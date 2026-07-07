@@ -1,0 +1,412 @@
+# AshTypescript Usage Rules
+
+## Quick Reference
+
+**Critical**: Add `AshTypescript.Rpc` extension to domain, run `mix ash_typescript.codegen`
+**Authentication**: Use `buildCSRFHeaders()` for Phoenix CSRF protection
+**Controller Routes**: Use `AshTypescript.TypedController` for controller-style actions with `conn` access
+**Typed Channels**: Use `AshTypescript.TypedChannel` for typed PubSub event subscriptions
+**Validation**: Always verify generated TypeScript compiles
+
+## Essential Syntax Table
+
+| Pattern | Syntax | Example |
+|---------|--------|---------|
+| **Domain Setup** | `use Ash.Domain, extensions: [AshTypescript.Rpc]` | Required extension |
+| **RPC Action** | `rpc_action :name, :action_type` | `rpc_action :list_todos, :read` |
+| **Basic Call** | `functionName({ fields: [...] })` | `listTodos({ fields: ["id", "title"] })` |
+| **Field Selection** | `["field1", {"nested": ["field2"]}]` | Relationships in objects |
+| **Union Fields** | `{ unionField: ["member1", {"member2": [...]}] }` | Selective union member access |
+| **Calculation (no args)** | `{ calc: ["field1", ...] }` | Simple nested syntax |
+| **Calculation (with args)** | `{ calc: { args: {...}, fields: [...] } }` | Args + fields object |
+| **Filter Syntax** | `{ field: { eq: value } }` | Always use operator objects |
+| **Sort String** | `"-field1,field2"` | Dash prefix = descending |
+| **CSRF Headers** | `headers: buildCSRFHeaders()` | Phoenix CSRF protection |
+| **Input Args** | `input: { argName: value }` | Action arguments |
+| **Identity (PK)** | `identity: "id-123"` | Primary key lookup |
+| **Identity (Named)** | `identity: { email: "a@b.com" }` | Named identity lookup |
+| **Identities Config** | `identities: [:_primary_key, :email]` | Allowed lookup methods |
+| **Actor-Scoped** | `identities: []` | No identity param needed |
+| **Get Action** | `get?: true` or `get_by: [:email]` | Single record lookup |
+| **Not Found** | `not_found_error?: false` | Return null instead of error |
+| **Custom Fetch** | `customFetch: myFetchFn` | Replace native fetch |
+| **Pagination** | `page: { limit: 10 }` | Offset/keyset pagination |
+| **Disable Filter** | `enable_filter?: false` | Disable client filtering |
+| **Disable Sort** | `enable_sort?: false` | Disable client sorting |
+| **Allowed Loads** | `allowed_loads: [:user, comments: [:author]]` | Whitelist loadable fields |
+| **Denied Loads** | `denied_loads: [:user]` | Blacklist loadable fields |
+| **Field Mapping** | `field_names [field_1: "field1"]` | Map invalid field names |
+| **Arg Mapping** | `argument_names [action: [arg_1: "arg1"]]` | Map invalid arg names |
+| **Type Mapping** | `def typescript_field_names, do: [...]` | NewType/TypedStruct callback |
+| **Metadata Config** | `show_metadata: [:field1]` | Control metadata exposure |
+| **Metadata Mapping** | `metadata_field_names: [field_1: "field1"]` | Map metadata names |
+| **Metadata (Read)** | `metadataFields: ["field1"]` | Merged into records |
+| **Metadata (Mutation)** | `result.metadata.field1` | Separate metadata field |
+| **Domain Namespace** | `typescript_rpc do namespace :api` | Default for all resources |
+| **Resource Namespace** | `resource X do namespace :todos` | Override domain default |
+| **Action Namespace** | `namespace: :custom` | Override resource default |
+| **Deprecation** | `deprecated: true` or `"message"` | Mark action deprecated |
+| **Related Actions** | `see: [:create_todo]` | Link in JSDoc |
+| **Description** | `description: "Custom desc"` | Override JSDoc description |
+| **Channel Function** | `actionNameChannel({channel, resultHandler})` | Phoenix channel RPC |
+| **Validation Fn** | `validateActionName({...})` | Client-side validation |
+| **Type Overrides** | `type_mapping_overrides: [{Module, "TSType"}]` | Map dependency types |
+| **Typed Controller** | `use AshTypescript.TypedController` | Controller-style routes |
+| **Controller Module** | `typed_controller do module_name MyWeb.Ctrl` | Generated controller module |
+| **Verb Shortcut** | `get :auth do run fn ... end end` | Preferred route syntax |
+| **Positional Method** | `route :login, :post do run fn ... end end` | Method as 2nd arg |
+| **Default GET** | `route :home do run fn ... end end` | Method defaults to :get |
+| **Route Argument** | `argument :code, :string, allow_nil?: false` | Colocated in route |
+| **Route Namespace** | `namespace "auth"` | Inside typed_controller or route do block |
+| **Route Description** | `description "..."` | JSDoc on route (inside do block) |
+| **Route Deprecated** | `deprecated true` | Deprecation notice (inside do block) |
+| **Route @see Tags** | `see [:auth, :logout]` | JSDoc `@see` cross-references |
+| **Typed Controllers** | `config :ash_typescript, typed_controllers: [M]` | Module discovery |
+| **Router Config** | `config :ash_typescript, router: MyWeb.Router` | Path introspection |
+| **Routes Output** | `config :ash_typescript, routes_output_file: "routes.ts"` | Route file path |
+| **Paths-Only Mode** | `config :ash_typescript, typed_controller_mode: :paths_only` | Skip fetch functions |
+| **GET Query Params** | `argument :q, :string, allow_nil?: false` on GET route | Becomes `?q=value` |
+| **Typed Channel** | `use AshTypescript.TypedChannel` | Server-push event subscriptions |
+| **Channel Topic** | `typed_channel do topic "org:*"` | Wildcard or static topic |
+| **Channel Resource** | `resource MyApp.Post do publish :event end` | Declare events per resource |
+| **Channel Create** | `createOrgChannel(socket, suffix)` | Factory with branded type |
+| **Channel Subscribe** | `onOrgChannelMessages(channel, handlers)` | Multi-event subscription |
+| **Channel Unsubscribe** | `unsubscribeOrgChannel(channel, refs)` | Cleanup all refs |
+| **Typed Channels** | `config :ash_typescript, typed_channels: [M]` | Module discovery |
+| **Channels Output** | `config :ash_typescript, typed_channels_output_file: "..."` | Channel functions file |
+| **JSON Manifest** | `config :ash_typescript, json_manifest_file: "manifest.json"` | Machine-readable action metadata |
+| **Manifest Filename** | `json_manifest_filename_format: :relative` | `:relative`, `:absolute`, or `:basename` |
+
+## Action Feature Matrix
+
+| Action Type | Fields | Filter | Page | Sort | Input | Identity |
+|-------------|--------|--------|------|------|-------|----------|
+| **read** | ✓ | ✓* | ✓ | ✓* | ✓ | - |
+| **read (get?/get_by)** | ✓ | - | - | - | ✓ | - |
+| **create** | ✓ | - | - | - | ✓ | - |
+| **update** | ✓ | - | - | - | ✓ | ✓ |
+| **destroy** | - | - | - | - | ✓ | ✓ |
+
+*Can be disabled with `enable_filter?: false` / `enable_sort?: false`
+
+## Core Patterns
+
+### Basic Setup
+
+```elixir
+defmodule MyApp.Domain do
+  use Ash.Domain, extensions: [AshTypescript.Rpc]
+
+  typescript_rpc do
+    resource MyApp.Todo do
+      rpc_action :list_todos, :read
+      rpc_action :create_todo, :create
+      rpc_action :update_todo, :update
+    end
+  end
+end
+```
+
+### TypeScript Usage
+
+```typescript
+// Read with all features
+const todos = await listTodos({
+  fields: ["id", "title", { user: ["name"] }],
+  filter: { completed: { eq: false } },
+  page: { limit: 10 },
+  sort: "-createdAt",
+  headers: buildCSRFHeaders()
+});
+
+// Update requires identity
+await updateTodo({
+  identity: "todo-123",
+  input: { title: "Updated" },
+  fields: ["id", "title"]
+});
+
+// Phoenix channel
+createTodoChannel({
+  channel: myChannel,
+  input: { title: "New" },
+  fields: ["id"],
+  resultHandler: (r) => console.log(r.data)
+});
+```
+
+### Field Name Mapping (Invalid Names)
+
+```elixir
+# Resource attributes/calculations
+typescript do
+  field_names [field_1: "field1", is_active?: "isActive"]
+  argument_names [search: [filter_1: "filter1"]]
+end
+
+# Custom types (NewType, TypedStruct, map constraints)
+def typescript_field_names, do: [field_1: "field1"]
+
+# Metadata fields
+rpc_action :read, :read_with_meta,
+  metadata_field_names: [meta_1: "meta1"]
+```
+
+## Typed Controller (Route Helpers)
+
+### When to Use
+
+| Use Case | Extension |
+|----------|-----------|
+| Data operations with field selection, filtering, pagination | `AshTypescript.Rpc` + `AshTypescript.Resource` |
+| Controller actions (Inertia renders, redirects, file downloads) | `AshTypescript.TypedController` |
+
+### Setup
+
+```elixir
+defmodule MyApp.Session do
+  use AshTypescript.TypedController
+
+  typed_controller do
+    module_name MyAppWeb.SessionController
+
+    # Verb shortcut (preferred)
+    get :auth do
+      run fn conn, _params -> render_inertia(conn, "Auth") end
+    end
+
+    # Verb shortcut with args
+    post :login do
+      see [:auth, :logout]
+      run fn conn, _params -> Plug.Conn.send_resp(conn, 200, "OK") end
+      argument :code, :string, allow_nil?: false
+      argument :remember_me, :boolean
+    end
+
+    # Positional method arg
+    route :logout, :post do
+      run fn conn, _params -> Plug.Conn.send_resp(conn, 200, "OK") end
+    end
+
+    # Default method (GET when omitted)
+    route :home do
+      run fn conn, _params -> Plug.Conn.send_resp(conn, 200, "Home") end
+    end
+  end
+end
+```
+
+### Generated TypeScript
+
+```typescript
+// GET → path helper
+authPath()                          // → "/auth"
+
+// GET with query args → path with query params
+searchPath({ q: "test", page: 1 }) // → "/search?q=test&page=1"
+
+// POST → typed async function (via executeTypedControllerRequest helper)
+login({ code: "abc" }, { headers: { "X-CSRF-Token": token } })
+
+// PATCH with path params + input
+updateProvider({ provider: "github" }, { enabled: true })
+```
+
+**Function parameter order**: `path` (if path params) → `input` (if args) → `config?: TypedControllerConfig`
+
+**Modes**: `:full` generates path helpers + fetch functions (+ Zod schemas if enabled). `:paths_only` generates only path helpers.
+
+### Typed Controller Constraints
+
+- Handlers must return `%Plug.Conn{}` directly — no `{:ok, conn}` wrapping
+- Multi-mount requires unique `as:` options on scopes for disambiguation
+- Not an Ash resource — standalone Spark DSL with colocated arguments
+- Path param `allow_nil?` must match presence: always present → `false`, sometimes present (multi-mount) → `true`
+
+## Typed Channel (Event Subscriptions)
+
+### When to Use
+
+| Use Case | Extension |
+|----------|-----------|
+| Data operations with field selection, filtering, pagination | `AshTypescript.Rpc` + `AshTypescript.Resource` |
+| Controller actions (Inertia renders, redirects, file downloads) | `AshTypescript.TypedController` |
+| Server pushes events to clients (notifications, updates) | `AshTypescript.TypedChannel` |
+
+### Setup
+
+```elixir
+defmodule MyAppWeb.OrgChannel do
+  use AshTypescript.TypedChannel
+  use Phoenix.Channel
+
+  typed_channel do
+    topic "org:*"
+
+    resource MyApp.Post do
+      publish :post_created
+      publish :post_updated
+    end
+  end
+
+  @impl true
+  def join("org:" <> org_id, _payload, socket), do: {:ok, socket}
+end
+```
+
+Resources must have `pub_sub` publications with matching `event:` names. Add `returns:` to publications for typed payloads (otherwise `unknown`).
+
+### Generated TypeScript
+
+```typescript
+// Create branded channel + subscribe
+const channel = createOrgChannel(socket, orgId);
+channel.join();
+
+const refs = onOrgChannelMessages(channel, {
+  post_created: (payload) => console.log(payload),  // typed payload
+  post_updated: (payload) => updatePost(payload),
+});
+
+// Single event: onOrgChannelMessage(channel, "post_created", handler)
+
+// Cleanup
+unsubscribeOrgChannel(channel, refs);
+```
+
+### Topic Patterns
+
+| Topic Pattern | Factory Signature |
+|--------------|-------------------|
+| `"org:*"` (wildcard) | `createOrgChannel(socket, suffix)` |
+| `"global"` (no wildcard) | `createGlobalChannel(socket)` |
+
+### Typed Channel Constraints
+
+- Event names must be unique across all resources in a channel
+- Publications need `public?: true` (warning if missing)
+- Publications need `returns:` option for typed payloads (warning if missing, falls back to `unknown`)
+- Channel types go in `ash_types.ts`; channel functions go in `typed_channels_output_file`
+
+## JSON Manifest (Third-Party Integrations)
+
+When `json_manifest_file` is configured, `mix ash_typescript.codegen` generates a machine-readable JSON manifest. This enables third-party packages (e.g., TanStack Query wrappers) to introspect the generated API without coupling to ash_typescript internals.
+
+```elixir
+config :ash_typescript,
+  json_manifest_file: "assets/js/ash_rpc_manifest.json",
+  json_manifest_filename_format: :relative  # :relative | :absolute | :basename
+```
+
+The manifest contains:
+- **`files`** — generated file locations with `importPath` (for TS imports, always relative, no `.ts`) and `filename` (format controlled by config)
+- **`actions`** — every RPC action with: `functionName`, `actionType` (read/create/update/destroy/action), `get`, `namespace`, `types` (result, fields, input, config, filterInput — only present when applicable), `pagination`, `enableFilter`, `enableSort`, `variants`/`variantNames`, `deprecated`, `see`, `input` (none/optional/required)
+- **`typedControllerRoutes`** — each route with: `functionName`, `method`, `path`, `pathParams`, `mutation`, `types`
+- **`version`** — semver string (currently `"1.0"`) for consumer compatibility
+
+### Consumer Example
+
+```typescript
+import manifest from "./ash_rpc_manifest.json";
+
+for (const action of manifest.actions) {
+  const isQuery = action.actionType === "read";
+  // Import from manifest.files.rpc.importPath
+  // Generate queryOptions/mutationOptions wrappers
+}
+```
+
+## Common Gotchas
+
+| Error Pattern | Fix |
+|---------------|-----|
+| Missing `extensions: [AshTypescript.Rpc]` | Add to domain |
+| Missing `typescript` block on resource | Add `AshTypescript.Resource` extension + `typescript do type_name "X" end` |
+| No `rpc_action` declarations | Explicitly declare each action |
+| Filter syntax `{ field: false }` | Use operators: `{ field: { eq: false } }` |
+| Missing `fields` parameter | Always include `fields: [...]` |
+| Get action error on not found | Add `not_found_error?: false` |
+| Invalid field name `field_1` or `is_active?` | Add field mapping |
+| Identity not found | Check `identities` config; use `{ field: value }` for named |
+| Load not allowed/denied | Check `allowed_loads`/`denied_loads` config |
+| Channel/validation fn undefined | Enable in config |
+| Typed controller 500 error | Handler must return `%Plug.Conn{}` |
+| Routes not generated | Set `typed_controllers:`, `router:`, and `routes_output_file:` in config |
+| Multi-mount ambiguity error | Add unique `as:` option to each scope |
+| Path param without matching argument | Add `argument :param, :string` to route |
+| Path param `allow_nil?` mismatch | Always-present → `false`; sometimes-present → `true` |
+| Route hooks not firing | Check `typed_controller_import_into_generated` + hook names |
+| Typed channel event not found | Event name must match `event:` option on resource's `pub_sub` publication |
+| Duplicate channel event names | Use unique event names across all resources in one channel |
+| Channel payload is `unknown` | Add `returns:` option to the resource's `pub_sub` publication |
+| Typed channels not generated | Set `typed_channels:` and `typed_channels_output_file:` in config |
+
+## Error Quick Reference
+
+| Error Contains | Fix |
+|----------------|-----|
+| "Property does not exist" | Run `mix ash_typescript.codegen` |
+| "fields is required" | Add `fields: [...]` |
+| "No domains found" | Use `MIX_ENV=test` for test resources |
+| "Action not found" | Add `rpc_action` declaration |
+| "403 Forbidden" | Use `buildCSRFHeaders()` |
+| "Invalid field names" | Add mapping (see Field Name Mapping) |
+| "load_not_allowed" / "load_denied" | Check load restrictions config |
+| "allow_nil?: true" + path param | Set `allow_nil?: false` for always-present path params |
+| "allow_nil?: false" + sometimes-present | Use `allow_nil?: true` for multi-mount path params |
+| "No publication with event X found" | Check `event:` option on resource's `pub_sub` block |
+| "Duplicate event names found" | Use unique event names per channel |
+
+## Configuration
+
+```elixir
+config :ash_typescript,
+  output_file: "assets/js/ash_rpc.ts",
+  run_endpoint: "/rpc/run",
+  validate_endpoint: "/rpc/validate",
+  generate_validation_functions: false,
+  generate_phx_channel_rpc_actions: false,
+  generate_zod_schemas: false,
+  require_tenant_parameters: false,
+  not_found_error?: true,
+  # JSDoc/Manifest
+  add_ash_internals_to_jsdoc: false,
+  add_ash_internals_to_manifest: false,
+  manifest_file: nil,
+  json_manifest_file: nil,              # Machine-readable JSON manifest for third-party tools
+  json_manifest_filename_format: :relative,  # :relative | :absolute | :basename
+  source_path_prefix: nil,  # For monorepos: "backend"
+  # Warnings
+  warn_on_missing_rpc_config: true,
+  warn_on_non_rpc_references: true,
+  # Dev codegen behavior
+  always_regenerate: false,
+  # Imports/Types
+  import_into_generated: [%{import_name: "CustomTypes", file: "./customTypes"}],
+  type_mapping_overrides: [{MyApp.CustomType, "string"}],
+  # Typed Controller (route helpers)
+  typed_controllers: [MyApp.Session],
+  router: MyAppWeb.Router,
+  routes_output_file: "assets/js/routes.ts",
+  typed_controller_mode: :full,                # :full or :paths_only
+  typed_controller_path_params_style: :object,  # :object or :args
+  # Optional: lifecycle hooks, custom imports, error handling
+  # typed_controller_before_request_hook: "RouteHooks.beforeRequest",
+  # typed_controller_after_request_hook: "RouteHooks.afterRequest",
+  # typed_controller_hook_context_type: "RouteHooks.RouteHookContext",
+  # typed_controller_import_into_generated: [%{import_name: "RouteHooks", file: "./routeHooks"}],
+  # typed_controller_error_handler: {MyApp.ErrorHandler, :handle, []},
+  # typed_controller_show_raised_errors: false  # true only in dev
+  # Typed Channel (event subscriptions)
+  typed_channels: [MyApp.OrgChannel],
+  typed_channels_output_file: "assets/js/ash_typed_channels.ts"
+```
+
+## Commands
+
+```bash
+mix ash_typescript.codegen              # Generate
+mix ash_typescript.codegen --check      # Verify up-to-date (CI)
+mix ash_typescript.codegen --dry-run    # Preview
+npx tsc ash_rpc.ts --noEmit             # Validate TS
+```
