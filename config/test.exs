@@ -1,4 +1,6 @@
 import Config
+
+config :dala, data_dir: "priv/data_test"
 config :dala, token_signing_secret: "SSNLsysbEwIQWJsjkxYLFk+RPj+Ny4wU"
 config :bcrypt_elixir, log_rounds: 1
 config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true

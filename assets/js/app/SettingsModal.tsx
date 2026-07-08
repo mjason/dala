@@ -1,0 +1,199 @@
+import React, { useState } from "react";
+import {
+  buildCSRFHeaders,
+  closeSession,
+  deleteSession,
+  renameSession,
+  restartSession,
+  setScrollbackLimit,
+} from "../ash_rpc";
+import type { Session } from "./Sidebar";
+import { humanBytes } from "./util";
+
+const MB = 1024 * 1024;
+
+type Props = {
+  session: Session;
+  onClose: () => void;
+  onDeleted: () => void;
+  onError: (message: string) => void;
+};
+
+export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
+  const [name, setName] = useState(session.name);
+  const [limitMb, setLimitMb] = useState(Math.round(session.scrollbackLimit / MB) || 1);
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const fail = (errors: { message: string }[]) =>
+    onError(errors[0]?.message ?? "Something went wrong");
+
+  const save = async () => {
+    setBusy(true);
+    const headers = buildCSRFHeaders();
+
+    if (name.trim() && name.trim() !== session.name) {
+      const result = await renameSession({
+        identity: session.id,
+        input: { name: name.trim() },
+        headers,
+      });
+      if (!result.success) fail(result.errors);
+    }
+
+    const limit = Math.min(Math.max(limitMb, 1), 256) * MB;
+    if (limit !== session.scrollbackLimit) {
+      const result = await setScrollbackLimit({
+        identity: session.id,
+        input: { scrollbackLimit: limit },
+        headers,
+      });
+      if (!result.success) fail(result.errors);
+    }
+
+    setBusy(false);
+    onClose();
+  };
+
+  const act = async (fn: () => Promise<{ success: boolean; errors?: any }>) => {
+    setBusy(true);
+    const result = await fn();
+    setBusy(false);
+    if (!result.success) fail(result.errors);
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-6" onClick={onClose}>
+      <div
+        id="session-settings"
+        className="w-full max-w-sm rounded-xl border border-line bg-bg1 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between border-b border-line px-4 py-3">
+          <span className="text-sm font-medium text-fg">Session settings</span>
+          <span
+            className={`font-mono text-[10px] ${
+              session.status === "running" ? "text-mint" : "text-fg-muted"
+            }`}
+          >
+            {session.status}
+            {session.status === "exited" && session.exitCode != null
+              ? ` (${session.exitCode})`
+              : ""}
+          </span>
+        </header>
+
+        <div className="space-y-4 px-4 py-4">
+          <label className="block">
+            <span className="mb-1 block text-[11px] uppercase tracking-wider text-fg-muted">
+              Name
+            </span>
+            <input
+              id="session-name-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-mint/60"
+            />
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-[11px] uppercase tracking-wider text-fg-muted">
+              Scrollback cache · {humanBytes(limitMb * MB)}
+            </span>
+            <div className="flex items-center gap-3">
+              <input
+                id="scrollback-limit-input"
+                type="range"
+                min={1}
+                max={256}
+                value={limitMb}
+                onChange={(e) => setLimitMb(Number(e.target.value))}
+                className="flex-1 accent-[#4cc38a]"
+              />
+              <input
+                type="number"
+                min={1}
+                max={256}
+                value={limitMb}
+                onChange={(e) => setLimitMb(Number(e.target.value) || 1)}
+                className="w-16 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-xs text-fg outline-none focus:border-mint/60"
+              />
+              <span className="font-mono text-[10px] text-fg-muted">MB</span>
+            </div>
+            <span className="mt-1 block text-[10.5px] leading-4 text-fg-muted/80">
+              Output kept on disk so refreshes and reconnects replay history.
+            </span>
+          </label>
+
+          <div className="flex gap-2 border-t border-line pt-3">
+            {session.status === "running" ? (
+              <button
+                onClick={() => void act(() => closeSession({ input: { id: session.id }, headers: buildCSRFHeaders() }))}
+                disabled={busy}
+                className="rounded-md border border-line px-2.5 py-1 text-xs text-fg-muted transition-colors hover:border-danger/60 hover:text-danger disabled:opacity-50"
+              >
+                Kill shell
+              </button>
+            ) : (
+              <button
+                id="restart-session-button"
+                onClick={() => void act(() => restartSession({ input: { id: session.id }, headers: buildCSRFHeaders() }))}
+                disabled={busy}
+                className="rounded-md border border-mint/50 px-2.5 py-1 text-xs text-mint transition-colors hover:bg-mint/10 disabled:opacity-50"
+              >
+                Restart shell
+              </button>
+            )}
+            <div className="flex-1" />
+            {confirmDelete ? (
+              <button
+                onClick={() =>
+                  void act(async () => {
+                    const result = await deleteSession({
+                      identity: session.id,
+                      headers: buildCSRFHeaders(),
+                    });
+                    if (result.success) {
+                      onDeleted();
+                      onClose();
+                    }
+                    return result;
+                  })
+                }
+                disabled={busy}
+                className="rounded-md bg-danger/90 px-2.5 py-1 text-xs font-medium text-black transition-colors hover:bg-danger disabled:opacity-50"
+              >
+                Really delete?
+              </button>
+            ) : (
+              <button
+                id="delete-session-button"
+                onClick={() => setConfirmDelete(true)}
+                className="rounded-md border border-line px-2.5 py-1 text-xs text-fg-muted transition-colors hover:border-danger/60 hover:text-danger"
+              >
+                Delete session
+              </button>
+            )}
+          </div>
+        </div>
+
+        <footer className="flex justify-end gap-2 border-t border-line px-4 py-3">
+          <button
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+          >
+            Cancel
+          </button>
+          <button
+            id="save-settings-button"
+            onClick={() => void save()}
+            disabled={busy}
+            className="rounded-md bg-mint px-3 py-1.5 text-xs font-medium text-black transition-colors hover:brightness-110 disabled:opacity-50"
+          >
+            Save
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}

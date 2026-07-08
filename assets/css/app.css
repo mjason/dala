@@ -2,6 +2,7 @@
    https://tailwindcss.com/docs/configuration */
 
 @import "tailwindcss" source(none);
+@import "../node_modules/@xterm/xterm/css/xterm.css";
 @source "../../deps/ash_authentication_phoenix";
 @import "phoenix-colocated/dala/colocated.css";
 @source "../css";
@@ -104,3 +105,46 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+/* Dala design tokens — dark, neutral, terminal-first.
+   The accent is named "mint" to avoid colliding with daisyUI's
+   --color-accent variable, which the auth pages still use. */
+@theme {
+  --color-bg0: #0b0c0e;
+  --color-bg1: #121417;
+  --color-bg2: #1b1e23;
+  --color-line: #24272c;
+  --color-fg: #e6e8eb;
+  --color-fg-muted: #8f96a0;
+  --color-mint: #4cc38a;
+  --color-danger: #f0716e;
+}
+
+/* SPA root: fill the viewport, no page scroll */
+body:has(> #app) {
+  background: var(--color-bg0);
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  #app {
+    height: 100dvh;
+  }
+}
+
+/* Let xterm own its box; keep scrollbars quiet and consistent */
+.xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3037 transparent;
+}
+
+#session-list,
+#file-drawer *,
+#file-preview pre {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3037 transparent;
+}

@@ -1,5 +1,8 @@
 {
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
     "phoenix": "file:../deps/phoenix",
     "phoenix_html": "file:../deps/phoenix_html",
     "phoenix_live_view": "file:../deps/phoenix_live_view",
@@ -8,7 +11,9 @@
     "topbar": "^3.0.0"
   },
   "devDependencies": {
+    "@types/phoenix": "^1.6.7",
     "@types/react": "^19.1.13",
-    "@types/react-dom": "^19.1.9"
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^6.0.3"
   }
 }

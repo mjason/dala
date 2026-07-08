@@ -1,8 +1,11 @@
 defmodule DalaWeb.PageControllerTest do
   use DalaWeb.ConnCase
 
-  test "GET /", %{conn: conn} do
+  test "GET / serves the terminal SPA", %{conn: conn} do
     conn = get(conn, ~p"/")
-    assert html_response(conn, 200) =~ "Peace of mind from prototype to production"
+    html = html_response(conn, 200)
+
+    assert html =~ ~s(id="app")
+    assert html =~ ~s(name="auth-enabled" content="false")
   end
 end

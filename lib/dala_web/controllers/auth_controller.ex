@@ -2,15 +2,10 @@ defmodule DalaWeb.AuthController do
   use DalaWeb, :controller
   use AshAuthentication.Phoenix.Controller
 
-  def success(conn, activity, user, _token) do
+  def success(conn, _activity, user, _token) do
     return_to = get_session(conn, :return_to) || ~p"/"
 
-    message =
-      case activity do
-        {:confirm_new_user, :confirm} -> "Your email address has now been confirmed"
-        {:password, :reset} -> "Your password has successfully been reset"
-        _ -> "You are now signed in"
-      end
+    message = "You are now signed in"
 
     conn
     |> delete_session(:return_to)
@@ -21,35 +16,9 @@ defmodule DalaWeb.AuthController do
     |> redirect(to: return_to)
   end
 
-  def failure(conn, activity, reason) do
-    message =
-      case {activity, reason} do
-        {_,
-         %AshAuthentication.Errors.AuthenticationFailed{
-           caused_by: %Ash.Error.Forbidden{
-             errors: [%AshAuthentication.Errors.CannotConfirmUnconfirmedUser{}]
-           }
-         }} ->
-          """
-          You have already signed in another way, but have not confirmed your account.
-          You can confirm your account using the link we sent to you, or by resetting your password.
-          """
-
-        {_,
-         %AshAuthentication.Errors.AuthenticationFailed{
-           caused_by: %AshAuthentication.Errors.ConfirmationRequired{}
-         }} ->
-          """
-          An account with this email already exists. We've sent a link to that
-          address - confirm it to finish linking this provider to your account.
-          """
-
-        _ ->
-          "Incorrect email or password"
-      end
-
+  def failure(conn, _activity, _reason) do
     conn
-    |> put_flash(:error, message)
+    |> put_flash(:error, "Incorrect email or password")
     |> redirect(to: ~p"/sign-in")
   end
 
@@ -57,6 +26,8 @@ defmodule DalaWeb.AuthController do
     return_to = get_session(conn, :return_to) || ~p"/"
 
     conn
+    # Revoke the bearer token too, so websocket access ends with the session.
+    |> revoke_session_tokens(:dala)
     |> clear_session(:dala)
     |> put_flash(:info, "You are now signed out")
     |> redirect(to: return_to)

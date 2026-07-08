@@ -14,10 +14,13 @@ defmodule Dala.Application do
        repos: Application.fetch_env!(:dala, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:dala, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Dala.PubSub},
-      # Start a worker by calling: Dala.Worker.start_link(arg)
-      # {Dala.Worker, arg},
-      # Start to serve requests, typically the last entry
+      {Registry, keys: :unique, name: Dala.Terminal.Registry},
+      {DynamicSupervisor, name: Dala.Terminal.ServerSupervisor, strategy: :one_for_one},
+      Dala.Terminal.Scrollback,
       DalaWeb.Endpoint,
+      # After the endpoint: Boot publishes session updates through it.
+      Dala.Terminal.Boot,
+      Dala.Accounts.Seeder,
       {AshAuthentication.Supervisor, [otp_app: :dala]}
     ]
 

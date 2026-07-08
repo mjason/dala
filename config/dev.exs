@@ -15,9 +15,8 @@ config :dala, Dala.Repo,
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
 config :dala, DalaWeb.Endpoint,
-  # Binding to loopback ipv4 address prevents access from other machines.
-  # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  # Bind to all interfaces so the dev server is reachable over the LAN.
+  http: [ip: {0, 0, 0, 0}],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

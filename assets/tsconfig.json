@@ -23,11 +23,11 @@
   "compilerOptions": {
     "esModuleInterop": true,
     "jsx": "react-jsx",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
-    "paths": {
-      "*": ["../deps/*"]
-    },
     "allowJs": true,
+    "strict": true,
+    "skipLibCheck": true,
     "noEmit": true
   },
   "include": ["js/**/*"]

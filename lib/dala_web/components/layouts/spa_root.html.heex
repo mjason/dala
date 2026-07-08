@@ -1,14 +1,17 @@
-<!--
-SPDX-FileCopyrightText: 2025 ash_typescript contributors <https://github.com/ash-project/ash_typescript/graphs/contributors>
-SPDX-License-Identifier: MIT
--->
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="AshTypescript">Page</.live_title>
+    <meta name="auth-enabled" content={to_string(Dala.Auth.enabled?())} />
+    <%= if assigns[:user_email] do %>
+      <meta name="user-email" content={@user_email} />
+    <% end %>
+    <%= if assigns[:socket_token] do %>
+      <meta name="socket-token" content={@socket_token} />
+    <% end %>
+    <.live_title default="Dala">Dala</.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
   </head>
   <body>

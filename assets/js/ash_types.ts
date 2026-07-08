@@ -3,14 +3,153 @@
 
 
 
+export type UUID = string;
+export type UtcDateTimeUsec = string;
+
+// FileSystem Schema
+export type FileSystemResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type FileSystemAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+// Session Schema
+export type SessionResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "insertedAt" | "updatedAt";
+  id: UUID;
+  name: string;
+  shell: string;
+  cwd: string;
+  status: "exited" | "running";
+  exitCode: number | null;
+  scrollbackLimit: number;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+};
+
+
+
+export type SessionAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "insertedAt" | "updatedAt";
+  id: UUID;
+  name: string;
+  shell: string;
+  cwd: string;
+  status: "exited" | "running";
+  exitCode: number | null;
+  scrollbackLimit: number;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+};
+
+
+export type FileSystemFilterInput = {
+  and?: Array<FileSystemFilterInput>;
+  or?: Array<FileSystemFilterInput>;
+  not?: Array<FileSystemFilterInput>;
 
 
 
 
+};
+export type SessionFilterInput = {
+  and?: Array<SessionFilterInput>;
+  or?: Array<SessionFilterInput>;
+  not?: Array<SessionFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  name?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  shell?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  cwd?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  status?: {
+    eq?: "exited" | "running";
+    notEq?: "exited" | "running";
+    in?: Array<"exited" | "running">;
+  };
+
+  exitCode?: {
+    eq?: number;
+    notEq?: number;
+    greaterThan?: number;
+    greaterThanOrEqual?: number;
+    lessThan?: number;
+    lessThanOrEqual?: number;
+    in?: Array<number>;
+    isNil?: boolean;
+  };
+
+  scrollbackLimit?: {
+    eq?: number;
+    notEq?: number;
+    greaterThan?: number;
+    greaterThanOrEqual?: number;
+    lessThan?: number;
+    lessThanOrEqual?: number;
+    in?: Array<number>;
+  };
+
+  insertedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+  };
+
+  updatedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+  };
 
 
 
+};
 
+
+
+export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "insertedAt", "updatedAt"] as const;
+export type SessionFilterField = (typeof sessionFilterFields)[number];
+
+
+
+export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "insertedAt", "updatedAt"] as const;
+export type SessionSortField = (typeof sessionSortFields)[number];
 
 
 // Utility Types
@@ -438,3 +577,56 @@ export type ValidationResult =
 
 
 
+
+export type CwdPayload = {id: UUID, cwd: string};
+export type ExitPayload = {id: UUID, exitCode: number | null};
+export type OutputPayload = {data: string, seq: number};
+export type ReplayPayload = {data: string, seq: number, done: boolean};
+export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, insertedAt: UtcDateTimeUsec};
+export type SessionDeletedPayload = {id: UUID};
+export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, insertedAt: UtcDateTimeUsec};
+
+// Channel types for DalaWeb.SessionsChannel
+
+export type SessionsChannel = {
+  readonly __channelType: "SessionsChannel";
+  on(event: string, callback: (payload: unknown) => void): number;
+  off(event: string, ref: number): void;
+};
+
+export type SessionsChannelEvents = {
+  session_created: SessionCreatedPayload;
+  session_deleted: SessionDeletedPayload;
+  session_updated: SessionUpdatedPayload;
+};
+
+export type SessionsChannelHandlers = {
+  [E in keyof SessionsChannelEvents]?: (payload: SessionsChannelEvents[E]) => void;
+};
+
+export type SessionsChannelRefs = {
+  [E in keyof SessionsChannelEvents]?: number;
+};
+
+// Channel types for DalaWeb.TerminalChannel
+
+export type TerminalChannel = {
+  readonly __channelType: "TerminalChannel";
+  on(event: string, callback: (payload: unknown) => void): number;
+  off(event: string, ref: number): void;
+};
+
+export type TerminalChannelEvents = {
+  cwd: CwdPayload;
+  exit: ExitPayload;
+  output: OutputPayload;
+  replay: ReplayPayload;
+};
+
+export type TerminalChannelHandlers = {
+  [E in keyof TerminalChannelEvents]?: (payload: TerminalChannelEvents[E]) => void;
+};
+
+export type TerminalChannelRefs = {
+  [E in keyof TerminalChannelEvents]?: number;
+};

@@ -42,7 +42,9 @@ defmodule Dala.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      {:bcrypt_elixir, "~> 3.0"},
       {:picosat_elixir, "~> 0.2"},
+      {:rustler, "~> 0.38.0"},
       {:sourceror, "~> 1.8", only: [:dev, :test]},
       {:ash_typescript, "~> 0.17"},
       {:usage_rules, "~> 1.0", only: [:dev]},
@@ -129,12 +131,14 @@ defmodule Dala.MixProject do
         build: [
           "ash-framework": [
             # The description tells people how to use this skill.
-            description: "Use this skill working with Ash Framework or any of its extensions. Always consult this when making any domain changes, features or fixes.",
+            description:
+              "Use this skill working with Ash Framework or any of its extensions. Always consult this when making any domain changes, features or fixes.",
             # Include all Ash dependencies
             usage_rules: [:ash, ~r/^ash_/]
           ],
           "phoenix-framework": [
-            description: "Use this skill working with Phoenix Framework. Consult this when working with the web layer, controllers, views, liveviews etc.",
+            description:
+              "Use this skill working with Phoenix Framework. Consult this when working with the web layer, controllers, views, liveviews etc.",
             # Include all Phoenix dependencies
             usage_rules: [:phoenix, ~r/^phoenix_/]
           ]

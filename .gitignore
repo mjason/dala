@@ -39,3 +39,8 @@ npm-debug.log
 *.db
 *.db-*
 
+
+# Rust NIF build artifacts
+/native/*/target/
+/priv/native/
+/priv/data*/

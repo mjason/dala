@@ -22,6 +22,14 @@ end
 
 config :dala, DalaWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Optional authentication: when enabled, only the accounts seeded from
+# DALA_USERS ("email:password,email2:password2") can sign in.
+config :dala, auth_enabled: System.get_env("DALA_AUTH_ENABLED", "false") in ~w(true 1)
+
+if data_dir = System.get_env("DALA_DATA_DIR") do
+  config :dala, data_dir: data_dir
+end
+
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
   config :dala, DalaWeb.Endpoint,
