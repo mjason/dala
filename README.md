@@ -4,50 +4,167 @@
 
 <h1 align="center">Dala</h1>
 
-<p align="center">AI 时代的 Web 终端：长任务不怕重启、内建 Fork 级 git review、CodeMirror 全家桶。</p>
+<p align="center">A web terminal built for the AI era: long-running tasks survive restarts, Fork-grade git review built in, CodeMirror everywhere.</p>
 
-## 特性
+<p align="center"><a href="README.zh-CN.md">中文文档</a></p>
 
-- **持久 Shell**：每个会话跑在独立的 PTY holder 守护进程里（dtach 模型，Rust 实现），dala 重启/升级后 shell 原样恢复——tmux 的能力，浏览器的界面
-- **Git review**：hunk 级与行级 stage/unstage/discard、双视角（工作区/暂存区）、分支查看与切换、提交历史按文件查看、amend（libgit2 NIF）
-- **文件管理**：VS Code 式文件抽屉（上传/下载/删除/拖拽/粘贴系统文件）、Ctrl/⌘+P 快速打开
-- **编辑与预览**：CodeMirror 6 语法高亮编辑器、字符级 merge diff、Markdown/CSV 预览
-- **贴图给 AI**：往终端粘贴截图自动落盘，并把文件路径敲进 claude code / codex / opencode
-- **自升级**：侧栏一键升级到最新 GitHub Release，升级期间 shell 不断线
+---
 
-## 安装（Linux x86_64）
+## Features
+
+- **Persistent shells** — every session lives in its own PTY holder daemon (dtach model, written in Rust). Restarting or upgrading dala leaves your shells running: tmux durability, browser UI.
+- **Git review** — hunk-level *and* line-level stage/unstage/discard, working-tree/index dual perspectives, branch switching, per-file commit browsing, amend. All through a libgit2 NIF, no shelling out.
+- **Files** — VS Code-style drawer: upload/download/delete, drag & drop, paste files from the OS clipboard, `Ctrl/⌘+P` fuzzy quick-open.
+- **Editing & preview** — CodeMirror 6 syntax-highlighted editor, character-level merge diffs, Markdown/CSV preview.
+- **Screenshots for AI CLIs** — paste an image into the terminal; dala saves it to disk and types the file path for claude code / codex / opencode.
+- **Self-upgrade** — one click in the sidebar updates to the latest GitHub release. Shells stay alive through the restart.
+
+## Quick start (Linux x86_64)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 ```
 
-以 systemd 用户守护进程运行，默认地址 `http://localhost:4400`。
-配置在 `~/.config/dala/dala.env`（端口、可选登录 `DALA_AUTH_ENABLED` / `DALA_USERS`），数据在 `~/.local/share/dala`。
+This installs a prebuilt release as a systemd **user daemon** on `http://localhost:4400`.
+Config lives in `~/.config/dala/dala.env`, data in `~/.local/share/dala`.
 
-## 升级
+To update later — either click the sidebar update button, or:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
 ```
 
-或直接点侧栏底部的升级按钮。两种方式 shell 都不会断。
+## Usage guide
 
-## 服务管理
+### Sessions
+
+The sidebar lists your shells. `+` creates one; each runs on the server inside its
+own holder process, so closing the tab, refreshing, restarting dala or upgrading
+it never kills a shell. A session that *exited* (the process itself ended) shows
+an overlay with a restart button. Per-session settings (rename, scrollback cache
+size, kill/restart, delete) are behind the `settings` button.
+
+### Keyboard shortcuts
+
+| Shortcut (Linux/Windows · macOS) | Action |
+|---|---|
+| `Ctrl+P` · `⌘P` | Quick-open a file (fuzzy search; on macOS it works even while the terminal is focused) |
+| `Ctrl+Shift+E` · `⇧⌘E` | File drawer |
+| `Ctrl+Shift+G` · `⇧⌘G` | Git panel |
+| `Ctrl+Shift+F` · `⇧⌘F` | Refit terminal width |
+| `Ctrl+Shift+X` · `⇧⌘X` | Reset terminal |
+| `Esc` | Close the topmost window |
+
+File drawer: `↑↓` select · `⏎` open · `⌫` parent directory · `Del` delete ·
+`Esc` deselect (uploads then target the root) · `Ctrl/⌘+V` paste a copied file.
+Diff windows: `i` inline · `s` side-by-side · `l` line-select mode · `Alt+Z` wrap.
+Every button shows its shortcut in a hover tooltip.
+
+### Git panel
+
+Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
+
+- **Changes** — staged and unstaged lists (a file with both kinds of changes
+  appears in both). Click a file for a syntax-highlighted diff with two
+  perspectives: unstaged (index ↔ working tree) and staged (HEAD ↔ index).
+- **Hunks & lines** — every change block has Stage/Discard/Unstage buttons
+  (inline and side-by-side modes). Press `l` for line-select mode: tick
+  individual `+`/`-` lines and stage/discard/unstage exactly those.
+- **Commit** — message box at the bottom; `Amend (--amend)` melds staged
+  changes into the previous commit (empty message keeps the original).
+- **Branches** — click the branch name in the header to list local/remote
+  branches and switch (remote branches get a local tracking branch). Dirty
+  conflicts abort safely.
+- **History** — commit log; multi-file commits get a file rail so you can
+  review file by file.
+
+### Images for AI CLIs
+
+Run claude code / codex / opencode inside a dala shell and paste a screenshot
+(`Ctrl/⌘+V`): dala stores it under the session directory and types its path
+into the prompt — the same flow those CLIs support in a native terminal.
+
+## Application guide
+
+- **Long-running AI agents.** Kick off a multi-hour agent run, close the
+  laptop, come back from any browser: the shell, its scrollback and the agent
+  are still there. This is the core reason dala exists — terminal multiplexers
+  work, but a browser tab with persistent state travels better.
+- **Review what the agent wrote.** The git panel is built for the "AI writes,
+  human reviews" loop: skim per-file diffs, stage exactly the lines you accept,
+  discard the rest, amend fixups — without leaving the browser.
+- **Multi-device access.** Expose dala on your LAN (see deployment guide),
+  enable login, and drive the same shells from a phone or tablet.
+
+## Deployment guide
+
+### Layout
+
+| Path | Purpose |
+|---|---|
+| `~/.local/dala/versions/<tag>` | unpacked releases |
+| `~/.local/dala/current` | symlink to the active version |
+| `~/.config/dala/dala.env` | environment file (secrets, port, toggles) |
+| `~/.config/systemd/user/dala.service` | the daemon unit |
+| `~/.local/share/dala` | SQLite DB, session store, scrollback cache |
+
+The unit runs `Dala.Release.migrate()` before every start, so upgrades migrate
+the database automatically. `KillMode=process` keeps PTY holders (and your
+shells) alive across service restarts.
+
+### Environment reference (`~/.config/dala/dala.env`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `4400` | HTTP port |
+| `DALA_LISTEN_IP` | `127.0.0.1` | Listen address. **Loopback only by default** — set `0.0.0.0` to serve the LAN (and enable login!) |
+| `DALA_AUTH_ENABLED` | `false` | Require sign-in |
+| `DALA_USERS` | — | Seeded accounts, `email:password[,email2:password2]` (min 8-char passwords; applied at boot, so it is the source of truth) |
+| `PHX_HOST` / `PHX_SCHEME` / `PHX_URL_PORT` | `localhost` / `http` / `PORT` | Public URL parts (set when behind a reverse proxy) |
+| `PHX_CHECK_ORIGIN` | `false` | WebSocket origin check — enable behind a reverse proxy with a fixed host |
+| `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite location |
+| `DALA_DATA_DIR` | `~/.local/share/dala` | Session store & scrollback |
+| `DALA_RELEASE_ROOT` | set by install.sh | Enables the in-app updater |
+| `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / `dala` | Updater source repo / systemd unit name |
+| `SECRET_KEY_BASE` / `TOKEN_SIGNING_SECRET` | generated | Session/token secrets — keep private |
+
+After editing: `systemctl --user restart dala` (shells survive).
+
+### Service management
 
 ```sh
-systemctl --user status dala     # 状态
-journalctl --user -u dala -f     # 日志
-systemctl --user restart dala    # 重启（shell 存活）
+systemctl --user status dala
+journalctl --user -u dala -f
+systemctl --user restart dala
 ```
 
-## HTTPS / 反向代理
+`install.sh` runs `loginctl enable-linger` so the daemon also runs while you
+are logged out.
 
-dala 默认只服务本机/局域网的 http（监听地址由 `DALA_LISTEN_IP` 显式控制），
-`config/prod.exs` 里 Phoenix 生成器自带的 `force_ssl` 已在 v0.1.2 移除——
-它只豁免 `localhost`，用局域网 IP 访问会被 301 到 `https://localhost/`。
+### LAN access
 
-如果以后把 dala 挂到带 TLS 的反向代理（nginx/caddy）后面，希望强制 https，
-把下面这段加回 `config/prod.exs` 即可（编译期配置，改后需重新构建发布）：
+1. In `dala.env`: `DALA_LISTEN_IP=0.0.0.0`, `DALA_AUTH_ENABLED=true`,
+   `DALA_USERS=you@example.com:yourpassword`, then restart.
+2. Open `http://<machine-ip>:<port>` from another device.
+3. **WSL2**: use mirrored networking (`.wslconfig` → `networkingMode=mirrored`)
+   and allow the port through the Hyper-V firewall (admin PowerShell):
+
+   ```powershell
+   New-NetFirewallHyperVRule -Name dala-4400 -DisplayName "dala 4400" `
+     -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" `
+     -Protocol TCP -LocalPorts 4400
+   ```
+
+A terminal server hands out your shell — never expose it without auth, and
+prefer a VPN (tailscale etc.) over raw internet exposure.
+
+### HTTPS / reverse proxy
+
+dala serves plain http by design; TLS belongs to a reverse proxy (nginx/caddy).
+The Phoenix generator's `force_ssl` block was removed in v0.1.2 (it only
+exempted `localhost`, so LAN-IP access got 301-redirected to
+`https://localhost/`). To force https behind a TLS proxy, put it back in
+`config/prod.exs` (compile-time — requires a rebuild):
 
 ```elixir
 config :dala, DalaWeb.Endpoint,
@@ -59,26 +176,30 @@ config :dala, DalaWeb.Endpoint,
   ]
 ```
 
-同时在 `~/.config/dala/dala.env` 里设置 `PHX_SCHEME=https`、`PHX_HOST=<域名>`、
-`PHX_CHECK_ORIGIN=true`。
+and set `PHX_SCHEME=https`, `PHX_HOST=<your-domain>`, `PHX_CHECK_ORIGIN=true`
+in `dala.env`.
 
-## 架构速览
+### Releases & building from source
 
-- Phoenix + Bandit 做服务端，React + xterm.js 做前端（Phoenix Channels 传输）
-- 每个会话一个 `dala_holder`（Rust）：daemon 化持有 PTY，unix socket + 4 字节长度前缀帧对接 BEAM，8MB 环形缓冲兜住离线输出
-- `dala_git`（Rustler + libgit2）：status/diff/stage/patch apply/branch/checkout 全走 NIF，不 shell out
-- SQLite（Ash + Ecto）存账户，DETS 存会话与滚动缓存
+Releases are built by GitHub Actions on every `v*` tag
+(`.github/workflows/release.yml`): production assets (minified + digested),
+Rust NIFs, the PTY holder, packaged as `dala-<tag>-linux-x86_64.tar.gz`.
 
-## 从源码开发
-
-需要 Elixir 1.19+ / OTP 28、Rust、Node 22：
+Local development needs Elixir 1.19+/OTP 28, Rust and Node 22:
 
 ```sh
 mix setup
 mix phx.server        # http://localhost:4000
 ```
 
-发布产物由 GitHub Actions 在打 tag（`v*`）时自动构建（`.github/workflows/release.yml`）。
+## Architecture
+
+- Phoenix + Bandit server, React + xterm.js frontend (Phoenix Channels transport)
+- One `dala_holder` (Rust) per session: a daemonized PTY owner speaking a
+  4-byte length-prefixed frame protocol over a unix socket, with an 8 MB ring
+  buffer for output while no server is attached
+- `dala_git` (Rustler + libgit2): status/diff/stage/patch-apply/branches/checkout as NIFs
+- SQLite (Ash + Ecto) for accounts, DETS for sessions & scrollback cache
 
 ## License
 
