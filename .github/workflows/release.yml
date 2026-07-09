@@ -43,9 +43,12 @@ jobs:
           restore-keys: ${{ runner.os }}-mix-
 
       - name: Install dependencies
+        # npm install (not ci): the lock file is written by npm 11 locally,
+        # while the runner's node 22 bundles npm 10 whose `ci` validation
+        # rejects it over optional-dependency entries.
         run: |
           mix deps.get --only prod
-          npm ci --prefix assets
+          npm install --prefix assets
 
       - name: Compile (Elixir + Rust NIF + PTY holder)
         run: mix compile
