@@ -4,6 +4,7 @@ import { authEnabled, userEmail } from "./meta";
 import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
+import UpdateCheck from "./UpdateCheck";
 
 export type Session = SessionUpdatedPayload;
 
@@ -138,6 +139,7 @@ export default function Sidebar({
             <span className="font-mono">{t("localMode")}</span>
           )}
         </div>
+        <UpdateCheck />
         <select
           id="language-select"
           aria-label={t("language")}

@@ -35,6 +35,11 @@ defmodule Dala.Terminal do
       rpc_action :git_branches, :git_branches
       rpc_action :git_checkout, :git_checkout
     end
+
+    resource Dala.Terminal.Updater do
+      rpc_action :check_update, :check_update
+      rpc_action :apply_update, :apply_update
+    end
   end
 
   resources do
@@ -50,5 +55,6 @@ defmodule Dala.Terminal do
 
     resource Dala.Terminal.FileSystem
     resource Dala.Terminal.Git
+    resource Dala.Terminal.Updater
   end
 end

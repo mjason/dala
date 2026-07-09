@@ -30,6 +30,11 @@ if data_dir = System.get_env("DALA_DATA_DIR") do
   config :dala, data_dir: data_dir
 end
 
+# Set by install.sh: the root of the versioned install tree
+# (<root>/versions/<tag> + <root>/current). Its presence enables the in-app
+# updater; running from source (mix) leaves it off.
+config :dala, release_root: System.get_env("DALA_RELEASE_ROOT")
+
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
   config :dala, DalaWeb.Endpoint,
@@ -71,12 +76,28 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  host = System.get_env("PHX_HOST") || "localhost"
+
+  # Local daemon installs serve plain http on localhost; a reverse-proxied
+  # deployment sets PHX_SCHEME=https (and its own PHX_HOST).
+  scheme = System.get_env("PHX_SCHEME") || "http"
+
+  url_port =
+    String.to_integer(
+      System.get_env("PHX_URL_PORT") ||
+        if(scheme == "https", do: "443", else: System.get_env("PORT", "4000"))
+    )
+
+  # The origin check breaks WebSockets when the app is reached by IP or an
+  # alternate hostname (common for a personal terminal server on a LAN), so
+  # it is opt-in for reverse-proxied setups.
+  check_origin = System.get_env("PHX_CHECK_ORIGIN", "false") in ~w(true 1)
 
   config :dala, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :dala, DalaWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: scheme],
+    check_origin: check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

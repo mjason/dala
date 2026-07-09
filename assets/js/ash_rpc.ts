@@ -2008,3 +2008,131 @@ export async function validateSetScrollbackLimit(
   );
 }
 
+
+export type ApplyUpdateFields = UnifiedFieldSelection<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}>[];
+
+export type InferApplyUpdateResult<
+  Fields extends ApplyUpdateFields | undefined,
+> = InferResult<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}, Fields>;
+
+export type ApplyUpdateResult<Fields extends ApplyUpdateFields | undefined = undefined> = | { success: true; data: InferApplyUpdateResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Updater
+ *
+ * @ashActionType :action
+ */
+export async function applyUpdate<Fields extends ApplyUpdateFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ApplyUpdateResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "apply_update",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ApplyUpdateResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Updater
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateApplyUpdate(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "apply_update",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type CheckUpdateFields = UnifiedFieldSelection<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl"}>[];
+
+export type InferCheckUpdateResult<
+  Fields extends CheckUpdateFields | undefined,
+> = InferResult<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl"}, Fields>;
+
+export type CheckUpdateResult<Fields extends CheckUpdateFields | undefined = undefined> = | { success: true; data: InferCheckUpdateResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Updater
+ *
+ * @ashActionType :action
+ */
+export async function checkUpdate<Fields extends CheckUpdateFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CheckUpdateResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "check_update",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CheckUpdateResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Updater
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateCheckUpdate(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "check_update",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
