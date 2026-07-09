@@ -136,7 +136,14 @@ export default function App() {
       input: { id },
       headers: buildCSRFHeaders(),
     });
-    if (!result.success) toast(result.errors[0]?.message ?? t("couldNotRestart"));
+    if (!result.success) {
+      toast(result.errors[0]?.message ?? t("couldNotRestart"));
+      return;
+    }
+    // The revived shell is a fresh PTY at the default size — push our real size
+    // immediately instead of waiting for a resize event.
+    termActions.current?.refit();
+    window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
