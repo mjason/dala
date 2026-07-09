@@ -4,6 +4,7 @@ import {
   gitCommit,
   gitDiff,
   gitDiscard,
+  gitFileAt,
   gitLog,
   gitShow,
   gitStage,
@@ -20,7 +21,7 @@ import type {
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { FileTypeIcon } from "./fileIcons";
-import DiffView, { type DiffDisplayMode } from "./DiffView";
+import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
 import Windowed from "./Windowed";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
@@ -32,9 +33,12 @@ type GitFile = { path: string; status: string; staged: boolean };
 type Status = { repo: boolean; root: string | null; branch: string | null; files: GitFile[] };
 type Commit = { hash: string; author: string; date: string; subject: string };
 
+/** Revisions to fetch full file contents from, powering the merge view. */
+type DiffRevs = { repo: string; oldRev: string; newRev: string };
+
 type DiffTarget =
-  | { kind: "file"; title: string; text: string; truncated: boolean }
-  | { kind: "commit"; title: string; text: string; truncated: boolean };
+  | { kind: "file"; title: string; text: string; truncated: boolean; revs?: DiffRevs }
+  | { kind: "commit"; title: string; text: string; truncated: boolean; revs?: DiffRevs };
 
 type Props = {
   path: string;
@@ -104,7 +108,13 @@ export default function GitPanel({ path, onClose, onError }: Props) {
     setBusy(null);
     if (result.success) {
       const data = result.data as unknown as { diff: string; binary: boolean; truncated: boolean };
-      setTarget({ kind: "file", title: file.path, text: data.diff, truncated: data.truncated });
+      setTarget({
+        kind: "file",
+        title: file.path,
+        text: data.diff,
+        truncated: data.truncated,
+        revs: { repo: root, oldRev: "HEAD", newRev: "WORKTREE" },
+      });
     } else {
       onError(result.errors[0]?.message ?? t("couldNotLoadDiff"));
     }
@@ -125,6 +135,7 @@ export default function GitPanel({ path, onClose, onError }: Props) {
         title: `${commit.hash} · ${commit.subject}`,
         text: data.text,
         truncated: data.truncated,
+        revs: { repo: path, oldRev: `${commit.hash}^`, newRev: commit.hash },
       });
     } else {
       onError(result.errors[0]?.message ?? t("couldNotLoadDiff"));
@@ -412,6 +423,44 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
   const [mode, setMode] = useState<DiffDisplayMode>("inline");
   const [wrap, setWrap] = useState(true);
 
+  // With revisions known, each file upgrades to the syntax-highlighted merge
+  // view by fetching its full old/new contents; binary/oversized files (or
+  // fetch failures) keep the plain hunk rendering.
+  const sidesFor = useMemo<DiffSidesProvider | undefined>(() => {
+    const revs = target.revs;
+    if (!revs) return undefined;
+
+    const fetchSide = async (rev: string, file: string): Promise<string> => {
+      if (!file) return "";
+      const result = await gitFileAt({
+        input: { path: revs.repo, rev, file },
+        fields: ["content", "binary", "truncated", "missing"],
+        headers: buildCSRFHeaders(),
+      });
+      if (!result.success) throw new Error("unavailable");
+      const data = result.data as unknown as {
+        content: string;
+        binary: boolean;
+        truncated: boolean;
+        missing: boolean;
+      };
+      if (data.binary || data.truncated) throw new Error("not renderable");
+      return data.missing ? "" : data.content;
+    };
+
+    return async (file) => {
+      try {
+        const [oldText, newText] = await Promise.all([
+          fetchSide(revs.oldRev, file.oldPath),
+          fetchSide(revs.newRev, file.newPath),
+        ]);
+        return { oldText, newText };
+      } catch {
+        return null;
+      }
+    };
+  }, [target]);
+
   const title = (
     <span className="truncate font-mono text-[13px] text-fg">{target.title}</span>
   );
@@ -450,7 +499,7 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
 
   return (
     <Windowed id="diff-view" onClose={onClose} title={title} actions={actions}>
-      <DiffView text={target.text} mode={mode} wrap={wrap} />
+      <DiffView text={target.text} mode={mode} wrap={wrap} sidesFor={sidesFor} />
     </Windowed>
   );
 }

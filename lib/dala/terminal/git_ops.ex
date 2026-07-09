@@ -7,6 +7,8 @@ defmodule Dala.Terminal.GitOps do
   root is discovered automatically.
   """
 
+  @file_at_max_bytes 2 * 1024 * 1024
+
   @doc """
   Working-tree status of the repository containing `path`.
 
@@ -25,6 +27,60 @@ defmodule Dala.Terminal.GitOps do
     case Dala.Git.diff_file(expand(path), file) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Full contents of one file at a revision, for the merge diff view.
+
+  `rev` is anything libgit2 revparse accepts (`HEAD`, a sha, `sha^`, …); the
+  special `"WORKTREE"` reads the file from disk instead.
+  """
+  def file_at(path, "WORKTREE", file) do
+    root = repo_root(path)
+
+    case File.read(Path.join(root, file)) do
+      {:ok, content} ->
+        cond do
+          not String.valid?(content) or String.contains?(content, <<0>>) ->
+            {:ok, %{content: "", binary: true, truncated: false, missing: false}}
+
+          byte_size(content) > @file_at_max_bytes ->
+            {:ok,
+             %{
+               content: truncate_utf8(content, @file_at_max_bytes),
+               binary: false,
+               truncated: true,
+               missing: false
+             }}
+
+          true ->
+            {:ok, %{content: content, binary: false, truncated: false, missing: false}}
+        end
+
+      {:error, _reason} ->
+        {:ok, %{content: "", binary: false, truncated: false, missing: true}}
+    end
+  end
+
+  def file_at(path, rev, file), do: Dala.Git.file_at(expand(path), rev, file)
+
+  # Cut at a UTF-8 boundary so the truncated text still encodes as JSON.
+  defp truncate_utf8(content, max) do
+    slice = binary_part(content, 0, max)
+
+    Enum.reduce_while(0..3, slice, fn offset, acc ->
+      candidate = binary_part(slice, 0, byte_size(slice) - offset)
+      if String.valid?(candidate), do: {:halt, candidate}, else: {:cont, acc}
+    end)
+  end
+
+  # The worktree read needs the repo root: file paths in diffs are
+  # root-relative, while `path` may point anywhere inside the repo.
+  defp repo_root(path) do
+    case Dala.Git.status(expand(path)) do
+      {:ok, %{root: root}} when is_binary(root) -> root
+      _other -> expand(path)
     end
   end
 

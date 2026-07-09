@@ -60,6 +60,32 @@ defmodule Dala.Terminal.Git do
       end
     end
 
+    action :git_file_at, :map do
+      description """
+      Full contents of one file at a revision (HEAD, a sha, sha^, or the
+      special WORKTREE for the on-disk file), for the merge diff view.
+      """
+
+      constraints fields: [
+                    content: [type: :string, allow_nil?: false],
+                    binary: [type: :boolean, allow_nil?: false],
+                    truncated: [type: :boolean, allow_nil?: false],
+                    missing: [type: :boolean, allow_nil?: false]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+      argument :rev, :string, allow_nil?: false
+      argument :file, :string, allow_nil?: false
+
+      run fn input, _context ->
+        Dala.Terminal.GitOps.file_at(
+          input.arguments.path,
+          input.arguments.rev,
+          input.arguments.file
+        )
+      end
+    end
+
     action :git_stage, :boolean do
       description "Stage one file."
       argument :path, :string, allow_nil?: false

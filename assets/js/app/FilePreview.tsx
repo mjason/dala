@@ -5,10 +5,10 @@ import { useI18n } from "./i18n";
 import { detectDelimiter, parseCsv } from "./csv";
 import { rawFileUrl } from "./fileTypes";
 import type { PreviewKind } from "./fileTypes";
-import { highlightCode } from "./highlight";
 import { FileTypeIcon } from "./fileIcons";
 import Windowed from "./Windowed";
 import CodeEditor from "./CodeEditor";
+import CmCode from "./CmCode";
 
 const CSV_MAX_ROWS = 500;
 const WRAPPABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv"]);
@@ -158,7 +158,13 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
   return (
     <Windowed id="file-preview" onClose={requestClose} title={title} actions={actions}>
       {editing ? (
-        <CodeEditor value={draft} onChange={setDraft} onSave={() => void save()} wrap={wrap} />
+        <CodeEditor
+          value={draft}
+          onChange={setDraft}
+          onSave={() => void save()}
+          wrap={wrap}
+          filename={preview.path}
+        />
       ) : (
         <Body preview={preview} wrap={wrap} />
       )}
@@ -208,17 +214,7 @@ function CodeView({
   fileName: string;
   wrap: boolean;
 }) {
-  const html = useMemo(() => highlightCode(content, fileName), [content, fileName]);
-
-  return (
-    <pre
-      className={`overflow-auto px-4 py-3 font-mono text-[13px] leading-5 text-fg ${
-        wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : ""
-      }`}
-    >
-      {html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : content}
-    </pre>
-  );
+  return <CmCode content={content} filename={fileName} wrap={wrap} />;
 }
 
 function CsvTable({ path, content, wrap }: { path: string; content: string; wrap: boolean }) {

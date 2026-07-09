@@ -1,92 +1,141 @@
-import React, { useLayoutEffect, useMemo, useRef } from "react";
-import { handleEnter, handleTab, isSaveShortcut } from "./editorKeys";
+import React, { useEffect, useRef } from "react";
+import { EditorState, Compartment } from "@codemirror/state";
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  drawSelection,
+  dropCursor,
+  rectangularSelection,
+  crosshairCursor,
+} from "@codemirror/view";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands";
+import { bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { dalaTheme } from "./cm/theme";
+import { languageExtension } from "./cm/languages";
 
 type Props = {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
   wrap: boolean;
+  filename?: string;
 };
 
 /**
- * Lightweight code editor: a monospace textarea with a scroll-synced line
- * number gutter, indent-aware Tab/Enter, and Cmd/Ctrl+S to save.
+ * The file editor: CodeMirror 6 with syntax highlighting (lazy-loaded
+ * per-language grammars), bracket matching, in-editor search (Ctrl/Cmd+F),
+ * indent-aware Tab/Enter and Cmd/Ctrl+S to save.
  */
-export default function CodeEditor({ value, onChange, onSave, wrap }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+export default function CodeEditor({ value, onChange, onSave, wrap, filename }: Props) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
+  onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
 
-  const lineCount = useMemo(() => Math.max(1, value.split("\n").length), [value]);
+  const wrapCompartment = useRef(new Compartment());
+  const languageCompartment = useRef(new Compartment());
 
-  // Keep the gutter aligned with the textarea's scroll position.
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    const gutter = gutterRef.current;
-    if (!textarea || !gutter) return;
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
 
-    const sync = () => {
-      gutter.scrollTop = textarea.scrollTop;
+    const state = EditorState.create({
+      doc: value,
+      extensions: [
+        lineNumbers(),
+        highlightActiveLine(),
+        highlightActiveLineGutter(),
+        history(),
+        drawSelection(),
+        dropCursor(),
+        rectangularSelection(),
+        crosshairCursor(),
+        indentOnInput(),
+        indentUnit.of("  "),
+        bracketMatching(),
+        closeBrackets(),
+        highlightSelectionMatches(),
+        search({ top: false }),
+        keymap.of([
+          {
+            key: "Mod-s",
+            preventDefault: true,
+            run: () => {
+              onSaveRef.current();
+              return true;
+            },
+          },
+          ...closeBracketsKeymap,
+          ...defaultKeymap,
+          ...searchKeymap,
+          ...historyKeymap,
+          indentWithTab,
+        ]),
+        wrapCompartment.current.of([]),
+        languageCompartment.current.of([]),
+        dalaTheme,
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+        }),
+      ],
+    });
+
+    const view = new EditorView({ state, parent: host });
+    viewRef.current = view;
+    view.focus();
+
+    return () => {
+      viewRef.current = null;
+      view.destroy();
     };
-    textarea.addEventListener("scroll", sync);
-    return () => textarea.removeEventListener("scroll", sync);
+    // The view lives for the component's lifetime; value/wrap/filename are
+    // synchronized through the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const apply = (next: { value: string; selectionStart: number; selectionEnd: number }) => {
-    onChange(next.value);
-    // Restore the caret/selection after React re-renders the new value.
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        textarea.selectionStart = next.selectionStart;
-        textarea.selectionEnd = next.selectionEnd;
-      }
+  // External value changes (e.g. a reload) — do not clobber user edits.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current !== value) {
+      view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+    }
+  }, [value]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: wrapCompartment.current.reconfigure(wrap ? EditorView.lineWrapping : []),
     });
-  };
+  }, [wrap]);
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isSaveShortcut(e)) {
-      e.preventDefault();
-      onSave();
-      return;
-    }
+  useEffect(() => {
+    let cancelled = false;
 
-    const textarea = e.currentTarget;
-    const { selectionStart, selectionEnd } = textarea;
+    void (async () => {
+      const language = filename ? await languageExtension(filename) : null;
+      if (cancelled) return;
+      viewRef.current?.dispatch({
+        effects: languageCompartment.current.reconfigure(language ?? []),
+      });
+    })();
 
-    if (e.key === "Tab") {
-      e.preventDefault();
-      apply(handleTab(value, selectionStart, selectionEnd, e.shiftKey));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      apply(handleEnter(value, selectionStart, selectionEnd));
-    }
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [filename]);
 
-  return (
-    <div className="flex min-h-0 flex-1 overflow-hidden bg-bg0">
-      <div
-        ref={gutterRef}
-        aria-hidden
-        className="shrink-0 select-none overflow-hidden border-r border-line bg-bg1/40 py-3 pl-3 pr-2 text-right font-mono text-[13px] leading-5 text-fg-muted/50"
-      >
-        {Array.from({ length: lineCount }, (_, i) => (
-          <div key={i}>{i + 1}</div>
-        ))}
-      </div>
-      <textarea
-        id="code-editor"
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onKeyDown}
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        wrap={wrap ? "soft" : "off"}
-        className={`min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono text-[13px] leading-5 text-fg outline-none ${
-          wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"
-        }`}
-      />
-    </div>
-  );
+  return <div id="code-editor" ref={hostRef} className="min-h-0 flex-1 overflow-hidden bg-bg0" />;
 }

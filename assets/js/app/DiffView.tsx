@@ -1,22 +1,34 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { parseDiff, toSplitRows } from "./diffParse";
 import type { DiffFile, DiffLine } from "./diffParse";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
+import CmDiff from "./CmDiff";
 
 export type DiffDisplayMode = "inline" | "split";
+
+/**
+ * Resolves the full old/new contents for one file of a diff, so the file can
+ * be rendered as a syntax-highlighted merge view. Return null (or reject) to
+ * keep the plain hunk-row rendering for that file.
+ */
+export type DiffSides = { oldText: string; newText: string };
+export type DiffSidesProvider = (file: DiffFile) => Promise<DiffSides | null>;
 
 type Props = {
   text: string;
   mode: DiffDisplayMode;
   wrap: boolean;
+  sidesFor?: DiffSidesProvider;
 };
 
 /**
- * Structured diff renderer: parsed hunks with line numbers, colored rows and
- * an optional side-by-side mode — the web-native upgrade over raw patch text.
+ * Structured diff renderer. With a `sidesFor` provider each file upgrades to
+ * a CodeMirror merge view (syntax highlighting, character-level change marks,
+ * collapsed unchanged regions); without one — or while contents load, or for
+ * binary files — it renders parsed hunks as colored rows.
  */
-export default function DiffView({ text, mode, wrap }: Props) {
+export default function DiffView({ text, mode, wrap, sidesFor }: Props) {
   const parsed = useMemo(() => parseDiff(text), [text]);
   const { t } = useI18n();
 
@@ -28,7 +40,14 @@ export default function DiffView({ text, mode, wrap }: Props) {
         </pre>
       )}
       {parsed.files.map((file, i) => (
-        <FileSection key={`${file.newPath}-${i}`} file={file} mode={mode} wrap={wrap} t={t} />
+        <FileSection
+          key={`${file.newPath}-${i}`}
+          file={file}
+          mode={mode}
+          wrap={wrap}
+          sidesFor={sidesFor}
+          t={t}
+        />
       ))}
     </div>
   );
@@ -38,14 +57,32 @@ function FileSection({
   file,
   mode,
   wrap,
+  sidesFor,
   t,
 }: {
   file: DiffFile;
   mode: DiffDisplayMode;
   wrap: boolean;
+  sidesFor?: DiffSidesProvider;
   t: (key: any) => string;
 }) {
   const renamed = file.oldPath !== file.newPath && file.oldPath && file.newPath;
+  const [sides, setSides] = useState<DiffSides | null>(null);
+
+  useEffect(() => {
+    if (!sidesFor || file.binary) return;
+
+    let cancelled = false;
+    sidesFor(file)
+      .then((resolved) => {
+        if (!cancelled) setSides(resolved);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, sidesFor]);
 
   return (
     <section className="border-b border-line last:border-b-0">
@@ -65,6 +102,14 @@ function FileSection({
         <div className="px-4 py-6 text-center font-mono text-xs text-fg-muted">
           {t("binaryDiff")}
         </div>
+      ) : sides ? (
+        <CmDiff
+          oldText={sides.oldText}
+          newText={sides.newText}
+          mode={mode}
+          wrap={wrap}
+          filename={file.newPath || file.oldPath}
+        />
       ) : mode === "split" ? (
         <SplitFile file={file} wrap={wrap} />
       ) : (

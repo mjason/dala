@@ -201,6 +201,78 @@ export async function executeValidationRpcRequest<T>(
 
 
 
+export type DeleteEntryInput = {
+  path: string;
+};
+
+export type DeleteEntryFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferDeleteEntryResult<
+  Fields extends DeleteEntryFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type DeleteEntryResult<Fields extends DeleteEntryFields | undefined = undefined> = | { success: true; data: InferDeleteEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function deleteEntry<Fields extends DeleteEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DeleteEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DeleteEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "delete_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DeleteEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateDeleteEntry(
+  config: {
+  tenant?: string;
+  input: DeleteEntryInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "delete_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type ListDirectoryInput = {
   path: string;
 };
@@ -262,6 +334,78 @@ export async function validateListDirectory(
 ): Promise<ValidationResult> {
   const payload = {
     action: "list_directory",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type ListFilesInput = {
+  path: string;
+};
+
+export type ListFilesFields = UnifiedFieldSelection<{root: string, files: Array<string>, truncated: boolean, __type: "TypedMap", __primitiveFields: "root" | "files" | "truncated"}>[];
+
+export type InferListFilesResult<
+  Fields extends ListFilesFields | undefined,
+> = InferResult<{root: string, files: Array<string>, truncated: boolean, __type: "TypedMap", __primitiveFields: "root" | "files" | "truncated"}, Fields>;
+
+export type ListFilesResult<Fields extends ListFilesFields | undefined = undefined> = | { success: true; data: InferListFilesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function listFiles<Fields extends ListFilesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListFilesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListFilesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_files",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListFilesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateListFiles(
+  config: {
+  tenant?: string;
+  input: ListFilesInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "list_files",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input
   };
@@ -335,6 +479,79 @@ export async function validateReadFile(
 ): Promise<ValidationResult> {
   const payload = {
     action: "read_file",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SavePastedFileInput = {
+  name: string;
+  contentBase64: string;
+};
+
+export type SavePastedFileFields = UnifiedFieldSelection<{path: string, size: number, __type: "TypedMap", __primitiveFields: "path" | "size"}>[];
+
+export type InferSavePastedFileResult<
+  Fields extends SavePastedFileFields | undefined,
+> = InferResult<{path: string, size: number, __type: "TypedMap", __primitiveFields: "path" | "size"}, Fields>;
+
+export type SavePastedFileResult<Fields extends SavePastedFileFields | undefined = undefined> = | { success: true; data: InferSavePastedFileResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function savePastedFile<Fields extends SavePastedFileFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SavePastedFileInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SavePastedFileResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "save_pasted_file",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SavePastedFileResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSavePastedFile(
+  config: {
+  tenant?: string;
+  input: SavePastedFileInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "save_pasted_file",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input
   };
@@ -760,6 +977,80 @@ export async function validateGitDiscard(
 ): Promise<ValidationResult> {
   const payload = {
     action: "git_discard",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type GitFileAtInput = {
+  path: string;
+  rev: string;
+  file: string;
+};
+
+export type GitFileAtFields = UnifiedFieldSelection<{content: string, binary: boolean, truncated: boolean, missing: boolean, __type: "TypedMap", __primitiveFields: "content" | "binary" | "truncated" | "missing"}>[];
+
+export type InferGitFileAtResult<
+  Fields extends GitFileAtFields | undefined,
+> = InferResult<{content: string, binary: boolean, truncated: boolean, missing: boolean, __type: "TypedMap", __primitiveFields: "content" | "binary" | "truncated" | "missing"}, Fields>;
+
+export type GitFileAtResult<Fields extends GitFileAtFields | undefined = undefined> = | { success: true; data: InferGitFileAtResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitFileAt<Fields extends GitFileAtFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GitFileAtInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GitFileAtResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "git_file_at",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GitFileAtResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Git
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateGitFileAt(
+  config: {
+  tenant?: string;
+  input: GitFileAtInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "git_file_at",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input
   };

@@ -13,6 +13,7 @@ defmodule Dala.Git do
 
   def status(_path), do: nif_error()
   def diff_file(_path, _file), do: nif_error()
+  def file_at(_path, _rev, _file), do: nif_error()
   def stage(_path, _file), do: nif_error()
   def unstage(_path, _file), do: nif_error()
   def discard(_path, _file), do: nif_error()

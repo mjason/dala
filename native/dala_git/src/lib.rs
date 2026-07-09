@@ -8,6 +8,7 @@ use git2::{
 use rustler::NifMap;
 
 const MAX_DIFF_BYTES: usize = 512 * 1024;
+const MAX_FILE_AT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(NifMap)]
 struct FileStatus {
@@ -29,6 +30,14 @@ struct DiffResult {
     diff: String,
     binary: bool,
     truncated: bool,
+}
+
+#[derive(NifMap)]
+struct FileAtResult {
+    content: String,
+    binary: bool,
+    truncated: bool,
+    missing: bool,
 }
 
 #[derive(NifMap)]
@@ -219,6 +228,52 @@ fn diff_file(path: String, file: String) -> Result<DiffResult, String> {
         binary,
         truncated,
     })
+}
+
+/// Full contents of one file at a revision (`HEAD`, a sha, `sha^`, …), for
+/// the syntax-highlighted merge diff view. A missing path (new/deleted file,
+/// bad rev) is reported as `missing`, not an error.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn file_at(path: String, rev: String, file: String) -> Result<FileAtResult, String> {
+    let repo = open(&path)?;
+
+    let missing = FileAtResult {
+        content: String::new(),
+        binary: false,
+        truncated: false,
+        missing: true,
+    };
+
+    let spec = format!("{rev}:{file}");
+    let blob = match repo.revparse_single(&spec).and_then(|o| o.peel_to_blob()) {
+        Ok(blob) => blob,
+        Err(_) => return Ok(missing),
+    };
+
+    if blob.is_binary() {
+        return Ok(FileAtResult {
+            content: String::new(),
+            binary: true,
+            truncated: false,
+            missing: false,
+        });
+    }
+
+    match std::str::from_utf8(blob.content()) {
+        Ok(text) => Ok(FileAtResult {
+            content: truncate_utf8(text, MAX_FILE_AT_BYTES),
+            binary: false,
+            truncated: text.len() > MAX_FILE_AT_BYTES,
+            missing: false,
+        }),
+        // Not valid UTF-8: treat like binary so the caller falls back.
+        Err(_) => Ok(FileAtResult {
+            content: String::new(),
+            binary: true,
+            truncated: false,
+            missing: false,
+        }),
+    }
 }
 
 fn format_diff(diff: &git2::Diff) -> Result<(String, bool), String> {

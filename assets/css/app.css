@@ -171,10 +171,37 @@ body:has(> #app) {
   }
 }
 
-/* Let xterm own its box; keep scrollbars quiet and consistent */
+/* Let xterm own its box; keep scrollbars quiet and consistent.
+   Firefox only offers auto/thin, but Chromium can go slimmer through the
+   ::-webkit-scrollbar pseudos — which are ignored the moment the standard
+   scrollbar-* properties are set, hence the @supports split. */
 .xterm .xterm-viewport {
   scrollbar-width: thin;
   scrollbar-color: #2c3037 transparent;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  .xterm .xterm-viewport {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background: #2c3037;
+    border-radius: 2px;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: #3a4048;
+  }
 }
 
 #session-list,
@@ -184,65 +211,4 @@ body:has(> #app) {
 #diff-view pre {
   scrollbar-width: thin;
   scrollbar-color: #2c3037 transparent;
-}
-
-/* highlight.js theme tuned to the dala palette */
-.hljs-comment,
-.hljs-quote {
-  color: #6b7280;
-  font-style: italic;
-}
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-tag,
-.hljs-name {
-  color: #b087c9;
-}
-.hljs-string,
-.hljs-regexp,
-.hljs-addition {
-  color: #5fbf87;
-}
-.hljs-number,
-.hljs-literal,
-.hljs-symbol,
-.hljs-bullet {
-  color: #d9a860;
-}
-.hljs-title,
-.hljs-section,
-.hljs-attr,
-.hljs-attribute,
-.hljs-variable,
-.hljs-template-variable {
-  color: #6d9fd6;
-}
-.hljs-type,
-.hljs-class .hljs-title,
-.hljs-built_in {
-  color: #5fb8b8;
-}
-.hljs-deletion {
-  color: #e5716e;
-}
-.hljs-meta,
-.hljs-doctag {
-  color: #8f96a0;
-}
-.hljs-emphasis {
-  font-style: italic;
-}
-.hljs-strong {
-  font-weight: 600;
-}
-/* diff-specific: give added/removed lines a subtle backdrop */
-.hljs-addition {
-  background: rgba(95, 191, 135, 0.12);
-  display: inline-block;
-  width: 100%;
-}
-.hljs-deletion {
-  background: rgba(229, 113, 110, 0.12);
-  display: inline-block;
-  width: 100%;
 }
