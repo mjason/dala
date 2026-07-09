@@ -98,6 +98,9 @@ EnvironmentFile=$ENV_FILE
 ExecStartPre=$ROOT/current/bin/dala eval "Dala.Release.migrate()"
 ExecStart=$ROOT/current/bin/dala start
 ExecStop=$ROOT/current/bin/dala stop
+# Only the BEAM dies on stop/restart — the per-session PTY holder daemons
+# stay in the cgroup and keep the shells alive across upgrades.
+KillMode=process
 Restart=on-failure
 RestartSec=2
 
