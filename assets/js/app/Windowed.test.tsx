@@ -59,7 +59,7 @@ describe("Windowed", () => {
     localStorage.setItem("dala:window-mode", "left");
     const onClose = renderWindow();
     const header = document.querySelector("#test-window > header")!;
-    const buttons = header.querySelectorAll(":scope > button");
+    const buttons = header.querySelectorAll("button");
     fireEvent.click(buttons[buttons.length - 1]);
     expect(onClose).toHaveBeenCalled();
   });

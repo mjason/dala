@@ -22,7 +22,7 @@ import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { FileTypeIcon } from "./fileIcons";
 import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
-import { hasOpenWindows, inTextInput, Kbd } from "./shortcuts";
+import { hasOpenWindows, inTextInput, Kbd, Tooltip } from "./shortcuts";
 import Windowed from "./Windowed";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
@@ -203,16 +203,16 @@ export default function GitPanel({ path, onClose, onError }: Props) {
             <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <button
-          onClick={onClose}
-          className="flex h-6 shrink-0 items-center gap-1 rounded px-1 text-fg-muted transition-colors hover:text-fg"
-          title={`${t("closeGitPanel")} · Esc`}
-        >
-          <Kbd>Esc</Kbd>
-          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-          </svg>
-        </button>
+        <Tooltip label={t("closeGitPanel")} keys="Esc">
+          <button
+            onClick={onClose}
+            className="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+            </svg>
+          </button>
+        </Tooltip>
       </header>
 
       {status && !status.repo ? (

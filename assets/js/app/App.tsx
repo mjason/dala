@@ -21,7 +21,7 @@ import SettingsModal from "./SettingsModal";
 import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
-import { isMac, Kbd, modCombo } from "./shortcuts";
+import { isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 
@@ -159,18 +159,45 @@ export default function App() {
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
-  // Ctrl/Cmd+P opens the quick-open palette — except when the terminal has
-  // focus, where Ctrl+P belongs to the shell (readline previous-history).
+  // Global header shortcuts. Ctrl+Shift/⌘ combos never type into the shell,
+  // so they work even while the terminal has focus; plain Ctrl+P inside the
+  // terminal stays with readline (previous-history), while ⌘P on macOS is
+  // always ours.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
-      if (e.key.toLowerCase() !== "p") return;
-      // Ctrl+P inside the terminal belongs to the shell (readline previous
-      // history); Cmd+P on macOS never reaches the shell, so it always works.
-      const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
-      if (inTerminal && !e.metaKey) return;
-      e.preventDefault();
-      setQuickOpen(true);
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+
+      if (!e.shiftKey && key === "p") {
+        const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
+        if (inTerminal && !e.metaKey) return;
+        e.preventDefault();
+        setQuickOpen(true);
+        return;
+      }
+
+      if (e.shiftKey) {
+        switch (key) {
+          case "e":
+            e.preventDefault();
+            setDrawerOpen((v) => !v);
+            setGitOpen(false);
+            return;
+          case "g":
+            e.preventDefault();
+            setGitOpen((v) => !v);
+            setDrawerOpen(false);
+            return;
+          case "f":
+            e.preventDefault();
+            termActions.current?.refit();
+            return;
+          case "x":
+            e.preventDefault();
+            termActions.current?.reset();
+            return;
+        }
+      }
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
@@ -268,69 +295,80 @@ export default function App() {
                     ? t("exitedWithCode", { code: active.exitCode })
                     : t("exited")}
               </span>
-              <button
-                id="quick-open-button"
-                onClick={() => setQuickOpen(true)}
-                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
-                title={isMac ? "⌘P" : "Ctrl+P"}
+              <Tooltip
+                label={t("quickOpenTitle")}
+                description={t("quickOpenDesc")}
+                keys={isMac ? "⌘P" : "Ctrl+P"}
               >
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <circle cx="7" cy="7" r="4" />
-                  <path d="m13 13-3.2-3.2" strokeLinecap="round" />
-                </svg>
-              </button>
-              <button
-                id="toggle-drawer-button"
-                onClick={() => {
-                  setDrawerOpen((v) => !v);
-                  setGitOpen(false);
-                }}
-                className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
-                  drawerOpen
-                    ? "border-mint/50 text-mint"
-                    : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
-                }`}
-                title={t("filesTitle")}
-              >
-                {t("files")}
-              </button>
-              <button
-                id="toggle-git-button"
-                onClick={() => {
-                  setGitOpen((v) => !v);
-                  setDrawerOpen(false);
-                }}
-                className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
-                  gitOpen
-                    ? "border-mint/50 text-mint"
-                    : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
-                }`}
-                title={t("gitTitle")}
-              >
-                {t("git")}
-              </button>
-              <button
-                id="terminal-refit-button"
-                onClick={() => termActions.current?.refit()}
-                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
-                title={t("refitWidth")}
-              >
-                {t("refitWidth")}
-              </button>
-              <button
-                id="terminal-reset-button"
-                onClick={() => termActions.current?.reset()}
-                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
-                title={t("resetTerminal")}
-              >
-                {t("resetTerminal")}
-              </button>
-              <button
-                onClick={() => setSettingsFor(active.id)}
-                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
-              >
-                {t("settings")}
-              </button>
+                <button
+                  id="quick-open-button"
+                  onClick={() => setQuickOpen(true)}
+                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                >
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <circle cx="7" cy="7" r="4" />
+                    <path d="m13 13-3.2-3.2" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </Tooltip>
+              <Tooltip label={t("filesTitle")} description={t("filesDesc")} keys={modShiftCombo("e")}>
+                <button
+                  id="toggle-drawer-button"
+                  onClick={() => {
+                    setDrawerOpen((v) => !v);
+                    setGitOpen(false);
+                  }}
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                    drawerOpen
+                      ? "border-mint/50 text-mint"
+                      : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+                  }`}
+                >
+                  {t("files")}
+                </button>
+              </Tooltip>
+              <Tooltip label={t("gitTitle")} description={t("gitDesc")} keys={modShiftCombo("g")}>
+                <button
+                  id="toggle-git-button"
+                  onClick={() => {
+                    setGitOpen((v) => !v);
+                    setDrawerOpen(false);
+                  }}
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                    gitOpen
+                      ? "border-mint/50 text-mint"
+                      : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+                  }`}
+                >
+                  {t("git")}
+                </button>
+              </Tooltip>
+              <Tooltip label={t("refitWidth")} description={t("refitDesc")} keys={modShiftCombo("f")}>
+                <button
+                  id="terminal-refit-button"
+                  onClick={() => termActions.current?.refit()}
+                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                >
+                  {t("refitWidth")}
+                </button>
+              </Tooltip>
+              <Tooltip label={t("resetTerminal")} description={t("resetDesc")} keys={modShiftCombo("x")}>
+                <button
+                  id="terminal-reset-button"
+                  onClick={() => termActions.current?.reset()}
+                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                >
+                  {t("resetTerminal")}
+                </button>
+              </Tooltip>
+              <Tooltip label={t("sessionSettings")} description={t("settingsDesc")}>
+                <button
+                  onClick={() => setSettingsFor(active.id)}
+                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                >
+                  {t("settings")}
+                </button>
+              </Tooltip>
             </header>
 
             <div className="relative min-h-0 flex-1 bg-[#0b0c0e]">

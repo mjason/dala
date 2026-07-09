@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useI18n } from "./i18n";
-import { isTopWindow, Kbd, popWindow, pushWindow } from "./shortcuts";
+import { isTopWindow, popWindow, pushWindow, Tooltip } from "./shortcuts";
 
 export type WindowMode = "center" | "full" | "left" | "right";
 
@@ -108,18 +108,16 @@ export default function Windowed({ id, onClose, title, actions, children }: Prop
           <div className="flex min-w-0 flex-1 items-center gap-3">{title}</div>
           {actions}
           <WindowModeSwitcher mode={mode} setMode={setMode} />
-          <button
-            onClick={onClose}
-            title={`${t("close")} · Esc`}
-            className="flex h-6 shrink-0 items-center gap-1 rounded px-1 text-fg-muted hover:text-fg"
-          >
-            <span className="hidden sm:inline">
-              <Kbd>Esc</Kbd>
-            </span>
-            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-            </svg>
-          </button>
+          <Tooltip label={t("close")} keys="Esc">
+            <button
+              onClick={onClose}
+              className="grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted hover:text-fg"
+            >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+              </svg>
+            </button>
+          </Tooltip>
         </header>
         {children}
       </div>
