@@ -84,6 +84,21 @@ defmodule Dala.Terminal.GitOps do
     end
   end
 
+  @doc "Amend HEAD with the current index (empty message keeps the original)."
+  def commit_amend(path, message), do: Dala.Git.commit_amend(expand(path), message)
+
+  @doc """
+  Apply a unified patch to the index (stage/unstage a hunk) or the working
+  tree (discard a hunk). The caller builds the patch already reversed when it
+  wants an undo direction.
+  """
+  def apply_patch(path, patch, target) when target in [:index, :workdir] do
+    case Dala.Git.apply_patch(expand(path), patch, target == :index) do
+      {:ok, _applied} -> {:ok, %{applied: true}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc "Stage one file."
   def stage(path, file), do: unwrap(Dala.Git.stage(expand(path), file))
 

@@ -55,8 +55,8 @@ describe("GitPanel changes tab", () => {
     gitStatus.mockResolvedValue(
       ok(
         statusData([
-          { path: "staged.ex", status: "M ", staged: true },
-          { path: "work.ex", status: " M", staged: false },
+          { path: "staged.ex", status: "M ", staged: true, unstaged: false },
+          { path: "work.ex", status: " M", staged: false, unstaged: true },
         ]),
       ),
     );
@@ -70,8 +70,8 @@ describe("GitPanel changes tab", () => {
 
   it("stages a file and reloads status", async () => {
     gitStatus
-      .mockResolvedValueOnce(ok(statusData([{ path: "new.txt", status: "??", staged: false }])))
-      .mockResolvedValueOnce(ok(statusData([{ path: "new.txt", status: "A ", staged: true }])));
+      .mockResolvedValueOnce(ok(statusData([{ path: "new.txt", status: "??", staged: false, unstaged: true }])))
+      .mockResolvedValueOnce(ok(statusData([{ path: "new.txt", status: "A ", staged: true, unstaged: false }])));
     gitStage.mockResolvedValue(ok(true));
 
     renderPanel();
@@ -89,7 +89,7 @@ describe("GitPanel changes tab", () => {
 
   it("confirms before discarding", async () => {
     gitStatus.mockResolvedValue(
-      ok(statusData([{ path: "work.ex", status: " M", staged: false }])),
+      ok(statusData([{ path: "work.ex", status: " M", staged: false, unstaged: true }])),
     );
     gitDiscard.mockResolvedValue(ok(true));
 
@@ -107,7 +107,7 @@ describe("GitPanel changes tab", () => {
 
   it("commits the staged files with a message", async () => {
     gitStatus.mockResolvedValue(
-      ok(statusData([{ path: "staged.ex", status: "M ", staged: true }])),
+      ok(statusData([{ path: "staged.ex", status: "M ", staged: true, unstaged: false }])),
     );
     gitCommit.mockResolvedValue(ok({ hash: "abc123" }));
 
@@ -125,14 +125,14 @@ describe("GitPanel changes tab", () => {
     fireEvent.click(button);
     await waitFor(() =>
       expect(gitCommit).toHaveBeenCalledWith(
-        expect.objectContaining({ input: { path: "/proj", message: "my commit" } }),
+        expect.objectContaining({ input: { path: "/proj", message: "my commit", amend: false } }),
       ),
     );
   });
 
   it("opens a structured diff for a file", async () => {
     gitStatus.mockResolvedValue(
-      ok(statusData([{ path: "lib/app.ex", status: " M", staged: false }])),
+      ok(statusData([{ path: "lib/app.ex", status: " M", staged: false, unstaged: true }])),
     );
     gitDiff.mockResolvedValue(
       ok({

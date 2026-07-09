@@ -15,6 +15,7 @@ struct FileStatus {
     path: String,
     status: String,
     staged: bool,
+    unstaged: bool,
 }
 
 #[derive(NifMap)]
@@ -135,11 +136,12 @@ fn status(path: String) -> Result<StatusResult, String> {
         if s.is_ignored() {
             continue;
         }
-        let (code, staged) = porcelain(s);
+        let (code, staged, unstaged) = porcelain(s);
         files.push(FileStatus {
             path: path.to_string(),
             status: code,
             staged,
+            unstaged,
         });
     }
 
@@ -153,15 +155,17 @@ fn status(path: String) -> Result<StatusResult, String> {
     })
 }
 
-/// Porcelain `XY` status code plus a "staged" flag for one entry.
-fn porcelain(s: Status) -> (String, bool) {
+/// Porcelain `XY` status code plus staged/unstaged flags for one entry. A
+/// file with both index and worktree changes (e.g. `MM`) is both, and shows
+/// up in both lists like Fork does.
+fn porcelain(s: Status) -> (String, bool, bool) {
     if s.contains(Status::CONFLICTED) {
-        return ("UU".to_string(), false);
+        return ("UU".to_string(), false, true);
     }
 
     // Untracked: only a working-tree "new" bit.
     if s.contains(Status::WT_NEW) && !has_index_change(s) {
-        return ("??".to_string(), false);
+        return ("??".to_string(), false, true);
     }
 
     let x = if s.contains(Status::INDEX_NEW) {
@@ -190,7 +194,7 @@ fn porcelain(s: Status) -> (String, bool) {
         ' '
     };
 
-    (format!("{x}{y}"), x != ' ')
+    (format!("{x}{y}"), x != ' ', y != ' ')
 }
 
 fn has_index_change(s: Status) -> bool {
@@ -230,6 +234,60 @@ fn diff_file(path: String, file: String) -> Result<DiffResult, String> {
     })
 }
 
+/// Amend HEAD with the current index; an empty message keeps the original.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn commit_amend(path: String, message: String) -> Result<CommitResult, String> {
+    let repo = open(&path)?;
+
+    let mut index = repo.index().map_err(git_error)?;
+    let tree_id = index.write_tree().map_err(git_error)?;
+    let tree = repo.find_tree(tree_id).map_err(git_error)?;
+
+    let head = repo
+        .head()
+        .and_then(|h| h.peel_to_commit())
+        .map_err(git_error)?;
+
+    let message = if message.trim().is_empty() {
+        head.message().unwrap_or("").to_string()
+    } else {
+        message
+    };
+
+    let oid = head
+        .amend(Some("HEAD"), None, None, None, Some(&message), Some(&tree))
+        .map_err(git_error)?;
+
+    Ok(CommitResult {
+        hash: short_hash(&oid.to_string()),
+    })
+}
+
+/// Apply a unified patch to the index (stage/unstage a hunk) or the working
+/// tree (discard a hunk). Reversal is the caller's job: it builds the patch
+/// in the direction it wants applied.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn apply_patch(path: String, patch: String, to_index: bool) -> Result<bool, String> {
+    let repo = open(&path)?;
+    let diff = git2::Diff::from_buffer(patch.as_bytes()).map_err(git_error)?;
+
+    let location = if to_index {
+        git2::ApplyLocation::Index
+    } else {
+        git2::ApplyLocation::WorkDir
+    };
+
+    repo.apply(&diff, location, None).map_err(git_error)?;
+
+    if to_index {
+        repo.index()
+            .and_then(|mut index| index.write())
+            .map_err(git_error)?;
+    }
+
+    Ok(true)
+}
+
 /// Full contents of one file at a revision (`HEAD`, a sha, `sha^`, …), for
 /// the syntax-highlighted merge diff view. A missing path (new/deleted file,
 /// bad rev) is reported as `missing`, not an error.
@@ -244,10 +302,26 @@ fn file_at(path: String, rev: String, file: String) -> Result<FileAtResult, Stri
         missing: true,
     };
 
-    let spec = format!("{rev}:{file}");
-    let blob = match repo.revparse_single(&spec).and_then(|o| o.peel_to_blob()) {
-        Ok(blob) => blob,
-        Err(_) => return Ok(missing),
+    // ":0" (the index) is git-CLI revision syntax that libgit2's revparse
+    // does not understand — read the staged blob straight from the index.
+    let blob = if rev == ":0" {
+        let index = match repo.index() {
+            Ok(index) => index,
+            Err(_) => return Ok(missing),
+        };
+        match index
+            .get_path(Path::new(&file), 0)
+            .and_then(|entry| repo.find_blob(entry.id).ok())
+        {
+            Some(blob) => blob,
+            None => return Ok(missing),
+        }
+    } else {
+        let spec = format!("{rev}:{file}");
+        match repo.revparse_single(&spec).and_then(|o| o.peel_to_blob()) {
+            Ok(blob) => blob,
+            Err(_) => return Ok(missing),
+        }
     };
 
     if blob.is_binary() {

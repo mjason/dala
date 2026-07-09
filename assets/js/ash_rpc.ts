@@ -636,6 +636,80 @@ export async function validateWriteFile(
 }
 
 
+export type GitApplyPatchInput = {
+  path: string;
+  patch: string;
+  target: "index" | "workdir";
+};
+
+export type GitApplyPatchFields = UnifiedFieldSelection<{applied: boolean, __type: "TypedMap", __primitiveFields: "applied"}>[];
+
+export type InferGitApplyPatchResult<
+  Fields extends GitApplyPatchFields | undefined,
+> = InferResult<{applied: boolean, __type: "TypedMap", __primitiveFields: "applied"}, Fields>;
+
+export type GitApplyPatchResult<Fields extends GitApplyPatchFields | undefined = undefined> = | { success: true; data: InferGitApplyPatchResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitApplyPatch<Fields extends GitApplyPatchFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GitApplyPatchInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GitApplyPatchResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "git_apply_patch",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GitApplyPatchResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Git
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateGitApplyPatch(
+  config: {
+  tenant?: string;
+  input: GitApplyPatchInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "git_apply_patch",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type GitBranchesInput = {
   path: string;
 };
@@ -778,6 +852,7 @@ export async function validateGitCheckout(
 export type GitCommitInput = {
   path: string;
   message: string;
+  amend?: boolean | null;
 };
 
 export type GitCommitFields = UnifiedFieldSelection<{hash: string, __type: "TypedMap", __primitiveFields: "hash"}>[];
@@ -1279,11 +1354,11 @@ export type GitStatusInput = {
   path: string;
 };
 
-export type GitStatusFields = UnifiedFieldSelection<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}>[];
+export type GitStatusFields = UnifiedFieldSelection<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}>[];
 
 export type InferGitStatusResult<
   Fields extends GitStatusFields | undefined,
-> = InferResult<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}, Fields>;
+> = InferResult<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}, Fields>;
 
 export type GitStatusResult<Fields extends GitStatusFields | undefined = undefined> = | { success: true; data: InferGitStatusResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

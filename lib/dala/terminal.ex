@@ -25,6 +25,7 @@ defmodule Dala.Terminal do
       rpc_action :git_status, :git_status
       rpc_action :git_diff, :git_diff
       rpc_action :git_file_at, :git_file_at
+      rpc_action :git_apply_patch, :git_apply_patch
       rpc_action :git_stage, :git_stage
       rpc_action :git_unstage, :git_unstage
       rpc_action :git_discard, :git_discard

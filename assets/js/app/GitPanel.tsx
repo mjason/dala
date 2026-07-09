@@ -4,6 +4,7 @@ import {
   gitCommit,
   gitDiff,
   gitDiscard,
+  gitApplyPatch,
   gitFileAt,
   gitLog,
   gitShow,
@@ -30,15 +31,26 @@ const LOG_FIELDS = ["commits"] as unknown as GitLogFields;
 const DIFF_FIELDS: GitDiffFields = ["diff", "binary", "truncated"];
 const SHOW_FIELDS: GitShowFields = ["text", "truncated"];
 
-type GitFile = { path: string; status: string; staged: boolean };
+type GitFile = { path: string; status: string; staged: boolean; unstaged: boolean };
 type Status = { repo: boolean; root: string | null; branch: string | null; files: GitFile[] };
 type Commit = { hash: string; author: string; date: string; subject: string };
 
 /** Revisions to fetch full file contents from, powering the merge view. */
 type DiffRevs = { repo: string; oldRev: string; newRev: string };
 
+/** Which side of the index a working diff shows (Fork's two lists). */
+type DiffContext = "unstaged" | "staged";
+
 type DiffTarget =
-  | { kind: "file"; title: string; text: string; truncated: boolean; revs?: DiffRevs }
+  | {
+      kind: "file";
+      title: string;
+      text: string;
+      truncated: boolean;
+      revs?: DiffRevs;
+      context: DiffContext;
+      file: GitFile;
+    }
   | { kind: "commit"; title: string; text: string; truncated: boolean; revs?: DiffRevs };
 
 type Props = {
@@ -55,6 +67,7 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [amend, setAmend] = useState(false);
   const [target, setTarget] = useState<DiffTarget | null>(null);
 
   const root = status?.root ?? null;
@@ -112,7 +125,7 @@ export default function GitPanel({ path, onClose, onError }: Props) {
     return true;
   };
 
-  const openFileDiff = async (file: GitFile) => {
+  const openFileDiff = async (file: GitFile, context: DiffContext) => {
     if (!root) return;
     setBusy(`diff:${file.path}`);
     const result = await gitDiff({
@@ -123,16 +136,41 @@ export default function GitPanel({ path, onClose, onError }: Props) {
     setBusy(null);
     if (result.success) {
       const data = result.data as unknown as { diff: string; binary: boolean; truncated: boolean };
+      // Fork's two perspectives: unstaged = index↔worktree, staged = HEAD↔index.
+      const revs =
+        context === "unstaged"
+          ? { repo: root, oldRev: ":0", newRev: "WORKTREE" }
+          : { repo: root, oldRev: "HEAD", newRev: ":0" };
       setTarget({
         kind: "file",
-        title: file.path,
+        title: `${file.path} · ${t(context === "unstaged" ? "changes" : "stage")}`,
         text: data.diff,
         truncated: data.truncated,
-        revs: { repo: root, oldRev: "HEAD", newRev: "WORKTREE" },
+        revs,
+        context,
+        file,
       });
     } else {
       onError(result.errors[0]?.message ?? t("couldNotLoadDiff"));
     }
+  };
+
+  // Apply a hunk patch (stage/unstage/discard), then refresh both the file
+  // lists and the open diff so the remaining hunks stay accurate.
+  const applyHunk = async (patch: string, applyTo: "index" | "workdir") => {
+    if (!root || !target || target.kind !== "file") return;
+    const result = await gitApplyPatch({
+      input: { path: root, patch, target: applyTo },
+      fields: ["applied"],
+      headers: buildCSRFHeaders(),
+    });
+    if (!result.success) {
+      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+      return;
+    }
+    const { file, context } = target;
+    await loadStatus();
+    await openFileDiff(file, context);
   };
 
   const openCommit = async (commit: Commit) => {
@@ -158,16 +196,17 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   };
 
   const commit = async () => {
-    if (!root || !message.trim()) return;
+    if (!root || (!message.trim() && !amend)) return;
     setBusy("commit");
     const result = await gitCommit({
-      input: { path: root, message: message.trim() },
+      input: { path: root, message: message.trim(), amend },
       fields: ["hash"] as unknown as GitCommitFields,
       headers: buildCSRFHeaders(),
     });
     setBusy(null);
     if (result.success) {
       setMessage("");
+      setAmend(false);
       setCommits(null);
       await loadStatus();
     } else {
@@ -176,7 +215,7 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   };
 
   const staged = status?.files.filter((f) => f.staged) ?? [];
-  const unstaged = status?.files.filter((f) => !f.staged) ?? [];
+  const unstaged = status?.files.filter((f) => f.unstaged) ?? [];
 
   return (
     <section
@@ -244,14 +283,31 @@ export default function GitPanel({ path, onClose, onError }: Props) {
                   <div className="px-3 py-8 text-center text-[13px] text-fg-muted">{t("noChanges")}</div>
                 )}
                 {staged.length > 0 && (
-                  <GroupLabel>{t("stage")}</GroupLabel>
+                  <GroupLabel
+                    action={{
+                      id: "unstage-all-button",
+                      label: t("unstageAll"),
+                      onClick: () =>
+                        void run("unstage-all", async () => {
+                          for (const file of staged) {
+                            await gitUnstage({
+                              input: { path: root!, file: file.path },
+                              headers: buildCSRFHeaders(),
+                            });
+                          }
+                          return { success: true };
+                        }),
+                    }}
+                  >
+                    {t("stage")}
+                  </GroupLabel>
                 )}
                 {staged.map((file) => (
                   <FileRow
-                    key={file.path}
+                    key={`staged:${file.path}`}
                     file={file}
                     busy={busy}
-                    onOpen={() => void openFileDiff(file)}
+                    onOpen={() => void openFileDiff(file, "staged")}
                     actions={[
                       {
                         key: "unstage",
@@ -266,12 +322,32 @@ export default function GitPanel({ path, onClose, onError }: Props) {
                   />
                 ))}
                 {staged.length > 0 && unstaged.length > 0 && <div className="my-1 border-t border-line/60" />}
+                {unstaged.length > 0 && (
+                  <GroupLabel
+                    action={{
+                      id: "stage-all-button",
+                      label: t("stageAll"),
+                      onClick: () =>
+                        void run("stage-all", async () => {
+                          for (const file of unstaged) {
+                            await gitStage({
+                              input: { path: root!, file: file.path },
+                              headers: buildCSRFHeaders(),
+                            });
+                          }
+                          return { success: true };
+                        }),
+                    }}
+                  >
+                    {t("changes")}
+                  </GroupLabel>
+                )}
                 {unstaged.map((file) => (
                   <FileRow
-                    key={file.path}
+                    key={`unstaged:${file.path}`}
                     file={file}
                     busy={busy}
-                    onOpen={() => void openFileDiff(file)}
+                    onOpen={() => void openFileDiff(file, "unstaged")}
                     actions={[
                       {
                         key: "discard",
@@ -308,14 +384,27 @@ export default function GitPanel({ path, onClose, onError }: Props) {
                   rows={2}
                   className="w-full resize-none rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors placeholder:text-fg-muted/60 focus:border-mint/60"
                 />
+                <label className="mt-1 flex cursor-pointer select-none items-center gap-1.5 px-0.5 font-mono text-[11px] text-fg-muted">
+                  <input
+                    id="amend-checkbox"
+                    type="checkbox"
+                    checked={amend}
+                    onChange={(e) => setAmend(e.target.checked)}
+                    className="h-3 w-3 accent-[#4cc38a]"
+                  />
+                  {t("amend")}
+                </label>
                 <button
                   id="commit-button"
                   onClick={() => void commit()}
-                  disabled={busy === "commit" || staged.length === 0 || !message.trim()}
+                  disabled={
+                    busy === "commit" ||
+                    (amend ? false : staged.length === 0 || !message.trim())
+                  }
                   className="mt-1.5 w-full rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
                 >
-                  {t("commitButton")}
-                  {staged.length > 0 ? ` · ${staged.length}` : ""}
+                  {amend ? t("amend") : t("commitButton")}
+                  {!amend && staged.length > 0 ? ` · ${staged.length}` : ""}
                 </button>
               </div>
             </>
@@ -349,15 +438,31 @@ export default function GitPanel({ path, onClose, onError }: Props) {
         </div>
       )}
 
-      {target && <DiffModal target={target} onClose={() => setTarget(null)} />}
+      {target && <DiffModal target={target} onClose={() => setTarget(null)} onHunk={applyHunk} />}
     </section>
   );
 }
 
-function GroupLabel({ children }: { children: React.ReactNode }) {
+function GroupLabel({
+  children,
+  action,
+}: {
+  children: React.ReactNode;
+  action?: { id: string; label: string; onClick: () => void };
+}) {
   return (
-    <div className="px-3 pb-0.5 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-muted/70">
+    <div className="flex items-center px-3 pb-0.5 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-muted/70">
       {children}
+      <div className="flex-1" />
+      {action && (
+        <button
+          id={action.id}
+          onClick={action.onClick}
+          className="rounded border border-line px-1.5 py-px normal-case tracking-normal text-fg-muted transition-colors hover:border-mint/50 hover:text-mint"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }
@@ -434,10 +539,52 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => void }) {
+function DiffModal({
+  target,
+  onClose,
+  onHunk,
+}: {
+  target: DiffTarget;
+  onClose: () => void;
+  onHunk?: (patch: string, applyTo: "index" | "workdir") => Promise<void>;
+}) {
   const { t } = useI18n();
   const [mode, setMode] = useState<DiffDisplayMode>("inline");
   const [wrap, setWrap] = useState(true);
+
+  // Fork-style per-hunk operations. Unstaged view: stage (apply forward to
+  // the index — the old side IS the index, so the patch applies cleanly) or
+  // discard (apply reverse to the working tree). Staged view: unstage
+  // (apply reverse to the index).
+  const chunkActionsFor = useMemo(() => {
+    if (!onHunk || target.kind !== "file") return undefined;
+    if (target.context === "unstaged") {
+      return () => [
+        {
+          label: t("stageHunk"),
+          kind: "primary" as const,
+          onClick: (patch: { forward: string; reverse: string }) =>
+            void onHunk(patch.forward, "index"),
+        },
+        {
+          label: t("discardHunk"),
+          kind: "danger" as const,
+          onClick: (patch: { forward: string; reverse: string }) => {
+            if (!confirm(t("discardHunkConfirm"))) return;
+            void onHunk(patch.reverse, "workdir");
+          },
+        },
+      ];
+    }
+    return () => [
+      {
+        label: t("unstageHunk"),
+        kind: "primary" as const,
+        onClick: (patch: { forward: string; reverse: string }) =>
+          void onHunk(patch.reverse, "index"),
+      },
+    ];
+  }, [onHunk, target, t]);
 
   // i / s switch inline/split, Alt+Z toggles wrapping — skipped while typing
   // (e.g. in the diff's search panel).
@@ -534,7 +681,7 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
 
   return (
     <Windowed id="diff-view" onClose={onClose} title={title} actions={actions}>
-      <DiffView text={target.text} mode={mode} wrap={wrap} sidesFor={sidesFor} />
+      <DiffView text={target.text} mode={mode} wrap={wrap} sidesFor={sidesFor} chunkActionsFor={chunkActionsFor} />
     </Windowed>
   );
 }

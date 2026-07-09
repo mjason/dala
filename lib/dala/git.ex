@@ -18,6 +18,8 @@ defmodule Dala.Git do
   def unstage(_path, _file), do: nif_error()
   def discard(_path, _file), do: nif_error()
   def commit(_path, _message), do: nif_error()
+  def commit_amend(_path, _message), do: nif_error()
+  def apply_patch(_path, _patch, _to_index), do: nif_error()
   def log(_path, _limit), do: nif_error()
   def show(_path, _hash), do: nif_error()
   def branches(_path), do: nif_error()

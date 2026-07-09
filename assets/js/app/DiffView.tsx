@@ -3,7 +3,7 @@ import { parseDiff, toSplitRows } from "./diffParse";
 import type { DiffFile, DiffLine } from "./diffParse";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
-import CmDiff from "./CmDiff";
+import CmDiff, { type ChunkAction } from "./CmDiff";
 
 export type DiffDisplayMode = "inline" | "split";
 
@@ -20,6 +20,8 @@ type Props = {
   mode: DiffDisplayMode;
   wrap: boolean;
   sidesFor?: DiffSidesProvider;
+  /** Per-hunk operations (stage/unstage/discard), given the file. */
+  chunkActionsFor?: (file: DiffFile) => ChunkAction[];
 };
 
 /**
@@ -28,7 +30,7 @@ type Props = {
  * collapsed unchanged regions); without one — or while contents load, or for
  * binary files — it renders parsed hunks as colored rows.
  */
-export default function DiffView({ text, mode, wrap, sidesFor }: Props) {
+export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor }: Props) {
   const parsed = useMemo(() => parseDiff(text), [text]);
   const { t } = useI18n();
 
@@ -46,6 +48,7 @@ export default function DiffView({ text, mode, wrap, sidesFor }: Props) {
           mode={mode}
           wrap={wrap}
           sidesFor={sidesFor}
+          chunkActionsFor={chunkActionsFor}
           t={t}
         />
       ))}
@@ -58,12 +61,14 @@ function FileSection({
   mode,
   wrap,
   sidesFor,
+  chunkActionsFor,
   t,
 }: {
   file: DiffFile;
   mode: DiffDisplayMode;
   wrap: boolean;
   sidesFor?: DiffSidesProvider;
+  chunkActionsFor?: (file: DiffFile) => ChunkAction[];
   t: (key: any) => string;
 }) {
   const renamed = file.oldPath !== file.newPath && file.oldPath && file.newPath;
@@ -109,6 +114,7 @@ function FileSection({
           mode={mode}
           wrap={wrap}
           filename={file.newPath || file.oldPath}
+          chunkActions={chunkActionsFor?.(file)}
         />
       ) : mode === "split" ? (
         <SplitFile file={file} wrap={wrap} />

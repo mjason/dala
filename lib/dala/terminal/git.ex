@@ -29,7 +29,8 @@ defmodule Dala.Terminal.Git do
                           fields: [
                             path: [type: :string, allow_nil?: false],
                             status: [type: :string, allow_nil?: false],
-                            staged: [type: :boolean, allow_nil?: false]
+                            staged: [type: :boolean, allow_nil?: false],
+                            unstaged: [type: :boolean, allow_nil?: false]
                           ]
                         ]
                       ]
@@ -86,6 +87,37 @@ defmodule Dala.Terminal.Git do
       end
     end
 
+    action :git_apply_patch, :map do
+      description """
+      Apply a unified patch to the index (stage/unstage a hunk) or the
+      working tree (discard a hunk). The client builds the patch, already
+      reversed for undo directions.
+      """
+
+      constraints fields: [applied: [type: :boolean, allow_nil?: false]]
+
+      argument :path, :string, allow_nil?: false
+
+      # Never trim: unified patches end in a newline git2 requires.
+      argument :patch, :string do
+        allow_nil? false
+        constraints trim?: false
+      end
+
+      argument :target, :atom do
+        allow_nil? false
+        constraints one_of: [:index, :workdir]
+      end
+
+      run fn input, _context ->
+        Dala.Terminal.GitOps.apply_patch(
+          input.arguments.path,
+          input.arguments.patch,
+          input.arguments.target
+        )
+      end
+    end
+
     action :git_stage, :boolean do
       description "Stage one file."
       argument :path, :string, allow_nil?: false
@@ -117,15 +149,27 @@ defmodule Dala.Terminal.Git do
     end
 
     action :git_commit, :map do
-      description "Commit the staged changes."
+      description "Commit the staged changes; amend rewrites HEAD instead."
 
       constraints fields: [hash: [type: :string, allow_nil?: false]]
 
       argument :path, :string, allow_nil?: false
-      argument :message, :string, allow_nil?: false
+
+      argument :message, :string do
+        allow_nil? false
+        constraints allow_empty?: true, trim?: false
+      end
+
+      argument :amend, :boolean do
+        default false
+      end
 
       run fn input, _context ->
-        Dala.Terminal.GitOps.commit(input.arguments.path, input.arguments.message)
+        if input.arguments.amend do
+          Dala.Terminal.GitOps.commit_amend(input.arguments.path, input.arguments.message)
+        else
+          Dala.Terminal.GitOps.commit(input.arguments.path, input.arguments.message)
+        end
       end
     end
 
