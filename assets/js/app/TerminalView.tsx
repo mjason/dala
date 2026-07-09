@@ -181,6 +181,19 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
         phxChannel.push("resize", { rows: term.rows, cols: term.cols });
       };
 
+      // Fit and push only when the computed size actually changed — cheap to
+      // call from a timer/observer without spamming resizes.
+      let lastSize = "";
+      const maybeResize = () => {
+        if (disposed) return;
+        fit.fit();
+        const key = term.rows + "x" + term.cols;
+        if (key !== lastSize) {
+          lastSize = key;
+          pushResize();
+        }
+      };
+
       // Header-button actions so the user can recover a wedged terminal or
       // recompute width without remembering a shortcut.
       const refit = () => {
@@ -210,6 +223,11 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
             // default 80-col size until a later resize/repaint corrects it).
             fit.fit();
             pushResize();
+            lastSize = term.rows + "x" + term.cols;
+            // Layout/fonts may still be settling right after join/refresh;
+            // re-fit on the next ticks so early output is not at a stale size.
+            window.setTimeout(maybeResize, 120);
+            window.setTimeout(maybeResize, 600);
           }
         })
         .receive("error", () => {
@@ -232,20 +250,24 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
       const observer = new ResizeObserver(() => {
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
-          if (follower) {
-            scaleToFit();
-          } else {
-            fit.fit();
-            pushResize();
-          }
+          if (follower) scaleToFit();
+          else maybeResize();
         }, 60);
       });
       observer.observe(container);
+
+      // Idle self-heal: if the size ever drifts (zoom change, layout race, a
+      // missed resize event) re-fit periodically and push only on change.
+      const idleTimer = window.setInterval(() => {
+        if (follower) scaleToFit();
+        else maybeResize();
+      }, 2500);
 
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
         observer.disconnect();
         window.clearTimeout(resizeTimer);
+        window.clearInterval(idleTimer);
         inputDisposable.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
