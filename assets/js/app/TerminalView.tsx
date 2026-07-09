@@ -13,6 +13,8 @@ import {
 } from "../ash_typed_channels";
 import { base64ToBytes } from "./util";
 import { createStreamGate } from "./streamGate";
+import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
+import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
 
 const theme = {
   background: "#0b0c0e",
@@ -71,13 +73,16 @@ type TerminalActions = { reset: () => void; refit: () => void };
 type Props = {
   sessionId: string;
   onCwdChange?: (cwd: string) => void;
+  onError?: (message: string) => void;
   actionsRef?: React.MutableRefObject<TerminalActions | null>;
 };
 
-export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Props) {
+export default function TerminalView({ sessionId, onCwdChange, onError, actionsRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cwdChangeRef = useRef(onCwdChange);
   cwdChangeRef.current = onCwdChange;
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -246,6 +251,54 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
         phxChannel.push("input", { data });
       });
 
+      // Pasting or dropping files (screenshots for Claude Code & co): upload
+      // to the server's temp dir and paste the resulting absolute path, like
+      // dropping a file onto a native terminal. Text-only pastes fall through
+      // to xterm's own handler.
+      const uploadFiles = async (files: File[]) => {
+        const paths: string[] = [];
+        for (const file of files) {
+          try {
+            const contentBase64 = await fileToBase64(file);
+            const result = await savePastedFile({
+              input: { name: pasteName(file), contentBase64 },
+              fields: ["path"],
+              headers: buildCSRFHeaders(),
+            });
+            if (result.success) {
+              paths.push(result.data.path);
+            } else {
+              errorRef.current?.(result.errors[0]?.message ?? "could not upload pasted file");
+            }
+          } catch (error) {
+            errorRef.current?.(error instanceof Error ? error.message : "could not read file");
+          }
+        }
+        if (paths.length > 0 && !disposed) {
+          term.paste(paths.join(" ") + " ");
+          term.focus();
+        }
+      };
+
+      const onPaste = (event: ClipboardEvent) => {
+        const files = collectTransferFiles(event.clipboardData);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void uploadFiles(files);
+      };
+      const onDragOver = (event: DragEvent) => event.preventDefault();
+      const onDrop = (event: DragEvent) => {
+        const files = collectTransferFiles(event.dataTransfer);
+        if (files.length === 0) return;
+        event.preventDefault();
+        void uploadFiles(files);
+      };
+      // Capture phase so file pastes are intercepted before xterm's textarea.
+      container.addEventListener("paste", onPaste, true);
+      container.addEventListener("dragover", onDragOver);
+      container.addEventListener("drop", onDrop);
+
       let resizeTimer: number | undefined;
       const observer = new ResizeObserver(() => {
         window.clearTimeout(resizeTimer);
@@ -274,6 +327,9 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
 
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
+        container.removeEventListener("paste", onPaste, true);
+        container.removeEventListener("dragover", onDragOver);
+        container.removeEventListener("drop", onDrop);
         observer.disconnect();
         window.clearTimeout(resizeTimer);
         window.clearInterval(idleTimer);

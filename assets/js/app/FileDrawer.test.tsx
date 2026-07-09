@@ -1,17 +1,34 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
 import { I18nProvider } from "./i18n";
+
+/** The CodeMirror view inside the editor host div. */
+function editorView(): EditorView {
+  const content = document.querySelector("#code-editor .cm-content");
+  const view = content && EditorView.findFromDOM(content as HTMLElement);
+  if (!view) throw new Error("editor view not found");
+  return view;
+}
+
+function setEditorText(view: EditorView, text: string) {
+  act(() => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+  });
+}
 
 const listDirectory = vi.fn();
 const readFile = vi.fn();
 const writeFile = vi.fn();
+const deleteEntry = vi.fn();
 
 vi.mock("../ash_rpc", () => ({
   buildCSRFHeaders: () => ({}),
   listDirectory: (...args: unknown[]) => listDirectory(...args),
   readFile: (...args: unknown[]) => readFile(...args),
   writeFile: (...args: unknown[]) => writeFile(...args),
+  deleteEntry: (...args: unknown[]) => deleteEntry(...args),
 }));
 
 import FileDrawer from "./FileDrawer";
@@ -50,6 +67,7 @@ beforeEach(() => {
   listDirectory.mockReset();
   readFile.mockReset();
   writeFile.mockReset();
+  deleteEntry.mockReset();
 });
 
 describe("FileDrawer tree", () => {
@@ -220,12 +238,12 @@ describe("FilePreview wrapping", () => {
     fireEvent.click(await screen.findByText("notes.txt"));
     await screen.findByText("x".repeat(400));
 
-    const pre = document.querySelector("#file-preview pre")!;
-    expect(pre.className).toContain("whitespace-pre-wrap");
+    const content = document.querySelector("#file-preview .cm-content")!;
+    expect(content.className).toContain("cm-lineWrapping");
 
     fireEvent.click(document.getElementById("wrap-toggle-button")!);
-    expect(document.querySelector("#file-preview pre")!.className).not.toContain(
-      "whitespace-pre-wrap",
+    expect(document.querySelector("#file-preview .cm-content")!.className).not.toContain(
+      "cm-lineWrapping",
     );
   });
 });
@@ -250,11 +268,10 @@ describe("FilePreview editing", () => {
     writeFile.mockResolvedValueOnce({ success: true, data: { path: "/proj/notes.txt", size: 5 } });
 
     fireEvent.click(document.getElementById("edit-file-button")!);
-    const editor = document.getElementById("code-editor") as HTMLTextAreaElement;
-    expect(editor).toBeInTheDocument();
-    expect(editor.value).toBe("hello world");
+    const view = editorView();
+    expect(view.state.doc.toString()).toBe("hello world");
 
-    fireEvent.change(editor, { target: { value: "brave new world" } });
+    setEditorText(view, "brave new world");
 
     const saveButton = document.getElementById("save-file-button") as HTMLButtonElement;
     expect(saveButton.disabled).toBe(false);
@@ -281,7 +298,7 @@ describe("FilePreview editing", () => {
     writeFile.mockResolvedValueOnce({ success: false, errors: [{ message: "cannot write: permission denied" }] });
 
     fireEvent.click(document.getElementById("edit-file-button")!);
-    fireEvent.change(document.getElementById("code-editor")!, { target: { value: "changed" } });
+    setEditorText(editorView(), "changed");
     fireEvent.click(document.getElementById("save-file-button")!);
 
     await waitFor(() =>
@@ -299,5 +316,174 @@ describe("FilePreview editing", () => {
     fireEvent.click(await screen.findByText("big.log"));
     await screen.findByText("partial");
     expect(document.getElementById("edit-file-button")).toBeNull();
+  });
+});
+
+describe("FileDrawer keyboard and delete", () => {
+  const renderWithFiles = async () => {
+    listDirectory.mockResolvedValueOnce(
+      listing("/proj", [entry("src", "directory"), entry("a.txt", "file"), entry("b.txt", "file")]),
+    );
+    const props = renderDrawer();
+    await screen.findByText("a.txt");
+    return props;
+  };
+
+  const tree = () => document.getElementById("file-tree")!;
+
+  it("navigates with arrows and opens with Enter", async () => {
+    await renderWithFiles();
+    readFile.mockResolvedValueOnce({
+      success: true,
+      data: { path: "/proj/a.txt", size: 5, truncated: false, binary: false, content: "hello" },
+    });
+
+    // up-row (parent "/") is first, then src, then a.txt
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    expect(document.querySelector('[data-path="/proj/a.txt"]')!.getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    fireEvent.keyDown(tree(), { key: "Enter" });
+    await screen.findByText("hello");
+    expect(readFile).toHaveBeenCalledWith(
+      expect.objectContaining({ input: { path: "/proj/a.txt" } }),
+    );
+  });
+
+  it("deletes an entry through the confirm modal", async () => {
+    await renderWithFiles();
+    deleteEntry.mockResolvedValueOnce({ success: true, data: { path: "/proj/b.txt" } });
+    listDirectory.mockResolvedValueOnce(
+      listing("/proj", [entry("src", "directory"), entry("a.txt", "file")]),
+    );
+
+    fireEvent.click(document.querySelector('[data-delete="/proj/b.txt"]')!);
+    expect(document.getElementById("delete-entry-modal")).toBeInTheDocument();
+
+    fireEvent.click(document.getElementById("confirm-delete-entry-button")!);
+    await waitFor(() =>
+      expect(deleteEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ input: { path: "/proj/b.txt" } }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText("b.txt")).toBeNull());
+  });
+
+  it("Delete key targets the selected row", async () => {
+    await renderWithFiles();
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    fireEvent.keyDown(tree(), { key: "Delete" });
+    expect(document.getElementById("delete-entry-modal")).toBeInTheDocument();
+    expect(screen.getByTitle("/proj/a.txt")).toBeInTheDocument();
+  });
+
+  it("download links point at the raw endpoint", async () => {
+    await renderWithFiles();
+    const link = document.querySelector('[data-download="/proj/a.txt"]') as HTMLAnchorElement;
+    expect(link.href).toContain("/files/raw?");
+    expect(link.href).toContain("download=1");
+  });
+});
+
+describe("FileDrawer upload targeting", () => {
+  const setup = async () => {
+    listDirectory.mockResolvedValue(
+      listing("/proj", [entry("src", "directory"), entry("a.txt", "file")]),
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    renderDrawer();
+    await screen.findByText("a.txt");
+    return fetchMock;
+  };
+
+  const pasteFile = () => {
+    const file = new File(["x"], "pasted.txt", { type: "text/plain" });
+    const clipboardData = {
+      items: [{ kind: "file", getAsFile: () => file }],
+      files: [file],
+    };
+    fireEvent.paste(document.getElementById("file-tree")!, { clipboardData });
+  };
+
+  it("pastes OS-copied files into the selected directory", async () => {
+    const fetchMock = await setup();
+
+    // Select the "src" directory (up-row first, then src).
+    const tree = document.getElementById("file-tree")!;
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(document.querySelector('[data-path="/proj/src"]')!.getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    pasteFile();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    expect(form.get("dir")).toBe("/proj/src");
+    vi.unstubAllGlobals();
+  });
+
+  it("pastes into the root when nothing is selected", async () => {
+    const fetchMock = await setup();
+
+    pasteFile();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    expect(form.get("dir")).toBe("/proj");
+    vi.unstubAllGlobals();
+  });
+
+  it("a selected file targets its parent directory", async () => {
+    const fetchMock = await setup();
+
+    readFile.mockResolvedValueOnce({
+      success: true,
+      data: { path: "/proj/a.txt", size: 1, truncated: false, binary: false, content: "x" },
+    });
+    fireEvent.click(document.querySelector('[data-path="/proj/a.txt"]')!);
+
+    pasteFile();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    expect(form.get("dir")).toBe("/proj");
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("FileDrawer deselection", () => {
+  it("Escape and empty-area clicks clear the selection back to root targeting", async () => {
+    listDirectory.mockResolvedValue(
+      listing("/proj", [entry("src", "directory"), entry("a.txt", "file")]),
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    renderDrawer();
+    await screen.findByText("a.txt");
+    const tree = document.getElementById("file-tree")!;
+
+    // Select src, then Escape -> paste goes to root.
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "Escape" });
+    const file = new File(["x"], "p.txt", { type: "text/plain" });
+    fireEvent.paste(tree, {
+      clipboardData: { items: [{ kind: "file", getAsFile: () => file }], files: [file] },
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect((fetchMock.mock.calls[0][1].body as FormData).get("dir")).toBe("/proj");
+
+    // Re-select, then click the empty area -> selection cleared.
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(document.querySelector('[aria-selected="true"]')).not.toBeNull();
+    fireEvent.click(tree);
+    expect(document.querySelector('[aria-selected="true"]')).toBeNull();
+    vi.unstubAllGlobals();
   });
 });

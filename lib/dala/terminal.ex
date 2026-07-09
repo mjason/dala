@@ -14,13 +14,17 @@ defmodule Dala.Terminal do
 
     resource Dala.Terminal.FileSystem do
       rpc_action :list_directory, :list_directory
+      rpc_action :list_files, :list_files
       rpc_action :read_file, :read_file
       rpc_action :write_file, :write_file
+      rpc_action :save_pasted_file, :save_pasted_file
+      rpc_action :delete_entry, :delete_entry
     end
 
     resource Dala.Terminal.Git do
       rpc_action :git_status, :git_status
       rpc_action :git_diff, :git_diff
+      rpc_action :git_file_at, :git_file_at
       rpc_action :git_stage, :git_stage
       rpc_action :git_unstage, :git_unstage
       rpc_action :git_discard, :git_discard

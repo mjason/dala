@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Channel } from "phoenix";
-import { buildCSRFHeaders, createSession, listSessions, restartSession } from "../ash_rpc";
+import {
+  buildCSRFHeaders,
+  createSession,
+  deleteSession,
+  listSessions,
+  restartSession,
+} from "../ash_rpc";
 import {
   createSessionsChannel,
   onSessionsChannelMessages,
@@ -12,6 +18,9 @@ import TerminalView from "./TerminalView";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
 import SettingsModal from "./SettingsModal";
+import QuickOpen from "./QuickOpen";
+import FilePreview, { type Preview } from "./FilePreview";
+import { loadPreview } from "./loadPreview";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 
@@ -42,6 +51,9 @@ export default function App() {
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
   const [followCwd, setFollowCwd] = useState(true);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const [deleteFor, setDeleteFor] = useState<string | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
   const termActions = useRef<{ reset: () => void; refit: () => void } | null>(null);
@@ -146,7 +158,46 @@ export default function App() {
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
+  // Ctrl/Cmd+P opens the quick-open palette — except when the terminal has
+  // focus, where Ctrl+P belongs to the shell (readline previous-history).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "p") return;
+      if ((e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+      e.preventDefault();
+      setQuickOpen(true);
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, []);
+
+  const openQuickFile = async (path: string) => {
+    setQuickOpen(false);
+    const result = await loadPreview(path);
+    if (result.ok) setQuickPreview(result.preview);
+    else toast(result.message ?? t("couldNotReadFile"));
+  };
+
+  const deleting = useRef(new Set<string>());
+  const handleDelete = async (id: string) => {
+    if (deleting.current.has(id)) return;
+    deleting.current.add(id);
+    try {
+      const result = await deleteSession({ identity: id, headers: buildCSRFHeaders() });
+      if (result.success) {
+        setSessions((list) => list.filter((s) => s.id !== id));
+        if (activeId === id) setActiveId(null);
+      } else {
+        toast(result.errors[0]?.message ?? t("somethingWentWrong"));
+      }
+    } finally {
+      deleting.current.delete(id);
+    }
+  };
+
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
+  const sessionToDelete = ordered.find((s) => s.id === deleteFor) ?? null;
 
   const hamburger = (
     <button
@@ -185,6 +236,7 @@ export default function App() {
           }}
           onCreate={() => void handleCreate()}
           onOpenSettings={setSettingsFor}
+          onDelete={setDeleteFor}
         />
       </div>
 
@@ -212,6 +264,17 @@ export default function App() {
                     ? t("exitedWithCode", { code: active.exitCode })
                     : t("exited")}
               </span>
+              <button
+                id="quick-open-button"
+                onClick={() => setQuickOpen(true)}
+                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                title="Ctrl+P"
+              >
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="7" cy="7" r="4" />
+                  <path d="m13 13-3.2-3.2" strokeLinecap="round" />
+                </svg>
+              </button>
               <button
                 id="toggle-drawer-button"
                 onClick={() => {
@@ -271,6 +334,7 @@ export default function App() {
                 key={active.id}
                 sessionId={active.id}
                 actionsRef={termActions}
+                onError={toast}
                 onCwdChange={(cwd) => {
                   if (followCwd) setDrawerPath(cwd);
                 }}
@@ -333,6 +397,72 @@ export default function App() {
           onClose={() => setDrawerOpen(false)}
           onError={toast}
         />
+      )}
+
+      {quickOpen && active && (
+        <QuickOpen
+          root={active.cwd}
+          onPick={(path) => void openQuickFile(path)}
+          onClose={() => setQuickOpen(false)}
+          onError={toast}
+        />
+      )}
+
+      {quickPreview && (
+        <FilePreview
+          preview={quickPreview}
+          onClose={() => setQuickPreview(null)}
+          onError={toast}
+          onSaved={(savedPath, savedContent, savedSize) => {
+            setQuickPreview((current) =>
+              current && "content" in current && current.path === savedPath
+                ? { ...current, content: savedContent, size: savedSize }
+                : current,
+            );
+          }}
+        />
+      )}
+
+      {sessionToDelete && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 sm:p-6"
+          onClick={() => setDeleteFor(null)}
+        >
+          <div
+            id="delete-session-modal"
+            className="w-full max-w-sm rounded-xl border border-line bg-bg1 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="border-b border-line px-4 py-3">
+              <span className="text-[15px] font-medium text-fg">{t("reallyDelete")}</span>
+            </header>
+            <div className="space-y-1 px-4 py-4">
+              <div className="truncate font-mono text-sm text-fg">{sessionToDelete.name}</div>
+              <div className="truncate font-mono text-xs text-fg-muted" title={sessionToDelete.cwd}>
+                {sessionToDelete.cwd}
+              </div>
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                id="cancel-delete-button"
+                onClick={() => setDeleteFor(null)}
+                className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
+              >
+                {t("cancel")}
+              </button>
+              <button
+                id="confirm-delete-button"
+                onClick={() => {
+                  setDeleteFor(null);
+                  void handleDelete(sessionToDelete.id);
+                }}
+                className="rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
+              >
+                {t("deleteSession")}
+              </button>
+            </footer>
+          </div>
+        </div>
       )}
 
       {settingsSession && (

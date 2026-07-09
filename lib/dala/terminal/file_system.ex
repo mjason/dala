@@ -11,6 +11,9 @@ defmodule Dala.Terminal.FileSystem do
 
   @preview_default_max_bytes 262_144
   @write_max_bytes 10 * 1024 * 1024
+  # Base64 inflates by 4/3 and the whole payload must fit the RPC body limit
+  # (Plug.Parsers defaults to 8 MB), so cap pasted files at 5 MB.
+  @paste_max_bytes 5 * 1024 * 1024
 
   typescript do
     type_name "FileSystem"
@@ -59,6 +62,33 @@ defmodule Dala.Terminal.FileSystem do
 
           {:error, reason} ->
             {:error, "cannot list #{path}: #{:file.format_error(reason)}"}
+        end
+      end
+    end
+
+    action :list_files, :map do
+      description """
+      Recursively list file paths under a root, for the quick-open palette.
+      Hidden directories and common dependency/build trees are skipped; the
+      walk is capped, with `truncated` reporting whether the cap was hit.
+      """
+
+      constraints fields: [
+                    root: [type: :string, allow_nil?: false],
+                    files: [type: {:array, :string}, allow_nil?: false],
+                    truncated: [type: :boolean, allow_nil?: false]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+
+      run fn input, _context ->
+        root = expand(input.arguments.path)
+
+        if File.dir?(root) do
+          {files, truncated} = walk_files(root)
+          {:ok, %{root: root, files: files, truncated: truncated}}
+        else
+          {:error, "not a directory: #{root}"}
         end
       end
     end
@@ -144,6 +174,157 @@ defmodule Dala.Terminal.FileSystem do
         end
       end
     end
+
+    action :delete_entry, :map do
+      description "Delete a file, or a directory with everything in it."
+
+      constraints fields: [path: [type: :string, allow_nil?: false]]
+
+      argument :path, :string, allow_nil?: false
+
+      run fn input, _context ->
+        path = expand(input.arguments.path)
+
+        case File.lstat(path) do
+          {:ok, %File.Stat{type: :directory}} ->
+            case File.rm_rf(path) do
+              {:ok, _removed} ->
+                {:ok, %{path: path}}
+
+              {:error, reason, at} ->
+                {:error, "cannot delete #{at}: #{:file.format_error(reason)}"}
+            end
+
+          {:ok, _stat} ->
+            case File.rm(path) do
+              :ok -> {:ok, %{path: path}}
+              {:error, reason} -> {:error, "cannot delete #{path}: #{:file.format_error(reason)}"}
+            end
+
+          {:error, reason} ->
+            {:error, "cannot delete #{path}: #{:file.format_error(reason)}"}
+        end
+      end
+    end
+
+    action :save_pasted_file, :map do
+      description """
+      Persist a file pasted or dropped into the web terminal (typically a
+      screenshot) to a temp directory, returning its absolute path so it can
+      be handed to CLI tools like Claude Code as a file reference.
+      """
+
+      constraints fields: [
+                    path: [type: :string, allow_nil?: false],
+                    size: [type: :integer, allow_nil?: false]
+                  ]
+
+      # Original filename or MIME hint; only its extension is kept.
+      argument :name, :string, allow_nil?: false
+
+      argument :content_base64, :string do
+        allow_nil? false
+        constraints trim?: false
+      end
+
+      run fn input, _context ->
+        with {:ok, content} <- Base.decode64(input.arguments.content_base64),
+             :ok <- check_paste_size(content) do
+          dir = Path.join(System.tmp_dir!(), "dala-paste")
+          File.mkdir_p!(dir)
+
+          timestamp = Calendar.strftime(DateTime.utc_now(), "%Y%m%d-%H%M%S")
+          rand = Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+          path = Path.join(dir, "paste-#{timestamp}-#{rand}.#{safe_ext(input.arguments.name)}")
+
+          case File.write(path, content) do
+            :ok ->
+              File.chmod(path, 0o600)
+              {:ok, %{path: path, size: byte_size(content)}}
+
+            {:error, reason} ->
+              {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+          end
+        else
+          :error -> {:error, "invalid base64 content"}
+          {:error, _reason} = error -> error
+        end
+      end
+    end
+  end
+
+  defp check_paste_size(content) do
+    if byte_size(content) > @paste_max_bytes do
+      {:error, "pasted file too large (max #{div(@paste_max_bytes, 1_048_576)} MB)"}
+    else
+      :ok
+    end
+  end
+
+  # "screenshot.png" -> "png", "image/png" -> "png"; anything else -> "png".
+  defp safe_ext(name) do
+    ext =
+      case Path.extname(name) do
+        "." <> ext ->
+          ext
+
+        "" ->
+          case String.split(name, "/") do
+            [type, subtype] when type in ~w(image video audio application text) -> subtype
+            _not_a_mime -> ""
+          end
+      end
+
+    if ext =~ ~r/^[a-zA-Z0-9]{1,8}$/, do: String.downcase(ext), else: "png"
+  end
+
+  # Quick-open walk bounds: enough for real projects, bounded for $HOME.
+  @walk_max_files 20_000
+  @walk_max_depth 12
+  @walk_skip_dirs MapSet.new(
+                    ~w(node_modules _build deps target .git .hg .svn __pycache__ .venv venv)
+                  )
+
+  defp walk_files(root) do
+    {files, count} = walk_files(root, "", 0, [], 0)
+    {files |> Enum.reverse(), count >= @walk_max_files}
+  end
+
+  defp walk_files(_abs, _rel, depth, acc, count)
+       when depth > @walk_max_depth or count >= @walk_max_files,
+       do: {acc, count}
+
+  defp walk_files(abs_dir, rel_dir, depth, acc, count) do
+    entries =
+      case File.ls(abs_dir) do
+        {:ok, names} -> Enum.sort(names)
+        {:error, _reason} -> []
+      end
+
+    Enum.reduce_while(entries, {acc, count}, fn name, {acc, count} ->
+      if count >= @walk_max_files do
+        {:halt, {acc, count}}
+      else
+        abs = Path.join(abs_dir, name)
+        rel = if rel_dir == "", do: name, else: rel_dir <> "/" <> name
+
+        case File.lstat(abs) do
+          {:ok, %File.Stat{type: :directory}} ->
+            if String.starts_with?(name, ".") or MapSet.member?(@walk_skip_dirs, name) do
+              {:cont, {acc, count}}
+            else
+              {:cont, walk_files(abs, rel, depth + 1, acc, count)}
+            end
+
+          {:ok, %File.Stat{type: :regular}} ->
+            {:cont, {[rel | acc], count + 1}}
+
+          # Symlinks and specials are skipped: no cycles, no surprises.
+          _other ->
+            {:cont, {acc, count}}
+        end
+      end
+    end)
   end
 
   defp expand("~" <> rest), do: Path.expand((System.user_home() || "/") <> rest)

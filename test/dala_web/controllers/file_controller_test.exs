@@ -36,6 +36,41 @@ defmodule DalaWeb.FileControllerTest do
     assert conn |> get(~p"/files/raw?#{[path: dir]}") |> response(404)
   end
 
+  defp upload_conn(conn, dir, filename, content) do
+    tmp = Path.join(System.tmp_dir!(), "upload-src-#{System.unique_integer([:positive])}")
+    File.write!(tmp, content)
+    on_exit(fn -> File.rm(tmp) end)
+
+    upload = %Plug.Upload{path: tmp, filename: filename, content_type: "application/octet-stream"}
+    post(conn, ~p"/files/upload", %{"dir" => dir, "file" => upload})
+  end
+
+  test "uploads a file into the directory", %{conn: conn, dir: dir} do
+    conn = upload_conn(conn, dir, "notes.txt", "uploaded!")
+
+    assert %{"path" => path, "name" => "notes.txt", "size" => 9} = json_response(conn, 200)
+    assert File.read!(path) == "uploaded!"
+  end
+
+  test "upload never overwrites — collisions get a suffix", %{conn: conn, dir: dir} do
+    File.write!(Path.join(dir, "a.txt"), "original")
+
+    conn = upload_conn(conn, dir, "a.txt", "second")
+
+    assert %{"name" => "a-1.txt", "path" => path} = json_response(conn, 200)
+    assert File.read!(path) == "second"
+    assert File.read!(Path.join(dir, "a.txt")) == "original"
+  end
+
+  test "upload rejects bad directories and names", %{conn: conn, dir: dir} do
+    assert conn
+           |> upload_conn(Path.join(dir, "missing"), "a.txt", "x")
+           |> json_response(400)
+
+    assert %{"error" => _message} =
+             build_conn() |> upload_conn(dir, "", "x") |> json_response(400)
+  end
+
   test "requires auth when enabled", %{conn: conn, dir: dir} do
     Application.put_env(:dala, :auth_enabled, true)
     on_exit(fn -> Application.put_env(:dala, :auth_enabled, false) end)

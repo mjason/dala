@@ -36,6 +36,7 @@ defmodule DalaWeb.Router do
 
     post "/rpc/run", AshTypescriptRpcController, :run
     post "/rpc/validate", AshTypescriptRpcController, :validate
+    post "/files/upload", FileController, :upload
   end
 
   scope "/", DalaWeb do

@@ -37,6 +37,7 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
     onSelect: vi.fn(),
     onCreate: vi.fn(),
     onOpenSettings: vi.fn(),
+    onDelete: vi.fn(),
     ...overrides,
   };
   render(
@@ -71,6 +72,13 @@ describe("Sidebar", () => {
     const props = renderSidebar({ sessions: [], activeId: null });
     fireEvent.click(screen.getByText(/new terminal/i));
     expect(props.onCreate).toHaveBeenCalled();
+  });
+
+  it("requests a delete without selecting the row", () => {
+    const props = renderSidebar();
+    fireEvent.click(document.querySelector('[data-delete-session="s2"]')!);
+    expect(props.onDelete).toHaveBeenCalledWith("s2");
+    expect(props.onSelect).not.toHaveBeenCalled();
   });
 
   it("switches languages via the footer select", () => {

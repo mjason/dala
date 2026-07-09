@@ -15,6 +15,7 @@ type Props = {
   onSelect: (id: string) => void;
   onCreate: () => void;
   onOpenSettings: (id: string) => void;
+  onDelete: (id: string) => void;
 };
 
 export default function Sidebar({
@@ -25,6 +26,7 @@ export default function Sidebar({
   onSelect,
   onCreate,
   onOpenSettings,
+  onDelete,
 }: Props) {
   const { locale, t, setLocale } = useI18n();
 
@@ -95,6 +97,25 @@ export default function Sidebar({
                   <circle cx="3" cy="8" r="1.3" />
                   <circle cx="8" cy="8" r="1.3" />
                   <circle cx="13" cy="8" r="1.3" />
+                </svg>
+              </button>
+              <button
+                data-delete-session={s.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(s.id);
+                }}
+                className="hidden h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-danger group-hover:grid"
+                title={t("deleteSession")}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path d="m4 4 8 8m0-8-8 8" strokeLinecap="round" />
                 </svg>
               </button>
             </div>
