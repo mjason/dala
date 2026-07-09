@@ -263,11 +263,22 @@ export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Pro
         else maybeResize();
       }, 2500);
 
+      // Extra triggers a ResizeObserver can miss: window resize, browser zoom
+      // (via window resize on most browsers), and the tab becoming visible.
+      const onWindowChange = () => {
+        if (follower) scaleToFit();
+        else maybeResize();
+      };
+      window.addEventListener("resize", onWindowChange);
+      document.addEventListener("visibilitychange", onWindowChange);
+
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
         observer.disconnect();
         window.clearTimeout(resizeTimer);
         window.clearInterval(idleTimer);
+        window.removeEventListener("resize", onWindowChange);
+        document.removeEventListener("visibilitychange", onWindowChange);
         inputDisposable.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
