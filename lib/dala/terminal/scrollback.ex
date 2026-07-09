@@ -63,10 +63,28 @@ defmodule Dala.Terminal.Scrollback do
   def init(opts) do
     dir = Keyword.get(opts, :data_dir) || Application.fetch_env!(:dala, :data_dir)
     File.mkdir_p!(dir)
-    file = Path.join(dir, "scrollback.dets") |> String.to_charlist()
+    path = Path.join(dir, "scrollback.dets")
+    file = String.to_charlist(path)
 
-    {:ok, @table} = :dets.open_file(@table, file: file, type: :set, auto_save: 10_000)
+    :ok = open_table(file, path)
     {:ok, %{}}
+  end
+
+  # The scrollback is a disposable cache. If the DETS file is corrupt or was
+  # left unclean by a hard kill, drop it and start fresh instead of failing
+  # every read/write.
+  defp open_table(file, path) do
+    case :dets.open_file(@table, file: file, type: :set, auto_save: 10_000) do
+      {:ok, @table} ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("scrollback cache corrupt (#{inspect(reason)}); recreating")
+        File.rm(path)
+        {:ok, @table} = :dets.open_file(@table, file: file, type: :set, auto_save: 10_000)
+        :ok
+    end
   end
 
   @impl true
@@ -114,10 +132,10 @@ defmodule Dala.Terminal.Scrollback do
     meta = get_meta(session_id)
 
     for seq <- meta.first..(meta.next - 1)//1 do
-      :dets.delete(@table, {session_id, seq})
+      safe_delete({session_id, seq})
     end
 
-    :dets.delete(@table, {session_id, :meta})
+    safe_delete({session_id, :meta})
     {:reply, :ok, state}
   end
 
@@ -135,6 +153,13 @@ defmodule Dala.Terminal.Scrollback do
 
   defp safe_insert(record) do
     case :dets.insert(@table, record) do
+      :ok -> :ok
+      {:error, reason} -> log_corruption(reason)
+    end
+  end
+
+  defp safe_delete(key) do
+    case :dets.delete(@table, key) do
       :ok -> :ok
       {:error, reason} -> log_corruption(reason)
     end
@@ -162,7 +187,7 @@ defmodule Dala.Terminal.Scrollback do
       freed =
         case safe_lookup({session_id, meta.first}) do
           [{_key, data}] ->
-            :dets.delete(@table, {session_id, meta.first})
+            safe_delete({session_id, meta.first})
             byte_size(data)
 
           _ ->
