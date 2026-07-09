@@ -562,15 +562,18 @@ function DiffModal({
       return () => [
         {
           label: t("stageHunk"),
+          lineLabel: t("stageLines"),
           kind: "primary" as const,
           onClick: (patch: { forward: string; reverse: string }) =>
             void onHunk(patch.forward, "index"),
         },
         {
           label: t("discardHunk"),
+          lineLabel: t("discardLines"),
           kind: "danger" as const,
-          onClick: (patch: { forward: string; reverse: string }) => {
-            if (!confirm(t("discardHunkConfirm"))) return;
+          onClick: (patch: { forward: string; reverse: string }, source?: "hunk" | "lines") => {
+            if (!confirm(t(source === "lines" ? "discardLinesConfirm" : "discardHunkConfirm")))
+              return;
             void onHunk(patch.reverse, "workdir");
           },
         },
@@ -579,6 +582,7 @@ function DiffModal({
     return () => [
       {
         label: t("unstageHunk"),
+        lineLabel: t("unstageLines"),
         kind: "primary" as const,
         onClick: (patch: { forward: string; reverse: string }) =>
           void onHunk(patch.reverse, "index"),
@@ -586,8 +590,15 @@ function DiffModal({
     ];
   }, [onHunk, target, t]);
 
-  // i / s switch inline/split, Alt+Z toggles wrapping — skipped while typing
-  // (e.g. in the diff's search panel).
+  const hasLineMode = chunkActionsFor !== undefined;
+  const modeOptions: { value: DiffDisplayMode; label: string; key: string }[] = [
+    { value: "inline", label: t("diffInline"), key: "i" },
+    { value: "split", label: t("diffSplit"), key: "s" },
+    ...(hasLineMode ? [{ value: "lines" as const, label: t("diffLines"), key: "l" }] : []),
+  ];
+
+  // i / s / l switch inline/split/line-select, Alt+Z toggles wrapping —
+  // skipped while typing (e.g. in the diff's search panel).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
@@ -599,10 +610,11 @@ function DiffModal({
       if (e.ctrlKey || e.metaKey || e.altKey || inTextInput(e)) return;
       if (e.key === "i") setMode("inline");
       if (e.key === "s") setMode("split");
+      if (e.key === "l" && hasLineMode) setMode("lines");
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [hasLineMode]);
 
   // With revisions known, each file upgrades to the syntax-highlighted merge
   // view by fetching its full old/new contents; binary/oversized files (or
@@ -652,7 +664,7 @@ function DiffModal({
         <span className="shrink-0 font-mono text-[11px] text-fg-muted">{t("diffTruncated")}</span>
       )}
       <div className="hidden shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5 sm:flex">
-        {(["inline", "split"] as const).map((value) => (
+        {modeOptions.map(({ value, label, key }) => (
           <button
             key={value}
             data-diff-mode={value}
@@ -661,8 +673,7 @@ function DiffModal({
               mode === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
             }`}
           >
-            {value === "inline" ? t("diffInline") : t("diffSplit")}{" "}
-            <Kbd>{value === "inline" ? "i" : "s"}</Kbd>
+            {label} <Kbd>{key}</Kbd>
           </button>
         ))}
       </div>

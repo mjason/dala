@@ -4,8 +4,9 @@ import type { DiffFile, DiffLine } from "./diffParse";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
 import CmDiff, { type ChunkAction } from "./CmDiff";
+import LineSelectDiff from "./LineSelectDiff";
 
-export type DiffDisplayMode = "inline" | "split";
+export type DiffDisplayMode = "inline" | "split" | "lines";
 
 /**
  * Resolves the full old/new contents for one file of a diff, so the file can
@@ -107,11 +108,19 @@ function FileSection({
         <div className="px-4 py-6 text-center font-mono text-xs text-fg-muted">
           {t("binaryDiff")}
         </div>
+      ) : sides && mode === "lines" && chunkActionsFor ? (
+        <LineSelectDiff
+          oldText={sides.oldText}
+          newText={sides.newText}
+          filename={file.newPath || file.oldPath}
+          wrap={wrap}
+          actions={chunkActionsFor(file)}
+        />
       ) : sides ? (
         <CmDiff
           oldText={sides.oldText}
           newText={sides.newText}
-          mode={mode}
+          mode={mode === "split" ? "split" : "inline"}
           wrap={wrap}
           filename={file.newPath || file.oldPath}
           chunkActions={chunkActionsFor?.(file)}

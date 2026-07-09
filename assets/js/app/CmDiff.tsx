@@ -13,8 +13,10 @@ export type ChunkPatch = { forward: string; reverse: string };
 
 export type ChunkAction = {
   label: string;
+  /** Label used by the line-selection mode ("Stage selected lines" …). */
+  lineLabel?: string;
   kind: "primary" | "danger";
-  onClick: (patch: ChunkPatch) => void;
+  onClick: (patch: ChunkPatch, source?: "hunk" | "lines") => void;
 };
 
 type Props = {
@@ -23,7 +25,7 @@ type Props = {
   mode: "inline" | "split";
   wrap: boolean;
   filename: string;
-  /** Per-hunk buttons (Fork-style stage/unstage/discard). Inline mode only. */
+  /** Per-hunk buttons (Fork-style stage/unstage/discard). */
   chunkActions?: ChunkAction[];
 };
 
@@ -71,11 +73,16 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
       const view = new MergeView({
         parent: host,
         a: { doc: oldText, extensions: shared },
-        b: { doc: newText, extensions: shared },
+        b: { doc: newText, extensions: [...shared, hunkButtonsField] },
         gutter: true,
         highlightChanges: true,
         collapseUnchanged,
       });
+
+      if (chunkActions && chunkActions.length > 0) {
+        attachHunkButtons(view.b, filename, oldText, newText, chunkActions, view.a.state.doc);
+      }
+
       destroy = () => view.destroy();
     } else {
       const view = new EditorView({
@@ -157,7 +164,7 @@ class HunkButtonsWidget extends WidgetType {
 /** 1-based half-open line number for a document offset (chunk boundaries are
  * always at line starts; the document end maps to lines+1 unless a trailing
  * newline already accounts for it). */
-function lineAt(doc: Text, pos: number): number {
+export function lineAt(doc: Text, pos: number): number {
   if (pos >= doc.length) {
     const endsWithNewline = doc.length > 0 && doc.sliceString(doc.length - 1) === "\n";
     return endsWithNewline ? doc.lines : doc.lines + 1;
@@ -171,11 +178,13 @@ function attachHunkButtons(
   oldText: string,
   newText: string,
   actions: ChunkAction[],
+  /** The old-side document; defaults to the unified view's original doc. */
+  original?: Text,
 ) {
   const result = getChunks(view.state);
   if (!result) return;
 
-  const originalDoc = getOriginalDoc(view.state);
+  const originalDoc = original ?? getOriginalDoc(view.state);
   const doc = view.state.doc;
   const decorations = [];
 

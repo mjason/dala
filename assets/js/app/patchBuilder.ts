@@ -85,3 +85,90 @@ export function buildChunkPatch(
     "",
   ].join("\n");
 }
+
+/** Which lines of a chunk are selected, as 0-based offsets into the chunk's
+ * old (`removed`) and new (`added`) line ranges. */
+export type LineSelection = {
+  removed: ReadonlySet<number>;
+  added: ReadonlySet<number>;
+};
+
+/**
+ * Builds a patch that applies only the *selected* lines of a chunk
+ * (lazygit/`git add -p` edit semantics): unselected removals stay as context,
+ * unselected additions are dropped.
+ *
+ * Forward patches apply against the old document (stage → index, whose
+ * content is the old side). Reverse patches undo the selected lines against
+ * the new document (discard → worktree, unstage → index), so the roles and
+ * selections swap wholesale.
+ */
+export function buildLinesPatch(
+  filePath: string,
+  oldText: string,
+  newText: string,
+  chunk: ChunkLines,
+  selection: LineSelection,
+  opts: { reverse?: boolean } = {},
+): string {
+  const oldSide = {
+    lines: splitLines(oldText),
+    from: chunk.fromA,
+    to: chunk.toA,
+    selected: selection.removed,
+  };
+  const newSide = {
+    lines: splitLines(newText),
+    from: chunk.fromB,
+    to: chunk.toB,
+    selected: selection.added,
+  };
+  const base = opts.reverse ? newSide : oldSide;
+  const other = opts.reverse ? oldSide : newSide;
+
+  // Context only needs to exist in the base document — that is the only
+  // document this patch is ever applied to.
+  const beforeCount = Math.min(CONTEXT, base.from - 1);
+  const afterCount = Math.min(CONTEXT, base.lines.length - (base.to - 1));
+  const before = base.lines
+    .slice(base.from - 1 - beforeCount, base.from - 1)
+    .map((line) => " " + line);
+  const after = base.lines.slice(base.to - 1, base.to - 1 + afterCount).map((line) => " " + line);
+
+  const baseRows = base.lines
+    .slice(base.from - 1, base.to - 1)
+    .map((line, i) => (base.selected.has(i) ? "-" + line : " " + line));
+  const kept = baseRows.filter((row) => row.startsWith(" ")).length;
+
+  const additions = other.lines
+    .slice(other.from - 1, other.to - 1)
+    .filter((_, i) => other.selected.has(i))
+    .map((line) => "+" + line);
+  const added = additions.length;
+
+  // Insert the additions right after the last selected removal — that is
+  // where they visually replace it — falling back to the end of the chunk.
+  const lastRemoval = baseRows.reduce((acc, row, i) => (row.startsWith("-") ? i + 1 : acc), 0);
+  const insertAt = lastRemoval > 0 ? lastRemoval : baseRows.length;
+  const body = [...baseRows.slice(0, insertAt), ...additions, ...baseRows.slice(insertAt)];
+
+  const oldCount = beforeCount + (base.to - base.from) + afterCount;
+  const newCount = beforeCount + kept + added + afterCount;
+  // A standalone hunk has no preceding changes, so both sides start at the
+  // same line of the base document.
+  const start = base.from - beforeCount;
+  const position = (count: number) => (count === 0 ? start - 1 : start);
+
+  const header = `@@ -${position(oldCount)},${oldCount} +${position(newCount)},${newCount} @@`;
+
+  return [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    header,
+    ...before,
+    ...body,
+    ...after,
+    "",
+  ].join("\n");
+}
