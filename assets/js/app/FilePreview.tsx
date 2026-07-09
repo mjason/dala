@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildCSRFHeaders, writeFile } from "../ash_rpc";
 import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
@@ -7,6 +7,7 @@ import { rawFileUrl } from "./fileTypes";
 import type { PreviewKind } from "./fileTypes";
 import { FileTypeIcon } from "./fileIcons";
 import Windowed from "./Windowed";
+import { Kbd, modCombo } from "./shortcuts";
 import CodeEditor from "./CodeEditor";
 import CmCode from "./CmCode";
 
@@ -77,6 +78,31 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
     onClose();
   };
 
+  const stateRef = useRef({ editing, dirty, saving });
+  stateRef.current = { editing, dirty, saving };
+
+  // Alt+Z toggles wrapping (VS Code); Ctrl/Cmd+S saves while editing even
+  // when the focus is outside the editor.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === "KeyZ") {
+        e.preventDefault();
+        setWrap((v) => !v);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
+        const { editing, dirty, saving } = stateRef.current;
+        if (editing) {
+          e.preventDefault();
+          if (dirty && !saving) void save();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const title = (
     <>
       <FileTypeIcon name={preview.path} />
@@ -108,7 +134,7 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
         disabled={saving || !dirty}
         className="shrink-0 rounded-md bg-mint px-2.5 py-0.5 font-mono text-[11px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
       >
-        {t("save")}
+        {t("save")} <Kbd>{modCombo("s")}</Kbd>
       </button>
     </>
   ) : (
@@ -120,9 +146,9 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
           className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
             wrap ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
           }`}
-          title={t("wrapLines")}
+          title={`${t("wrapLines")} · Alt+Z`}
         >
-          {t("wrapLines")}
+          {t("wrapLines")} <Kbd>Alt+Z</Kbd>
         </button>
       )}
       {canEdit && (

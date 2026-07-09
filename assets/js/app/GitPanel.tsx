@@ -22,6 +22,7 @@ import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { FileTypeIcon } from "./fileIcons";
 import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
+import { hasOpenWindows, inTextInput, Kbd } from "./shortcuts";
 import Windowed from "./Windowed";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
@@ -57,6 +58,20 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   const [target, setTarget] = useState<DiffTarget | null>(null);
 
   const root = status?.root ?? null;
+
+  // Escape closes the panel — unless a window (diff/preview) is on top or
+  // the user is typing (commit message).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (hasOpenWindows() || inTextInput(e)) return;
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -190,9 +205,10 @@ export default function GitPanel({ path, onClose, onError }: Props) {
         </button>
         <button
           onClick={onClose}
-          className="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
-          title={t("closeGitPanel")}
+          className="flex h-6 shrink-0 items-center gap-1 rounded px-1 text-fg-muted transition-colors hover:text-fg"
+          title={`${t("closeGitPanel")} · Esc`}
         >
+          <Kbd>Esc</Kbd>
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
           </svg>
@@ -423,6 +439,24 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
   const [mode, setMode] = useState<DiffDisplayMode>("inline");
   const [wrap, setWrap] = useState(true);
 
+  // i / s switch inline/split, Alt+Z toggles wrapping — skipped while typing
+  // (e.g. in the diff's search panel).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === "KeyZ") {
+        e.preventDefault();
+        setWrap((v) => !v);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || inTextInput(e)) return;
+      if (e.key === "i") setMode("inline");
+      if (e.key === "s") setMode("split");
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // With revisions known, each file upgrades to the syntax-highlighted merge
   // view by fetching its full old/new contents; binary/oversized files (or
   // fetch failures) keep the plain hunk rendering.
@@ -480,7 +514,8 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
               mode === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
             }`}
           >
-            {value === "inline" ? t("diffInline") : t("diffSplit")}
+            {value === "inline" ? t("diffInline") : t("diffSplit")}{" "}
+            <Kbd>{value === "inline" ? "i" : "s"}</Kbd>
           </button>
         ))}
       </div>
@@ -490,9 +525,9 @@ function DiffModal({ target, onClose }: { target: DiffTarget; onClose: () => voi
         className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
           wrap ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
         }`}
-        title={t("wrapLines")}
+        title={`${t("wrapLines")} · Alt+Z`}
       >
-        {t("wrapLines")}
+        {t("wrapLines")} <Kbd>Alt+Z</Kbd>
       </button>
     </>
   );

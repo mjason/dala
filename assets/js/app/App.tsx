@@ -21,6 +21,7 @@ import SettingsModal from "./SettingsModal";
 import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
+import { isMac, Kbd, modCombo } from "./shortcuts";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 
@@ -164,7 +165,10 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
       if (e.key.toLowerCase() !== "p") return;
-      if ((e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+      // Ctrl+P inside the terminal belongs to the shell (readline previous
+      // history); Cmd+P on macOS never reaches the shell, so it always works.
+      const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
+      if (inTerminal && !e.metaKey) return;
       e.preventDefault();
       setQuickOpen(true);
     };
@@ -268,7 +272,7 @@ export default function App() {
                 id="quick-open-button"
                 onClick={() => setQuickOpen(true)}
                 className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
-                title="Ctrl+P"
+                title={isMac ? "⌘P" : "Ctrl+P"}
               >
                 <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <circle cx="7" cy="7" r="4" />
@@ -448,17 +452,21 @@ export default function App() {
                 onClick={() => setDeleteFor(null)}
                 className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
               >
-                {t("cancel")}
+                {t("cancel")} <Kbd>Esc</Kbd>
               </button>
               <button
                 id="confirm-delete-button"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setDeleteFor(null);
+                }}
                 onClick={() => {
                   setDeleteFor(null);
                   void handleDelete(sessionToDelete.id);
                 }}
                 className="rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
               >
-                {t("deleteSession")}
+                {t("deleteSession")} <Kbd>⏎</Kbd>
               </button>
             </footer>
           </div>

@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useI18n } from "./i18n";
+import { isTopWindow, Kbd, popWindow, pushWindow } from "./shortcuts";
 
 export type WindowMode = "center" | "full" | "left" | "right";
 
@@ -73,7 +74,27 @@ type Props = {
  */
 export default function Windowed({ id, onClose, title, actions, children }: Props) {
   const [mode, setMode] = useWindowMode();
+  const { t } = useI18n();
   const frame = FRAMES[mode];
+
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Escape closes the topmost window. Handlers inside (e.g. CodeMirror's
+  // search panel) run first and preventDefault when Escape is theirs.
+  useEffect(() => {
+    const token = pushWindow();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || !isTopWindow(token)) return;
+      e.preventDefault();
+      onCloseRef.current();
+    };
+    window.addEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      popWindow(token);
+    };
+  }, []);
 
   return (
     <div className={frame.overlay} onClick={frame.backdrop ? onClose : undefined}>
@@ -89,8 +110,12 @@ export default function Windowed({ id, onClose, title, actions, children }: Prop
           <WindowModeSwitcher mode={mode} setMode={setMode} />
           <button
             onClick={onClose}
-            className="grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted hover:text-fg"
+            title={`${t("close")} · Esc`}
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1 text-fg-muted hover:text-fg"
           >
+            <span className="hidden sm:inline">
+              <Kbd>Esc</Kbd>
+            </span>
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
             </svg>

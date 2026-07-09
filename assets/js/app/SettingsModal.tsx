@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   buildCSRFHeaders,
   closeSession,
@@ -10,6 +10,7 @@ import {
 import type { Session } from "./Sidebar";
 import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
+import { Kbd, modCombo } from "./shortcuts";
 
 const MB = 1024 * 1024;
 
@@ -56,6 +57,24 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     setBusy(false);
     onClose();
   };
+
+  // Esc closes, Ctrl/Cmd+S saves.
+  const handlersRef = useRef({ save, onClose, busy });
+  handlersRef.current = { save, onClose, busy };
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault();
+        handlersRef.current.onClose();
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (!handlersRef.current.busy) void handlersRef.current.save();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const act = async (fn: () => Promise<{ success: boolean; errors?: any }>) => {
     setBusy(true);
@@ -193,7 +212,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
           >
-            {t("cancel")}
+            {t("cancel")} <Kbd>Esc</Kbd>
           </button>
           <button
             id="save-settings-button"
@@ -201,7 +220,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             disabled={busy}
             className="rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-50"
           >
-            {t("save")}
+            {t("save")} <Kbd>{modCombo("s")}</Kbd>
           </button>
         </footer>
       </div>

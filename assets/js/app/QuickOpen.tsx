@@ -3,6 +3,7 @@ import { buildCSRFHeaders, listFiles } from "../ash_rpc";
 import { rankFiles } from "./fuzzy";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
+import { KeyHint } from "./shortcuts";
 
 type Props = {
   root: string;
@@ -150,9 +151,9 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
         </div>
 
         <footer className="flex items-center gap-3 border-t border-line px-3 py-1.5 font-mono text-[10px] text-fg-muted/70">
-          <span>↑↓</span>
-          <span>⏎ {t("hintOpen")}</span>
-          <span>Esc {t("cancel")}</span>
+          <KeyHint keys="↑↓" label={t("hintSelect")} />
+          <KeyHint keys="⏎" label={t("hintOpen")} />
+          <KeyHint keys="Esc" label={t("cancel")} />
         </footer>
       </div>
     </div>

@@ -8,6 +8,7 @@ import { loadPreview } from "./loadPreview";
 import { rawFileUrl } from "./fileTypes";
 import { FileTypeIcon } from "./fileIcons";
 import { collectTransferFiles } from "./pasteFiles";
+import { Kbd, KeyHint, modLabel } from "./shortcuts";
 
 // "entries" as a leaf field returns the full entry maps; the generated
 // selection type has no shape for arrays of typed maps, hence the cast.
@@ -537,12 +538,12 @@ export default function FileDrawer({
       </div>
 
       <footer className="hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 font-mono text-[10px] leading-4 text-fg-muted/70 md:flex">
-        <Hint keys="↑↓" label={t("hintSelect")} />
-        <Hint keys="⏎" label={t("hintOpen")} />
-        <Hint keys="⌫" label={t("hintParent")} />
-        <Hint keys="Del" label={t("deleteEntry")} />
-        <Hint keys="Esc" label={t("hintDeselect")} />
-        <Hint keys="Ctrl+V" label={t("hintPaste")} />
+        <KeyHint keys="↑↓" label={t("hintSelect")} />
+        <KeyHint keys="⏎" label={t("hintOpen")} />
+        <KeyHint keys="⌫" label={t("hintParent")} />
+        <KeyHint keys="Del" label={t("deleteEntry")} />
+        <KeyHint keys="Esc" label={t("hintDeselect")} />
+        <KeyHint keys={`${modLabel}+V`} label={t("hintPaste")} />
       </footer>
 
       {deleteTarget && (
@@ -570,14 +571,18 @@ export default function FileDrawer({
                 onClick={() => setDeleteTarget(null)}
                 className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
               >
-                {t("cancel")}
+                {t("cancel")} <Kbd>Esc</Kbd>
               </button>
               <button
                 id="confirm-delete-entry-button"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setDeleteTarget(null);
+                }}
                 onClick={() => void confirmDelete()}
                 className="rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
               >
-                {t("deleteEntry")}
+                {t("deleteEntry")} <Kbd>⏎</Kbd>
               </button>
             </footer>
           </div>
@@ -678,17 +683,6 @@ function Row({
         )
       )}
     </div>
-  );
-}
-
-function Hint({ keys, label }: { keys: string; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <kbd className="rounded border border-line bg-bg0 px-1 py-px text-[9px] text-fg-muted">
-        {keys}
-      </kbd>
-      {label}
-    </span>
   );
 }
 
