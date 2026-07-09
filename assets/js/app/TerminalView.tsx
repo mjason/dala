@@ -66,12 +66,15 @@ function isFollowerClient(): boolean {
   );
 }
 
+type TerminalActions = { reset: () => void; refit: () => void };
+
 type Props = {
   sessionId: string;
   onCwdChange?: (cwd: string) => void;
+  actionsRef?: React.MutableRefObject<TerminalActions | null>;
 };
 
-export default function TerminalView({ sessionId, onCwdChange }: Props) {
+export default function TerminalView({ sessionId, onCwdChange, actionsRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cwdChangeRef = useRef(onCwdChange);
   cwdChangeRef.current = onCwdChange;
@@ -178,6 +181,23 @@ export default function TerminalView({ sessionId, onCwdChange }: Props) {
         phxChannel.push("resize", { rows: term.rows, cols: term.cols });
       };
 
+      // Header-button actions so the user can recover a wedged terminal or
+      // recompute width without remembering a shortcut.
+      const refit = () => {
+        if (follower) scaleToFit();
+        else {
+          fit.fit();
+          pushResize();
+        }
+      };
+      const reset = () => {
+        term.reset();
+        refit();
+        // Ctrl-L: ask the shell to redraw a fresh prompt after the clear.
+        phxChannel.push("input", { data: "\f" });
+      };
+      if (actionsRef) actionsRef.current = { reset, refit };
+
       phxChannel
         .join()
         .receive("ok", (resp?: { rows?: number; cols?: number }) => {
@@ -223,6 +243,7 @@ export default function TerminalView({ sessionId, onCwdChange }: Props) {
       observer.observe(container);
 
       cleanup = () => {
+        if (actionsRef) actionsRef.current = null;
         observer.disconnect();
         window.clearTimeout(resizeTimer);
         inputDisposable.dispose();

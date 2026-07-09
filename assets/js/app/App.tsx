@@ -44,6 +44,7 @@ export default function App() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
+  const termActions = useRef<{ reset: () => void; refit: () => void } | null>(null);
 
   const toast = useCallback((message: string) => {
     const id = ++toastSeq.current;
@@ -235,6 +236,22 @@ export default function App() {
                 {t("git")}
               </button>
               <button
+                id="terminal-refit-button"
+                onClick={() => termActions.current?.refit()}
+                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                title={t("refitWidth")}
+              >
+                {t("refitWidth")}
+              </button>
+              <button
+                id="terminal-reset-button"
+                onClick={() => termActions.current?.reset()}
+                className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                title={t("resetTerminal")}
+              >
+                {t("resetTerminal")}
+              </button>
+              <button
                 onClick={() => setSettingsFor(active.id)}
                 className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
               >
@@ -246,6 +263,7 @@ export default function App() {
               <TerminalView
                 key={active.id}
                 sessionId={active.id}
+                actionsRef={termActions}
                 onCwdChange={(cwd) => {
                   if (followCwd) setDrawerPath(cwd);
                 }}

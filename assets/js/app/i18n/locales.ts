@@ -2,6 +2,8 @@
 // must provide exactly the same keys (enforced by the `Messages` type and by
 // i18n.test.ts).
 export const en = {
+  resetTerminal: "Reset",
+  refitWidth: "Refit",
   // sidebar
   newTerminal: "New terminal",
   noTerminalsYet: "No terminals yet.",
@@ -95,6 +97,8 @@ export const en = {
 export type Messages = typeof en;
 
 export const zhCN: Messages = {
+  resetTerminal: "重置",
+  refitWidth: "适配宽度",
   newTerminal: "新建终端",
   noTerminalsYet: "还没有终端。",
   localMode: "本地模式",
@@ -181,6 +185,8 @@ export const zhCN: Messages = {
 };
 
 export const zhTW: Messages = {
+  resetTerminal: "重置",
+  refitWidth: "適配寬度",
   newTerminal: "新增終端機",
   noTerminalsYet: "還沒有終端機。",
   localMode: "本機模式",
@@ -267,6 +273,8 @@ export const zhTW: Messages = {
 };
 
 export const ja: Messages = {
+  resetTerminal: "リセット",
+  refitWidth: "幅調整",
   newTerminal: "新しいターミナル",
   noTerminalsYet: "ターミナルはまだありません。",
   localMode: "ローカルモード",
@@ -353,6 +361,8 @@ export const ja: Messages = {
 };
 
 export const ko: Messages = {
+  resetTerminal: "리셋",
+  refitWidth: "너비 맞춤",
   newTerminal: "새 터미널",
   noTerminalsYet: "아직 터미널이 없습니다.",
   localMode: "로컬 모드",
@@ -439,6 +449,8 @@ export const ko: Messages = {
 };
 
 export const es: Messages = {
+  resetTerminal: "Restablecer",
+  refitWidth: "Ajustar",
   newTerminal: "Nueva terminal",
   noTerminalsYet: "Aún no hay terminales.",
   localMode: "modo local",
@@ -525,6 +537,8 @@ export const es: Messages = {
 };
 
 export const fr: Messages = {
+  resetTerminal: "Réinitialiser",
+  refitWidth: "Ajuster",
   newTerminal: "Nouveau terminal",
   noTerminalsYet: "Aucun terminal pour l'instant.",
   localMode: "mode local",
@@ -611,6 +625,8 @@ export const fr: Messages = {
 };
 
 export const de: Messages = {
+  resetTerminal: "Zurücksetzen",
+  refitWidth: "Anpassen",
   newTerminal: "Neues Terminal",
   noTerminalsYet: "Noch keine Terminals.",
   localMode: "Lokaler Modus",
@@ -697,6 +713,8 @@ export const de: Messages = {
 };
 
 export const ru: Messages = {
+  resetTerminal: "Сброс",
+  refitWidth: "Подгон",
   newTerminal: "Новый терминал",
   noTerminalsYet: "Терминалов пока нет.",
   localMode: "локальный режим",
@@ -783,6 +801,8 @@ export const ru: Messages = {
 };
 
 export const pt: Messages = {
+  resetTerminal: "Redefinir",
+  refitWidth: "Ajustar",
   newTerminal: "Novo terminal",
   noTerminalsYet: "Ainda não há terminais.",
   localMode: "modo local",
