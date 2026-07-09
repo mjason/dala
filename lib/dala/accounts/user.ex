@@ -24,6 +24,9 @@ defmodule Dala.Accounts.User do
       signing_secret Dala.Secrets
       store_all_tokens? true
       require_token_presence_for_authentication? true
+      # Match the persistent session cookie (endpoint @session_options
+      # max_age): stay signed in for 60 days; sign-out still revokes.
+      token_lifetime {60, :days}
     end
 
     strategies do

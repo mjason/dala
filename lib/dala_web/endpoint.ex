@@ -4,11 +4,14 @@ defmodule DalaWeb.Endpoint do
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
+  # max_age makes the cookie persistent, so signing in survives browser
+  # restarts (bounded by the auth token lifetime on the User resource).
   @session_options [
     store: :cookie,
     key: "_dala_key",
     signing_salt: "m2Lj/uyW",
-    same_site: "Lax"
+    same_site: "Lax",
+    max_age: 60 * 60 * 24 * 60
   ]
 
   socket "/socket", DalaWeb.UserSocket,
