@@ -172,6 +172,11 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
+  def handle_call(:viewport, _from, state) do
+    {:reply, state.size, state}
+  end
+
+  @impl true
   def handle_cast({:input, data}, state) do
     safe_pty(fn -> Dala.Pty.write(state.pty, data) end)
     {:noreply, state}
