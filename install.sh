@@ -68,6 +68,9 @@ if [ ! -f "$ENV_FILE" ]; then
 PHX_SERVER=true
 PORT=$PORT
 PHX_HOST=localhost
+# Loopback only by default. LAN access: DALA_LISTEN_IP=0.0.0.0 (then enable
+# login below!).
+DALA_LISTEN_IP=127.0.0.1
 # Reached from other machines? Keep check_origin off, or set PHX_HOST and
 # PHX_CHECK_ORIGIN=true behind a reverse proxy.
 PHX_CHECK_ORIGIN=false

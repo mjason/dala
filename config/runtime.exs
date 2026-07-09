@@ -95,16 +95,21 @@ if config_env() == :prod do
 
   config :dala, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # Loopback-only by default — exposing a terminal server is opt-in.
+  # DALA_LISTEN_IP=0.0.0.0 serves the LAN (WSL2 mirrored networking needs
+  # the explicit IPv4-any; an IPv6-any `::` socket is not reliably mirrored).
+  listen_ip =
+    with raw = System.get_env("DALA_LISTEN_IP", "127.0.0.1"),
+         {:ok, ip} <- raw |> String.to_charlist() |> :inet.parse_address() do
+      ip
+    else
+      _ -> raise "invalid DALA_LISTEN_IP (expected an IPv4/IPv6 address)"
+    end
+
   config :dala, DalaWeb.Endpoint,
     url: [host: host, port: url_port, scheme: scheme],
     check_origin: check_origin,
-    http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
-      # See the documentation on https://bandit.hexdocs.pm/Bandit.html#t:options/0
-      # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
-    ],
+    http: [ip: listen_ip],
     secret_key_base: secret_key_base
 
   config :dala,
