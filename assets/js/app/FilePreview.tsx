@@ -132,7 +132,7 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
         id="save-file-button"
         onClick={() => void save()}
         disabled={saving || !dirty}
-        className="shrink-0 rounded-md bg-mint px-2.5 py-0.5 font-mono text-[11px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
+        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-mint px-2.5 py-0.5 font-mono text-[11px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
       >
         {t("save")} <Kbd>{modCombo("s")}</Kbd>
       </button>
@@ -143,7 +143,7 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
         <button
           id="wrap-toggle-button"
           onClick={() => setWrap((v) => !v)}
-          className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+          className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
             wrap ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
           }`}
           title={`${t("wrapLines")} · Alt+Z`}

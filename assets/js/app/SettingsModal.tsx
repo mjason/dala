@@ -224,7 +224,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
         <footer className="flex justify-end gap-2 border-t border-line px-4 py-3">
           <button
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
           >
             {t("cancel")} <Kbd>Esc</Kbd>
           </button>
@@ -232,7 +232,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             id="save-settings-button"
             onClick={() => void save()}
             disabled={busy}
-            className="rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-50"
           >
             {t("save")} <Kbd>{modCombo("s")}</Kbd>
           </button>

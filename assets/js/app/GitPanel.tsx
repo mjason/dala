@@ -776,7 +776,7 @@ function DiffModal({
             key={value}
             data-diff-mode={value}
             onClick={() => setMode(value)}
-            className={`rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
+            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
               mode === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
             }`}
           >
@@ -787,7 +787,7 @@ function DiffModal({
       <button
         id="diff-wrap-toggle-button"
         onClick={() => setWrap((v) => !v)}
-        className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+        className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
           wrap ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
         }`}
         title={`${t("wrapLines")} · Alt+Z`}

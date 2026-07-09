@@ -488,7 +488,7 @@ export default function App() {
               <button
                 id="cancel-delete-button"
                 onClick={() => setDeleteFor(null)}
-                className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
+                className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
               >
                 {t("cancel")} <Kbd>Esc</Kbd>
               </button>
@@ -502,7 +502,7 @@ export default function App() {
                   setDeleteFor(null);
                   void handleDelete(sessionToDelete.id);
                 }}
-                className="rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
+                className="inline-flex items-center gap-1.5 rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
               >
                 {t("deleteSession")} <Kbd>⏎</Kbd>
               </button>

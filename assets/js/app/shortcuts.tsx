@@ -52,7 +52,7 @@ export function hasOpenWindows(): boolean {
  * text contexts. */
 export function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="inline-flex items-center rounded border border-current/25 bg-current/10 px-1 py-px align-middle font-kbd text-[10px] leading-4 opacity-90">
+    <kbd className="inline-flex items-center rounded bg-current/15 px-1 py-[3px] align-middle font-kbd text-[10px] leading-none">
       {children}
     </kbd>
   );
