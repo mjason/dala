@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   buildCSRFHeaders,
+  gitBranches,
+  gitCheckout,
   gitCommit,
   gitDiff,
   gitDiscard,
@@ -13,6 +15,7 @@ import {
   gitUnstage,
 } from "../ash_rpc";
 import type {
+  GitBranchesFields,
   GitCommitFields,
   GitDiffFields,
   GitLogFields,
@@ -21,12 +24,14 @@ import type {
 } from "../ash_rpc";
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
+import { parseDiff } from "./diffParse";
 import { FileTypeIcon } from "./fileIcons";
 import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
 import { hasOpenWindows, inTextInput, Kbd, Tooltip } from "./shortcuts";
 import Windowed from "./Windowed";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
+const BRANCH_FIELDS = ["current", "local", "remote"] as unknown as GitBranchesFields;
 const LOG_FIELDS = ["commits"] as unknown as GitLogFields;
 const DIFF_FIELDS: GitDiffFields = ["diff", "binary", "truncated"];
 const SHOW_FIELDS: GitShowFields = ["text", "truncated"];
@@ -34,6 +39,8 @@ const SHOW_FIELDS: GitShowFields = ["text", "truncated"];
 type GitFile = { path: string; status: string; staged: boolean; unstaged: boolean };
 type Status = { repo: boolean; root: string | null; branch: string | null; files: GitFile[] };
 type Commit = { hash: string; author: string; date: string; subject: string };
+type BranchInfo = { name: string; current: boolean };
+type Branches = { current: string | null; local: BranchInfo[]; remote: BranchInfo[] };
 
 /** Revisions to fetch full file contents from, powering the merge view. */
 type DiffRevs = { repo: string; oldRev: string; newRev: string };
@@ -217,6 +224,43 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   const staged = status?.files.filter((f) => f.staged) ?? [];
   const unstaged = status?.files.filter((f) => f.unstaged) ?? [];
 
+  const [branchMenu, setBranchMenu] = useState(false);
+  const [branches, setBranches] = useState<Branches | null>(null);
+
+  const openBranchMenu = async () => {
+    setBranchMenu(true);
+    setBranches(null);
+    const result = await gitBranches({
+      input: { path: root ?? path },
+      fields: BRANCH_FIELDS,
+      headers: buildCSRFHeaders(),
+    });
+    if (result.success) {
+      setBranches(result.data as unknown as Branches);
+    } else {
+      setBranchMenu(false);
+      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+    }
+  };
+
+  const switchBranch = async (branch: BranchInfo) => {
+    setBranchMenu(false);
+    if (branch.current) return;
+    setBusy(`checkout:${branch.name}`);
+    const result = await gitCheckout({
+      input: { path: root ?? path, name: branch.name },
+      headers: buildCSRFHeaders(),
+    });
+    setBusy(null);
+    if (result.success) {
+      // The history list belongs to the previous branch — refetch lazily.
+      setCommits(null);
+      await loadStatus();
+    } else {
+      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+    }
+  };
+
   return (
     <section
       id="git-panel"
@@ -225,10 +269,62 @@ export default function GitPanel({ path, onClose, onError }: Props) {
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">{t("gitTitle")}</span>
         {status?.repo && status.branch && (
-          <span className="flex min-w-0 items-center gap-1 font-mono text-xs text-mint">
-            <BranchIcon />
-            <span className="truncate">{status.branch}</span>
-          </span>
+          <div className="relative min-w-0">
+            <button
+              id="branch-menu-button"
+              onClick={() => (branchMenu ? setBranchMenu(false) : void openBranchMenu())}
+              title={t("branches")}
+              className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-xs text-mint transition-colors hover:bg-bg2"
+            >
+              <BranchIcon />
+              <span className="truncate">{status.branch}</span>
+              <svg viewBox="0 0 16 16" className="h-2.5 w-2.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {branchMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setBranchMenu(false)} />
+                <div
+                  id="branch-menu"
+                  className="absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-line bg-bg1 py-1 shadow-xl shadow-black/40"
+                >
+                  {branches === null ? (
+                    <div className="px-3 py-2 text-xs text-fg-muted">…</div>
+                  ) : (
+                    <>
+                      <div className="px-2.5 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-fg-muted">
+                        {t("localBranches")}
+                      </div>
+                      {branches.local.map((branch) => (
+                        <BranchRow
+                          key={branch.name}
+                          branch={branch}
+                          current={Boolean(branch.current) || branch.name === branches.current}
+                          onClick={() => void switchBranch(branch)}
+                        />
+                      ))}
+                      {branches.remote.length > 0 && (
+                        <>
+                          <div className="mt-1 border-t border-line/60 px-2.5 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-fg-muted">
+                            {t("remoteBranches")}
+                          </div>
+                          {branches.remote.map((branch) => (
+                            <BranchRow
+                              key={branch.name}
+                              branch={branch}
+                              current={false}
+                              onClick={() => void switchBranch(branch)}
+                            />
+                          ))}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         )}
         <div className="flex-1" />
         <button
@@ -551,6 +647,17 @@ function DiffModal({
   const { t } = useI18n();
   const [mode, setMode] = useState<DiffDisplayMode>("inline");
   const [wrap, setWrap] = useState(true);
+  const [onlyFile, setOnlyFile] = useState<string | null>(null);
+
+  // Commit patches usually span several files — offer a Fork-style file rail
+  // so each one can be reviewed on its own.
+  const commitFiles = useMemo(
+    () => (target.kind === "commit" ? parseDiff(target.text).files : []),
+    [target],
+  );
+  useEffect(() => {
+    setOnlyFile(null);
+  }, [target]);
 
   // Fork-style per-hunk operations. Unstaged view: stage (apply forward to
   // the index — the old side IS the index, so the patch applies cleanly) or
@@ -690,10 +797,112 @@ function DiffModal({
     </>
   );
 
+  const diff = (
+    <DiffView
+      text={target.text}
+      mode={mode}
+      wrap={wrap}
+      sidesFor={sidesFor}
+      chunkActionsFor={chunkActionsFor}
+      onlyFile={onlyFile}
+    />
+  );
+
   return (
     <Windowed id="diff-view" onClose={onClose} title={title} actions={actions}>
-      <DiffView text={target.text} mode={mode} wrap={wrap} sidesFor={sidesFor} chunkActionsFor={chunkActionsFor} />
+      {commitFiles.length > 1 ? (
+        <div className="flex h-full min-h-0">
+          <aside
+            id="commit-file-list"
+            className="w-48 shrink-0 overflow-y-auto border-r border-line bg-bg1/50 py-1 sm:w-60"
+          >
+            <FileRailEntry
+              active={onlyFile === null}
+              onClick={() => setOnlyFile(null)}
+              label={t("allFiles")}
+              additions={commitFiles.reduce((n, f) => n + f.additions, 0)}
+              deletions={commitFiles.reduce((n, f) => n + f.deletions, 0)}
+            />
+            {commitFiles.map((file) => {
+              const path = file.newPath || file.oldPath;
+              return (
+                <FileRailEntry
+                  key={path}
+                  active={onlyFile === path}
+                  onClick={() => setOnlyFile(path)}
+                  label={path}
+                  icon={<FileTypeIcon name={path} />}
+                  additions={file.additions}
+                  deletions={file.deletions}
+                />
+              );
+            })}
+          </aside>
+          <div className="min-w-0 flex-1 overflow-auto">{diff}</div>
+        </div>
+      ) : (
+        diff
+      )}
     </Windowed>
+  );
+}
+
+function FileRailEntry({
+  active,
+  onClick,
+  label,
+  icon,
+  additions,
+  deletions,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  icon?: React.ReactNode;
+  additions: number;
+  deletions: number;
+}) {
+  return (
+    <button
+      data-commit-file={label}
+      onClick={onClick}
+      title={label}
+      className={`flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-[11px] transition-colors ${
+        active ? "bg-bg2 text-fg" : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
+      }`}
+    >
+      {icon}
+      <span className="min-w-0 flex-1 truncate" dir="rtl">
+        <bdi>{label}</bdi>
+      </span>
+      <span className="shrink-0 text-[10px]">
+        <span className="text-[#5fbf87]">+{additions}</span>{" "}
+        <span className="text-[#e5716e]">−{deletions}</span>
+      </span>
+    </button>
+  );
+}
+
+function BranchRow({
+  branch,
+  current,
+  onClick,
+}: {
+  branch: BranchInfo;
+  current: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      data-branch={branch.name}
+      onClick={onClick}
+      className={`flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-xs transition-colors ${
+        current ? "text-mint" : "text-fg-muted hover:bg-bg2/70 hover:text-fg"
+      }`}
+    >
+      <span className="w-3 shrink-0 text-center">{current ? "✓" : ""}</span>
+      <span className="min-w-0 flex-1 truncate">{branch.name}</span>
+    </button>
   );
 }
 

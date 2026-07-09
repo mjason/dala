@@ -23,6 +23,8 @@ type Props = {
   sidesFor?: DiffSidesProvider;
   /** Per-hunk operations (stage/unstage/discard), given the file. */
   chunkActionsFor?: (file: DiffFile) => ChunkAction[];
+  /** Restrict rendering to a single file of the diff (path as shown). */
+  onlyFile?: string | null;
 };
 
 /**
@@ -31,18 +33,21 @@ type Props = {
  * collapsed unchanged regions); without one — or while contents load, or for
  * binary files — it renders parsed hunks as colored rows.
  */
-export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor }: Props) {
+export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor, onlyFile }: Props) {
   const parsed = useMemo(() => parseDiff(text), [text]);
   const { t } = useI18n();
+  const files = onlyFile
+    ? parsed.files.filter((file) => (file.newPath || file.oldPath) === onlyFile)
+    : parsed.files;
 
   return (
     <div className="overflow-auto">
-      {parsed.preamble && (
+      {parsed.preamble && !onlyFile && (
         <pre className="whitespace-pre-wrap border-b border-line px-4 py-3 font-mono text-xs leading-5 text-fg-muted [overflow-wrap:anywhere]">
           {parsed.preamble}
         </pre>
       )}
-      {parsed.files.map((file, i) => (
+      {files.map((file, i) => (
         <FileSection
           key={`${file.newPath}-${i}`}
           file={file}

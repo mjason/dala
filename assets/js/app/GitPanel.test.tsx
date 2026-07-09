@@ -11,6 +11,8 @@ const gitStage = vi.fn();
 const gitUnstage = vi.fn();
 const gitDiscard = vi.fn();
 const gitCommit = vi.fn();
+const gitBranches = vi.fn();
+const gitCheckout = vi.fn();
 
 vi.mock("../ash_rpc", () => ({
   buildCSRFHeaders: () => ({}),
@@ -22,6 +24,8 @@ vi.mock("../ash_rpc", () => ({
   gitUnstage: (...a: unknown[]) => gitUnstage(...a),
   gitDiscard: (...a: unknown[]) => gitDiscard(...a),
   gitCommit: (...a: unknown[]) => gitCommit(...a),
+  gitBranches: (...a: unknown[]) => gitBranches(...a),
+  gitCheckout: (...a: unknown[]) => gitCheckout(...a),
 }));
 
 import GitPanel from "./GitPanel";
@@ -44,9 +48,18 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof GitPanel>> =
 
 beforeEach(() => {
   localStorage.clear();
-  [gitStatus, gitDiff, gitLog, gitShow, gitStage, gitUnstage, gitDiscard, gitCommit].forEach((m) =>
-    m.mockReset(),
-  );
+  [
+    gitStatus,
+    gitDiff,
+    gitLog,
+    gitShow,
+    gitStage,
+    gitUnstage,
+    gitDiscard,
+    gitCommit,
+    gitBranches,
+    gitCheckout,
+  ].forEach((m) => m.mockReset());
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
@@ -155,6 +168,40 @@ describe("GitPanel changes tab", () => {
   });
 });
 
+describe("GitPanel branches", () => {
+  it("lists branches and checks out another one", async () => {
+    gitStatus.mockResolvedValue(ok(statusData([])));
+    gitBranches.mockResolvedValue(
+      ok({
+        current: "main",
+        local: [
+          { name: "feature", current: false },
+          { name: "main", current: true },
+        ],
+        remote: [{ name: "origin/main", current: false }],
+      }),
+    );
+    gitCheckout.mockResolvedValue(ok(true));
+
+    renderPanel();
+    await screen.findByText("main");
+
+    fireEvent.click(document.getElementById("branch-menu-button")!);
+    await waitFor(() => expect(document.getElementById("branch-menu")).not.toBeNull());
+    expect(document.querySelector('[data-branch="feature"]')).not.toBeNull();
+    expect(document.querySelector('[data-branch="origin/main"]')).not.toBeNull();
+
+    fireEvent.click(document.querySelector('[data-branch="feature"]')!);
+    await waitFor(() =>
+      expect(gitCheckout).toHaveBeenCalledWith(
+        expect.objectContaining({ input: { path: "/proj", name: "feature" } }),
+      ),
+    );
+    // status is reloaded after the switch
+    await waitFor(() => expect(gitStatus.mock.calls.length).toBeGreaterThan(1));
+  });
+});
+
 describe("GitPanel history tab", () => {
   it("lists commits and opens a commit patch", async () => {
     gitStatus.mockResolvedValue(ok(statusData([])));
@@ -183,5 +230,47 @@ describe("GitPanel history tab", () => {
     await waitFor(() =>
       expect(document.getElementById("diff-view")?.textContent).toContain("added line"),
     );
+  });
+
+  it("shows a file rail for multi-file commits and filters by file", async () => {
+    const patch = [
+      "commit aaa111",
+      "diff --git a/first.ex b/first.ex",
+      "--- a/first.ex",
+      "+++ b/first.ex",
+      "@@ -1 +1 @@",
+      "-old one",
+      "+new one",
+      "diff --git a/second.ex b/second.ex",
+      "--- a/second.ex",
+      "+++ b/second.ex",
+      "@@ -1 +1 @@",
+      "-old two",
+      "+new two",
+      "",
+    ].join("\n");
+
+    gitStatus.mockResolvedValue(ok(statusData([])));
+    gitLog.mockResolvedValue(
+      ok({
+        commits: [{ hash: "aaa111", author: "MJ", date: "2026-07-08T10:00:00Z", subject: "multi" }],
+      }),
+    );
+    gitShow.mockResolvedValue(ok({ text: patch, truncated: false }));
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /History/ }));
+    fireEvent.click(await screen.findByText("multi"));
+
+    await waitFor(() => expect(document.getElementById("commit-file-list")).not.toBeNull());
+    const diffView = () => document.getElementById("diff-view")!.textContent!;
+    expect(diffView()).toContain("new one");
+    expect(diffView()).toContain("new two");
+
+    fireEvent.click(document.querySelector('[data-commit-file="second.ex"]')!);
+    await waitFor(() => {
+      expect(diffView()).toContain("new two");
+      expect(diffView()).not.toContain("new one");
+    });
   });
 });
