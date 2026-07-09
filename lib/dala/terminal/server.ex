@@ -177,6 +177,26 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
+  def terminate(_reason, state) do
+    # Kill the child shell now rather than waiting for the PTY resource to be
+    # garbage-collected, and reconcile the session so clients stop showing a
+    # terminal whose server is gone (covers crashes, not just clean exits).
+    safe_pty(fn -> Dala.Pty.kill(state.pty) end)
+
+    case Dala.Terminal.get_session(state.id) do
+      {:ok, %{status: :running} = session} ->
+        Dala.Terminal.mark_exited(session, %{exit_code: nil})
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  rescue
+    _error -> :ok
+  end
+
+  @impl true
   def handle_cast({:input, data}, state) do
     safe_pty(fn -> Dala.Pty.write(state.pty, data) end)
     {:noreply, state}
