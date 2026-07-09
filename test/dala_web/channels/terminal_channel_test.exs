@@ -34,6 +34,82 @@ defmodule DalaWeb.TerminalChannelTest do
     assert {:error, %{reason: "not_found"}} = join!(Ash.UUID.generate())
   end
 
+  test "join reattaches to the live holder when the server died without cleanup" do
+    session = create_session!()
+    id = to_string(session.id)
+    pid = Server.whereis(id)
+    ref = Process.monitor(pid)
+
+    # A brutal kill (code-reload purge, crash) skips terminate/2 — but the
+    # shell lives in a detached holder, so join must reattach, not bury it.
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+    assert {:ok, %{status: :running}, socket} = join!(id)
+    assert Server.alive?(id)
+
+    # The reattached shell still works end to end.
+    push(socket, "input", %{"data" => "echo reattached-$((3 * 14))\r"})
+    assert_output_containing("reattached-42")
+  end
+
+  test "join marks the session exited when both server and holder are gone" do
+    session = create_session!()
+    id = to_string(session.id)
+    pid = Server.whereis(id)
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+    # Kill the detached holder too: its shell exits, the holder removes its
+    # socket and leaves an exit file behind.
+    {:ok, holder} = Dala.Terminal.Holder.connect(id)
+    :ok = Dala.Terminal.Holder.send_kill(holder)
+    wait_until(fn -> not Dala.Terminal.Holder.exists?(id) end)
+
+    assert {:ok, %{status: :exited}, _socket} = join!(id)
+    assert {:ok, %{status: :exited}} = Dala.Terminal.get_session(id)
+  end
+
+  test "shell state survives a graceful server stop (dala restart)" do
+    session = create_session!()
+    id = to_string(session.id)
+    assert {:ok, _reply, socket} = join!(id)
+    assert_push "replay", %{done: true}
+
+    push(socket, "input", %{"data" => "MARKER=survives-$((10 * 4 + 2))\r"})
+    push(socket, "input", %{"data" => "echo set-done\r"})
+    assert_output_containing("set-done")
+
+    # Graceful stop = what happens on BEAM shutdown. The holder (and shell)
+    # must keep running.
+    pid = Server.whereis(id)
+    ref = Process.monitor(pid)
+    GenServer.stop(pid, :shutdown)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}
+    assert Dala.Terminal.Holder.exists?(id)
+
+    # Reattach (what Boot does on the next startup) and read the state back.
+    assert {:ok, _pid} = Server.ensure_started(session)
+    assert {:ok, _reply, socket} = join!(id)
+    push(socket, "input", %{"data" => "echo got-$MARKER\r"})
+    assert_output_containing("got-survives-42")
+  end
+
+  defp wait_until(fun, attempts \\ 200) do
+    cond do
+      fun.() ->
+        :ok
+
+      attempts == 0 ->
+        flunk("condition never became true")
+
+      true ->
+        Process.sleep(10)
+        wait_until(fun, attempts - 1)
+    end
+  end
+
   test "input round-trips through the PTY and comes back as output" do
     session = create_session!()
     assert {:ok, _reply, socket} = join!(session.id)

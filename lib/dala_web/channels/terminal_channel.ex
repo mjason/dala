@@ -34,6 +34,7 @@ defmodule DalaWeb.TerminalChannel do
   def join("terminal:" <> session_id, _payload, socket) do
     case Dala.Terminal.get_session(session_id) do
       {:ok, session} ->
+        session = reconcile_status(session)
         send(self(), :after_join)
 
         {rows, cols} = Dala.Terminal.Server.viewport(session_id) || {24, 80}
@@ -45,6 +46,35 @@ defmodule DalaWeb.TerminalChannel do
         {:error, %{reason: "not_found"}}
     end
   end
+
+  # A brutally-killed Terminal.Server (code-reload purge, VM crash mid-callback)
+  # never runs terminate/2, so its session stays "running" with no process
+  # behind it — the UI then shows a dead terminal with no restart overlay and
+  # "kill" is a no-op. Reconcile on join, like Dala.Terminal.Boot does at
+  # startup: reattach when the detached holder still runs the shell, mark the
+  # session exited otherwise so the restart path works again.
+  defp reconcile_status(%{status: :running} = session) do
+    id = to_string(session.id)
+
+    cond do
+      Dala.Terminal.Server.alive?(id) ->
+        session
+
+      Dala.Terminal.Holder.exists?(id) ->
+        _ = Dala.Terminal.Server.ensure_started(session)
+        session
+
+      true ->
+        exit_code = Dala.Terminal.Holder.take_exit_status(id)
+
+        case Dala.Terminal.mark_exited(session, %{exit_code: exit_code}) do
+          {:ok, reconciled} -> reconciled
+          {:error, _error} -> session
+        end
+    end
+  end
+
+  defp reconcile_status(session), do: session
 
   @impl true
   def handle_info(:after_join, socket) do

@@ -42,4 +42,21 @@ defmodule Dala.Terminal.ScrollbackTest do
     assert Scrollback.replay(id) == []
     assert Scrollback.last_seq(id) == -1
   end
+
+  test "rebuild drops the damaged cache and keeps working", %{id: id} do
+    Scrollback.append(id, "before-corruption")
+    assert Scrollback.last_seq(id) == 0
+
+    # What log_corruption/1 schedules when DETS reports damage: the cache is
+    # disposable, so the file is dropped and recreated on the spot.
+    pid = Process.whereis(Scrollback)
+    send(pid, :rebuild)
+    _ = :sys.get_state(pid)
+
+    # History is gone, but the cache works again immediately.
+    assert Scrollback.replay(id) == []
+    assert Scrollback.last_seq(id) == -1
+    assert Scrollback.append(id, "after-rebuild") == 0
+    assert Scrollback.replay(id) == [{0, "after-rebuild"}]
+  end
 end

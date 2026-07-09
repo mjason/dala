@@ -1,19 +1,21 @@
 defmodule Dala.Terminal.Server do
   @moduledoc """
-  Owns the PTY of a single terminal session.
+  BEAM-side owner of a terminal session, connected to its out-of-process PTY
+  holder (`Dala.Terminal.Holder`) over a unix socket.
 
-  Receives `{:pty_data, id, chunk}` / `{:pty_exit, id, status}` from the
-  `Dala.Pty` reader thread, persists chunks to the scrollback cache and
-  broadcasts them to the `terminal:{id}` channel topic. Session lifecycle
-  changes go through internal Ash actions so their PubSub publications reach
-  the typed channels.
+  The holder — not this process — owns the PTY and the shell, so shells
+  survive dala restarts: on init this server reattaches to a live holder when
+  one exists and only spawns a fresh shell otherwise. Output frames are
+  persisted to the scrollback cache and broadcast to the `terminal:{id}`
+  channel topic. Session lifecycle changes go through internal Ash actions so
+  their PubSub publications reach the typed channels.
   """
 
   use GenServer, restart: :temporary
 
   require Logger
 
-  alias Dala.Terminal.Scrollback
+  alias Dala.Terminal.{Holder, Scrollback}
 
   @cwd_poll_ms 2_000
   @force_stop_ms 5_000
@@ -37,7 +39,7 @@ defmodule Dala.Terminal.Server do
   # When the shell those programs lived in is gone, that state is stale and
   # turns mouse movement into `35;36M`-style input garbage. This sequence
   # switches every such mode off; it is appended to the stream whenever the
-  # PTY dies or a fresh PTY attaches to existing scrollback, so replays
+  # shell dies or a fresh shell attaches to existing scrollback, so replays
   # always end in a sane state.
   @mode_reset "\e[?1000l\e[?1002l\e[?1003l\e[?1005l\e[?1006l" <>
                 "\e[?2004l\e[?1049l\e[?1l\e[?7h\e[?25h\e[0m"
@@ -79,7 +81,7 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  @doc "Kill the shell. The session is marked exited once the PTY reports it."
+  @doc "Kill the shell. The session is marked exited once the holder reports it."
   def stop(id), do: cast_if_alive(id, :shutdown)
 
   @doc """
@@ -90,7 +92,8 @@ defmodule Dala.Terminal.Server do
   def shutdown_and_wait(id, timeout \\ 10_000) do
     case whereis(id) do
       nil ->
-        :ok
+        # No server, but a detached holder may still be running the shell.
+        kill_detached_holder(to_string(id))
 
       pid ->
         ref = Process.monitor(pid)
@@ -124,35 +127,52 @@ defmodule Dala.Terminal.Server do
     end
   end
 
+  # Best-effort kill of a holder no server is attached to (session destroy
+  # while dala never reattached after a restart).
+  defp kill_detached_holder(id) do
+    with {:ok, socket} <- Holder.connect(id) do
+      Holder.send_kill(socket)
+      :gen_tcp.close(socket)
+    end
+
+    :ok
+  end
+
   ## Server
 
   @impl true
   def init(session) do
     id = to_string(session.id)
 
-    env = [
-      {"TERM", "xterm-256color"},
-      {"COLORTERM", "truecolor"}
+    opts = [
+      shell: session.shell,
+      cwd: session.cwd,
+      env: [{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}],
+      env_remove: @env_remove,
+      rows: 24,
+      cols: 80
     ]
 
-    try do
-      pty = Dala.Pty.open(id, session.shell, [], session.cwd, env, @env_remove, 24, 80)
+    case Holder.attach_or_spawn(id, opts) do
+      {:ok, socket, reattached?} ->
+        state = %{
+          id: id,
+          session: session,
+          socket: socket,
+          # Filled in by the holder's HELLO frame.
+          shell_pid: nil,
+          cwd: session.cwd,
+          seq: Scrollback.last_seq(id),
+          # Per-client viewport sizes; the PTY tracks their minimum.
+          clients: %{},
+          size: {24, 80},
+          reattached?: reattached?
+        }
 
-      state = %{
-        id: id,
-        session: session,
-        pty: pty,
-        child_pid: Dala.Pty.child_pid(pty),
-        cwd: session.cwd,
-        seq: Scrollback.last_seq(id),
-        # Per-client viewport sizes; the PTY tracks their minimum.
-        clients: %{},
-        size: {24, 80}
-      }
+        {:ok, state, {:continue, :post_init}}
 
-      {:ok, state, {:continue, :post_init}}
-    rescue
-      error -> {:stop, {:pty_open_failed, Exception.message(error)}}
+      {:error, reason} ->
+        {:stop, {:holder_start_failed, reason}}
     end
   end
 
@@ -160,9 +180,10 @@ defmodule Dala.Terminal.Server do
   def handle_continue(:post_init, state) do
     Scrollback.set_limit(state.id, state.session.scrollback_limit)
 
-    # A fresh PTY attaching to existing scrollback: neutralize terminal
-    # modes left over from the previous shell's programs.
-    if Scrollback.last_seq(state.id) >= 0 do
+    # A fresh shell attaching to existing scrollback: neutralize terminal
+    # modes left over from the previous shell's programs. A reattached shell
+    # keeps its live modes — resetting them would corrupt running TUIs.
+    if not state.reattached? and Scrollback.last_seq(state.id) >= 0 do
       emit(state.id, @mode_reset)
     end
 
@@ -178,19 +199,10 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def terminate(_reason, state) do
-    # Kill the child shell now rather than waiting for the PTY resource to be
-    # garbage-collected, and reconcile the session so clients stop showing a
-    # terminal whose server is gone (covers crashes, not just clean exits).
-    safe_pty(fn -> Dala.Pty.kill(state.pty) end)
-
-    case Dala.Terminal.get_session(state.id) do
-      {:ok, %{status: :running} = session} ->
-        Dala.Terminal.mark_exited(session, %{exit_code: nil})
-
-      _ ->
-        :ok
-    end
-
+    # Deliberately leaves the holder (and thus the shell) running: surviving
+    # BEAM shutdowns and code reloads is the point of the holder split.
+    # Explicit kills go through handle_cast(:shutdown) instead.
+    if state.socket, do: :gen_tcp.close(state.socket)
     :ok
   rescue
     _error -> :ok
@@ -198,7 +210,7 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_cast({:input, data}, state) do
-    safe_pty(fn -> Dala.Pty.write(state.pty, data) end)
+    _ = Holder.send_input(state.socket, data)
     {:noreply, state}
   end
 
@@ -212,28 +224,24 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_cast(:shutdown, state) do
-    safe_pty(fn -> Dala.Pty.kill(state.pty) end)
+    _ = Holder.send_kill(state.socket)
     Process.send_after(self(), :force_stop, @force_stop_ms)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:pty_data, id, data}, %{id: id} = state) do
-    seq = emit(id, data)
-    {:noreply, %{state | seq: seq}}
+  def handle_info({:tcp, socket, <<frame_type, payload::binary>>}, %{socket: socket} = state) do
+    handle_frame(frame_type, payload, state)
   end
 
-  def handle_info({:pty_exit, id, status}, %{id: id} = state) do
-    # Whatever was running is gone; make sure clients (and future replays)
-    # drop its mouse/paste/alt-screen modes.
-    emit(id, @mode_reset)
+  def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
+    # The holder vanished without an EXIT frame (crash, or it kicked us for a
+    # newer client). Its exit file has the status when the shell died.
+    exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
+  end
 
-    case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
-      {:ok, _session} -> :ok
-      {:error, error} -> Logger.warning("could not mark session #{id} exited: #{inspect(error)}")
-    end
-
-    {:stop, :normal, state}
+  def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state) do
+    exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
@@ -244,7 +252,7 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_info(:force_stop, state) do
-    # The PTY did not report an exit within the timeout after kill.
+    # The holder did not report an exit within the timeout after kill.
     case Dala.Terminal.mark_exited(state.session, %{exit_code: nil}) do
       {:ok, _session} -> :ok
       {:error, error} -> Logger.warning("could not mark session exited: #{inspect(error)}")
@@ -255,7 +263,7 @@ defmodule Dala.Terminal.Server do
 
   def handle_info(:poll_cwd, state) do
     state =
-      case current_cwd(state.child_pid) do
+      case current_cwd(state.shell_pid) do
         nil ->
           state
 
@@ -273,24 +281,60 @@ defmodule Dala.Terminal.Server do
     {:noreply, state}
   end
 
+  defp handle_frame(frame_type, payload, state) do
+    cond do
+      frame_type == Holder.type_output() ->
+        seq = emit(state.id, payload)
+        {:noreply, %{state | seq: seq}}
+
+      frame_type == Holder.type_hello() ->
+        shell_pid =
+          case Jason.decode(payload) do
+            {:ok, %{"pid" => pid}} when is_integer(pid) and pid > 0 -> pid
+            _other -> nil
+          end
+
+        # The holder sized the PTY at spawn time; make sure a reattached one
+        # matches the currently connected clients.
+        {:noreply, apply_min_size(%{state | shell_pid: shell_pid}, force: true)}
+
+      frame_type == Holder.type_exit() ->
+        <<status::32>> = payload
+        exit_with_status(status, state)
+
+      true ->
+        {:noreply, state}
+    end
+  end
+
+  defp exit_with_status(status, state) do
+    # Whatever was running is gone; make sure clients (and future replays)
+    # drop its mouse/paste/alt-screen modes.
+    emit(state.id, @mode_reset)
+
+    case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
+      {:ok, _session} ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning("could not mark session #{state.id} exited: #{inspect(error)}")
+    end
+
+    {:stop, :normal, state}
+  end
+
   defp current_cwd(nil), do: nil
 
-  defp current_cwd(child_pid) do
-    case File.read_link("/proc/#{child_pid}/cwd") do
+  defp current_cwd(shell_pid) do
+    case File.read_link("/proc/#{shell_pid}/cwd") do
       {:ok, cwd} -> cwd
       {:error, _reason} -> nil
     end
   end
 
-  defp safe_pty(fun) do
-    fun.()
-  rescue
-    _error -> :ok
-  end
-
   # Sizes the PTY to the smallest connected client's viewport. No-op while no
   # clients are attached (keep the last size) or when the minimum is unchanged.
-  defp apply_min_size(state) do
+  defp apply_min_size(state, opts \\ []) do
     case Map.values(state.clients) do
       [] ->
         state
@@ -300,10 +344,10 @@ defmodule Dala.Terminal.Server do
         cols = sizes |> Enum.map(&elem(&1, 1)) |> Enum.min()
         size = {rows, cols}
 
-        if size == state.size do
+        if size == state.size and not Keyword.get(opts, :force, false) do
           state
         else
-          safe_pty(fn -> Dala.Pty.resize(state.pty, rows, cols) end)
+          _ = Holder.send_resize(state.socket, rows, cols)
           # Tell every attached client the new PTY size. Desktop clients that
           # drive their own size ignore it; "follower" clients (e.g. a phone
           # watching a desktop session) render at this size and scale to fit.

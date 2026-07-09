@@ -44,3 +44,4 @@ npm-debug.log
 /native/*/target/
 /priv/native/
 /priv/data*/
+/priv/bin/

@@ -67,7 +67,7 @@ defmodule Dala.Terminal.Scrollback do
     file = String.to_charlist(path)
 
     :ok = open_table(file, path)
-    {:ok, %{}}
+    {:ok, %{path: path, file: file, rebuilt_at: nil}}
   end
 
   # The scrollback is a disposable cache. If the DETS file is corrupt or was
@@ -91,6 +91,31 @@ defmodule Dala.Terminal.Scrollback do
   def terminate(_reason, _state) do
     :dets.close(@table)
   end
+
+  # Runtime corruption (e.g. the file was shared by two BEAM instances):
+  # scrollback is a disposable cache, so drop the damaged file and start
+  # fresh — the alternative is every read/write failing forever, which stalls
+  # sequence numbers and makes terminals appear dead. Corruption errors
+  # usually come in bursts, hence the debounce.
+  @impl true
+  def handle_info(:rebuild, state) do
+    now = System.monotonic_time(:millisecond)
+
+    if state.rebuilt_at != nil and now - state.rebuilt_at < 5_000 do
+      {:noreply, state}
+    else
+      require Logger
+      Logger.warning("scrollback cache corrupt at runtime; dropping history and recreating")
+
+      _ = :dets.close(@table)
+      _ = File.rm(state.path)
+      {:ok, @table} = :dets.open_file(@table, file: state.file, type: :set, auto_save: 10_000)
+
+      {:noreply, %{state | rebuilt_at: now}}
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def handle_call({:append, session_id, data}, _from, state) do
@@ -168,6 +193,9 @@ defmodule Dala.Terminal.Scrollback do
   defp log_corruption(reason) do
     require Logger
     Logger.warning("scrollback cache read/write failed: #{inspect(reason)}")
+    # All table access happens inside this GenServer, so schedule a rebuild
+    # right after the current call finishes.
+    send(self(), :rebuild)
     true
   end
 
