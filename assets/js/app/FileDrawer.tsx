@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { buildCSRFHeaders, listDirectory, readFile } from "../ash_rpc";
 import type { ListDirectoryFields, ReadFileFields } from "../ash_rpc";
-import { humanBytes, timeAgo } from "./util";
+import { humanBytes } from "./util";
+import { useI18n } from "./i18n";
+import FilePreview, { type Preview } from "./FilePreview";
+import { previewKind } from "./fileTypes";
+import { FileTypeIcon } from "./fileIcons";
 
 // "entries" as a leaf field returns the full entry maps; the generated
 // selection type has no shape for arrays of typed maps, hence the cast.
@@ -9,7 +13,7 @@ const DIR_FIELDS = ["path", "parent", "entries"] as unknown as ListDirectoryFiel
 
 const FILE_FIELDS: ReadFileFields = ["path", "size", "truncated", "binary", "content"];
 
-type Entry = {
+export type Entry = {
   name: string;
   type: string;
   symlink: boolean;
@@ -23,14 +27,6 @@ type Listing = {
   entries: Entry[];
 };
 
-type Preview = {
-  path: string;
-  size: number;
-  truncated: boolean;
-  binary: boolean;
-  content: string | null;
-};
-
 type Props = {
   path: string;
   followCwd: boolean;
@@ -40,6 +36,10 @@ type Props = {
   onError: (message: string) => void;
 };
 
+function join(dir: string, name: string): string {
+  return `${dir === "/" ? "" : dir}/${name}`;
+}
+
 export default function FileDrawer({
   path,
   followCwd,
@@ -48,91 +48,206 @@ export default function FileDrawer({
   onClose,
   onError,
 }: Props) {
-  const [listing, setListing] = useState<Listing | null>(null);
-  const [loading, setLoading] = useState(false);
+  const { t } = useI18n();
+  const [root, setRoot] = useState<Listing | null>(null);
+  const [children, setChildren] = useState<Record<string, Entry[]>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
 
-  const load = useCallback(
-    async (target: string) => {
-      setLoading(true);
+  const fetchDir = useCallback(
+    async (target: string): Promise<Listing | null> => {
       const result = await listDirectory({
         input: { path: target },
         fields: DIR_FIELDS,
         headers: buildCSRFHeaders(),
       });
-      setLoading(false);
-      if (result.success) {
-        setListing(result.data as unknown as Listing);
-      } else {
-        onError(result.errors[0]?.message ?? "Could not list directory");
-      }
+      if (result.success) return result.data as unknown as Listing;
+      onError(result.errors[0]?.message ?? t("couldNotListDirectory"));
+      return null;
     },
-    [onError],
+    [onError, t],
   );
 
+  // (Re)load the tree root whenever the drawer path changes.
   useEffect(() => {
-    void load(path);
-  }, [path, load]);
+    let stale = false;
+    void fetchDir(path).then((listing) => {
+      if (stale || !listing) return;
+      setRoot(listing);
+      setChildren({ [listing.path]: listing.entries });
+      setExpanded(new Set([listing.path]));
+    });
+    return () => {
+      stale = true;
+    };
+  }, [path, fetchDir]);
 
-  const openFile = async (name: string) => {
-    if (!listing) return;
-    const filePath = `${listing.path === "/" ? "" : listing.path}/${name}`;
-    setPreviewLoading(name);
+  const toggleDir = async (dirPath: string) => {
+    if (expanded.has(dirPath)) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(dirPath);
+        return next;
+      });
+      return;
+    }
+
+    if (!children[dirPath]) {
+      setLoadingDirs((prev) => new Set(prev).add(dirPath));
+      const listing = await fetchDir(dirPath);
+      setLoadingDirs((prev) => {
+        const next = new Set(prev);
+        next.delete(dirPath);
+        return next;
+      });
+      if (!listing) return;
+      setChildren((prev) => ({ ...prev, [dirPath]: listing.entries }));
+    }
+
+    setExpanded((prev) => new Set(prev).add(dirPath));
+  };
+
+  const openFile = async (filePath: string, size: number) => {
+    const kind = previewKind(filePath);
+
+    if (kind === "image") {
+      setPreview({ kind: "image", path: filePath, size });
+      return;
+    }
+
+    setPreviewLoading(filePath);
     const result = await readFile({
       input: { path: filePath },
       fields: FILE_FIELDS,
       headers: buildCSRFHeaders(),
     });
     setPreviewLoading(null);
-    if (result.success) {
-      setPreview(result.data as unknown as Preview);
+
+    if (!result.success) {
+      onError(result.errors[0]?.message ?? t("couldNotReadFile"));
+      return;
+    }
+
+    const data = result.data as unknown as {
+      path: string;
+      size: number;
+      truncated: boolean;
+      binary: boolean;
+      content: string | null;
+    };
+
+    if (data.binary) {
+      setPreview({ kind: "binary", path: data.path, size: data.size });
     } else {
-      onError(result.errors[0]?.message ?? "Could not read file");
+      setPreview({
+        kind,
+        path: data.path,
+        size: data.size,
+        truncated: data.truncated,
+        content: data.content ?? "",
+      });
     }
   };
 
-  const entries = (listing?.entries ?? []).filter(
-    (e) => showHidden || !e.name.startsWith("."),
-  );
-  const hiddenCount = (listing?.entries.length ?? 0) - entries.length;
-  const segments = listing ? crumbs(listing.path) : [];
+  const renderEntries = (dirPath: string, depth: number): React.ReactNode => {
+    const entries = (children[dirPath] ?? []).filter(
+      (entry) => showHidden || !entry.name.startsWith("."),
+    );
+    const hiddenCount = (children[dirPath]?.length ?? 0) - entries.length;
+
+    return (
+      <>
+        {entries.map((entry) => {
+          const entryPath = join(dirPath, entry.name);
+
+          if (entry.type === "directory") {
+            const isOpen = expanded.has(entryPath);
+            return (
+              <React.Fragment key={entryPath}>
+                <Row
+                  depth={depth}
+                  icon={<Chevron open={isOpen} loading={loadingDirs.has(entryPath)} />}
+                  extraIcon={<FileTypeIcon name={entry.name} isDir isOpen={isOpen} />}
+                  name={entry.name}
+                  symlink={entry.symlink}
+                  onClick={() => void toggleDir(entryPath)}
+                />
+                {isOpen && renderEntries(entryPath, depth + 1)}
+              </React.Fragment>
+            );
+          }
+
+          return (
+            <Row
+              key={entryPath}
+              depth={depth}
+              icon={<span className="w-3.5" />}
+              extraIcon={<FileTypeIcon name={entry.name} />}
+              name={entry.name}
+              symlink={entry.symlink}
+              detail={humanBytes(entry.size)}
+              loading={previewLoading === entryPath}
+              onClick={() => void openFile(entryPath, entry.size)}
+            />
+          );
+        })}
+        {hiddenCount > 0 && !showHidden && (
+          <div
+            className="px-3 py-1 font-mono text-[11px] text-fg-muted/60"
+            style={{ paddingLeft: 12 + depth * 14 }}
+          >
+            {t("hiddenCount", { count: hiddenCount })}
+          </div>
+        )}
+        {children[dirPath] && children[dirPath].length === 0 && (
+          <div
+            className="px-3 py-1 font-mono text-[11px] text-fg-muted/60"
+            style={{ paddingLeft: 12 + depth * 14 }}
+          >
+            {t("emptyDirectory")}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const segments = root ? crumbs(root.path) : [];
 
   return (
     <section
       id="file-drawer"
-      className="flex h-full w-80 shrink-0 flex-col border-l border-line bg-bg1"
+      className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:static md:z-auto md:w-[22rem]"
     >
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-fg-muted">
-          Files
+        <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">
+          {t("filesTitle")}
         </span>
         <div className="flex-1" />
         <button
           onClick={onToggleFollow}
-          className={`rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
-            followCwd
-              ? "border-mint/50 text-mint"
-              : "border-line text-fg-muted hover:text-fg"
+          className={`rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
+            followCwd ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
           }`}
-          title="Follow the terminal's working directory"
+          title={t("followCwd")}
         >
-          follow cwd
+          {t("followCwd")}
         </button>
         <button
           onClick={() => setShowHidden((v) => !v)}
-          className={`rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
+          className={`rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
             showHidden ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
           }`}
-          title="Show dotfiles"
+          title={t("showHidden")}
         >
-          .hidden
+          {t("showHidden")}
         </button>
         <button
           onClick={onClose}
-          className="ml-1 grid h-5 w-5 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
-          title="Close file drawer"
+          className="ml-1 grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
+          title={t("closeFileDrawer")}
         >
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -140,7 +255,7 @@ export default function FileDrawer({
         </button>
       </header>
 
-      <div className="flex flex-wrap items-center gap-x-0.5 border-b border-line px-3 py-1.5 font-mono text-[11px] text-fg-muted">
+      <div className="flex flex-wrap items-center gap-x-0.5 border-b border-line px-3 py-1.5 font-mono text-xs text-fg-muted">
         {segments.map((seg, i) => (
           <React.Fragment key={seg.path}>
             {i > 0 && <span className="text-fg-muted/50">/</span>}
@@ -154,87 +269,42 @@ export default function FileDrawer({
         ))}
       </div>
 
-      <div className="relative flex-1 overflow-y-auto py-1">
-        {loading && (
-          <div className="absolute inset-x-0 top-0 h-0.5 animate-pulse bg-mint/60" />
-        )}
-        {listing?.parent != null && (
+      <div id="file-tree" className="flex-1 overflow-y-auto py-1">
+        {root?.parent != null && (
           <Row
-            icon={<DirIcon />}
+            depth={0}
+            icon={<span className="w-3.5" />}
+            extraIcon={<FileTypeIcon name=".." isDir />}
             name=".."
-            onClick={() => onNavigate(listing.parent!)}
+            onClick={() => onNavigate(root.parent!)}
           />
         )}
-        {entries.map((entry) =>
-          entry.type === "directory" ? (
-            <Row
-              key={entry.name}
-              icon={<DirIcon />}
-              name={entry.name}
-              symlink={entry.symlink}
-              onClick={() =>
-                onNavigate(`${listing!.path === "/" ? "" : listing!.path}/${entry.name}`)
-              }
-            />
-          ) : (
-            <Row
-              key={entry.name}
-              icon={<FileIcon />}
-              name={entry.name}
-              symlink={entry.symlink}
-              detail={`${humanBytes(entry.size)}${entry.mtime ? " · " + timeAgo(entry.mtime) : ""}`}
-              loading={previewLoading === entry.name}
-              onClick={() => void openFile(entry.name)}
-            />
-          ),
-        )}
-        {hiddenCount > 0 && !showHidden && (
-          <div className="px-3 py-1.5 font-mono text-[10px] text-fg-muted/60">
-            {hiddenCount} hidden
-          </div>
-        )}
-        {listing && listing.entries.length === 0 && (
-          <div className="px-3 py-6 text-center text-xs text-fg-muted">Empty directory</div>
-        )}
+        {root && renderEntries(root.path, 0)}
       </div>
 
       {preview && (
-        <div
-          className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-8"
-          onClick={() => setPreview(null)}
-        >
-          <div
-            id="file-preview"
-            className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-line bg-bg1 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <header className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-              <span className="truncate font-mono text-xs text-fg">{preview.path}</span>
-              <span className="shrink-0 font-mono text-[10px] text-fg-muted">
-                {humanBytes(preview.size)}
-                {preview.truncated && " · preview truncated"}
-              </span>
-              <div className="flex-1" />
-              <button
-                onClick={() => setPreview(null)}
-                className="grid h-6 w-6 place-items-center rounded text-fg-muted hover:text-fg"
-              >
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-                </svg>
-              </button>
-            </header>
-            {preview.binary ? (
-              <div className="px-4 py-10 text-center text-xs text-fg-muted">
-                Binary file — no preview.
-              </div>
-            ) : (
-              <pre className="overflow-auto px-4 py-3 font-mono text-xs leading-5 text-fg">
-                {preview.content}
-              </pre>
-            )}
-          </div>
-        </div>
+        <FilePreview
+          preview={preview}
+          onClose={() => setPreview(null)}
+          onError={onError}
+          onSaved={(savedPath, savedContent, savedSize) => {
+            setPreview((current) =>
+              current && "content" in current && current.path === savedPath
+                ? { ...current, content: savedContent, size: savedSize }
+                : current,
+            );
+            // Refresh the file's directory (if loaded) so the tree shows the
+            // new size.
+            const dir = savedPath.slice(0, savedPath.lastIndexOf("/")) || "/";
+            void fetchDir(dir).then((listing) => {
+              if (listing) {
+                setChildren((prev) =>
+                  prev[dir] ? { ...prev, [dir]: listing.entries } : prev,
+                );
+              }
+            });
+          }}
+        />
       )}
     </section>
   );
@@ -253,14 +323,18 @@ function crumbs(path: string): { label: string; path: string }[] {
 }
 
 function Row({
+  depth,
   icon,
+  extraIcon,
   name,
   detail,
   symlink,
   loading,
   onClick,
 }: {
+  depth: number;
   icon: React.ReactNode;
+  extraIcon: React.ReactNode;
   name: string;
   detail?: string;
   symlink?: boolean;
@@ -270,35 +344,37 @@ function Row({
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-2 px-3 py-[5px] text-left transition-colors hover:bg-bg2/70"
+      className="flex w-full items-center gap-1.5 px-3 py-[5px] text-left transition-colors hover:bg-bg2/70"
+      style={{ paddingLeft: 12 + depth * 14 }}
     >
-      <span className="shrink-0 text-fg-muted">{icon}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">
+      <span className="grid w-3.5 shrink-0 place-items-center text-fg-muted">{icon}</span>
+      <span className="shrink-0 text-fg-muted">{extraIcon}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">
         {name}
         {symlink && <span className="text-fg-muted"> ⇢</span>}
       </span>
       {loading ? (
-        <span className="shrink-0 font-mono text-[10px] text-mint">…</span>
+        <span className="shrink-0 font-mono text-[11px] text-mint">…</span>
       ) : (
-        detail && <span className="shrink-0 font-mono text-[10px] text-fg-muted">{detail}</span>
+        detail && <span className="shrink-0 font-mono text-[11px] text-fg-muted">{detail}</span>
       )}
     </button>
   );
 }
 
-function DirIcon() {
+function Chevron({ open, loading }: { open: boolean; loading: boolean }) {
+  if (loading) return <span className="font-mono text-[11px] text-mint">…</span>;
   return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="currentColor" opacity="0.75">
-      <path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3l1.5 1.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12z" />
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
+      <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function FileIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.75">
-      <path d="M4 1.5h5L12.5 5v9A.5.5 0 0 1 12 14.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" />
-      <path d="M9 1.5V5h3.5" />
-    </svg>
-  );
-}
+

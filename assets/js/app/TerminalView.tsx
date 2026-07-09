@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type { Channel } from "phoenix";
 import { getSocket } from "./socket";
 import {
@@ -9,8 +11,8 @@ import {
   onTerminalChannelMessages,
   unsubscribeTerminalChannel,
 } from "../ash_typed_channels";
-import type { TerminalChannel } from "../ash_types";
 import { base64ToBytes } from "./util";
+import { createStreamGate } from "./streamGate";
 
 const theme = {
   background: "#0b0c0e",
@@ -36,6 +38,34 @@ const theme = {
   brightWhite: "#e6e8eb",
 };
 
+// The one terminal font, bundled with the app (see app.css @font-face) so
+// cell metrics are identical everywhere and icons never come from a
+// different-width fallback font.
+const FONT_FAMILY = '"JetBrainsMono NFM", monospace';
+const FONT_SIZE = 14;
+
+// Wait for the bundled font faces before the terminal measures its cell
+// size — measuring against a fallback font misaligns everything drawn later.
+function loadTerminalFonts(): Promise<unknown> {
+  return Promise.all(
+    ["", "bold ", "italic ", "bold italic "].map((variant) =>
+      document.fonts.load(`${variant}${FONT_SIZE}px "JetBrainsMono NFM"`),
+    ),
+  ).catch(() => undefined);
+}
+
+// A "follower" client (typically a phone) watches a shared session without
+// driving its size: it never sends resize, so it can't shrink the PTY for the
+// desktop that owns it. Instead it renders at the server's PTY size and scales
+// that down to fit its own screen. It can still type.
+function isFollowerClient(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return (
+    window.matchMedia("(pointer: coarse)").matches &&
+    window.matchMedia("(max-width: 820px)").matches
+  );
+}
+
 type Props = {
   sessionId: string;
   onCwdChange?: (cwd: string) => void;
@@ -50,89 +80,157 @@ export default function TerminalView({ sessionId, onCwdChange }: Props) {
     const container = containerRef.current;
     if (!container) return;
 
-    const term = new Terminal({
-      theme,
-      fontFamily:
-        '"JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      letterSpacing: 0,
-      cursorBlink: true,
-      cursorStyle: "bar",
-      scrollback: 10000,
-      allowTransparency: false,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(container);
-    fit.fit();
-    term.focus();
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
 
-    const channel = createTerminalChannel(getSocket(), sessionId);
-    const phxChannel = channel as unknown as Channel;
+    void loadTerminalFonts().then(() => {
+      if (disposed) return;
 
-    // The server pushes the whole DETS scrollback as `replay` batches after
-    // every (re)join; the first batch resets the terminal so a reconnect
-    // repaints from a clean slate. `seq` dedupes the overlap between the
-    // replay snapshot and live `output` broadcasts.
-    let awaitingReplay = true;
-    let lastSeq = -1;
+      const term = new Terminal({
+        theme,
+        fontFamily: FONT_FAMILY,
+        fontSize: FONT_SIZE,
+        lineHeight: 1.2,
+        letterSpacing: 0,
+        cursorBlink: true,
+        cursorStyle: "bar",
+        scrollback: 10000,
+        allowTransparency: false,
+        allowProposedApi: true,
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new Unicode11Addon());
+      term.unicode.activeVersion = "11";
+      term.open(container);
 
-    const refs = onTerminalChannelMessages(channel, {
-      replay: (payload) => {
-        if (awaitingReplay) {
-          term.reset();
-          awaitingReplay = false;
+      // WebGL renderer places every glyph on the exact cell grid (like VS
+      // Code), which keeps full-screen apps such as vim pixel-aligned. Fall
+      // back to the DOM renderer when WebGL isn't available.
+      let webgl: WebglAddon | undefined;
+      try {
+        webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl?.dispose();
+          webgl = undefined;
+        });
+        term.loadAddon(webgl);
+      } catch {
+        webgl = undefined;
+      }
+
+      fit.fit();
+      term.focus();
+
+      const follower = isFollowerClient();
+      if (follower) {
+        container.style.padding = "0";
+        container.style.overflow = "auto";
+      }
+
+      // Follower only: render at the server's PTY size, then scale that down to
+      // fit this screen's width (never resize the shared PTY).
+      const scaleToFit = () => {
+        const el = term.element;
+        if (!el) return;
+        el.style.transformOrigin = "top left";
+        el.style.transform = "";
+        const natural = el.offsetWidth;
+        const avail = container.clientWidth;
+        if (natural > 0 && avail > 0) {
+          el.style.transform = `scale(${Math.min(1, avail / natural)})`;
         }
-        if (payload.data) term.write(base64ToBytes(payload.data));
-        if (payload.seq > lastSeq) lastSeq = payload.seq;
-      },
-      output: (payload) => {
-        if (payload.seq <= lastSeq) return;
-        lastSeq = payload.seq;
-        term.write(base64ToBytes(payload.data));
-      },
-      cwd: (payload) => {
-        cwdChangeRef.current?.(payload.cwd);
-      },
-    });
+      };
+      const applyServerSize = (rows: number, cols: number) => {
+        term.resize(Math.max(cols, 1), Math.max(rows, 1));
+        scaleToFit();
+      };
 
-    const pushResize = () => {
-      phxChannel.push("resize", { rows: term.rows, cols: term.cols });
-    };
+      const channel = createTerminalChannel(getSocket(), sessionId);
+      const phxChannel = channel as unknown as Channel;
 
-    phxChannel
-      .join()
-      .receive("ok", () => {
-        awaitingReplay = true;
-        pushResize();
-      })
-      .receive("error", () => {
-        term.writeln("\x1b[31mcould not attach to session\x1b[0m");
+      // See streamGate.ts for the replay/dedup/input-guard invariants.
+      const gate = createStreamGate();
+
+      const refs = onTerminalChannelMessages(channel, {
+        replay: (payload) => {
+          const { reset, release } = gate.replayBatch(payload.seq, payload.done);
+          if (reset) term.reset();
+
+          const data = payload.data ? base64ToBytes(payload.data) : "";
+          if (release) {
+            term.write(data, () => gate.replayParsed());
+          } else {
+            term.write(data);
+          }
+        },
+        output: (payload) => {
+          if (!gate.acceptOutput(payload.seq)) return;
+          term.write(base64ToBytes(payload.data));
+        },
+        cwd: (payload) => {
+          cwdChangeRef.current?.(payload.cwd);
+        },
       });
 
-    const inputDisposable = term.onData((data) => {
-      phxChannel.push("input", { data });
-    });
+      const pushResize = () => {
+        phxChannel.push("resize", { rows: term.rows, cols: term.cols });
+      };
 
-    let resizeTimer: number | undefined;
-    const observer = new ResizeObserver(() => {
-      window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => {
-        fit.fit();
-        pushResize();
-      }, 60);
+      phxChannel
+        .join()
+        .receive("ok", (resp?: { rows?: number; cols?: number }) => {
+          gate.joined();
+          if (follower) {
+            if (resp?.rows && resp?.cols) applyServerSize(resp.rows, resp.cols);
+          } else {
+            pushResize();
+          }
+        })
+        .receive("error", () => {
+          term.writeln("\x1b[31mcould not attach to session\x1b[0m");
+        });
+
+      // Follower: track the owner's PTY size instead of driving our own.
+      if (follower) {
+        phxChannel.on("resize", (p: { rows: number; cols: number }) => {
+          applyServerSize(p.rows, p.cols);
+        });
+      }
+
+      const inputDisposable = term.onData((data) => {
+        if (!gate.acceptInput()) return;
+        phxChannel.push("input", { data });
+      });
+
+      let resizeTimer: number | undefined;
+      const observer = new ResizeObserver(() => {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => {
+          if (follower) {
+            scaleToFit();
+          } else {
+            fit.fit();
+            pushResize();
+          }
+        }, 60);
+      });
+      observer.observe(container);
+
+      cleanup = () => {
+        observer.disconnect();
+        window.clearTimeout(resizeTimer);
+        inputDisposable.dispose();
+        unsubscribeTerminalChannel(channel, refs);
+        phxChannel.leave();
+        term.dispose();
+      };
     });
-    observer.observe(container);
 
     return () => {
-      observer.disconnect();
-      window.clearTimeout(resizeTimer);
-      inputDisposable.dispose();
-      unsubscribeTerminalChannel(channel, refs);
-      phxChannel.leave();
-      term.dispose();
+      disposed = true;
+      cleanup?.();
     };
   }, [sessionId]);
 

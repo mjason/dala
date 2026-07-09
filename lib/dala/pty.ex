@@ -22,10 +22,12 @@ defmodule Dala.Pty do
           [String.t()],
           String.t(),
           [{String.t(), String.t()}],
+          [String.t()],
           pos_integer(),
           pos_integer()
         ) :: pty()
-  def open(_id, _shell, _args, _cwd, _env, _rows, _cols), do: :erlang.nif_error(:nif_not_loaded)
+  def open(_id, _shell, _args, _cwd, _env, _env_remove, _rows, _cols),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @spec write(pty(), binary()) :: :ok
   def write(_pty, _data), do: :erlang.nif_error(:nif_not_loaded)

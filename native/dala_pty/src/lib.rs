@@ -52,6 +52,7 @@ fn open(
     argv: Vec<String>,
     cwd: String,
     envs: Vec<(String, String)>,
+    env_remove: Vec<String>,
     rows: u16,
     cols: u16,
 ) -> NifResult<ResourceArc<PtyResource>> {
@@ -74,6 +75,9 @@ fn open(
     }
     for (key, value) in envs {
         cmd.env(key, value);
+    }
+    for key in env_remove {
+        cmd.env_remove(key);
     }
 
     let mut child = pair.slave.spawn_command(cmd).map_err(to_error)?;

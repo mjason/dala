@@ -10,6 +10,7 @@ defmodule Dala.Terminal.FileSystem do
     extensions: [AshTypescript.Resource]
 
   @preview_default_max_bytes 262_144
+  @write_max_bytes 10 * 1024 * 1024
 
   typescript do
     type_name "FileSystem"
@@ -103,6 +104,43 @@ defmodule Dala.Terminal.FileSystem do
         else
           {:ok, %File.Stat{}} -> {:error, "#{path} is not a regular file"}
           {:error, reason} -> {:error, "cannot read #{path}: #{:file.format_error(reason)}"}
+        end
+      end
+    end
+
+    action :write_file, :map do
+      description "Overwrite a text file with new content."
+
+      constraints fields: [
+                    path: [type: :string, allow_nil?: false],
+                    size: [type: :integer, allow_nil?: false]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+
+      # trim?/allow_empty? matter: editors must be able to save trailing
+      # whitespace/newlines and to empty a file.
+      argument :content, :string do
+        allow_nil? false
+        constraints trim?: false, allow_empty?: true
+      end
+
+      run fn input, _context ->
+        path = expand(input.arguments.path)
+        content = input.arguments.content
+
+        cond do
+          byte_size(content) > @write_max_bytes ->
+            {:error, "file too large to save (max #{div(@write_max_bytes, 1_048_576)} MB)"}
+
+          File.dir?(path) ->
+            {:error, "#{path} is a directory"}
+
+          true ->
+            case File.write(path, content) do
+              :ok -> {:ok, %{path: path, size: byte_size(content)}}
+              {:error, reason} -> {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+            end
         end
       end
     end

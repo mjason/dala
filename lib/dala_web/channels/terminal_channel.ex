@@ -36,7 +36,9 @@ defmodule DalaWeb.TerminalChannel do
       {:ok, session} ->
         send(self(), :after_join)
 
-        {:ok, %{status: session.status, cwd: session.cwd},
+        {rows, cols} = Dala.Terminal.Server.viewport(session_id) || {24, 80}
+
+        {:ok, %{status: session.status, cwd: session.cwd, rows: rows, cols: cols},
          assign(socket, :session_id, session.id)}
 
       {:error, _error} ->
@@ -61,7 +63,9 @@ defmodule DalaWeb.TerminalChannel do
       when is_integer(rows) and is_integer(cols) do
     rows = min(max(rows, 1), @max_rows)
     cols = min(max(cols, 1), @max_cols)
-    Dala.Terminal.Server.resize(socket.assigns.session_id, rows, cols)
+    # `self()` is this channel process — one per connected client. The server
+    # tracks each client's size and sizes the shared PTY to their minimum.
+    Dala.Terminal.Server.resize(socket.assigns.session_id, self(), rows, cols)
     {:noreply, socket}
   end
 

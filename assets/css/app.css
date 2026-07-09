@@ -106,6 +106,41 @@
 
 /* This file is for your main application CSS */
 
+/* Bundled terminal font: JetBrainsMono Nerd Font Mono. One strictly
+   monospaced font for text AND icons (powerline, devicons, …), so cell
+   metrics are identical on every machine regardless of installed fonts. */
+@font-face {
+  font-family: "JetBrainsMono NFM";
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono NFM";
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono NFM";
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Italic.woff2") format("woff2");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono NFM";
+  src: url("/fonts/JetBrainsMonoNerdFontMono-BoldItalic.woff2") format("woff2");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
 /* Dala design tokens — dark, neutral, terminal-first.
    The accent is named "mint" to avoid colliding with daisyUI's
    --color-accent variable, which the auth pages still use. */
@@ -144,7 +179,70 @@ body:has(> #app) {
 
 #session-list,
 #file-drawer *,
-#file-preview pre {
+#git-panel *,
+#file-preview pre,
+#diff-view pre {
   scrollbar-width: thin;
   scrollbar-color: #2c3037 transparent;
+}
+
+/* highlight.js theme tuned to the dala palette */
+.hljs-comment,
+.hljs-quote {
+  color: #6b7280;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-tag,
+.hljs-name {
+  color: #b087c9;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #5fbf87;
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: #d9a860;
+}
+.hljs-title,
+.hljs-section,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: #6d9fd6;
+}
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-built_in {
+  color: #5fb8b8;
+}
+.hljs-deletion {
+  color: #e5716e;
+}
+.hljs-meta,
+.hljs-doctag {
+  color: #8f96a0;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+/* diff-specific: give added/removed lines a subtle backdrop */
+.hljs-addition {
+  background: rgba(95, 191, 135, 0.12);
+  display: inline-block;
+  width: 100%;
+}
+.hljs-deletion {
+  background: rgba(229, 113, 110, 0.12);
+  display: inline-block;
+  width: 100%;
 }

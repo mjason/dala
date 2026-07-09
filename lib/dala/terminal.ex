@@ -15,6 +15,20 @@ defmodule Dala.Terminal do
     resource Dala.Terminal.FileSystem do
       rpc_action :list_directory, :list_directory
       rpc_action :read_file, :read_file
+      rpc_action :write_file, :write_file
+    end
+
+    resource Dala.Terminal.Git do
+      rpc_action :git_status, :git_status
+      rpc_action :git_diff, :git_diff
+      rpc_action :git_stage, :git_stage
+      rpc_action :git_unstage, :git_unstage
+      rpc_action :git_discard, :git_discard
+      rpc_action :git_commit, :git_commit
+      rpc_action :git_log, :git_log
+      rpc_action :git_show, :git_show
+      rpc_action :git_branches, :git_branches
+      rpc_action :git_checkout, :git_checkout
     end
   end
 
@@ -30,5 +44,6 @@ defmodule Dala.Terminal do
     end
 
     resource Dala.Terminal.FileSystem
+    resource Dala.Terminal.Git
   end
 end

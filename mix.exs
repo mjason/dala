@@ -114,7 +114,13 @@ defmodule Dala.MixProject do
         "esbuild dala --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "cmd --cd assets npm run check",
+        "test"
+      ],
       "ash.setup": ["ash.setup", "run priv/repo/seeds.exs"]
     ]
   end

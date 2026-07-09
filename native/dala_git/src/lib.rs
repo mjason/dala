@@ -1,0 +1,509 @@
+use std::path::Path;
+
+use git2::build::CheckoutBuilder;
+use git2::{
+    BranchType, DiffFormat, DiffOptions, ErrorCode, IndexAddOption, Repository, Status,
+    StatusOptions,
+};
+use rustler::NifMap;
+
+const MAX_DIFF_BYTES: usize = 512 * 1024;
+
+#[derive(NifMap)]
+struct FileStatus {
+    path: String,
+    status: String,
+    staged: bool,
+}
+
+#[derive(NifMap)]
+struct StatusResult {
+    repo: bool,
+    root: Option<String>,
+    branch: Option<String>,
+    files: Vec<FileStatus>,
+}
+
+#[derive(NifMap)]
+struct DiffResult {
+    diff: String,
+    binary: bool,
+    truncated: bool,
+}
+
+#[derive(NifMap)]
+struct Commit {
+    hash: String,
+    author: String,
+    date_unix: i64,
+    subject: String,
+}
+
+#[derive(NifMap)]
+struct LogResult {
+    commits: Vec<Commit>,
+}
+
+#[derive(NifMap)]
+struct ShowResult {
+    text: String,
+    truncated: bool,
+}
+
+#[derive(NifMap)]
+struct CommitResult {
+    hash: String,
+}
+
+#[derive(NifMap)]
+struct Branch {
+    name: String,
+    current: bool,
+}
+
+#[derive(NifMap)]
+struct BranchesResult {
+    current: Option<String>,
+    local: Vec<Branch>,
+    remote: Vec<Branch>,
+}
+
+fn git_error(err: git2::Error) -> String {
+    err.message().to_string()
+}
+
+fn open(path: &str) -> Result<Repository, String> {
+    Repository::discover(path).map_err(|_| format!("not a git repository: {path}"))
+}
+
+/// Largest valid-UTF-8 prefix that fits in `max` bytes.
+fn truncate_utf8(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+// --- status -----------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn status(path: String) -> Result<StatusResult, String> {
+    let repo = match Repository::discover(&path) {
+        Ok(repo) => repo,
+        Err(_) => {
+            return Ok(StatusResult {
+                repo: false,
+                root: None,
+                branch: None,
+                files: vec![],
+            })
+        }
+    };
+
+    let root = repo
+        .workdir()
+        .map(|p| p.to_string_lossy().trim_end_matches('/').to_string());
+
+    let branch = match repo.head() {
+        Ok(head) if head.is_branch() => head.shorthand().map(|s| s.to_string()),
+        Ok(_) => Some("HEAD".to_string()),
+        Err(_) => None,
+    };
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+
+    let statuses = repo.statuses(Some(&mut opts)).map_err(git_error)?;
+    let mut files = Vec::new();
+
+    for entry in statuses.iter() {
+        let Some(path) = entry.path() else { continue };
+        let s = entry.status();
+        if s.is_ignored() {
+            continue;
+        }
+        let (code, staged) = porcelain(s);
+        files.push(FileStatus {
+            path: path.to_string(),
+            status: code,
+            staged,
+        });
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(StatusResult {
+        repo: true,
+        root,
+        branch,
+        files,
+    })
+}
+
+/// Porcelain `XY` status code plus a "staged" flag for one entry.
+fn porcelain(s: Status) -> (String, bool) {
+    if s.contains(Status::CONFLICTED) {
+        return ("UU".to_string(), false);
+    }
+
+    // Untracked: only a working-tree "new" bit.
+    if s.contains(Status::WT_NEW) && !has_index_change(s) {
+        return ("??".to_string(), false);
+    }
+
+    let x = if s.contains(Status::INDEX_NEW) {
+        'A'
+    } else if s.contains(Status::INDEX_MODIFIED) {
+        'M'
+    } else if s.contains(Status::INDEX_DELETED) {
+        'D'
+    } else if s.contains(Status::INDEX_RENAMED) {
+        'R'
+    } else if s.contains(Status::INDEX_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+
+    let y = if s.contains(Status::WT_MODIFIED) {
+        'M'
+    } else if s.contains(Status::WT_DELETED) {
+        'D'
+    } else if s.contains(Status::WT_RENAMED) {
+        'R'
+    } else if s.contains(Status::WT_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+
+    (format!("{x}{y}"), x != ' ')
+}
+
+fn has_index_change(s: Status) -> bool {
+    s.intersects(
+        Status::INDEX_NEW
+            | Status::INDEX_MODIFIED
+            | Status::INDEX_DELETED
+            | Status::INDEX_RENAMED
+            | Status::INDEX_TYPECHANGE,
+    )
+}
+
+// --- diff -------------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn diff_file(path: String, file: String) -> Result<DiffResult, String> {
+    let repo = open(&path)?;
+
+    let mut opts = DiffOptions::new();
+    opts.pathspec(&file)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let diff = repo
+        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+        .map_err(git_error)?;
+
+    let (text, binary) = format_diff(&diff)?;
+    let truncated = text.len() > MAX_DIFF_BYTES;
+
+    Ok(DiffResult {
+        diff: truncate_utf8(&text, MAX_DIFF_BYTES),
+        binary,
+        truncated,
+    })
+}
+
+fn format_diff(diff: &git2::Diff) -> Result<(String, bool), String> {
+    let mut buf = String::new();
+    let mut binary = false;
+
+    diff.print(DiffFormat::Patch, |delta, _hunk, line| {
+        if delta.flags().is_binary() {
+            binary = true;
+        }
+        match line.origin() {
+            '+' | '-' | ' ' => buf.push(line.origin()),
+            _ => {}
+        }
+        buf.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })
+    .map_err(git_error)?;
+
+    Ok((buf, binary))
+}
+
+// --- staging ----------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn stage(path: String, file: String) -> Result<bool, String> {
+    let repo = open(&path)?;
+    let mut index = repo.index().map_err(git_error)?;
+    // add_all mirrors `git add <pathspec>`: stages additions, modifications
+    // and deletions of matching files.
+    index
+        .add_all([&file].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(git_error)?;
+    index.write().map_err(git_error)?;
+    Ok(true)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn unstage(path: String, file: String) -> Result<bool, String> {
+    let repo = open(&path)?;
+
+    match repo.head().and_then(|h| h.peel_to_commit()) {
+        Ok(head) => {
+            repo.reset_default(Some(head.as_object()), [&file])
+                .map_err(git_error)?;
+        }
+        Err(_) => {
+            // No commits yet: unstaging just removes the entry from the index.
+            let mut index = repo.index().map_err(git_error)?;
+            index.remove_path(Path::new(&file)).map_err(git_error)?;
+            index.write().map_err(git_error)?;
+        }
+    }
+
+    Ok(true)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn discard(path: String, file: String) -> Result<bool, String> {
+    let repo = open(&path)?;
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+
+    let tracked = head_tree
+        .as_ref()
+        .map(|tree| tree.get_path(Path::new(&file)).is_ok())
+        .unwrap_or(false);
+
+    if tracked {
+        let tree = head_tree.unwrap();
+        let mut co = CheckoutBuilder::new();
+        co.force().update_index(true).path(&file);
+        repo.checkout_tree(tree.as_object(), Some(&mut co))
+            .map_err(git_error)?;
+    } else {
+        let full = repo
+            .workdir()
+            .ok_or_else(|| "bare repository".to_string())?
+            .join(&file);
+        std::fs::remove_file(&full).map_err(|e| format!("could not delete {file}: {e}"))?;
+    }
+
+    Ok(true)
+}
+
+// --- commit -----------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn commit(path: String, message: String) -> Result<CommitResult, String> {
+    let repo = open(&path)?;
+    let sig = repo
+        .signature()
+        .map_err(|_| "no git identity configured (user.name / user.email)".to_string())?;
+
+    let mut index = repo.index().map_err(git_error)?;
+    let tree_oid = index.write_tree().map_err(git_error)?;
+    let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+
+    // Reject empty commits (nothing staged).
+    match &parent {
+        Some(p) if p.tree_id() == tree_oid => {
+            return Err("nothing to commit — working tree clean".to_string())
+        }
+        None if tree.is_empty() => return Err("nothing to commit".to_string()),
+        _ => {}
+    }
+
+    let parents: Vec<&git2::Commit> = parent.iter().collect();
+    let oid = repo
+        .commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
+        .map_err(git_error)?;
+
+    Ok(CommitResult {
+        hash: short_hash(&oid.to_string()),
+    })
+}
+
+fn short_hash(hash: &str) -> String {
+    hash.chars().take(7).collect()
+}
+
+// --- log / show -------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn log(path: String, limit: usize) -> Result<LogResult, String> {
+    let repo = open(&path)?;
+
+    let mut revwalk = match repo.revwalk() {
+        Ok(rw) => rw,
+        Err(_) => return Ok(LogResult { commits: vec![] }),
+    };
+
+    if revwalk.push_head().is_err() {
+        // Empty repository (unborn HEAD).
+        return Ok(LogResult { commits: vec![] });
+    }
+
+    let mut commits = Vec::new();
+    for oid in revwalk.take(limit) {
+        let oid = oid.map_err(git_error)?;
+        let c = repo.find_commit(oid).map_err(git_error)?;
+        commits.push(Commit {
+            hash: short_hash(&oid.to_string()),
+            author: c.author().name().unwrap_or("").to_string(),
+            date_unix: c.time().seconds(),
+            subject: c.summary().unwrap_or("").to_string(),
+        });
+    }
+
+    Ok(LogResult { commits })
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn show(path: String, hash: String) -> Result<ShowResult, String> {
+    let repo = open(&path)?;
+    let commit = repo
+        .revparse_single(&hash)
+        .and_then(|o| o.peel_to_commit())
+        .map_err(|_| format!("no such commit: {hash}"))?;
+
+    let mut text = String::new();
+    text.push_str(&format!("commit {}\n", commit.id()));
+    text.push_str(&format!(
+        "Author: {} <{}>\n",
+        commit.author().name().unwrap_or(""),
+        commit.author().email().unwrap_or("")
+    ));
+    text.push('\n');
+    for line in commit.message().unwrap_or("").lines() {
+        text.push_str("    ");
+        text.push_str(line);
+        text.push('\n');
+    }
+    text.push('\n');
+
+    let tree = commit.tree().map_err(git_error)?;
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(git_error)?;
+
+    let (patch, _binary) = format_diff(&diff)?;
+    text.push_str(&patch);
+
+    let truncated = text.len() > MAX_DIFF_BYTES;
+
+    Ok(ShowResult {
+        text: truncate_utf8(&text, MAX_DIFF_BYTES),
+        truncated,
+    })
+}
+
+// --- branches ---------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn branches(path: String) -> Result<BranchesResult, String> {
+    let repo = open(&path)?;
+
+    let current = match repo.head() {
+        Ok(head) if head.is_branch() => head.shorthand().map(|s| s.to_string()),
+        _ => None,
+    };
+
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+
+    let iter = repo.branches(None).map_err(git_error)?;
+    for item in iter {
+        let (branch, kind) = item.map_err(git_error)?;
+        let Some(name) = branch.name().map_err(git_error)?.map(|s| s.to_string()) else {
+            continue;
+        };
+        match kind {
+            BranchType::Local => local.push(Branch {
+                current: branch.is_head(),
+                name,
+            }),
+            BranchType::Remote => {
+                // Skip symbolic refs like "origin/HEAD".
+                if !name.ends_with("/HEAD") {
+                    remote.push(Branch {
+                        name,
+                        current: false,
+                    });
+                }
+            }
+        }
+    }
+
+    local.sort_by(|a, b| a.name.cmp(&b.name));
+    remote.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(BranchesResult {
+        current,
+        local,
+        remote,
+    })
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn checkout(path: String, name: String) -> Result<bool, String> {
+    let repo = open(&path)?;
+
+    // Existing local branch → plain switch.
+    let local_ref = format!("refs/heads/{name}");
+    if repo.find_reference(&local_ref).is_ok() {
+        switch_to(&repo, &name, &local_ref)?;
+        return Ok(true);
+    }
+
+    // Remote-tracking branch (e.g. "origin/feature") → create/switch a local
+    // branch that tracks it, like `git switch feature`.
+    if let Ok(remote_ref) = repo.find_reference(&format!("refs/remotes/{name}")) {
+        let commit = remote_ref.peel_to_commit().map_err(git_error)?;
+        let local_name = name.splitn(2, '/').nth(1).unwrap_or(&name).to_string();
+
+        if repo.find_branch(&local_name, BranchType::Local).is_err() {
+            let mut b = repo.branch(&local_name, &commit, false).map_err(git_error)?;
+            let _ = b.set_upstream(Some(&name));
+        }
+
+        switch_to(&repo, &local_name, &format!("refs/heads/{local_name}"))?;
+        return Ok(true);
+    }
+
+    Err(format!("branch not found: {name}"))
+}
+
+fn switch_to(repo: &Repository, revspec: &str, ref_name: &str) -> Result<(), String> {
+    let (object, _reference) = repo.revparse_ext(revspec).map_err(git_error)?;
+
+    // Safe checkout: refuses to overwrite conflicting local modifications.
+    let mut co = CheckoutBuilder::new();
+    co.safe();
+    repo.checkout_tree(&object, Some(&mut co)).map_err(|e| {
+        if e.code() == ErrorCode::Conflict {
+            "your local changes would be overwritten — commit or discard them first".to_string()
+        } else {
+            git_error(e)
+        }
+    })?;
+
+    repo.set_head(ref_name).map_err(git_error)?;
+    Ok(())
+}
+
+rustler::init!("Elixir.Dala.Git");

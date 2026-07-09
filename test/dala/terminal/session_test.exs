@@ -97,6 +97,35 @@ defmodule Dala.Terminal.SessionTest do
     assert Scrollback.replay(session.id) |> Enum.map_join(&elem(&1, 1)) =~ "before-restart"
   end
 
+  test "shell exit and restart append a terminal mode reset to the stream" do
+    session = create_session!()
+
+    # like a TUI enabling SGR mouse tracking, then the shell dying
+    Server.input(session.id, "printf '\\e[?1002h\\e[?1006h'\r")
+    eventually(fn -> replay_text(session.id) =~ "\e[?1002h" end)
+
+    Server.stop(session.id)
+    await_exit(session.id)
+
+    # the exit path must switch mouse reporting back off for future replays
+    assert replay_text(session.id) =~ "\e[?1000l\e[?1002l"
+
+    # a fresh PTY attaching to existing scrollback resets modes again
+    {:ok, _pid} =
+      Ash.run_action(
+        Ash.ActionInput.for_action(Dala.Terminal.Session, :restart, %{id: session.id})
+      )
+      |> then(fn {:ok, true} -> {:ok, Server.whereis(session.id)} end)
+
+    eventually(fn ->
+      replay_text(session.id) |> String.split("\e[?1000l") |> length() >= 3
+    end)
+  end
+
+  defp replay_text(session_id) do
+    session_id |> Scrollback.replay() |> Enum.map_join(&elem(&1, 1))
+  end
+
   test "destroy stops the server and clears the scrollback cache" do
     session = create_session!()
     Server.input(session.id, "echo gone\r")

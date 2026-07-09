@@ -20,6 +20,20 @@ export type FileSystemAttributesOnlySchema = {
 };
 
 
+// Git Schema
+export type GitResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type GitAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Session Schema
 export type SessionResourceSchema = {
   __type: "Resource";
@@ -56,6 +70,15 @@ export type FileSystemFilterInput = {
   and?: Array<FileSystemFilterInput>;
   or?: Array<FileSystemFilterInput>;
   not?: Array<FileSystemFilterInput>;
+
+
+
+
+};
+export type GitFilterInput = {
+  and?: Array<GitFilterInput>;
+  or?: Array<GitFilterInput>;
+  not?: Array<GitFilterInput>;
 
 
 
@@ -143,8 +166,10 @@ export type SessionFilterInput = {
 
 
 
+
 export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "insertedAt", "updatedAt"] as const;
 export type SessionFilterField = (typeof sessionFilterFields)[number];
+
 
 
 

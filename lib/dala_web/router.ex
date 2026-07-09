@@ -28,6 +28,7 @@ defmodule DalaWeb.Router do
     pipe_through [:browser, :spa]
 
     get "/", PageController, :index
+    get "/files/raw", FileController, :raw
   end
 
   scope "/", DalaWeb do

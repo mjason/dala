@@ -79,7 +79,7 @@ defmodule Dala.Terminal.Scrollback do
     meta = get_meta(session_id)
     seq = meta.next
 
-    :ok = :dets.insert(@table, {{session_id, seq}, data})
+    safe_insert({{session_id, seq}, data})
 
     meta = %{meta | next: seq + 1, bytes: meta.bytes + byte_size(data)}
     meta = trim(session_id, meta)
@@ -97,7 +97,7 @@ defmodule Dala.Terminal.Scrollback do
 
     chunks =
       for seq <- meta.first..(meta.next - 1)//1,
-          [{_key, data}] <- [:dets.lookup(@table, {session_id, seq})] do
+          [{_key, data}] <- [safe_lookup({session_id, seq})] do
         {seq, data}
       end
 
@@ -123,26 +123,49 @@ defmodule Dala.Terminal.Scrollback do
 
   ## Helpers
 
+  # The scrollback is a cache: a corrupted DETS record (e.g. after an unclean
+  # shutdown) must never crash this server. Damaged entries read as missing
+  # and get overwritten by subsequent writes.
+  defp safe_lookup(key) do
+    case :dets.lookup(@table, key) do
+      results when is_list(results) -> results
+      {:error, reason} -> log_corruption(reason) && []
+    end
+  end
+
+  defp safe_insert(record) do
+    case :dets.insert(@table, record) do
+      :ok -> :ok
+      {:error, reason} -> log_corruption(reason)
+    end
+  end
+
+  defp log_corruption(reason) do
+    require Logger
+    Logger.warning("scrollback cache read/write failed: #{inspect(reason)}")
+    true
+  end
+
   defp get_meta(session_id) do
-    case :dets.lookup(@table, {session_id, :meta}) do
+    case safe_lookup({session_id, :meta}) do
       [{_key, %Meta{} = meta}] -> %{meta | limit: meta.limit || @default_limit}
-      [] -> %Meta{limit: @default_limit}
+      _ -> %Meta{limit: @default_limit}
     end
   end
 
   defp put_meta(session_id, meta) do
-    :ok = :dets.insert(@table, {{session_id, :meta}, meta})
+    safe_insert({{session_id, :meta}, meta})
   end
 
   defp trim(session_id, %Meta{} = meta) do
     if meta.bytes > meta.limit and meta.first < meta.next do
       freed =
-        case :dets.lookup(@table, {session_id, meta.first}) do
+        case safe_lookup({session_id, meta.first}) do
           [{_key, data}] ->
             :dets.delete(@table, {session_id, meta.first})
             byte_size(data)
 
-          [] ->
+          _ ->
             0
         end
 
