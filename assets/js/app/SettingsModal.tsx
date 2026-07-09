@@ -11,6 +11,15 @@ import type { Session } from "./Sidebar";
 import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
 import { Kbd, modCombo } from "./shortcuts";
+import {
+  DEFAULT_PREFS,
+  FONT_SIZE_RANGE,
+  LINE_HEIGHT_RANGE,
+  loadPrefs,
+  resetPrefs,
+  savePrefs,
+} from "./termPrefs";
+import type { CursorStyle, TermPrefs } from "./termPrefs";
 
 const MB = 1024 * 1024;
 
@@ -84,7 +93,10 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   };
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 sm:p-6" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 grid place-items-center overflow-y-auto bg-black/60 p-4 sm:p-6"
+      onClick={onClose}
+    >
       <div
         id="session-settings"
         className="w-full max-w-sm rounded-xl border border-line bg-bg1 shadow-2xl"
@@ -146,6 +158,8 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
               {t("scrollbackHint")}
             </span>
           </label>
+
+          <AppearanceSection />
 
           <div className="flex gap-2 border-t border-line pt-3">
             {session.status === "running" ? (
@@ -223,6 +237,121 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             {t("save")} <Kbd>{modCombo("s")}</Kbd>
           </button>
         </footer>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Terminal appearance (font, size, line height, cursor). Browser-local and
+ * global across sessions; every change persists and applies to open
+ * terminals immediately, so there is no save step.
+ */
+function AppearanceSection() {
+  const { t } = useI18n();
+  const [prefs, setPrefs] = useState<TermPrefs>(loadPrefs);
+
+  const apply = (patch: Partial<TermPrefs>) => setPrefs(savePrefs(patch));
+
+  const cursorStyles: { value: CursorStyle; label: string }[] = [
+    { value: "bar", label: t("cursorBar") },
+    { value: "block", label: t("cursorBlock") },
+    { value: "underline", label: t("cursorUnderline") },
+  ];
+
+  return (
+    <div className="space-y-3 border-t border-line pt-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs uppercase tracking-wider text-fg-muted">{t("appearance")}</span>
+        <button
+          id="appearance-reset-button"
+          onClick={() => setPrefs(resetPrefs())}
+          className="text-xs text-fg-muted transition-colors hover:text-fg"
+        >
+          {t("resetDefaults")}
+        </button>
+      </div>
+      <span className="block text-xs leading-5 text-fg-muted/80">{t("appearanceScope")}</span>
+
+      <label className="block">
+        <span className="mb-1 block text-xs text-fg-muted">
+          {t("fontSize")} · {prefs.fontSize}px
+        </span>
+        <div className="flex items-center gap-3">
+          <input
+            id="font-size-input"
+            type="range"
+            min={FONT_SIZE_RANGE.min}
+            max={FONT_SIZE_RANGE.max}
+            value={prefs.fontSize}
+            onChange={(e) => apply({ fontSize: Number(e.target.value) })}
+            className="flex-1 accent-[#4cc38a]"
+          />
+          <input
+            type="number"
+            min={FONT_SIZE_RANGE.min}
+            max={FONT_SIZE_RANGE.max}
+            value={prefs.fontSize}
+            onChange={(e) => apply({ fontSize: Number(e.target.value) || DEFAULT_PREFS.fontSize })}
+            className="w-16 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-[13px] text-fg outline-none focus:border-mint/60"
+          />
+        </div>
+      </label>
+
+      <label className="block">
+        <span className="mb-1 block text-xs text-fg-muted">
+          {t("lineHeight")} · {prefs.lineHeight.toFixed(2)}
+        </span>
+        <input
+          id="line-height-input"
+          type="range"
+          min={LINE_HEIGHT_RANGE.min}
+          max={LINE_HEIGHT_RANGE.max}
+          step={0.05}
+          value={prefs.lineHeight}
+          onChange={(e) => apply({ lineHeight: Number(e.target.value) })}
+          className="w-full accent-[#4cc38a]"
+        />
+      </label>
+
+      <label className="block">
+        <span className="mb-1 block text-xs text-fg-muted">{t("fontFamily")}</span>
+        <input
+          id="font-family-input"
+          value={prefs.fontFamily}
+          onChange={(e) => apply({ fontFamily: e.target.value })}
+          placeholder='JetBrainsMono NFM'
+          spellCheck={false}
+          className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors placeholder:text-fg-muted/50 focus:border-mint/60"
+        />
+        <span className="mt-1 block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>
+      </label>
+
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-0.5 rounded-md border border-line p-0.5">
+          {cursorStyles.map(({ value, label }) => (
+            <button
+              key={value}
+              data-cursor-style={value}
+              onClick={() => apply({ cursorStyle: value })}
+              className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                prefs.cursorStyle === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+          <input
+            id="cursor-blink-checkbox"
+            type="checkbox"
+            checked={prefs.cursorBlink}
+            onChange={(e) => apply({ cursorBlink: e.target.checked })}
+            className="h-3.5 w-3.5 accent-[#4cc38a]"
+          />
+          {t("cursorBlink")}
+        </label>
       </div>
     </div>
   );

@@ -15,6 +15,7 @@ import { base64ToBytes } from "./util";
 import { createStreamGate } from "./streamGate";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
+import { fontStack, loadPrefs, onPrefsChange } from "./termPrefs";
 
 const theme = {
   background: "#0b0c0e",
@@ -40,18 +41,14 @@ const theme = {
   brightWhite: "#e6e8eb",
 };
 
-// The one terminal font, bundled with the app (see app.css @font-face) so
-// cell metrics are identical everywhere and icons never come from a
-// different-width fallback font.
-const FONT_FAMILY = '"JetBrainsMono NFM", monospace';
-const FONT_SIZE = 14;
-
-// Wait for the bundled font faces before the terminal measures its cell
-// size — measuring against a fallback font misaligns everything drawn later.
-function loadTerminalFonts(): Promise<unknown> {
+// Wait for the bundled font faces (the guaranteed fallback of every stack)
+// before the terminal measures its cell size — measuring against a fallback
+// font misaligns everything drawn later. User-picked fonts are system fonts
+// and need no loading.
+function loadTerminalFonts(fontSize: number): Promise<unknown> {
   return Promise.all(
     ["", "bold ", "italic ", "bold italic "].map((variant) =>
-      document.fonts.load(`${variant}${FONT_SIZE}px "JetBrainsMono NFM"`),
+      document.fonts.load(`${variant}${fontSize}px "JetBrainsMono NFM"`),
     ),
   ).catch(() => undefined);
 }
@@ -91,17 +88,19 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
     let disposed = false;
     let cleanup: (() => void) | undefined;
 
-    void loadTerminalFonts().then(() => {
+    const prefs = loadPrefs();
+
+    void loadTerminalFonts(prefs.fontSize).then(() => {
       if (disposed) return;
 
       const term = new Terminal({
         theme,
-        fontFamily: FONT_FAMILY,
-        fontSize: FONT_SIZE,
-        lineHeight: 1.2,
+        fontFamily: fontStack(prefs),
+        fontSize: prefs.fontSize,
+        lineHeight: prefs.lineHeight,
         letterSpacing: 0,
-        cursorBlink: true,
-        cursorStyle: "bar",
+        cursorBlink: prefs.cursorBlink,
+        cursorStyle: prefs.cursorStyle,
         scrollback: 10000,
         allowTransparency: false,
         allowProposedApi: true,
@@ -130,6 +129,16 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
 
       fit.fit();
       term.focus();
+
+      // Appearance settings apply live to every open terminal.
+      const stopPrefsSync = onPrefsChange((next) => {
+        term.options.fontFamily = fontStack(next);
+        term.options.fontSize = next.fontSize;
+        term.options.lineHeight = next.lineHeight;
+        term.options.cursorStyle = next.cursorStyle;
+        term.options.cursorBlink = next.cursorBlink;
+        fit.fit();
+      });
 
       const follower = isFollowerClient();
       if (follower) {
@@ -335,6 +344,7 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
         window.clearInterval(idleTimer);
         window.removeEventListener("resize", onWindowChange);
         document.removeEventListener("visibilitychange", onWindowChange);
+        stopPrefsSync();
         inputDisposable.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
