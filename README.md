@@ -40,6 +40,28 @@ journalctl --user -u dala -f     # 日志
 systemctl --user restart dala    # 重启（shell 存活）
 ```
 
+## HTTPS / 反向代理
+
+dala 默认只服务本机/局域网的 http（监听地址由 `DALA_LISTEN_IP` 显式控制），
+`config/prod.exs` 里 Phoenix 生成器自带的 `force_ssl` 已在 v0.1.2 移除——
+它只豁免 `localhost`，用局域网 IP 访问会被 301 到 `https://localhost/`。
+
+如果以后把 dala 挂到带 TLS 的反向代理（nginx/caddy）后面，希望强制 https，
+把下面这段加回 `config/prod.exs` 即可（编译期配置，改后需重新构建发布）：
+
+```elixir
+config :dala, DalaWeb.Endpoint,
+  force_ssl: [
+    rewrite_on: [:x_forwarded_proto],
+    exclude: [
+      hosts: ["localhost", "127.0.0.1"]
+    ]
+  ]
+```
+
+同时在 `~/.config/dala/dala.env` 里设置 `PHX_SCHEME=https`、`PHX_HOST=<域名>`、
+`PHX_CHECK_ORIGIN=true`。
+
 ## 架构速览
 
 - Phoenix + Bandit 做服务端，React + xterm.js 做前端（Phoenix Channels 传输）
