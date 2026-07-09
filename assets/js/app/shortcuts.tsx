@@ -45,40 +45,13 @@ export function hasOpenWindows(): boolean {
   return windowStack.length > 0;
 }
 
-/** Modifier/arrow glyphs come from fallback fonts with different vertical
- * metrics than letters; rendering each run as its own flex item keeps
- * everything optically centered. */
-const SYMBOL_RE = /[\u21e7\u2318\u2325\u2303\u23ce\u232b\u2191\u2193\u2190\u2192]+/g;
-
-function splitKeyRuns(text: string): { text: string; symbol: boolean }[] {
-  const runs: { text: string; symbol: boolean }[] = [];
-  let last = 0;
-  for (const match of text.matchAll(SYMBOL_RE)) {
-    const index = match.index ?? 0;
-    if (index > last) runs.push({ text: text.slice(last, index), symbol: false });
-    runs.push({ text: match[0], symbol: true });
-    last = index + match[0].length;
-  }
-  if (last < text.length) runs.push({ text: text.slice(last), symbol: false });
-  return runs;
-}
-
+/** The bundled "Inter Kbd" subset covers letters AND the Mac modifier glyphs
+ * (\u21e7\u2318\u2325\u2303\u23ce\u232b, arrows), so the whole badge renders from one font with one
+ * baseline \u2014 no fallback-font misalignment. */
 export function Kbd({ children }: { children: React.ReactNode }) {
-  const content =
-    typeof children === "string"
-      ? splitKeyRuns(children).map((run, i) => (
-          <span
-            key={i}
-            className={run.symbol ? "text-[11px] leading-none" : "text-[9px] leading-none"}
-          >
-            {run.text}
-          </span>
-        ))
-      : children;
-
   return (
-    <kbd className="inline-flex items-center gap-px rounded border border-line bg-bg0 px-1 py-px align-middle font-mono text-[9px] leading-4 text-fg-muted">
-      {content}
+    <kbd className="inline-flex items-center rounded border border-line bg-bg0 px-1 py-px align-middle font-kbd text-[10px] leading-4 text-fg-muted">
+      {children}
     </kbd>
   );
 }

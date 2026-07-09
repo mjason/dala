@@ -141,6 +141,18 @@
   font-display: swap;
 }
 
+/* Subset of Inter (OFL, see priv/static/fonts/LICENSE-Inter.txt) carrying
+   ASCII plus the keyboard glyphs (⇧⌘⌥⌃⏎⌫ and arrows), so shortcut badges
+   render letters and modifier symbols from one font with one baseline on
+   every platform. */
+@font-face {
+  font-family: "Inter Kbd";
+  src: url("/fonts/inter-kbd.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Dala design tokens — dark, neutral, terminal-first.
    The accent is named "mint" to avoid colliding with daisyUI's
    --color-accent variable, which the auth pages still use. */
@@ -153,6 +165,7 @@
   --color-fg-muted: #8f96a0;
   --color-mint: #4cc38a;
   --color-danger: #f0716e;
+  --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
 }
 
 /* SPA root: fill the viewport, no page scroll */
