@@ -47,10 +47,12 @@ export function hasOpenWindows(): boolean {
 
 /** The bundled "Inter Kbd" subset covers letters AND the Mac modifier glyphs
  * (\u21e7\u2318\u2325\u2303\u23ce\u232b, arrows), so the whole badge renders from one font with one
- * baseline \u2014 no fallback-font misalignment. */
+ * baseline \u2014 no fallback-font misalignment. Colors derive from currentColor,
+ * so the badge blends into filled buttons (mint/danger) as well as muted
+ * text contexts. */
 export function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="inline-flex items-center rounded border border-line bg-bg0 px-1 py-px align-middle font-kbd text-[10px] leading-4 text-fg-muted">
+    <kbd className="inline-flex items-center rounded border border-current/25 bg-current/10 px-1 py-px align-middle font-kbd text-[10px] leading-4 opacity-90">
       {children}
     </kbd>
   );
