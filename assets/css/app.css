@@ -3,7 +3,6 @@
 
 @import "tailwindcss" source(none);
 @import "../node_modules/@xterm/xterm/css/xterm.css";
-@import "../node_modules/@wterm/dom/src/terminal.css";
 @source "../../deps/ash_authentication_phoenix";
 @import "phoenix-colocated/dala/colocated.css";
 @source "../css";
@@ -223,43 +222,6 @@ body:has(> #app) {
 #git-panel *,
 #file-preview pre,
 #diff-view pre {
-  scrollbar-width: thin;
-  scrollbar-color: #2c3037 transparent;
-}
-
-/* wterm (experimental renderer): dala palette + bundled terminal font,
-   stripped of the standalone-widget chrome. */
-.wterm {
-  --term-fg: #d7dde3;
-  --term-bg: #0b0c0e;
-  --term-cursor: #4cc38a;
-  --term-color-0: #1a1d21;
-  --term-color-1: #e5716e;
-  --term-color-2: #5fbf87;
-  --term-color-3: #d9a860;
-  --term-color-4: #6d9fd6;
-  --term-color-5: #b087c9;
-  --term-color-6: #5fb8b8;
-  --term-color-7: #c9ced4;
-  --term-color-8: #5b626b;
-  --term-color-9: #f0928f;
-  --term-color-10: #7fd6a3;
-  --term-color-11: #ecc57f;
-  --term-color-12: #8fb8e8;
-  --term-color-13: #c9a5dd;
-  --term-color-14: #7fd0d0;
-  --term-color-15: #e6e8eb;
-  --term-font-family: "JetBrainsMono NFM", monospace;
-  --term-font-size: 14px;
-  --term-line-height: 1.2;
-  padding: 8px 12px;
-  border-radius: 0;
-  box-shadow: none;
-  height: 100%;
-  width: 100%;
-}
-
-.wterm.has-scrollback {
   scrollbar-width: thin;
   scrollbar-color: #2c3037 transparent;
 }

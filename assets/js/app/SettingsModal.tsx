@@ -284,24 +284,6 @@ function AppearanceSection() {
       </span>
 
       <label className="block">
-        <span className="mb-1 block text-xs text-fg-muted">{t("rendererEngine")}</span>
-        <div className="flex w-fit items-center gap-0.5 rounded-md border border-line p-0.5">
-          {(["xterm", "wterm"] as const).map((value) => (
-            <button
-              key={value}
-              data-renderer={value}
-              onClick={() => apply({ renderer: value })}
-              className={`whitespace-nowrap rounded px-2.5 py-0.5 text-xs transition-colors ${
-                prefs.renderer === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
-              }`}
-            >
-              {value === "xterm" ? "xterm.js" : "wterm + ghostty (beta)"}
-            </button>
-          ))}
-        </div>
-      </label>
-
-      <label className="block">
         <span className="mb-1 block text-xs text-fg-muted">
           {t("fontSize")} · {prefs.fontSize}px
         </span>

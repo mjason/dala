@@ -15,8 +15,6 @@ import {
 import { getSocket } from "./socket";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView from "./TerminalView";
-import WtermView from "./WtermView";
-import { loadPrefs, onPrefsChange } from "./termPrefs";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
 import SettingsModal from "./SettingsModal";
@@ -49,8 +47,6 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [creating, setCreating] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
-  const [renderer, setRenderer] = useState(() => loadPrefs().renderer);
-  useEffect(() => onPrefsChange((prefs) => setRenderer(prefs.renderer)), []);
   // Desktop sidebar collapse (VS Code's Ctrl/Cmd+B), remembered per browser.
   const [sidebarHidden, setSidebarHidden] = useState(
     () => localStorage.getItem("dala:sidebar-hidden") === "1",
@@ -409,29 +405,16 @@ export default function App() {
             </header>
 
             <div className="relative min-h-0 flex-1 bg-[#0b0c0e]">
-              {renderer === "wterm" ? (
-                <WtermView
-                  key={`wterm-${active.id}`}
-                  sessionId={active.id}
-                  scrollbackLines={historyLines(active.scrollbackLimit)}
-                  actionsRef={termActions}
-                  onError={toast}
-                  onCwdChange={(cwd) => {
-                    if (followCwd) setDrawerPath(cwd);
-                  }}
-                />
-              ) : (
-                <TerminalView
-                  key={active.id}
-                  sessionId={active.id}
-                  scrollbackLines={historyLines(active.scrollbackLimit)}
-                  actionsRef={termActions}
-                  onError={toast}
-                  onCwdChange={(cwd) => {
-                    if (followCwd) setDrawerPath(cwd);
-                  }}
-                />
-              )}
+              <TerminalView
+                key={active.id}
+                sessionId={active.id}
+                scrollbackLines={historyLines(active.scrollbackLimit)}
+                actionsRef={termActions}
+                onError={toast}
+                onCwdChange={(cwd) => {
+                  if (followCwd) setDrawerPath(cwd);
+                }}
+              />
               {active.status === "exited" && (
                 <div className="absolute inset-0 z-10 grid place-items-center bg-bg0/70 backdrop-blur-[1px]">
                   <div className="flex flex-col items-center gap-3 rounded-xl border border-line bg-bg1 px-8 py-6 shadow-2xl">

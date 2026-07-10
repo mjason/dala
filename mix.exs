@@ -110,7 +110,6 @@ defmodule Dala.MixProject do
       ],
       "assets.build": ["compile", "tailwind dala", "esbuild dala"],
       "assets.deploy": [
-        "cmd cp assets/node_modules/@wterm/ghostty/wasm/ghostty-vt.wasm priv/static/wasm/",
         "tailwind dala --minify",
         "esbuild dala --minify",
         "phx.digest"
