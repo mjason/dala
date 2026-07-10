@@ -4,7 +4,7 @@
 // bilingual application menu to switch servers, a local management page,
 // a built-in browser window for external links, and a native clipboard
 // bridge for plain-http LAN servers.
-const { app, BrowserWindow, Menu, clipboard, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, ipcMain, nativeTheme } = require("electron");
 const fs = require("fs");
 const path = require("path");
 
@@ -304,6 +304,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => createShellWindow(startupServer()));
 
   app.whenReady().then(() => {
+    // Dark window chrome (title bar on macOS/Windows) regardless of the
+    // system theme — the app itself is dark, a white title bar clashes.
+    nativeTheme.themeSource = "dark";
     config = loadConfig();
     rebuildMenu();
     app.on("browser-window-focus", rebuildMenu);
