@@ -19,6 +19,8 @@ export type TermPrefs = {
   scrollSensitivity: number;
   /** Selecting text copies it immediately (canvas text has no native copy). */
   copyOnSelect: boolean;
+  /** Terminal renderer: battle-tested xterm.js or experimental wterm (DOM). */
+  renderer: "xterm" | "wterm";
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -30,6 +32,7 @@ export const DEFAULT_PREFS: TermPrefs = {
   smoothScroll: true,
   scrollSensitivity: 2,
   copyOnSelect: true,
+  renderer: "xterm",
 };
 
 /** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
@@ -73,6 +76,7 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
     ),
     copyOnSelect:
       typeof raw.copyOnSelect === "boolean" ? raw.copyOnSelect : DEFAULT_PREFS.copyOnSelect,
+    renderer: raw.renderer === "wterm" ? "wterm" : "xterm",
   };
 }
 

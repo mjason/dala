@@ -51,6 +51,19 @@ export function historyLines(stored: number): number {
  * execCommand("copy"), restoring focus afterwards.
  */
 export async function writeClipboard(text: string): Promise<boolean> {
+  // Inside the desktop client the injected bridge writes the OS clipboard
+  // natively — webview clipboard APIs are unreliable across platforms.
+  const native = (window as { __DALA_CLIPBOARD__?: (t: string) => Promise<void> })
+    .__DALA_CLIPBOARD__;
+  if (native) {
+    try {
+      await native(text);
+      return true;
+    } catch {
+      // fall through to the web APIs
+    }
+  }
+
   try {
     await navigator.clipboard.writeText(text);
     return true;

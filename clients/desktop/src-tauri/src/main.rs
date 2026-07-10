@@ -27,6 +27,9 @@ const LINK_SCRIPT: &str = r#"
       window.__TAURI__.core.invoke("open_browser", { url: String(url) });
     } catch (e) {}
   };
+  window.__DALA_CLIPBOARD__ = function (text) {
+    return window.__TAURI__.core.invoke("clip_write", { text: String(text) });
+  };
   var native = window.open;
   window.open = function (url) {
     if (url) { send(url); return null; }
@@ -244,6 +247,16 @@ fn connect(app: AppHandle, window: WebviewWindow, url: String) -> Result<(), Str
     Ok(())
 }
 
+/// Native clipboard write: webview clipboard APIs are inconsistent across
+/// WKWebView/WebKitGTK/WebView2 (secure-context rules, execCommand quirks),
+/// so pages bridge here instead.
+#[tauri::command]
+fn clip_write(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|e| e.to_string())
+}
+
 /// Built-in browser window for links that would otherwise open a popup
 /// (terminal web links, HTML previews, OAuth pages).
 #[tauri::command]
@@ -313,7 +326,8 @@ fn main() {
             remove_server,
             connect,
             open_in_new_window,
-            open_browser
+            open_browser,
+            clip_write
         ])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         .setup(|app| {
