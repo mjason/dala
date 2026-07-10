@@ -28,3 +28,13 @@ jobs:
         run: |
           npm install
           npx electron-builder --linux dir
+
+      # Every module main.js requires must actually be inside the asar —
+      # a missing entry in build.files crashes the app only at runtime.
+      - name: Verify packaged modules
+        working-directory: clients/desktop
+        run: |
+          for f in main.js preload.js updater.js; do
+            npx @electron/asar list dist/linux-unpacked/resources/app.asar | grep -qx "/$f" \
+              || { echo "MISSING $f in app.asar"; exit 1; }
+          done
