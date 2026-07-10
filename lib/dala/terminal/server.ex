@@ -359,12 +359,29 @@ defmodule Dala.Terminal.Server do
     # mouse/paste/alt-screen modes.
     _ = emit(state, @mode_reset)
 
-    case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
-      {:ok, _session} ->
-        :ok
+    if state.session.ephemeral do
+      # Quick shells vanish on exit instead of lingering as "exited".
+      # Destroy from outside this process: CleanupSession waits for this
+      # server to stop, which we are about to do.
+      session = state.session
 
-      {:error, error} ->
-        Logger.warning("could not mark session #{state.id} exited: #{inspect(error)}")
+      Task.start(fn ->
+        case Dala.Terminal.delete_session(session) do
+          :ok ->
+            :ok
+
+          {:error, error} ->
+            Logger.warning("could not destroy quick shell #{session.id}: #{inspect(error)}")
+        end
+      end)
+    else
+      case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
+        {:ok, _session} ->
+          :ok
+
+        {:error, error} ->
+          Logger.warning("could not mark session #{state.id} exited: #{inspect(error)}")
+      end
     end
 
     {:stop, :normal, state}

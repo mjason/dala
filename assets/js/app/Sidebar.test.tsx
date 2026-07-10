@@ -14,6 +14,7 @@ const sessions: Session[] = [
     status: "running",
     exitCode: null,
     scrollbackLimit: 5_242_880,
+    ephemeral: false,
     insertedAt: "2026-07-08T00:00:00Z",
   },
   {
@@ -24,6 +25,7 @@ const sessions: Session[] = [
     status: "exited",
     exitCode: 0,
     scrollbackLimit: 5_242_880,
+    ephemeral: false,
     insertedAt: "2026-07-08T01:00:00Z",
   },
 ];

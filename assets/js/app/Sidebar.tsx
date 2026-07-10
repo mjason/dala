@@ -81,7 +81,17 @@ export default function Sidebar({
                 }`}
               />
               <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-sm">{s.name}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate font-mono text-sm">{s.name}</span>
+                  {s.ephemeral && (
+                    <span
+                      className="shrink-0 text-[10px] text-mint/80"
+                      title={t("quickShellTitle")}
+                    >
+                      ⚡
+                    </span>
+                  )}
+                </div>
                 <div className="truncate font-mono text-xs text-fg-muted/80">
                   {shortPath(s.cwd, 28)}
                 </div>

@@ -65,6 +65,24 @@ defmodule Dala.Terminal.SessionTest do
     eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
   end
 
+  test "ephemeral session destroys itself when the shell exits" do
+    session = create_session!(%{ephemeral: true})
+    assert session.ephemeral
+
+    Phoenix.PubSub.subscribe(Dala.PubSub, "sessions")
+    Server.input(session.id, "exit\r")
+    await_exit(session.id)
+
+    # the record self-destructs (broadcasting session_deleted) …
+    eventually(fn -> match?({:error, _}, Dala.Terminal.get_session(session.id)) end)
+    assert_receive %Phoenix.Socket.Broadcast{event: "session_deleted"}, 5_000
+
+    # … and leaves no holder files behind
+    id = to_string(session.id)
+    refute File.exists?(Holder.exit_path(id))
+    refute File.exists?(Holder.final_path(id))
+  end
+
   test "input reaches the shell; output is broadcast and lands in the repaint" do
     session = create_session!()
     Phoenix.PubSub.subscribe(Dala.PubSub, "terminal:#{session.id}")

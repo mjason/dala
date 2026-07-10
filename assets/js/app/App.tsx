@@ -33,6 +33,7 @@ const SESSION_FIELDS = [
   "status",
   "exitCode",
   "scrollbackLimit",
+  "ephemeral",
   "insertedAt",
 ] as const;
 
@@ -84,6 +85,16 @@ export default function App() {
     });
   }, []);
 
+  // Trail of visited sessions, so closing a quick shell can land the user
+  // back where they came from. Refs, because the channel handlers below are
+  // registered once and must not see stale state.
+  const activeIdRef = useRef<string | null>(null);
+  const historyRef = useRef<string[]>([]);
+  const sessionsRef = useRef<Session[]>([]);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
   // Socket status + sessions lobby channel.
   useEffect(() => {
     const socket = getSocket();
@@ -96,7 +107,17 @@ export default function App() {
     const refs = onSessionsChannelMessages(channel, {
       session_created: upsertSession,
       session_updated: upsertSession,
-      session_deleted: ({ id }) => setSessions((list) => list.filter((s) => s.id !== id)),
+      session_deleted: ({ id }) => {
+        setSessions((list) => list.filter((s) => s.id !== id));
+        // A quick shell exiting deletes itself while active: return to the
+        // most recently visited session that still exists.
+        if (id === activeIdRef.current) {
+          const previous = [...historyRef.current]
+            .reverse()
+            .find((h) => h !== id && sessionsRef.current.some((s) => s.id === h));
+          if (previous) setActiveId(previous);
+        }
+      },
     });
     phxChannel.join();
 
@@ -127,7 +148,12 @@ export default function App() {
   const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
 
   useEffect(() => {
-    if (active) localStorage.setItem("dala:active", active.id);
+    if (!active) return;
+    localStorage.setItem("dala:active", active.id);
+    activeIdRef.current = active.id;
+    const trail = historyRef.current.filter((id) => id !== active.id);
+    trail.push(active.id);
+    historyRef.current = trail.slice(-20);
   }, [active?.id]);
 
   // Keep the drawer on the terminal's cwd while following.
@@ -135,10 +161,10 @@ export default function App() {
     if (followCwd && active) setDrawerPath(active.cwd);
   }, [followCwd, active?.id, active?.cwd]);
 
-  const handleCreate = async (cwd?: string) => {
+  const handleCreate = async (input: { cwd?: string; ephemeral?: boolean } = {}) => {
     setCreating(true);
     const result = await createSession({
-      input: cwd ? { cwd } : {},
+      input,
       fields: [...SESSION_FIELDS],
       headers: buildCSRFHeaders(),
     });
@@ -154,11 +180,12 @@ export default function App() {
   };
 
   // Quick shell (Ctrl+Shift+`): a fresh shell already cd'd into the active
-  // session's directory — for running vim/git beside a busy shell. Kept in
+  // session's directory — for running vim/git beside a busy shell. Ephemeral:
+  // `exit`/Ctrl+D destroys it and returns to the previous session. Kept in
   // a ref so the mount-once shortcut handler sees the current session.
   const quickShellRef = useRef(() => {});
   quickShellRef.current = () => {
-    void handleCreate(active?.cwd || undefined).then(() => {
+    void handleCreate({ cwd: active?.cwd || undefined, ephemeral: true }).then(() => {
       // focus once the new session's terminal has mounted
       window.setTimeout(() => termActions.current?.focus(), 150);
     });
@@ -329,6 +356,20 @@ export default function App() {
               >
                 {shortPath(active.cwd, 60)}
               </span>
+              <Tooltip
+                label={t("quickShellTitle")}
+                description={t("quickShellDesc")}
+                keys="Ctrl+Shift+`"
+              >
+                <button
+                  id="quick-shell-button"
+                  onClick={() => quickShellRef.current()}
+                  disabled={creating}
+                  className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint disabled:opacity-50"
+                >
+                  +&gt;_
+                </button>
+              </Tooltip>
               <div className="flex-1" />
               <span
                 className={`hidden font-mono text-[11px] sm:block ${

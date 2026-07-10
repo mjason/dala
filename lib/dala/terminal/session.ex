@@ -19,7 +19,7 @@ defmodule Dala.Terminal.Session do
     defaults [:read]
 
     create :create do
-      accept [:scrollback_limit]
+      accept [:scrollback_limit, :ephemeral]
 
       # Optional; SetDefaults falls back to $SHELL, $HOME and the shell name.
       argument :name, :string
@@ -208,6 +208,17 @@ defmodule Dala.Terminal.Session do
 
       constraints min: 1_000, max: 268_435_456
       default 10_000
+      allow_nil? false
+      public? true
+    end
+
+    attribute :ephemeral, :boolean do
+      description """
+      Quick shells: the session destroys itself (instead of lingering as
+      exited) when its shell exits, so `exit`/Ctrl+D closes it for good.
+      """
+
+      default false
       allow_nil? false
       public? true
     end
