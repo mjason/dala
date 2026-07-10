@@ -35,6 +35,35 @@ function stripPrefix(path: string): string {
   return path.replace(/^[ab]\//, "");
 }
 
+/**
+ * git C-quotes paths with non-ASCII bytes in patch headers
+ * (`"a/\346\226\207.txt"`): strip the quotes and decode the octal escapes
+ * back into UTF-8 so the path matches what the filesystem/index use.
+ */
+export function unquoteGitPath(raw: string): string {
+  let path = raw;
+  if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+  if (!path.includes("\\")) return path;
+
+  const bytes: number[] = [];
+  for (let i = 0; i < path.length; i++) {
+    if (path[i] !== "\\") {
+      bytes.push(path.charCodeAt(i));
+      continue;
+    }
+    const next = path[i + 1] ?? "";
+    if (next >= "0" && next <= "7") {
+      bytes.push(parseInt(path.slice(i + 1, i + 4), 8));
+      i += 3;
+    } else {
+      const escapes: Record<string, string> = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\" };
+      bytes.push((escapes[next] ?? next).charCodeAt(0));
+      i += 1;
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
 export function parseDiff(text: string): ParsedDiff {
   const lines = text.split("\n");
   const files: DiffFile[] = [];
@@ -50,8 +79,8 @@ export function parseDiff(text: string): ParsedDiff {
       // "diff --git a/path b/path"
       const m = line.match(/^diff --git (?:"?a\/([^"]+)"?) (?:"?b\/([^"]+)"?)$/);
       file = {
-        oldPath: m ? m[1] : "",
-        newPath: m ? m[2] : "",
+        oldPath: m ? unquoteGitPath(m[1]) : "",
+        newPath: m ? unquoteGitPath(m[2]) : "",
         binary: false,
         additions: 0,
         deletions: 0,
@@ -85,13 +114,13 @@ export function parseDiff(text: string): ParsedDiff {
     if (!hunk) {
       const renamed = line.match(/^rename (from|to) (.+)$/);
       if (renamed) {
-        if (renamed[1] === "from") file.oldPath = renamed[2];
-        else file.newPath = renamed[2];
+        if (renamed[1] === "from") file.oldPath = unquoteGitPath(renamed[2]);
+        else file.newPath = unquoteGitPath(renamed[2]);
       }
       const plusPath = line.match(/^\+\+\+ "?b\/(.+?)"?$/);
-      if (plusPath) file.newPath = stripPrefix(plusPath[1]);
+      if (plusPath) file.newPath = unquoteGitPath(stripPrefix(plusPath[1]));
       const minusPath = line.match(/^--- "?a\/(.+?)"?$/);
-      if (minusPath) file.oldPath = stripPrefix(minusPath[1]);
+      if (minusPath) file.oldPath = unquoteGitPath(stripPrefix(minusPath[1]));
       continue;
     }
 
