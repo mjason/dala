@@ -37,7 +37,11 @@ export function useWindowMode(): [WindowMode, (mode: WindowMode) => void] {
 const FRAMES: Record<WindowMode, { overlay: string; panel: string; backdrop: boolean }> = {
   center: {
     overlay: "fixed inset-0 z-40 grid place-items-center bg-black/60 p-3 sm:p-6",
-    panel: "w-full max-w-5xl max-h-full h-auto sm:max-h-[88vh]",
+    // Definite height, not max-h + auto: percentage heights inside an
+    // auto-height panel resolve to auto on Chromium, which breaks
+    // CodeMirror's internal scrolling (and a viewer that keeps its size
+    // while flipping through files is calmer anyway).
+    panel: "h-full w-full max-w-5xl sm:h-[88vh]",
     backdrop: true,
   },
   full: {

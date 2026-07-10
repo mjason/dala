@@ -137,5 +137,11 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
     };
   }, [filename]);
 
-  return <div id="code-editor" ref={hostRef} className="min-h-0 flex-1 overflow-hidden bg-bg0" />;
+  // See CmCode: the absolute box keeps CodeMirror's height definite so its
+  // own scroller works inside auto-height windows on Chromium.
+  return (
+    <div id="code-editor" className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
+      <div ref={hostRef} className="absolute inset-0" />
+    </div>
+  );
 }

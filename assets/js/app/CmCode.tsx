@@ -86,5 +86,12 @@ export default function CmCode({ content, filename, wrap }: Props) {
     };
   }, [filename]);
 
-  return <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden" />;
+  // The absolute box gives CodeMirror a *definite* height: percentage
+  // heights resolve to auto inside max-h/auto-height windows on Chromium,
+  // which lets .cm-editor grow to its content and kills scrolling.
+  return (
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={hostRef} className="absolute inset-0" />
+    </div>
+  );
 }
