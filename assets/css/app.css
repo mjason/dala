@@ -184,13 +184,14 @@ body:has(> #app) {
   }
 }
 
-/* Slim scrollbars for every scroll container in the app. Chromium gets
-   5px ::-webkit-scrollbar pseudos; Firefox (no webkit pseudos) gets the
-   standard properties. The two must not mix: setting scrollbar-width
-   disables the webkit pseudo styling. */
+/* Scrollbars. macOS (html[data-platform="mac"], set at boot) keeps the
+   system's native overlay scrollbars untouched — native beats imitation.
+   Other platforms get a slim macOS-like pill: Chromium via
+   ::-webkit-scrollbar pseudos, Firefox via the standard properties (the
+   two must not mix: setting scrollbar-width disables the pseudos). */
 @supports not selector(::-webkit-scrollbar) {
-  #app,
-  #app * {
+  html[data-platform="other"] #app,
+  html[data-platform="other"] #app * {
     scrollbar-width: thin;
     scrollbar-color: #2c3037 transparent;
   }
@@ -200,29 +201,29 @@ body:has(> #app) {
   /* macOS-style pill: a 6px rounded thumb floating 3px off the edge
      (12px gutter − 3px transparent border each side, background-clip
      keeps the color inside the content box). */
-  #app ::-webkit-scrollbar {
+  html[data-platform="other"] #app ::-webkit-scrollbar {
     width: 12px;
     height: 12px;
   }
 
-  #app ::-webkit-scrollbar-track {
+  html[data-platform="other"] #app ::-webkit-scrollbar-track {
     background: transparent;
   }
 
-  #app ::-webkit-scrollbar-thumb {
+  html[data-platform="other"] #app ::-webkit-scrollbar-thumb {
     background: rgba(128, 132, 140, 0.45);
     background-clip: content-box;
     border: 3px solid transparent;
     border-radius: 6px;
   }
 
-  #app ::-webkit-scrollbar-thumb:hover {
+  html[data-platform="other"] #app ::-webkit-scrollbar-thumb:hover {
     background: rgba(140, 145, 154, 0.7);
     background-clip: content-box;
     border: 3px solid transparent;
   }
 
-  #app ::-webkit-scrollbar-corner {
+  html[data-platform="other"] #app ::-webkit-scrollbar-corner {
     background: transparent;
   }
 }
@@ -236,15 +237,28 @@ body:has(> #app) {
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   width: 6px !important;
   left: auto !important;
-  right: 3px;
+  right: 1px;
   border-radius: 6px;
+  opacity: 0;
+  transition: opacity 150ms linear;
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider {
   height: 6px !important;
   top: auto !important;
-  bottom: 3px;
+  bottom: 1px;
   border-radius: 6px;
+  opacity: 0;
+  transition: opacity 150ms linear;
+}
+
+/* Strictly macOS: the thumb only materializes when the pointer is near
+   the edge (the 14px strip) or while dragging. Streaming output moves the
+   scroll position constantly, which would otherwise keep the fade-in
+   scrollbar awake the whole time. */
+.xterm .xterm-scrollable-element > .scrollbar:hover > .slider,
+.xterm .xterm-scrollable-element > .scrollbar > .slider.active {
+  opacity: 1;
 }
 
 /* Settings dialog: entrance micro-animation + slim custom sliders. */

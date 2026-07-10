@@ -127,9 +127,13 @@ function openBrowserWindow(url) {
     if (/^https?:/i.test(next)) openBrowserWindow(next);
     return { action: "deny" };
   });
-  win.webContents.on("dom-ready", () => {
-    void win.webContents.insertCSS(BROWSER_SCROLLBAR_CSS);
-  });
+  // macOS renders its native overlay scrollbars — leave them alone;
+  // other platforms get the slim pill instead of Chromium's chunky default.
+  if (process.platform !== "darwin") {
+    win.webContents.on("dom-ready", () => {
+      void win.webContents.insertCSS(BROWSER_SCROLLBAR_CSS);
+    });
+  }
   win.loadURL(url);
 }
 
