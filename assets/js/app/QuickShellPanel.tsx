@@ -7,7 +7,10 @@ import type { Session } from "./Sidebar";
 type TerminalActions = { reset: () => void; refit: () => void; focus: () => void };
 
 type Props = {
-  session: Session;
+  sessions: Session[];
+  active: Session;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
   maximized: boolean;
   onToggleMax: () => void;
   onClose: () => void;
@@ -16,13 +19,16 @@ type Props = {
 };
 
 /**
- * The quick shell: an ephemeral terminal in an overlay panel (like the file
+ * The quick shells: ephemeral terminals in an overlay panel (like the file
  * drawer), so grabbing a shell for vim/git never rearranges the session
- * list. Closing the panel keeps the shell running; `exit`/Ctrl+D inside it
- * destroys the session for good.
+ * list. Tabs (⚡1 ⚡2 …) hold multiple shells; Esc or the toggle hides the
+ * panel keeping them alive; `exit`/Ctrl+D inside one destroys it for good.
  */
 export default function QuickShellPanel({
-  session,
+  sessions,
+  active,
+  onSelect,
+  onAdd,
   maximized,
   onToggleMax,
   onClose,
@@ -40,17 +46,51 @@ export default function QuickShellPanel({
           : "inset-y-0 right-0 w-full border-l border-line sm:w-[min(52rem,78vw)]"
       }`}
     >
-      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3">
+      {/* h-11 matches the main header, so the split line tops align. */}
+      <header
+        className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3"
+        onKeyDown={(e) => {
+          // Esc with focus on the header buttons/tabs also hides the panel;
+          // Esc inside the terminal is handled by TerminalView's onEscape.
+          if (e.key === "Escape") onClose();
+        }}
+      >
         <span className="text-sm text-mint">⚡</span>
-        <span className="shrink-0 font-mono text-sm text-fg">{t("quickShellTitle")}</span>
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          {sessions.map((s, i) => (
+            <button
+              key={s.id}
+              data-quick-tab={s.id}
+              onClick={() => onSelect(s.id)}
+              title={s.cwd}
+              className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                s.id === active.id
+                  ? "border-mint/50 bg-bg2 text-mint"
+                  : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+              }`}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+        <button
+          id="quick-shell-add"
+          onClick={onAdd}
+          className="grid h-6 w-6 shrink-0 place-items-center rounded border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
+          title={t("quickShellTitle")}
+        >
+          <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+          </svg>
+        </button>
         <span
           className="hidden truncate font-mono text-xs text-fg-muted sm:block"
-          title={session.cwd}
+          title={active.cwd}
         >
-          {shortPath(session.cwd, 48)}
+          {shortPath(active.cwd, 40)}
         </span>
         <div className="flex-1" />
-        <span className="hidden font-mono text-[11px] text-fg-muted/70 md:block">
+        <span className="hidden font-mono text-[11px] text-fg-muted/70 lg:block">
           {t("quickShellHint")}
         </span>
         <button
@@ -86,10 +126,12 @@ export default function QuickShellPanel({
       </header>
       <div className="min-h-0 flex-1">
         <TerminalView
-          sessionId={session.id}
-          scrollbackLines={historyLines(session.scrollbackLimit)}
+          key={active.id}
+          sessionId={active.id}
+          scrollbackLines={historyLines(active.scrollbackLimit)}
           actionsRef={actionsRef}
           onError={onError}
+          onEscape={onClose}
         />
       </div>
     </div>

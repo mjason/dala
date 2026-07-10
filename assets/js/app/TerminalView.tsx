@@ -93,9 +93,21 @@ type Props = {
   onCwdChange?: (cwd: string) => void;
   onError?: (message: string) => void;
   actionsRef?: React.MutableRefObject<TerminalActions | null>;
+  /** Called instead of sending ESC to the shell — but only at a normal
+   * prompt: full-screen programs (vim, htop, …) run on the alternate
+   * buffer and keep receiving their Escape key. The quick-shell panel
+   * uses this to close on Esc. */
+  onEscape?: () => void;
 };
 
-export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, onError, actionsRef }: Props) {
+export default function TerminalView({
+  sessionId,
+  scrollbackLines,
+  onCwdChange,
+  onError,
+  actionsRef,
+  onEscape,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
@@ -104,6 +116,8 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
   cwdChangeRef.current = onCwdChange;
   const errorRef = useRef(onError);
   errorRef.current = onError;
+  const escapeRef = useRef(onEscape);
+  escapeRef.current = onEscape;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -168,6 +182,15 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
       // through xterm's native copy-event path.
       let livePrefs = prefs;
       term.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === "keydown" &&
+          event.key === "Escape" &&
+          escapeRef.current &&
+          term.buffer.active.type === "normal"
+        ) {
+          escapeRef.current();
+          return false;
+        }
         if (
           !isMac &&
           event.type === "keydown" &&

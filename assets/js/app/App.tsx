@@ -96,26 +96,27 @@ export default function App() {
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  // The quick shell lives in an overlay panel (not the sidebar): one
-  // ephemeral session, toggled open/closed, maximizable.
-  const [qsId, setQsId] = useState<string | null>(null);
+  // The quick shells live in one overlay panel (not the sidebar): ephemeral
+  // sessions as tabs, toggled open/closed, maximizable.
+  const [qsIds, setQsIds] = useState<string[]>([]);
+  const [qsActiveId, setQsActiveId] = useState<string | null>(null);
   const [qsOpen, setQsOpen] = useState(false);
   const [qsMax, setQsMax] = useState(false);
   const qsActions = useRef<{ reset: () => void; refit: () => void; focus: () => void } | null>(
     null,
   );
-  const qsIdRef = useRef<string | null>(null);
-  qsIdRef.current = qsId;
-  const qsOpenRef = useRef(false);
-  qsOpenRef.current = qsOpen;
+  const qsRef = useRef({ ids: [] as string[], activeId: null as string | null, open: false });
+  qsRef.current = { ids: qsIds, activeId: qsActiveId, open: qsOpen };
 
-  // After a reload the panel state is gone but the ephemeral shell may still
-  // be running — adopt it instead of leaking it, so the next toggle
-  // reconnects to the same shell.
+  const focusQuickShell = () => window.setTimeout(() => qsActions.current?.focus(), 150);
+
+  // After a reload the panel state is gone but ephemeral shells may still be
+  // running — adopt them as tabs instead of leaking them.
   useEffect(() => {
-    if (qsIdRef.current) return;
-    const orphan = sessions.find((s) => s.ephemeral);
-    if (orphan) setQsId(orphan.id);
+    const orphans = sessions.filter((s) => s.ephemeral && !qsRef.current.ids.includes(s.id));
+    if (orphans.length === 0) return;
+    setQsIds((ids) => [...ids, ...orphans.map((o) => o.id).filter((id) => !ids.includes(id))]);
+    setQsActiveId((current) => current ?? orphans[0].id);
   }, [sessions]);
 
   // Socket status + sessions lobby channel.
@@ -132,12 +133,20 @@ export default function App() {
       session_updated: upsertSession,
       session_deleted: ({ id }) => {
         setSessions((list) => list.filter((s) => s.id !== id));
-        // The quick shell destroyed itself (exit/Ctrl+D): drop the panel.
-        if (id === qsIdRef.current) {
-          setQsId(null);
-          setQsOpen(false);
-          setQsMax(false);
-          termActions.current?.focus();
+        // A quick shell destroyed itself (exit/Ctrl+D): drop its tab, and
+        // the whole panel when it was the last one.
+        if (qsRef.current.ids.includes(id)) {
+          const rest = qsRef.current.ids.filter((x) => x !== id);
+          setQsIds(rest);
+          if (rest.length === 0) {
+            setQsOpen(false);
+            setQsMax(false);
+            setQsActiveId(null);
+            termActions.current?.focus();
+          } else if (qsRef.current.activeId === id) {
+            setQsActiveId(rest[rest.length - 1]);
+            if (qsRef.current.open) focusQuickShell();
+          }
         }
         // The active session was deleted: return to the most recently
         // visited one that still exists.
@@ -181,7 +190,10 @@ export default function App() {
     [sessions],
   );
   const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
-  const qsSession = (qsId && sessions.find((s) => s.id === qsId)) || null;
+  const qsSessions = qsIds
+    .map((id) => sessions.find((s) => s.id === id))
+    .filter((s): s is Session => Boolean(s));
+  const qsSession = qsSessions.find((s) => s.id === qsActiveId) ?? qsSessions[0] ?? null;
 
   useEffect(() => {
     if (!active) return;
@@ -215,24 +227,14 @@ export default function App() {
     }
   };
 
-  // Quick shell (Ctrl+Shift+` or the header button): an ephemeral terminal
+  // Quick shells (Ctrl+Shift+` or the header button): ephemeral terminals
   // in an overlay panel, opened in the active session's directory — for
   // vim/git while the main shell is busy. The toggle hides the panel but
-  // keeps the shell; `exit`/Ctrl+D inside it destroys the session, which
-  // closes the panel via the session_deleted broadcast.
-  const toggleQuickShell = async () => {
-    if (qsOpen) {
-      setQsOpen(false);
-      termActions.current?.focus();
-      return;
-    }
-    if (qsId && sessionsRef.current.some((s) => s.id === qsId)) {
-      setQsOpen(true);
-      window.setTimeout(() => qsActions.current?.focus(), 150);
-      return;
-    }
+  // keeps the shells; `exit`/Ctrl+D inside one destroys that session, which
+  // drops its tab via the session_deleted broadcast.
+  const createQuickShell = async (cwd?: string) => {
     const result = await createSession({
-      input: { cwd: active?.cwd || undefined, ephemeral: true },
+      input: { cwd: cwd || undefined, ephemeral: true },
       fields: [...SESSION_FIELDS],
       headers: buildCSRFHeaders(),
     });
@@ -242,9 +244,26 @@ export default function App() {
     }
     const session = result.data as unknown as Session;
     upsertSession(session);
-    setQsId(session.id);
+    setQsIds((ids) => (ids.includes(session.id) ? ids : [...ids, session.id]));
+    setQsActiveId(session.id);
     setQsOpen(true);
-    window.setTimeout(() => qsActions.current?.focus(), 150);
+    focusQuickShell();
+  };
+
+  const toggleQuickShell = async () => {
+    if (qsOpen) {
+      setQsOpen(false);
+      termActions.current?.focus();
+      return;
+    }
+    const alive = qsIds.filter((id) => sessionsRef.current.some((s) => s.id === id));
+    if (alive.length > 0) {
+      if (!qsActiveId || !alive.includes(qsActiveId)) setQsActiveId(alive[alive.length - 1]);
+      setQsOpen(true);
+      focusQuickShell();
+      return;
+    }
+    await createQuickShell(active?.cwd);
   };
   const quickShellRef = useRef(() => {});
   quickShellRef.current = () => void toggleQuickShell();
@@ -288,7 +307,7 @@ export default function App() {
       if (e.code === "Backquote") {
         e.preventDefault();
         if (e.shiftKey) quickShellRef.current();
-        else (qsOpenRef.current ? qsActions : termActions).current?.focus();
+        else (qsRef.current.open ? qsActions : termActions).current?.focus();
         return;
       }
 
@@ -577,7 +596,13 @@ export default function App() {
 
       {qsOpen && qsSession && (
         <QuickShellPanel
-          session={qsSession}
+          sessions={qsSessions}
+          active={qsSession}
+          onSelect={(id) => {
+            setQsActiveId(id);
+            focusQuickShell();
+          }}
+          onAdd={() => void createQuickShell(qsSession.cwd || active?.cwd)}
           maximized={qsMax}
           onToggleMax={() => setQsMax((v) => !v)}
           onClose={() => {
