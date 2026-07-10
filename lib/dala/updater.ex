@@ -75,17 +75,35 @@ defmodule Dala.Updater do
       Version.compare(latest, current) == :gt
   end
 
+  # Server and desktop-client releases share the repo but use distinct tag
+  # prefixes (v* vs client-v*), so /releases/latest may point at a client
+  # build. List recent releases and pick the newest server one instead.
   defp fetch_latest do
-    url = "https://api.github.com/repos/#{repo()}/releases/latest"
+    url = "https://api.github.com/repos/#{repo()}/releases?per_page=15"
 
     case Req.get(url,
            headers: [{"accept", "application/vnd.github+json"}, {"user-agent", "dala-updater"}],
            retry: false
          ) do
-      {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
-      {:ok, %{status: 404}} -> {:error, "no releases published yet"}
-      {:ok, %{status: status}} -> {:error, "GitHub responded with #{status}"}
-      {:error, reason} -> {:error, "could not reach GitHub: #{Exception.message(reason)}"}
+      {:ok, %{status: 200, body: body}} when is_list(body) ->
+        body
+        |> Enum.find(fn release ->
+          is_binary(release["tag_name"]) and release["tag_name"] =~ ~r/^v\d/ and
+            release["draft"] != true and release["prerelease"] != true
+        end)
+        |> case do
+          nil -> {:error, "no server releases published yet"}
+          release -> {:ok, release}
+        end
+
+      {:ok, %{status: 404}} ->
+        {:error, "no releases published yet"}
+
+      {:ok, %{status: status}} ->
+        {:error, "GitHub responded with #{status}"}
+
+      {:error, reason} ->
+        {:error, "could not reach GitHub: #{Exception.message(reason)}"}
     end
   end
 

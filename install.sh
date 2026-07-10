@@ -34,8 +34,9 @@ command -v systemctl >/dev/null || die "systemd (systemctl --user) is required"
 TAG="${1:-}"
 if [ -z "$TAG" ]; then
   say "resolving latest release of $REPO"
-  TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-    grep -m1 '"tag_name"' | cut -d'"' -f4) || true
+  # Skip client-v* tags: the repo also publishes desktop-client releases.
+  TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=15" |
+    grep '"tag_name"' | cut -d'"' -f4 | grep -m1 '^v[0-9]') || true
   [ -n "$TAG" ] || die "could not resolve the latest release (does $REPO have releases?)"
 fi
 ASSET="dala-$TAG-linux-x86_64.tar.gz"

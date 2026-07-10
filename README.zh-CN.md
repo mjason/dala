@@ -46,25 +46,28 @@ curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
 
 ## 桌面客户端
 
-轻量 Tauri 应用（Windows / macOS / Linux，约 5 MB），VS Code 式管理多台
-dala 服务器：
+Electron 应用（Windows / macOS / Linux），VS Code 式管理多台 dala 服务器。
+统一 Chromium 内核：渲染、输入法、剪贴板在所有平台上与 Chrome 表现完全一致：
 
 - **服务器菜单** — 当前窗口一键切换服务器（`Ctrl/⌘+1..9`），
   或**在新窗口打开**另一台；一窗口一服务器，像 VS Code 的多工作区
 - 每台服务器的登录状态独立保存（60 天免登录），启动直达上次连接的服务器
 - 内置管理页添加/删除服务器（`Ctrl/⌘+,`）
+- 终端里的外部链接在内置浏览器窗口打开
 
-从[最新 Release](https://github.com/mjason/dala/releases/latest)下载对应
-系统的安装包（`.msi`/`.exe`、`.dmg`、`.deb`/`.AppImage`），或自行构建。
+客户端使用独立的 tag（`client-vX.Y.Z`）发版，与服务端（`vX.Y.Z`）互不
+影响。从 [Releases 页面](https://github.com/mjason/dala/releases)下载对应
+系统的安装包（`.exe`、`.dmg`、`.deb`/`.AppImage`）。
 
-> **macOS**：v0.3.8 起已签名并通过 Apple 公证（Developer ID），
-> universal `.dmg` 同时支持 Apple Silicon 和 Intel，双击直接打开，
-> 无任何 Gatekeeper 弹窗。
+> **macOS**：universal `.dmg`（Apple Silicon + Intel）已签名并通过 Apple
+> 公证（Developer ID），双击直接打开，无任何 Gatekeeper 弹窗。
+
+> 从 Tauri 版客户端（≤ v0.5.x）升级？首次启动会自动导入原有服务器列表。
 
 源码构建：
 
 ```sh
-cd clients/desktop && npm install && npm run tauri build
+cd clients/desktop && npm install && npm run build
 ```
 
 ## 使用指南

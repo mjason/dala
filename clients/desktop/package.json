@@ -1,13 +1,58 @@
 {
   "name": "dala-desktop",
+  "productName": "Dala",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.1.0",
+  "description": "Desktop client for dala servers",
+  "author": "MJ",
+  "repository": "https://github.com/mjason/dala",
+  "main": "main.js",
   "scripts": {
-    "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build"
+    "start": "electron .",
+    "build": "electron-builder"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.9.0"
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.manjialin.dala",
+    "productName": "Dala",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "notarize": true
+    },
+    "dmg": {
+      "sign": false
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "maintainer": "MJ <tywf91@gmail.com>"
+    }
   }
 }

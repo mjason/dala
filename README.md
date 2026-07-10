@@ -46,8 +46,9 @@ curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
 
 ## Desktop client
 
-A lightweight Tauri app (Windows / macOS / Linux, ~5 MB) that manages
-multiple dala servers, VS Code style:
+An Electron app (Windows / macOS / Linux) that manages multiple dala
+servers, VS Code style. Chromium engine means rendering, IME and clipboard
+behave exactly like Chrome on every platform:
 
 - **Servers menu** — switch the current window between servers
   (`Ctrl/⌘+1..9`), or open a server **in a new window**; one window per
@@ -55,19 +56,23 @@ multiple dala servers, VS Code style:
 - Sign-in state is kept per server (60-day persistent login), the last-used
   server reopens on launch
 - Manage servers on the built-in page (`Ctrl/⌘+,`)
+- External links from the terminal open in a built-in browser window
 
-Download the installer for your OS from the
-[latest release](https://github.com/mjason/dala/releases/latest)
-(`.msi`/`.exe`, `.dmg`, `.deb`/`.AppImage`), or build it yourself.
+Client releases use their own tags (`client-vX.Y.Z`), independent from
+server releases (`vX.Y.Z`). Download the installer for your OS from the
+[releases page](https://github.com/mjason/dala/releases)
+(`.exe`, `.dmg`, `.deb`/`.AppImage`).
 
-> **macOS**: builds since v0.3.8 are signed and notarized (Developer ID) —
-> the universal `.dmg` covers Apple Silicon and Intel and opens without any
-> Gatekeeper prompt.
+> **macOS**: the universal `.dmg` (Apple Silicon + Intel) is signed and
+> notarized (Developer ID) — it opens without any Gatekeeper prompt.
+
+> Upgrading from the Tauri client (≤ v0.5.x)? Your server list is imported
+> automatically on first launch.
 
 Build from source:
 
 ```sh
-cd clients/desktop && npm install && npm run tauri build
+cd clients/desktop && npm install && npm run build
 ```
 
 ## Usage guide

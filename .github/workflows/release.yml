@@ -1,5 +1,10 @@
 name: Release
 
+# Server releases only. Tag rule:
+#   v*         → server tarball (this workflow)
+#   client-v*  → desktop client (client-release.yml)
+# The two release lines version independently so shipping one side never
+# forces a version bump on the other.
 on:
   push:
     tags: ["v*"]
@@ -77,83 +82,3 @@ jobs:
             ${{ env.OUT }}
             ${{ env.OUT }}.sha256
           generate_release_notes: true
-
-  client:
-    name: Desktop client (${{ matrix.os }})
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-          - os: windows-latest
-          # Universal binary: one .dmg for Apple Silicon AND Intel Macs.
-          - os: macos-latest
-            args: --target universal-apple-darwin
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Add both macOS architectures
-        if: startsWith(matrix.os, 'macos')
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install webkit/gtk dev dependencies
-        if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            clients/desktop/src-tauri/target
-          key: ${{ runner.os }}-client-${{ hashFiles('clients/desktop/src-tauri/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-client-
-
-      - name: Install client dependencies
-        working-directory: clients/desktop
-        run: npm install
-
-      # Written only when the secret exists; its absence downgrades macOS to
-      # sign-without-notarize instead of failing the build.
-      - name: Prepare App Store Connect API key
-        id: asc
-        if: startsWith(matrix.os, 'macos')
-        env:
-          KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
-        run: |
-          if [ -n "$KEY_B64" ]; then
-            echo -n "$KEY_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
-            echo "key_path=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_OUTPUT"
-          else
-            echo "APPSTORE_API_KEY_BASE64 not set — signing only, skipping notarization"
-          fi
-
-      - name: Build and attach to release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (tauri handles keychain import,
-          # codesign with hardened runtime, notarytool submit and stapling).
-          APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "${{ secrets.APPLE_TEAM_ID && format('Developer ID Application: Manjia Lin ({0})', secrets.APPLE_TEAM_ID) || '' }}"
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ steps.asc.outputs.key_path && secrets.APPSTORE_API_ISSUER_ID || '' }}
-          APPLE_API_KEY: ${{ steps.asc.outputs.key_path && secrets.APPSTORE_API_KEY_ID || '' }}
-          APPLE_API_KEY_PATH: ${{ steps.asc.outputs.key_path }}
-        with:
-          projectPath: clients/desktop
-          tagName: ${{ github.ref_name }}
-          args: ${{ matrix.args }}
