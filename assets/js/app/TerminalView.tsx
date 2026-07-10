@@ -4,6 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
+import type { IClipboardProvider, ClipboardSelectionType } from "@xterm/addon-clipboard";
 import type { Channel } from "phoenix";
 import { getSocket } from "./socket";
 import {
@@ -65,6 +67,21 @@ function isFollowerClient(): boolean {
   );
 }
 
+/**
+ * OSC 52 bridge: lets tmux/zellij/vim inside the terminal write to the
+ * system clipboard (their own copy bindings). Reads are refused — a remote
+ * program silently reading the clipboard is an exfiltration channel.
+ */
+class Osc52Provider implements IClipboardProvider {
+  readText(_selection: ClipboardSelectionType): Promise<string> {
+    return Promise.resolve("");
+  }
+
+  writeText(_selection: ClipboardSelectionType, text: string): Promise<void> {
+    return writeClipboard(text).then(() => undefined);
+  }
+}
+
 type TerminalActions = { reset: () => void; refit: () => void; focus: () => void };
 
 type Props = {
@@ -116,6 +133,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new ClipboardAddon(undefined, new Osc52Provider()));
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
       term.open(container);
