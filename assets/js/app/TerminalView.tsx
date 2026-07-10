@@ -29,9 +29,10 @@ const theme = {
   // xterm 6 draws its own DOM scrollbar (VS Code's scrollable-element) —
   // ::-webkit-scrollbar CSS never touches it; colors come from the theme
   // and the pill shape from app.css.
-  scrollbarSliderBackground: "rgba(128, 132, 140, 0.45)",
-  scrollbarSliderHoverBackground: "rgba(140, 145, 154, 0.7)",
-  scrollbarSliderActiveBackground: "rgba(140, 145, 154, 0.8)",
+  // macOS dark-mode overlay thumb is translucent white, not gray.
+  scrollbarSliderBackground: "rgba(255, 255, 255, 0.28)",
+  scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.45)",
+  scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.55)",
   black: "#1a1d21",
   red: "#e5716e",
   green: "#5fbf87",

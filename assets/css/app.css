@@ -237,15 +237,37 @@ body:has(> #app) {
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   width: 6px !important;
   left: auto !important;
-  right: 1px;
-  border-radius: 6px;
+  right: 2px;
+  border-radius: 5px;
+  transition: width 80ms linear;
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider {
   height: 6px !important;
   top: auto !important;
-  bottom: 1px;
-  border-radius: 6px;
+  bottom: 2px;
+  border-radius: 5px;
+  transition: height 80ms linear;
+}
+
+/* macOS expands the pill and reveals a faint track while the pointer is
+   over the scrollbar strip. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.vertical:hover > .slider,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+  width: 9px !important;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.horizontal:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.horizontal:hover > .slider,
+.xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider.active {
+  height: 9px !important;
 }
 
 /* Settings dialog: entrance micro-animation + slim custom sliders. */
