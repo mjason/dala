@@ -563,8 +563,10 @@ export default function FileDrawer({
                       data-edit={row.path}
                     >
                       <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="m9.5 3.5 3 3L5 14l-3.4.4L2 11z" strokeLinejoin="round" />
-                        <path d="m8 5 3 3" />
+                        <path
+                          d="M11.1 2.9a1.75 1.75 0 0 1 2.47 2.47L6.2 12.75l-3.45.85.85-3.45z"
+                          strokeLinejoin="round"
+                        />
                       </svg>
                     </button>
                   )}
