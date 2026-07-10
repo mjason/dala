@@ -21,6 +21,13 @@ defmodule DalaWeb.TerminalChannelTest do
     |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}")
   end
 
+  # The client reports its viewport after joining; only then is the repaint
+  # generated (sizing first lets the emulator reflow to the right width).
+  defp attach!(socket, rows \\ 24, cols \\ 80) do
+    push(socket, "attach", %{"rows" => rows, "cols" => cols})
+    socket
+  end
+
   test "join delivers the holder's synthesized repaint and reports status" do
     session = create_session!()
 
@@ -28,7 +35,8 @@ defmodule DalaWeb.TerminalChannelTest do
     Server.input(session.id, "echo repaint-me-$((40 + 2))\r")
     Process.sleep(300)
 
-    assert {:ok, %{status: :running}, _socket} = join!(session.id)
+    assert {:ok, %{status: :running}, socket} = join!(session.id)
+    attach!(socket)
 
     assert_replay_containing("repaint-me-42")
   end
@@ -105,6 +113,7 @@ defmodule DalaWeb.TerminalChannelTest do
     session = create_session!()
     id = to_string(session.id)
     assert {:ok, _reply, socket} = join!(id)
+    attach!(socket)
     assert_push "replay", %{done: true}
 
     push(socket, "input", %{"data" => "MARKER=survives-$((10 * 4 + 2))\r"})
@@ -122,6 +131,7 @@ defmodule DalaWeb.TerminalChannelTest do
     # Reattach (what Boot does on the next startup) and read the state back.
     assert {:ok, _pid} = Server.ensure_started(session)
     assert {:ok, _reply, socket} = join!(id)
+    attach!(socket)
     push(socket, "input", %{"data" => "echo got-$MARKER\r"})
     assert_output_containing("got-survives-42")
   end
@@ -143,6 +153,7 @@ defmodule DalaWeb.TerminalChannelTest do
   test "input round-trips through the PTY and comes back as output" do
     session = create_session!()
     assert {:ok, _reply, socket} = join!(session.id)
+    attach!(socket)
     assert_push "replay", %{done: true}
 
     push(socket, "input", %{"data" => "echo channel-$((2 * 21))\r"})

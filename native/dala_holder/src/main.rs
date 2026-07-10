@@ -89,8 +89,9 @@ struct Shared {
     exit_status: Option<u32>,
     /// Server-side emulator: grid + scrollback + modes.
     screen: Screen,
-    /// Repaints requested by the client, served once the ring is drained.
-    repaint_pending: u32,
+    /// Repaints requested by the client (each with the requester's column
+    /// count, 0 = unknown), served once the ring is drained.
+    repaint_pending: VecDeque<u16>,
 }
 
 struct State {
@@ -173,7 +174,7 @@ fn main() {
             client_gen: 0,
             exit_status: None,
             screen: Screen::new(config.rows, config.cols, config.history_lines),
-            repaint_pending: 0,
+            repaint_pending: VecDeque::new(),
         }),
         cond: Condvar::new(),
     });
@@ -229,7 +230,8 @@ fn main() {
                     loop {
                         let attached = shared.client.is_some();
                         let drainable = attached && !shared.ring.is_empty();
-                        let repaint = attached && shared.ring.is_empty() && shared.repaint_pending > 0;
+                        let repaint =
+                            attached && shared.ring.is_empty() && !shared.repaint_pending.is_empty();
                         let done = shared.exit_status.is_some() && shared.ring.is_empty();
                         if drainable || repaint || done {
                             break;
@@ -243,12 +245,16 @@ fn main() {
                     if shared.client.is_some() && !shared.ring.is_empty() {
                         let n = shared.ring.len().min(CHUNK);
                         (Job::Output(shared.ring.drain(..n).collect()), stream, gen)
-                    } else if shared.client.is_some() && shared.repaint_pending > 0 {
-                        shared.repaint_pending -= 1;
-                        (Job::Repaint(shared.screen.repaint()), stream, gen)
+                    } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
+                        let cols = shared.repaint_pending.pop_front().unwrap_or(0);
+                        // Soft wraps are only correct when the requester's
+                        // width matches the grid; anything else gets hard
+                        // line breaks so the layout cannot shear.
+                        let soft = cols as usize == shared.screen.columns();
+                        (Job::Repaint(shared.screen.repaint(soft)), stream, gen)
                     } else {
                         let status = shared.exit_status.unwrap_or(0);
-                        (Job::Exit(status, shared.screen.repaint()), stream, gen)
+                        (Job::Exit(status, shared.screen.repaint(false)), stream, gen)
                     }
                 };
 
@@ -312,7 +318,7 @@ fn main() {
             // Bytes for the previous client are already folded into the
             // emulator; the new client starts from a repaint it requests.
             shared.ring.clear();
-            shared.repaint_pending = 0;
+            shared.repaint_pending.clear();
             shared.client = stream.try_clone().ok();
             shared.client_gen += 1;
             state.cond.notify_all();
@@ -344,9 +350,14 @@ fn main() {
                             pixel_height: 0,
                         });
                     }
-                    Ok((T_REPAINT_REQ, _)) => {
+                    Ok((T_REPAINT_REQ, data)) => {
+                        let cols = if data.len() >= 2 {
+                            u16::from_be_bytes([data[0], data[1]])
+                        } else {
+                            0
+                        };
                         let mut shared = state.shared.lock().unwrap();
-                        shared.repaint_pending += 1;
+                        shared.repaint_pending.push_back(cols);
                         state.cond.notify_all();
                     }
                     Ok((T_KILL, _)) => {

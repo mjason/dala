@@ -227,7 +227,15 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_cast({:request_repaint, client}, state) do
-    case Holder.send_repaint_req(state.socket) do
+    # The requester's own viewport width decides soft vs hard wrapping in
+    # the repaint; an unknown client inherits the PTY width.
+    cols =
+      case Map.get(state.clients, client) do
+        {_rows, cols} -> cols
+        nil -> elem(state.size, 1)
+      end
+
+    case Holder.send_repaint_req(state.socket, cols) do
       :ok ->
         {:noreply, %{state | pending_repaints: :queue.in(client, state.pending_repaints)}}
 

@@ -353,14 +353,14 @@ function AppearanceSection() {
         <span className="mt-1 block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>
       </label>
 
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-0.5 rounded-md border border-line p-0.5">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+        <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5">
           {cursorStyles.map(({ value, label }) => (
             <button
               key={value}
               data-cursor-style={value}
               onClick={() => apply({ cursorStyle: value })}
-              className={`rounded px-2 py-0.5 text-xs transition-colors ${
+              className={`whitespace-nowrap rounded px-2.5 py-0.5 text-xs transition-colors ${
                 prefs.cursorStyle === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
               }`}
             >
@@ -368,7 +368,7 @@ function AppearanceSection() {
             </button>
           ))}
         </div>
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
           <input
             id="cursor-blink-checkbox"
             type="checkbox"
@@ -378,7 +378,7 @@ function AppearanceSection() {
           />
           {t("cursorBlink")}
         </label>
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
           <input
             id="copy-on-select-checkbox"
             type="checkbox"
@@ -388,7 +388,7 @@ function AppearanceSection() {
           />
           {t("copyOnSelect")}
         </label>
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
           <input
             id="smooth-scroll-checkbox"
             type="checkbox"

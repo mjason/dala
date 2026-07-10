@@ -306,12 +306,22 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
           gate.joined();
           if (follower) {
             if (resp?.rows && resp?.cols) applyServerSize(resp.rows, resp.cols);
+            // Attach at the server's size: the repaint is generated for the
+            // width this follower renders at.
+            phxChannel.push("attach", {
+              rows: resp?.rows ?? term.rows,
+              cols: resp?.cols ?? term.cols,
+            });
           } else {
             // Re-fit now that layout has settled so the PTY is the real size
             // before the user runs anything (else the first `ls` renders at the
             // default 80-col size until a later resize/repaint corrects it).
             fit.fit();
             pushResize();
+            // Report the settled viewport; the server resizes the PTY first
+            // and only then renders the attach repaint, so its soft wraps
+            // match this exact width.
+            phxChannel.push("attach", { rows: term.rows, cols: term.cols });
             lastSize = term.rows + "x" + term.cols;
             // Layout/fonts may still be settling right after join/refresh;
             // re-fit on the next ticks so early output is not at a stale size.

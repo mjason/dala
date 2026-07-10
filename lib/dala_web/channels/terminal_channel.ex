@@ -82,8 +82,9 @@ defmodule DalaWeb.TerminalChannel do
     id = socket.assigns.session_id
 
     if Dala.Terminal.Server.alive?(id) do
-      Dala.Terminal.Server.request_repaint(id, self())
-      # A wedged holder must not leave the client covered forever.
+      # The repaint is deferred until the client's `attach` reports its true
+      # viewport — sizing first lets the emulator reflow, so soft wraps match
+      # the client's width. The timer covers clients that never attach.
       Process.send_after(self(), :repaint_timeout, 4_000)
       {:noreply, assign(socket, :replayed, false)}
     else
@@ -109,6 +110,24 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   @impl true
+  def handle_in("attach", %{"rows" => rows, "cols" => cols}, socket)
+      when is_integer(rows) and is_integer(cols) do
+    id = socket.assigns.session_id
+    rows = min(max(rows, 1), @max_rows)
+    cols = min(max(cols, 1), @max_cols)
+
+    # Order matters: the resize reaches the holder (reflow) before the
+    # repaint request on the same FIFO socket.
+    Dala.Terminal.Server.resize(id, self(), rows, cols)
+
+    if Dala.Terminal.Server.alive?(id) and not socket.assigns[:replayed] and
+         not Map.get(socket.assigns, :repaint_requested, false) do
+      Dala.Terminal.Server.request_repaint(id, self())
+    end
+
+    {:noreply, assign(socket, :repaint_requested, true)}
+  end
+
   def handle_in("input", %{"data" => data}, socket) when is_binary(data) do
     Dala.Terminal.Server.input(socket.assigns.session_id, data)
     {:noreply, socket}

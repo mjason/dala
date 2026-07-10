@@ -113,8 +113,13 @@ defmodule Dala.Terminal.Holder do
 
   def send_kill(socket), do: :gen_tcp.send(socket, <<@type_kill>>)
 
-  @doc "Ask the holder for a synthesized full repaint (answered as a REPAINT frame)."
-  def send_repaint_req(socket), do: :gen_tcp.send(socket, <<@type_repaint_req>>)
+  @doc """
+  Ask the holder for a synthesized full repaint (answered as a REPAINT
+  frame). `cols` is the requesting viewer's width: the holder soft-wraps
+  only when it matches the grid, hard-breaking otherwise.
+  """
+  def send_repaint_req(socket, cols),
+    do: :gen_tcp.send(socket, <<@type_repaint_req, cols::16>>)
 
   defp spawn_holder(id, opts) do
     binary = binary_path()

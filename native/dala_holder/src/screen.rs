@@ -64,6 +64,10 @@ impl Screen {
         self.parser.advance(&mut self.term, bytes);
     }
 
+    pub fn columns(&self) -> usize {
+        self.term.grid().columns()
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.term.resize(Size {
             lines: rows.max(1) as usize,
@@ -72,7 +76,10 @@ impl Screen {
     }
 
     /// Synthesized full repaint: reset, history tail, screen, cursor, modes.
-    pub fn repaint(&self) -> Vec<u8> {
+    /// `soft_wrap` renders wrapped rows without explicit newlines so the
+    /// client rebuilds logical lines — only valid when the client's width
+    /// matches this grid; otherwise hard breaks keep the layout intact.
+    pub fn repaint(&self, soft_wrap: bool) -> Vec<u8> {
         let term = &self.term;
         let grid = term.grid();
         let mode = *term.mode();
@@ -96,14 +103,14 @@ impl Screen {
                 // Wrapped rows flow into the next one without an explicit
                 // newline, so xterm re-marks them as one logical line and
                 // copying a long command yields no hard breaks.
-                if !render_row(&mut out, &mut pen, grid, line, columns) {
+                if !render_row(&mut out, &mut pen, grid, line, columns, soft_wrap) {
                     out.extend_from_slice(b"\r\n");
                 }
             }
         }
 
         for i in 0..screen_lines {
-            let wrapped = render_row(&mut out, &mut pen, grid, Line(i as i32), columns);
+            let wrapped = render_row(&mut out, &mut pen, grid, Line(i as i32), columns, soft_wrap);
             if !wrapped && i + 1 < screen_lines {
                 out.extend_from_slice(b"\r\n");
             }
@@ -165,9 +172,11 @@ fn render_row(
     grid: &alacritty_terminal::grid::Grid<Cell>,
     line: Line,
     columns: usize,
+    soft_wrap: bool,
 ) -> bool {
     let row = &grid[line];
-    let wrapped = columns > 0 && row[Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+    let wrapped =
+        soft_wrap && columns > 0 && row[Column(columns - 1)].flags.contains(Flags::WRAPLINE);
 
     // Trim trailing cells that would render as nothing (never on wrapped
     // rows: auto-wrap needs the full width written out).
@@ -335,7 +344,7 @@ mod tests {
     fn repaint_carries_screen_content_and_colors() {
         let mut screen = Screen::new(24, 80, 100);
         screen.advance(b"hello \x1b[31mred\x1b[0m plain\r\nsecond line");
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
 
         assert!(out.starts_with("\x1bc"));
         assert!(out.contains("hello "));
@@ -349,7 +358,7 @@ mod tests {
     fn repaint_restores_alt_screen_and_modes() {
         let mut screen = Screen::new(10, 40, 100);
         screen.advance(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006hTUI");
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
 
         assert!(out.contains("\x1b[?1049h"));
         assert!(out.contains("\x1b[?25l"));
@@ -365,7 +374,7 @@ mod tests {
         for i in 0..10 {
             screen.advance(format!("line-{i}\r\n").as_bytes());
         }
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
 
         // 11 rows used (10 lines + prompt row), 4 on screen, rest history.
         assert!(out.contains("line-0"));
@@ -380,7 +389,7 @@ mod tests {
     fn wide_chars_render_once() {
         let mut screen = Screen::new(5, 20, 10);
         screen.advance("中文 ok".as_bytes());
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
         assert_eq!(out.matches('中').count(), 1);
         assert!(out.contains("中文 ok"));
     }
@@ -390,7 +399,7 @@ mod tests {
         let mut screen = Screen::new(5, 10, 50);
         // 25 chars in a 10-column terminal: wraps across three rows.
         screen.advance(b"ABCDEFGHIJKLMNOPQRSTUVWXY");
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
 
         let a = out.find("ABCDEFGHIJ").expect("first segment");
         let tail = &out[a..];
@@ -403,11 +412,20 @@ mod tests {
     }
 
     #[test]
+    fn width_mismatch_falls_back_to_hard_breaks() {
+        let mut screen = Screen::new(5, 10, 50);
+        screen.advance(b"ABCDEFGHIJKLMNOPQRSTUVWXY");
+        let out = text(&screen.repaint(false));
+        let a = out.find("ABCDEFGHIJ").expect("first segment");
+        assert!(out[a..].contains("\r\n"), "hard-break mode must keep row newlines");
+    }
+
+    #[test]
     fn resize_is_reflected() {
         let mut screen = Screen::new(24, 80, 10);
         screen.resize(30, 100);
         screen.advance(b"after resize");
-        let out = text(&screen.repaint());
+        let out = text(&screen.repaint(true));
         assert!(out.contains("after resize"));
     }
 }
