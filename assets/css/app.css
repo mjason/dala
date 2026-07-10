@@ -217,13 +217,40 @@ body:has(> #app) {
   }
 }
 
-#session-list,
-#file-drawer *,
-#git-panel *,
-#file-preview pre,
-#diff-view pre {
-  scrollbar-width: thin;
-  scrollbar-color: #2c3037 transparent;
+/* Slim scrollbars for every scroll container in the app. Chromium gets
+   5px ::-webkit-scrollbar pseudos; Firefox (no webkit pseudos) gets the
+   standard properties. The two must not mix: setting scrollbar-width
+   disables the webkit pseudo styling. */
+@supports not selector(::-webkit-scrollbar) {
+  #app,
+  #app * {
+    scrollbar-width: thin;
+    scrollbar-color: #2c3037 transparent;
+  }
+}
+
+@supports selector(::-webkit-scrollbar) {
+  #app ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  #app ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  #app ::-webkit-scrollbar-thumb {
+    background: #2c3037;
+    border-radius: 3px;
+  }
+
+  #app ::-webkit-scrollbar-thumb:hover {
+    background: #3a4048;
+  }
+
+  #app ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 /* Settings dialog: entrance micro-animation + slim custom sliders. */

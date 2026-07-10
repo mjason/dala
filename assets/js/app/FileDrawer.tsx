@@ -56,6 +56,16 @@ function join(dir: string, name: string): string {
   return `${dir === "/" ? "" : dir}/${name}`;
 }
 
+/** VS Code-style relative path from the drawer root to a target. */
+function relativePath(from: string, to: string): string {
+  const f = from.split("/").filter(Boolean);
+  const s = to.split("/").filter(Boolean);
+  let i = 0;
+  while (i < f.length && i < s.length && f[i] === s[i]) i++;
+  const parts = [...Array(f.length - i).fill(".."), ...s.slice(i)];
+  return parts.length ? parts.join("/") : ".";
+}
+
 export default function FileDrawer({
   path,
   followCwd,
@@ -671,6 +681,9 @@ export default function FileDrawer({
                     a.click();
                   }),
                   item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
+                  item("copy-relative-path", t("copyRelativePath"), () =>
+                    void writeClipboard(relativePath(root?.path ?? "/", row.path)),
+                  ),
                   item(
                     "delete",
                     t("deleteEntry"),
@@ -686,6 +699,9 @@ export default function FileDrawer({
                     uploadInputRef.current?.click();
                   }),
                   item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
+                  item("copy-relative-path", t("copyRelativePath"), () =>
+                    void writeClipboard(relativePath(root?.path ?? "/", row.path)),
+                  ),
                   item(
                     "delete",
                     t("deleteEntry"),
