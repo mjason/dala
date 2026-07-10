@@ -78,6 +78,7 @@ cd clients/desktop && npm install && npm run tauri build
 | `Ctrl+Shift+G` · `⇧⌘G` | Git 面板 |
 | `Ctrl+Shift+F` · `⇧⌘F` | 重排终端宽度 |
 | `Ctrl+Shift+X` · `⇧⌘X` | 重置终端 |
+| `Ctrl+\``（Mac 也是 Control 键——`⌘\`` 被系统的窗口切换占用） | 从任何地方聚焦回终端 |
 | `Esc` | 关闭最顶层窗口 |
 
 文件抽屉：`↑↓` 选择 · `⏎` 打开 · `⌫` 上级目录 · `Del` 删除 ·

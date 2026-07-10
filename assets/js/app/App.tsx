@@ -66,7 +66,7 @@ export default function App() {
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
-  const termActions = useRef<{ reset: () => void; refit: () => void } | null>(null);
+  const termActions = useRef<{ reset: () => void; refit: () => void; focus: () => void } | null>(null);
 
   const toast = useCallback((message: string) => {
     const id = ++toastSeq.current;
@@ -182,6 +182,16 @@ export default function App() {
         if (inTerminal && !e.metaKey) return;
         e.preventDefault();
         setQuickOpen(true);
+        return;
+      }
+
+      // Ctrl+` jumps focus back into the terminal from anywhere (drawer,
+      // git panel, commit box) — VS Code's focus-terminal key. Shift is
+      // accepted too; note macOS eats Cmd+` (window cycling), so it is the
+      // Control key there as well, exactly like VS Code.
+      if (e.code === "Backquote") {
+        e.preventDefault();
+        termActions.current?.focus();
         return;
       }
 

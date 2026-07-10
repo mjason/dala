@@ -83,6 +83,7 @@ size, kill/restart, delete) are behind the `settings` button.
 | `Ctrl+Shift+G` · `⇧⌘G` | Git panel |
 | `Ctrl+Shift+F` · `⇧⌘F` | Refit terminal width |
 | `Ctrl+Shift+X` · `⇧⌘X` | Reset terminal |
+| `Ctrl+\`` (Control on macOS too — `⌘\`` is taken by the OS) | Focus the terminal from anywhere |
 | `Esc` | Close the topmost window |
 
 File drawer: `↑↓` select · `⏎` open · `⌫` parent directory · `Del` delete ·

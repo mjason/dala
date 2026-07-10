@@ -65,7 +65,7 @@ function isFollowerClient(): boolean {
   );
 }
 
-type TerminalActions = { reset: () => void; refit: () => void };
+type TerminalActions = { reset: () => void; refit: () => void; focus: () => void };
 
 type Props = {
   sessionId: string;
@@ -223,7 +223,7 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
         // Ctrl-L: ask the shell to redraw a fresh prompt after the clear.
         phxChannel.push("input", { data: "\f" });
       };
-      if (actionsRef) actionsRef.current = { reset, refit };
+      if (actionsRef) actionsRef.current = { reset, refit, focus: () => term.focus() };
 
       phxChannel
         .join()
