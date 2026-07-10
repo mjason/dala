@@ -227,6 +227,26 @@ body:has(> #app) {
   }
 }
 
+/* The terminal's scrollbar is NOT native: xterm 6 draws a VS Code-style
+   DOM slider (.scrollbar > .slider) that ::-webkit-scrollbar can't reach.
+   Its colors come from the xterm theme (scrollbarSlider*); here we shape
+   it into the same macOS pill. The inline width/left set by xterm's JS
+   are overridden to a slim thumb hugging the edge; the 14px .scrollbar
+   strip stays as the grab target. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 6px !important;
+  left: auto !important;
+  right: 3px;
+  border-radius: 6px;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider {
+  height: 6px !important;
+  top: auto !important;
+  bottom: 3px;
+  border-radius: 6px;
+}
+
 /* Settings dialog: entrance micro-animation + slim custom sliders. */
 @keyframes dala-modal-in {
   from {
