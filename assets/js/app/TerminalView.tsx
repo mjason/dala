@@ -18,6 +18,7 @@ import { createStreamGate } from "./streamGate";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
+import { isMac } from "./shortcuts";
 
 const theme = {
   background: "#0b0c0e",
@@ -162,10 +163,13 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
       // WebGL draws to a canvas — there is no DOM text for the browser's
       // native copy — so copying is explicit: Ctrl+C copies when a selection
       // exists (and interrupts the shell otherwise, Windows Terminal style),
-      // and selecting copies immediately when the preference is on.
+      // and selecting copies immediately when the preference is on. macOS
+      // keeps Ctrl+C purely as SIGINT — Cmd+C is the copy key there and goes
+      // through xterm's native copy-event path.
       let livePrefs = prefs;
       term.attachCustomKeyEventHandler((event) => {
         if (
+          !isMac &&
           event.type === "keydown" &&
           event.ctrlKey &&
           !event.shiftKey &&
