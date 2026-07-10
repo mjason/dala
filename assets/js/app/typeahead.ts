@@ -20,9 +20,16 @@ function concat(head: Uint8Array, tail: Uint8Array): Uint8Array {
   return out;
 }
 
+// Cursor-addressing / erase sequences that a plain prompt echo never
+// contains, but every TUI redraw (ink, ratatui, …) is full of.
+const TUI_OUTPUT = /\x1b\[[0-9;]*[HABCDJKfGd]|\x1b\[\?(?:1049|2026)[hl]/;
+const TUI_QUIET_MS = 500;
+
 export function createTypeahead(term: Terminal, enabled: () => boolean) {
   let pending = "";
   let timer: number | undefined;
+  let tuiUntil = 0;
+  const decoder = new TextDecoder();
 
   const eraseSeq = () => `\x1b[${pending.length}D\x1b[K`;
 
@@ -42,6 +49,9 @@ export function createTypeahead(term: Terminal, enabled: () => boolean) {
     /** Call from term.onData BEFORE the keystroke is pushed to the server. */
     predict(data: string) {
       if (!enabled() || term.buffer.active.type !== "normal") return;
+      // A TUI owns the screen right now (Claude Code, opencode, …): its
+      // echo is a full redraw, never a plain character — stay out.
+      if (Date.now() < tuiUntil) return;
       if (pending.length >= MAX_PENDING) return;
       // Single printable ASCII only. IME/CJK input arrives as composed
       // strings and readline may render it anywhere — leave it to the echo.
@@ -57,6 +67,9 @@ export function createTypeahead(term: Terminal, enabled: () => boolean) {
 
     /** Filter live server output; returns the bytes to actually write. */
     reconcile(data: Uint8Array): Uint8Array {
+      if (TUI_OUTPUT.test(decoder.decode(data))) {
+        tuiUntil = Date.now() + TUI_QUIET_MS;
+      }
       if (!pending) return data;
       let matched = 0;
       while (
