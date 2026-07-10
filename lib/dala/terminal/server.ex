@@ -195,6 +195,12 @@ defmodule Dala.Terminal.Server do
           # zellij/tmux client detected under the shell — cwd then comes
           # from the multiplexer itself (focused pane), not OSC 7 or /proc.
           mux: nil,
+          # Output micro-batching: the first chunk after idle is emitted
+          # immediately (keystroke echo pays no extra latency); chunks that
+          # land within the 5ms window after it — TUI redraw storms — are
+          # coalesced into one broadcast.
+          out_buf: [],
+          out_timer: nil,
           size: {24, 80},
           reattached?: reattached?
         }
@@ -307,6 +313,10 @@ defmodule Dala.Terminal.Server do
     {:stop, :normal, state}
   end
 
+  def handle_info(:flush_output, state) do
+    {:noreply, flush_buffer(%{state | out_timer: nil})}
+  end
+
   def handle_info(:poll_cwd, state) do
     {state, cwd} = poll_cwd_once(state)
     state = if cwd, do: apply_cwd(state, cwd), else: state
@@ -357,7 +367,7 @@ defmodule Dala.Terminal.Server do
   defp handle_frame(frame_type, payload, state) do
     cond do
       frame_type == Holder.type_output() ->
-        {:noreply, emit(state, payload)}
+        {:noreply, buffer_output(state, payload)}
 
       frame_type == Holder.type_cwd() ->
         # OSC 7 from the stream. While a multiplexer runs, only its own
@@ -370,6 +380,8 @@ defmodule Dala.Terminal.Server do
         end
 
       frame_type == Holder.type_repaint() ->
+        state = flush_now(state)
+
         # The socket is FIFO: every output the repaint covers has already
         # been processed, so state.seq is exactly the repaint's watermark.
         case :queue.out(state.pending_repaints) do
@@ -402,6 +414,7 @@ defmodule Dala.Terminal.Server do
   end
 
   defp exit_with_status(status, state) do
+    state = flush_now(state)
     # Whatever was running is gone; make sure connected clients drop its
     # mouse/paste/alt-screen modes.
     _ = emit(state, @mode_reset)
@@ -469,6 +482,27 @@ defmodule Dala.Terminal.Server do
   end
 
   # Broadcasts an output chunk to connected clients with the next seq.
+  defp buffer_output(state, data) do
+    if state.out_timer do
+      %{state | out_buf: [data | state.out_buf]}
+    else
+      timer = Process.send_after(self(), :flush_output, 5)
+      %{emit(state, data) | out_timer: timer}
+    end
+  end
+
+  defp flush_buffer(%{out_buf: []} = state), do: state
+
+  defp flush_buffer(state) do
+    data = state.out_buf |> Enum.reverse() |> IO.iodata_to_binary()
+    emit(%{state | out_buf: []}, data)
+  end
+
+  defp flush_now(state) do
+    if state.out_timer, do: Process.cancel_timer(state.out_timer)
+    flush_buffer(%{state | out_timer: nil})
+  end
+
   defp emit(state, data) do
     seq = state.seq + 1
 

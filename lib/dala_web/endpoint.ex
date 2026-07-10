@@ -15,7 +15,10 @@ defmodule DalaWeb.Endpoint do
   ]
 
   socket "/socket", DalaWeb.UserSocket,
-    websocket: true,
+    # permessage-deflate: TUI redraw bursts are highly compressible ANSI —
+    # 5-10x smaller on the wire, which is what typing latency over WiFi
+    # actually feels like.
+    websocket: [compress: true],
     longpoll: false
 
   socket "/live", Phoenix.LiveView.Socket,
