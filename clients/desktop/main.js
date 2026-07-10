@@ -95,6 +95,15 @@ function createShellWindow(server) {
   return win;
 }
 
+// Slim, theme-neutral scrollbars for pages the built-in browser shows —
+// arbitrary documents come with Chromium's chunky defaults.
+const BROWSER_SCROLLBAR_CSS = `
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.45); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.7); }
+`;
+
 // External links (terminal web-links, files "open in browser") get a plain
 // Chromium window: no preload, no IPC, page title shown as-is.
 function openBrowserWindow(url) {
@@ -107,6 +116,9 @@ function openBrowserWindow(url) {
   win.webContents.setWindowOpenHandler(({ url: next }) => {
     if (/^https?:/i.test(next)) openBrowserWindow(next);
     return { action: "deny" };
+  });
+  win.webContents.on("dom-ready", () => {
+    void win.webContents.insertCSS(BROWSER_SCROLLBAR_CSS);
   });
   win.loadURL(url);
 }
