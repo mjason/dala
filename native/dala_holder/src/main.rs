@@ -51,9 +51,11 @@ const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
 const T_REPAINT_REQ: u8 = 0x14;
 
-/// Cap on buffered (undelivered) output. Old bytes are dropped first; dala's
-/// scrollback is the durable history, this only bridges reconnect gaps.
-const RING_MAX: usize = 8 * 1024 * 1024;
+/// Transit-queue cap between the PTY reader and the socket writer. The
+/// emulator is the durable history; this only smooths bursts to an attached
+/// client, so overflow (a stalled client) just drops oldest-first — the next
+/// repaint covers whatever was lost.
+const RING_MAX: usize = 1024 * 1024;
 const CHUNK: usize = 64 * 1024;
 
 #[derive(Deserialize)]
@@ -254,11 +256,10 @@ fn main() {
                     Job::Output(chunk) => {
                         if let Some(mut stream) = stream {
                             if write_frame(&mut stream, T_OUTPUT, &chunk).is_err() {
+                                // Undeliverable bytes are simply dropped: the
+                                // emulator has them, and any future client
+                                // starts from a repaint that covers them.
                                 let mut shared = state.shared.lock().unwrap();
-                                // Undeliverable: park the bytes back for the next client.
-                                for byte in chunk.iter().rev() {
-                                    shared.ring.push_front(*byte);
-                                }
                                 if shared.client_gen == gen {
                                     shared.client = None;
                                 }
