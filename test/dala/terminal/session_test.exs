@@ -53,6 +53,18 @@ defmodule Dala.Terminal.SessionTest do
     assert Server.alive?(session.id)
   end
 
+  test "create with cwd spawns the shell in that directory (quick shell)" do
+    dir = Path.join(System.tmp_dir!(), "dala-quick-shell-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    session = create_session!(%{cwd: dir})
+    assert session.cwd == dir
+
+    Server.input(session.id, "echo marker-$PWD\r")
+    eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
+  end
+
   test "input reaches the shell; output is broadcast and lands in the repaint" do
     session = create_session!()
     Phoenix.PubSub.subscribe(Dala.PubSub, "terminal:#{session.id}")

@@ -88,6 +88,7 @@ cd clients/desktop && npm install && npm run build
 | `Ctrl+Shift+F` · `⇧⌘F` | 重排终端宽度 |
 | `Ctrl+Shift+X` · `⇧⌘X` | 重置终端 |
 | `Ctrl+\``（Mac 也是 Control 键——`⌘\`` 被系统的窗口切换占用） | 从任何地方聚焦回终端 |
+| `Ctrl+Shift+\`` | **快速新建 shell**，直接落在当前会话的目录里（主 shell 被 AI/长任务占着时开新的跑 vim、git；连按开多个） |
 | `Esc` | 关闭最顶层窗口 |
 
 文件抽屉：`↑↓` 选择 · `⏎` 打开 · `⌫` 上级目录 · `Del` 删除 ·

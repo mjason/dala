@@ -135,10 +135,10 @@ export default function App() {
     if (followCwd && active) setDrawerPath(active.cwd);
   }, [followCwd, active?.id, active?.cwd]);
 
-  const handleCreate = async () => {
+  const handleCreate = async (cwd?: string) => {
     setCreating(true);
     const result = await createSession({
-      input: {},
+      input: cwd ? { cwd } : {},
       fields: [...SESSION_FIELDS],
       headers: buildCSRFHeaders(),
     });
@@ -151,6 +151,17 @@ export default function App() {
     } else {
       toast(result.errors[0]?.message ?? t("couldNotCreateTerminal"));
     }
+  };
+
+  // Quick shell (Ctrl+Shift+`): a fresh shell already cd'd into the active
+  // session's directory — for running vim/git beside a busy shell. Kept in
+  // a ref so the mount-once shortcut handler sees the current session.
+  const quickShellRef = useRef(() => {});
+  quickShellRef.current = () => {
+    void handleCreate(active?.cwd || undefined).then(() => {
+      // focus once the new session's terminal has mounted
+      window.setTimeout(() => termActions.current?.focus(), 150);
+    });
   };
 
   const handleRestart = async (id: string) => {
@@ -185,13 +196,15 @@ export default function App() {
         return;
       }
 
-      // Ctrl+` jumps focus back into the terminal from anywhere (drawer,
-      // git panel, commit box) — VS Code's focus-terminal key. Shift is
-      // accepted too; note macOS eats Cmd+` (window cycling), so it is the
-      // Control key there as well, exactly like VS Code.
+      // VS Code pair — Ctrl+` jumps focus back into the terminal from
+      // anywhere; Ctrl+Shift+` opens a NEW shell already cd'd into the
+      // active session's directory (for vim/git beside a busy shell).
+      // macOS eats Cmd+` (window cycling), so it is the Control key there
+      // as well, exactly like VS Code.
       if (e.code === "Backquote") {
         e.preventDefault();
-        termActions.current?.focus();
+        if (e.shiftKey) quickShellRef.current();
+        else termActions.current?.focus();
         return;
       }
 
