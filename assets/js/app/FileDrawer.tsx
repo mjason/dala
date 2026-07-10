@@ -74,6 +74,7 @@ export default function FileDrawer({
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [editOnOpen, setEditOnOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -149,13 +150,17 @@ export default function FileDrawer({
     setExpanded((prev) => new Set(prev).add(dirPath));
   };
 
-  const openFile = async (filePath: string, size: number) => {
+  const openFile = async (filePath: string, size: number, opts: { edit?: boolean } = {}) => {
     setPreviewLoading(filePath);
     const result = await loadPreview(filePath, size);
     setPreviewLoading(null);
 
-    if (result.ok) setPreview(result.preview);
-    else onError(result.message ?? t("couldNotReadFile"));
+    if (result.ok) {
+      setEditOnOpen(Boolean(opts.edit));
+      setPreview(result.preview);
+    } else {
+      onError(result.message ?? t("couldNotReadFile"));
+    }
   };
 
   // Where an upload should land: the selected directory, a selected file's
@@ -532,6 +537,37 @@ export default function FileDrawer({
               onClick={() => activate(row)}
               actions={
                 <>
+                  {!isDir && /\.(html?|xhtml|svg|pdf)$/i.test(row.path) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(rawFileUrl(row.path), "_blank");
+                      }}
+                      className="grid h-5 w-5 place-items-center rounded text-fg-muted hover:text-mint"
+                      title={t("openInBrowser")}
+                      data-open-browser={row.path}
+                    >
+                      <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M6.5 3H3v10h10V9.5M9.5 3H13v3.5M13 3 7.5 8.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
+                  {!isDir && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openFile(row.path, row.entry.size, { edit: true });
+                      }}
+                      className="grid h-5 w-5 place-items-center rounded text-fg-muted hover:text-mint"
+                      title={t("edit")}
+                      data-edit={row.path}
+                    >
+                      <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="m9.5 3.5 3 3L5 14l-3.4.4L2 11z" strokeLinejoin="round" />
+                        <path d="m8 5 3 3" />
+                      </svg>
+                    </button>
+                  )}
                   {!isDir && (
                     <a
                       href={rawFileUrl(row.path, true)}
@@ -714,6 +750,7 @@ export default function FileDrawer({
       {preview && (
         <FilePreview
           preview={preview}
+          startInEdit={editOnOpen}
           onClose={() => setPreview(null)}
           onError={onError}
           onSaved={(savedPath, savedContent, savedSize) => {

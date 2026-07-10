@@ -30,9 +30,11 @@ type Props = {
   onClose: () => void;
   onError: (message: string) => void;
   onSaved?: (path: string, content: string, size: number) => void;
+  /** Open straight in edit mode (the drawer's row pencil). */
+  startInEdit?: boolean;
 };
 
-export default function FilePreview({ preview, onClose, onError, onSaved }: Props) {
+export default function FilePreview({ preview, onClose, onError, onSaved, startInEdit }: Props) {
   const { t } = useI18n();
   const [wrap, setWrap] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -48,6 +50,16 @@ export default function FilePreview({ preview, onClose, onError, onSaved }: Prop
     setDraft(content);
     setEditing(true);
   };
+
+  // Row-level "edit" jumps straight into the editor once the content is in.
+  const wantEdit = useRef(Boolean(startInEdit));
+  useEffect(() => {
+    if (wantEdit.current && canEdit && !editing) {
+      wantEdit.current = false;
+      startEditing();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canEdit]);
 
   const cancelEditing = () => {
     if (dirty && !confirm(t("discardChanges"))) return;
