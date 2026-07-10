@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dala</title>
+  <style>
+    :root {
+      --bg0: #0b0c0e; --bg1: #121417; --bg2: #1b1e23; --line: #24272c;
+      --fg: #e6e8eb; --muted: #8f96a0; --mint: #4cc38a; --danger: #e5716e;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg0); color: var(--fg); min-height: 100vh;
+      font: 14px/1.6 ui-monospace, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      display: grid; place-items: center; padding: 32px;
+    }
+    .card { width: 100%; max-width: 560px; }
+    .logo { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .logo svg { width: 44px; height: 44px; }
+    .logo h1 { font-size: 22px; letter-spacing: 0.14em; }
+    .logo h1 i { color: var(--mint); font-style: normal; }
+    .tagline { color: var(--muted); font-size: 12px; margin-bottom: 24px; }
+    .section { color: var(--muted); font-size: 11px; text-transform: uppercase;
+               letter-spacing: 0.1em; margin: 18px 0 8px; }
+    #servers { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    #servers:empty { display: none; }
+    .server { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+              border-bottom: 1px solid var(--line); }
+    .server:last-child { border-bottom: none; }
+    .server .meta { flex: 1; min-width: 0; cursor: pointer; }
+    .server .meta:hover .name { color: var(--mint); }
+    .server .name { font-weight: 600; }
+    .server .url { color: var(--muted); font-size: 12px; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+    button { font: inherit; font-size: 12px; border-radius: 6px; cursor: pointer;
+             padding: 4px 10px; border: 1px solid var(--line);
+             background: transparent; color: var(--muted); transition: all .15s; }
+    button:hover { color: var(--fg); border-color: var(--muted); }
+    button.primary { border-color: rgba(76,195,138,.5); color: var(--mint); }
+    button.primary:hover { background: rgba(76,195,138,.1); border-color: var(--mint); }
+    button.danger:hover { color: var(--danger); border-color: rgba(229,113,110,.6); }
+    form { display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; margin-top: 8px; }
+    input { font: inherit; font-size: 13px; background: var(--bg1); color: var(--fg);
+            border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; }
+    input:focus { border-color: rgba(76,195,138,.6); }
+    input::placeholder { color: #5b626b; }
+    #error { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 18px; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 20px; line-height: 1.8; }
+    kbd { background: var(--bg2); border: 1px solid var(--line); border-radius: 4px;
+          padding: 1px 5px; font-size: 11px; }
+    .empty { border: 1px dashed var(--line); border-radius: 10px; padding: 22px;
+             text-align: center; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#15181c"/><rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="#2c3037" stroke-width="2"/><path d="M17 21 L33 32 L17 43" fill="none" stroke="#4cc38a" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/><rect x="37" y="39.5" width="13" height="7.5" rx="2.5" fill="#4cc38a"/></svg>
+      <h1>DALA <i>·</i> 客户端</h1>
+    </div>
+    <div class="tagline">连接你的 dala 服务器 — connect to your dala servers</div>
+
+    <div class="section">服务器 Servers</div>
+    <div id="servers"></div>
+    <div id="empty" class="empty" hidden>还没有服务器，先在下面添加一个 ↓</div>
+
+    <div class="section">添加 Add</div>
+    <form id="add-form">
+      <input id="name" placeholder="名称（可选）" autocomplete="off" />
+      <input id="url" placeholder="http://192.168.1.10:4400" autocomplete="off" required />
+      <button type="submit" class="primary">添加</button>
+    </form>
+    <div id="error"></div>
+
+    <div class="hint">
+      菜单栏可随时切换服务器（<kbd>Ctrl/⌘+1..9</kbd>）、新窗口打开、回到本页（<kbd>Ctrl/⌘+,</kbd>）。<br/>
+      每台服务器的登录状态独立保存，登录一次后 60 天内免登录。
+    </div>
+  </div>
+
+  <script>
+    const invoke = window.__TAURI__.core.invoke;
+    const $ = (id) => document.getElementById(id);
+
+    function render(cfg) {
+      const list = $("servers");
+      list.innerHTML = "";
+      $("empty").hidden = cfg.servers.length > 0;
+      for (const server of cfg.servers) {
+        const row = document.createElement("div");
+        row.className = "server";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.title = "连接 Connect";
+        meta.innerHTML = `<div class="name"></div><div class="url"></div>`;
+        meta.querySelector(".name").textContent =
+          (cfg.last === server.url ? "✓ " : "") + server.name;
+        meta.querySelector(".url").textContent = server.url;
+        meta.onclick = () => invoke("connect", { url: server.url }).catch(showError);
+
+        const newWin = document.createElement("button");
+        newWin.textContent = "新窗口";
+        newWin.title = "Open in new window";
+        newWin.onclick = () => invoke("open_in_new_window", { url: server.url }).catch(showError);
+
+        const del = document.createElement("button");
+        del.className = "danger";
+        del.textContent = "删除";
+        del.onclick = () =>
+          invoke("remove_server", { url: server.url }).then(render).catch(showError);
+
+        row.append(meta, newWin, del);
+        list.append(row);
+      }
+    }
+
+    function showError(err) {
+      $("error").textContent = String(err);
+    }
+
+    $("add-form").onsubmit = (e) => {
+      e.preventDefault();
+      showError("");
+      invoke("add_server", { name: $("name").value, url: $("url").value })
+        .then((cfg) => {
+          $("name").value = "";
+          $("url").value = "";
+          render(cfg);
+        })
+        .catch(showError);
+    };
+
+    invoke("list_servers").then(render).catch(showError);
+  </script>
+</body>
+</html>
