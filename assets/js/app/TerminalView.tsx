@@ -108,6 +108,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
         cursorBlink: prefs.cursorBlink,
         cursorStyle: prefs.cursorStyle,
         smoothScrollDuration: prefs.smoothScroll ? SMOOTH_SCROLL_MS : 0,
+        scrollSensitivity: prefs.scrollSensitivity,
         scrollback: scrollbackLines ?? 10_000,
         allowTransparency: false,
         allowProposedApi: true,
@@ -133,6 +134,9 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
       } catch {
         webgl = undefined;
       }
+      // Surfaced in the appearance settings: a silent DOM fallback is the
+      // usual culprit when scrolling feels sluggish.
+      document.documentElement.dataset.termRenderer = webgl ? "webgl" : "dom";
 
       fit.fit();
       term.focus();
@@ -145,6 +149,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
         term.options.cursorStyle = next.cursorStyle;
         term.options.cursorBlink = next.cursorBlink;
         term.options.smoothScrollDuration = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
+        term.options.scrollSensitivity = next.scrollSensitivity;
         fit.fit();
       });
 

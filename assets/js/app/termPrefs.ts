@@ -15,6 +15,8 @@ export type TermPrefs = {
   cursorBlink: boolean;
   /** Animated (eased) wheel scrolling instead of per-tick jumps. */
   smoothScroll: boolean;
+  /** Wheel distance multiplier (xterm scrollSensitivity). */
+  scrollSensitivity: number;
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -24,11 +26,13 @@ export const DEFAULT_PREFS: TermPrefs = {
   cursorStyle: "bar",
   cursorBlink: true,
   smoothScroll: true,
+  scrollSensitivity: 2,
 };
 
 /** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
 export const SMOOTH_SCROLL_MS = 120;
 
+export const SCROLL_SENSITIVITY_RANGE = { min: 0.5, max: 6 } as const;
 export const FONT_SIZE_RANGE = { min: 10, max: 24 } as const;
 export const LINE_HEIGHT_RANGE = { min: 1, max: 1.8 } as const;
 
@@ -59,6 +63,11 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
       typeof raw.cursorBlink === "boolean" ? raw.cursorBlink : DEFAULT_PREFS.cursorBlink,
     smoothScroll:
       typeof raw.smoothScroll === "boolean" ? raw.smoothScroll : DEFAULT_PREFS.smoothScroll,
+    scrollSensitivity: clamp(
+      Number(raw.scrollSensitivity) || DEFAULT_PREFS.scrollSensitivity,
+      SCROLL_SENSITIVITY_RANGE.min,
+      SCROLL_SENSITIVITY_RANGE.max,
+    ),
   };
 }
 

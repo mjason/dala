@@ -15,6 +15,7 @@ import {
   DEFAULT_PREFS,
   FONT_SIZE_RANGE,
   LINE_HEIGHT_RANGE,
+  SCROLL_SENSITIVITY_RANGE,
   loadPrefs,
   resetPrefs,
   savePrefs,
@@ -273,7 +274,14 @@ function AppearanceSection() {
           {t("resetDefaults")}
         </button>
       </div>
-      <span className="block text-xs leading-5 text-fg-muted/80">{t("appearanceScope")}</span>
+      <span className="block text-xs leading-5 text-fg-muted/80">
+        {t("appearanceScope")}
+        {typeof document !== "undefined" && document.documentElement.dataset.termRenderer && (
+          <span className="ml-2 font-mono text-[10px] uppercase text-fg-muted/60">
+            {t("renderer")}: {document.documentElement.dataset.termRenderer}
+          </span>
+        )}
+      </span>
 
       <label className="block">
         <span className="mb-1 block text-xs text-fg-muted">
@@ -312,6 +320,22 @@ function AppearanceSection() {
           step={0.05}
           value={prefs.lineHeight}
           onChange={(e) => apply({ lineHeight: Number(e.target.value) })}
+          className="w-full accent-[#4cc38a]"
+        />
+      </label>
+
+      <label className="block">
+        <span className="mb-1 block text-xs text-fg-muted">
+          {t("scrollSensitivity")} · {prefs.scrollSensitivity.toFixed(1)}×
+        </span>
+        <input
+          id="scroll-sensitivity-input"
+          type="range"
+          min={SCROLL_SENSITIVITY_RANGE.min}
+          max={SCROLL_SENSITIVITY_RANGE.max}
+          step={0.5}
+          value={prefs.scrollSensitivity}
+          onChange={(e) => apply({ scrollSensitivity: Number(e.target.value) })}
           className="w-full accent-[#4cc38a]"
         />
       </label>
