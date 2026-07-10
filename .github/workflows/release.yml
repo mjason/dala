@@ -148,7 +148,7 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_TEAM_ID && format('Developer ID Application: Manjia Lin ({0})', secrets.APPLE_TEAM_ID) || '' }}
+          APPLE_SIGNING_IDENTITY: "${{ secrets.APPLE_TEAM_ID && format('Developer ID Application: Manjia Lin ({0})', secrets.APPLE_TEAM_ID) || '' }}"
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_ISSUER: ${{ steps.asc.outputs.key_path && secrets.APPSTORE_API_ISSUER_ID || '' }}
           APPLE_API_KEY: ${{ steps.asc.outputs.key_path && secrets.APPSTORE_API_KEY_ID || '' }}
