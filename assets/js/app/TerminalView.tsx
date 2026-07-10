@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -76,6 +76,9 @@ type Props = {
 
 export default function TerminalView({ sessionId, onCwdChange, onError, actionsRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Covered while the scrollback replay streams in, so attaching to a
+  // session shows the settled screen instead of a visible scroll storm.
+  const [replaying, setReplaying] = useState(true);
   const cwdChangeRef = useRef(onCwdChange);
   cwdChangeRef.current = onCwdChange;
   const errorRef = useRef(onError);
@@ -173,11 +176,18 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
       const refs = onTerminalChannelMessages(channel, {
         replay: (payload) => {
           const { reset, release } = gate.replayBatch(payload.seq, payload.done);
-          if (reset) term.reset();
+          if (reset) {
+            term.reset();
+            setReplaying(true);
+          }
 
           const data = payload.data ? base64ToBytes(payload.data) : "";
           if (release) {
-            term.write(data, () => gate.replayParsed());
+            term.write(data, () => {
+              gate.replayParsed();
+              term.scrollToBottom();
+              setReplaying(false);
+            });
           } else {
             term.write(data);
           }
@@ -224,6 +234,10 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
         phxChannel.push("input", { data: "\f" });
       };
       if (actionsRef) actionsRef.current = { reset, refit, focus: () => term.focus() };
+
+      // Fallback: a session with no replay (or a lost done frame) must not
+      // stay covered.
+      const coverTimer = window.setTimeout(() => setReplaying(false), 2500);
 
       phxChannel
         .join()
@@ -340,6 +354,7 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
         container.removeEventListener("dragover", onDragOver);
         container.removeEventListener("drop", onDrop);
         observer.disconnect();
+        window.clearTimeout(coverTimer);
         window.clearTimeout(resizeTimer);
         window.clearInterval(idleTimer);
         window.removeEventListener("resize", onWindowChange);
@@ -358,5 +373,14 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
     };
   }, [sessionId]);
 
-  return <div ref={containerRef} className="h-full w-full px-3 py-2" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full px-3 py-2" />
+      <div
+        className={`pointer-events-none absolute inset-0 bg-bg0 transition-opacity duration-150 ${
+          replaying ? "opacity-100" : "opacity-0"
+        }`}
+      />
+    </div>
+  );
 }
