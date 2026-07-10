@@ -55,7 +55,13 @@ dala 服务器：
 - 内置管理页添加/删除服务器（`Ctrl/⌘+,`）
 
 从[最新 Release](https://github.com/mjason/dala/releases/latest)下载对应
-系统的安装包（`.msi`/`.exe`、`.dmg`、`.deb`/`.AppImage`），或自行构建：
+系统的安装包（`.msi`/`.exe`、`.dmg`、`.deb`/`.AppImage`），或自行构建。
+
+> **macOS**：应用未经公证（没有付费的 Apple 开发者账号），首次打开会被
+> Gatekeeper 拦截。执行 `xattr -cr /Applications/Dala.app`，或到
+> 「系统设置 → 隐私与安全性」点「仍要打开」。
+
+源码构建：
 
 ```sh
 cd clients/desktop && npm install && npm run tauri build

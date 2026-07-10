@@ -58,7 +58,13 @@ multiple dala servers, VS Code style:
 
 Download the installer for your OS from the
 [latest release](https://github.com/mjason/dala/releases/latest)
-(`.msi`/`.exe`, `.dmg`, `.deb`/`.AppImage`), or build it yourself:
+(`.msi`/`.exe`, `.dmg`, `.deb`/`.AppImage`), or build it yourself.
+
+> **macOS**: the app is not notarized (no paid Apple developer account), so
+> Gatekeeper blocks the first launch. Run `xattr -cr /Applications/Dala.app`,
+> or go to System Settings → Privacy & Security → "Open Anyway".
+
+Build from source:
 
 ```sh
 cd clients/desktop && npm install && npm run tauri build
