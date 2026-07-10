@@ -47,6 +47,15 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [creating, setCreating] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  // Desktop sidebar collapse (VS Code's Ctrl/Cmd+B), remembered per browser.
+  const [sidebarHidden, setSidebarHidden] = useState(
+    () => localStorage.getItem("dala:sidebar-hidden") === "1",
+  );
+  const toggleSidebar = () =>
+    setSidebarHidden((v) => {
+      localStorage.setItem("dala:sidebar-hidden", v ? "0" : "1");
+      return !v;
+    });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
@@ -176,6 +185,16 @@ export default function App() {
         return;
       }
 
+      // Ctrl/Cmd+B toggles the sidebar; plain Ctrl+B inside the terminal
+      // stays with readline (backward-char), mirroring the Ctrl+P rule.
+      if (!e.shiftKey && key === "b") {
+        const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
+        if (inTerminal && !e.metaKey) return;
+        e.preventDefault();
+        toggleSidebar();
+        return;
+      }
+
       if (e.shiftKey) {
         switch (key) {
           case "e":
@@ -231,16 +250,20 @@ export default function App() {
   const sessionToDelete = ordered.find((s) => s.id === deleteFor) ?? null;
 
   const hamburger = (
-    <button
-      id="nav-toggle-button"
-      onClick={() => setNavOpen((v) => !v)}
-      className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:text-fg md:hidden"
-      title="DALA"
-    >
-      <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" strokeLinecap="round" />
-      </svg>
-    </button>
+    <Tooltip label={t("toggleSidebar")} keys={isMac ? "⌘B" : "Ctrl+B"}>
+      <button
+        id="nav-toggle-button"
+        onClick={() => {
+          if (window.matchMedia("(min-width: 768px)").matches) toggleSidebar();
+          else setNavOpen((v) => !v);
+        }}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:text-fg"
+      >
+        <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" strokeLinecap="round" />
+        </svg>
+      </button>
+    </Tooltip>
   );
 
   return (
@@ -252,9 +275,9 @@ export default function App() {
         />
       )}
       <div
-        className={`fixed inset-y-0 left-0 z-30 transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 transition-transform duration-200 ${
           navOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
+        } ${sidebarHidden ? "md:hidden" : "md:static md:z-auto md:translate-x-0"}`}
       >
         <Sidebar
           sessions={ordered}
