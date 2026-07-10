@@ -230,9 +230,12 @@ body:has(> #app) {
 }
 
 @supports selector(::-webkit-scrollbar) {
+  /* macOS-style pill: a 6px rounded thumb floating 3px off the edge
+     (12px gutter − 3px transparent border each side, background-clip
+     keeps the color inside the content box). */
   #app ::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 12px;
+    height: 12px;
   }
 
   #app ::-webkit-scrollbar-track {
@@ -240,12 +243,16 @@ body:has(> #app) {
   }
 
   #app ::-webkit-scrollbar-thumb {
-    background: #2c3037;
-    border-radius: 3px;
+    background: rgba(128, 132, 140, 0.45);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 6px;
   }
 
   #app ::-webkit-scrollbar-thumb:hover {
-    background: #3a4048;
+    background: rgba(140, 145, 154, 0.7);
+    background-clip: content-box;
+    border: 3px solid transparent;
   }
 
   #app ::-webkit-scrollbar-corner {

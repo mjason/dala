@@ -98,10 +98,20 @@ function createShellWindow(server) {
 // Slim, theme-neutral scrollbars for pages the built-in browser shows —
 // arbitrary documents come with Chromium's chunky defaults.
 const BROWSER_SCROLLBAR_CSS = `
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.45); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.7); }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(128, 132, 140, 0.45);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(140, 145, 154, 0.7);
+    background-clip: content-box;
+    border: 3px solid transparent;
+  }
+  ::-webkit-scrollbar-corner { background: transparent; }
 `;
 
 // External links (terminal web-links, files "open in browser") get a plain
