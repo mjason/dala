@@ -9,6 +9,7 @@ import {
 } from "../ash_rpc";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
+import { historyLines as normalizeHistoryLines } from "./util";
 import { Kbd, modCombo } from "./shortcuts";
 import {
   DEFAULT_PREFS,
@@ -20,15 +21,8 @@ import {
 } from "./termPrefs";
 import type { CursorStyle, TermPrefs } from "./termPrefs";
 
-// scrollbackLimit is emulator history lines; values above 100k are legacy
-// byte limits from the retired disk cache (~120 bytes/line converts them).
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
-
-function normalizeLines(stored: number): number {
-  const lines = stored > 100_000 ? Math.round(stored / 120) : stored;
-  return Math.min(Math.max(lines || 10_000, LINES_MIN), LINES_MAX);
-}
 
 type Props = {
   session: Session;
@@ -40,7 +34,7 @@ type Props = {
 export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
   const { t } = useI18n();
   const [name, setName] = useState(session.name);
-  const [historyLines, setHistoryLines] = useState(() => normalizeLines(session.scrollbackLimit));
+  const [historyLines, setHistoryLines] = useState(() => normalizeHistoryLines(session.scrollbackLimit));
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 

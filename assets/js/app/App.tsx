@@ -22,7 +22,7 @@ import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
-import { shortPath } from "./util";
+import { historyLines, shortPath } from "./util";
 import { useI18n } from "./i18n";
 
 const SESSION_FIELDS = [
@@ -408,6 +408,7 @@ export default function App() {
               <TerminalView
                 key={active.id}
                 sessionId={active.id}
+                scrollbackLines={historyLines(active.scrollbackLimit)}
                 actionsRef={termActions}
                 onError={toast}
                 onCwdChange={(cwd) => {

@@ -35,3 +35,12 @@ export function timeAgo(iso: string | null): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+
+/**
+ * Session scrollback_limit → emulator history lines. Values above 100k are
+ * legacy byte limits from the retired disk cache (~120 bytes/line).
+ */
+export function historyLines(stored: number): number {
+  const lines = stored > 100_000 ? Math.round(stored / 120) : stored;
+  return Math.min(Math.max(lines || 10_000, 1_000), 50_000);
+}

@@ -69,12 +69,15 @@ type TerminalActions = { reset: () => void; refit: () => void; focus: () => void
 
 type Props = {
   sessionId: string;
+  /** Emulator history lines (session scrollback setting) — xterm keeps the
+   * same amount so the server-side history survives in the viewer. */
+  scrollbackLines?: number;
   onCwdChange?: (cwd: string) => void;
   onError?: (message: string) => void;
   actionsRef?: React.MutableRefObject<TerminalActions | null>;
 };
 
-export default function TerminalView({ sessionId, onCwdChange, onError, actionsRef }: Props) {
+export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, onError, actionsRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
@@ -104,7 +107,7 @@ export default function TerminalView({ sessionId, onCwdChange, onError, actionsR
         letterSpacing: 0,
         cursorBlink: prefs.cursorBlink,
         cursorStyle: prefs.cursorStyle,
-        scrollback: 10000,
+        scrollback: scrollbackLines ?? 10_000,
         allowTransparency: false,
         allowProposedApi: true,
       });
