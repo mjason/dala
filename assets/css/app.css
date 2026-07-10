@@ -225,3 +225,60 @@ body:has(> #app) {
   scrollbar-width: thin;
   scrollbar-color: #2c3037 transparent;
 }
+
+/* Settings dialog: entrance micro-animation + slim custom sliders. */
+@keyframes dala-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+#session-settings input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+#session-settings input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-bg2);
+}
+
+#session-settings input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  margin-top: -5px;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: var(--color-mint);
+  border: 3px solid var(--color-bg1);
+  box-shadow: 0 0 0 1px var(--color-line);
+  transition: transform 120ms ease;
+}
+
+#session-settings input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+#session-settings input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-bg2);
+}
+
+#session-settings input[type="range"]::-moz-range-thumb {
+  height: 8px;
+  width: 8px;
+  border-radius: 9999px;
+  background: var(--color-mint);
+  border: 3px solid var(--color-bg1);
+  box-shadow: 0 0 0 1px var(--color-line);
+}
