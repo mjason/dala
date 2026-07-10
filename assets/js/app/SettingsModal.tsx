@@ -266,13 +266,22 @@ function AppearanceSection() {
     <div className="space-y-3 border-t border-line pt-3">
       <div className="flex items-baseline justify-between">
         <span className="text-xs uppercase tracking-wider text-fg-muted">{t("appearance")}</span>
-        <button
-          id="appearance-reset-button"
-          onClick={() => setPrefs(resetPrefs())}
-          className="text-xs text-fg-muted transition-colors hover:text-fg"
-        >
-          {t("resetDefaults")}
-        </button>
+        <div className="flex items-baseline gap-3">
+          <button
+            id="layout-reset-button"
+            onClick={() => window.dispatchEvent(new CustomEvent("dala:reset-layout"))}
+            className="text-xs text-fg-muted transition-colors hover:text-fg"
+          >
+            {t("resetLayout")}
+          </button>
+          <button
+            id="appearance-reset-button"
+            onClick={() => setPrefs(resetPrefs())}
+            className="text-xs text-fg-muted transition-colors hover:text-fg"
+          >
+            {t("resetDefaults")}
+          </button>
+        </div>
       </div>
       <span className="block text-xs leading-5 text-fg-muted/80">
         {t("appearanceScope")}

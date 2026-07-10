@@ -99,7 +99,7 @@ size, kill/restart, delete) are behind the `settings` button.
 | `Ctrl+Shift+\`` (or the `⚡>_` header button) | **Quick shell**: a disposable overlay terminal (slides over the session, drag its left edge to resize, one-click fullscreen) already cd'd into the active session's directory; `+` in the panel opens more tabs. **Esc closes it** — every quick shell is destroyed on the spot, nothing is kept (inside vim & co. Esc belongs to the program); `exit`/`Ctrl+D` closes a single tab |
 | `Esc` | Close the topmost window |
 
-The sidebar's right edge and the quick shell's left edge are draggable (widths remembered per browser).
+The sidebar, quick shell, file drawer and git panel edges are all draggable (widths remembered per browser); double-click a divider to reset that panel, or use "Reset layout" in settings to reset them all.
 
 File drawer: `↑↓` select · `⏎` open · `⌫` parent directory · `Del` delete ·
 `Esc` deselect (uploads then target the root) · `Ctrl/⌘+V` paste a copied file.

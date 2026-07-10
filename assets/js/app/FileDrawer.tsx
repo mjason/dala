@@ -9,6 +9,7 @@ import { rawFileUrl } from "./fileTypes";
 import { FileTypeIcon } from "./fileIcons";
 import { collectTransferFiles } from "./pasteFiles";
 import { Kbd, KeyHint, modLabel } from "./shortcuts";
+import ResizeHandle from "./ResizeHandle";
 
 // "entries" as a leaf field returns the full entry maps; the generated
 // selection type has no shape for arrays of typed maps, hence the cast.
@@ -45,6 +46,10 @@ type Props = {
   onToggleFollow: () => void;
   onClose: () => void;
   onError: (message: string) => void;
+  /** Desktop width in px (draggable via the left-edge handle). */
+  width?: number;
+  onResize?: (clientX: number) => void;
+  onResetWidth?: () => void;
 };
 
 function join(dir: string, name: string): string {
@@ -58,6 +63,9 @@ export default function FileDrawer({
   onToggleFollow,
   onClose,
   onError,
+  width,
+  onResize,
+  onResetWidth,
 }: Props) {
   const { t } = useI18n();
   const [root, setRoot] = useState<Listing | null>(null);
@@ -343,8 +351,10 @@ export default function FileDrawer({
   return (
     <section
       id="file-drawer"
-      className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:static md:z-auto md:w-[22rem]"
+      className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:relative md:z-auto md:w-[var(--panel-w,22rem)]"
+      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
     >
+      {onResize && <ResizeHandle id="drawer-resize" edge="left" onResize={onResize} onReset={onResetWidth} />}
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">
           {t("filesTitle")}

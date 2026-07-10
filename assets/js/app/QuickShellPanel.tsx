@@ -18,15 +18,16 @@ type Props = {
   /** Desktop width in px (draggable via the left-edge handle). */
   width: number;
   onResize: (clientX: number) => void;
+  onResetWidth?: () => void;
   actionsRef: React.MutableRefObject<TerminalActions | null>;
   onError: (message: string) => void;
 };
 
 /**
- * The quick shells: ephemeral terminals in an overlay panel (like the file
+ * The quick shells: disposable terminals in an overlay panel (like the file
  * drawer), so grabbing a shell for vim/git never rearranges the session
- * list. Tabs (⚡1 ⚡2 …) hold multiple shells; Esc or the toggle hides the
- * panel keeping them alive; `exit`/Ctrl+D inside one destroys it for good.
+ * list. Tabs (⚡1 2 …) hold multiple shells; closing the panel (Esc, ✕ or
+ * the toggle) destroys them all — scratch paper, nothing is kept.
  */
 export default function QuickShellPanel({
   sessions,
@@ -38,6 +39,7 @@ export default function QuickShellPanel({
   onClose,
   width,
   onResize,
+  onResetWidth,
   actionsRef,
   onError,
 }: Props) {
@@ -51,7 +53,9 @@ export default function QuickShellPanel({
       }`}
       style={maximized ? undefined : { width, maxWidth: "100vw" }}
     >
-      {!maximized && <ResizeHandle id="quick-shell-resize" edge="left" onResize={onResize} />}
+      {!maximized && (
+        <ResizeHandle id="quick-shell-resize" edge="left" onResize={onResize} onReset={onResetWidth} />
+      )}
       {/* h-11 matches the main header, so the split line tops align. */}
       <header
         className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3"

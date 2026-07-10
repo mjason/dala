@@ -43,6 +43,9 @@ type Toast = { id: number; message: string };
 const clampWidth = (value: number, min: number, max: number) =>
   Math.min(Math.max(Math.round(value), min), Math.max(min, max));
 
+/** Default panel widths in px (352 = the former w-[22rem]). */
+const PANEL_W = { sidebar: 256, qs: 800, drawer: 352, git: 352 };
+
 export default function App() {
   const { t } = useI18n();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -124,15 +127,39 @@ export default function App() {
     }
   }, [sessions]);
 
-  // Draggable panel widths, remembered per browser.
+  // Draggable panel widths, remembered per browser. Double-clicking a
+  // handle resets that panel; settings has a reset-all button (it fires
+  // the dala:reset-layout event).
   const [sidebarW, setSidebarW] = useState(() =>
-    clampWidth(Number(localStorage.getItem("dala:sidebar-w")) || 256, 180, 440),
+    clampWidth(Number(localStorage.getItem("dala:sidebar-w")) || PANEL_W.sidebar, 180, 440),
   );
   const [qsW, setQsW] = useState(() =>
-    clampWidth(Number(localStorage.getItem("dala:qs-w")) || 800, 380, window.innerWidth - 160),
+    clampWidth(
+      Number(localStorage.getItem("dala:qs-w")) || PANEL_W.qs,
+      380,
+      window.innerWidth - 160,
+    ),
+  );
+  const [drawerW, setDrawerW] = useState(() =>
+    clampWidth(Number(localStorage.getItem("dala:drawer-w")) || PANEL_W.drawer, 260, 720),
+  );
+  const [gitW, setGitW] = useState(() =>
+    clampWidth(Number(localStorage.getItem("dala:git-w")) || PANEL_W.git, 280, 800),
   );
   useEffect(() => localStorage.setItem("dala:sidebar-w", String(sidebarW)), [sidebarW]);
   useEffect(() => localStorage.setItem("dala:qs-w", String(qsW)), [qsW]);
+  useEffect(() => localStorage.setItem("dala:drawer-w", String(drawerW)), [drawerW]);
+  useEffect(() => localStorage.setItem("dala:git-w", String(gitW)), [gitW]);
+  useEffect(() => {
+    const reset = () => {
+      setSidebarW(PANEL_W.sidebar);
+      setQsW(PANEL_W.qs);
+      setDrawerW(PANEL_W.drawer);
+      setGitW(PANEL_W.git);
+    };
+    window.addEventListener("dala:reset-layout", reset);
+    return () => window.removeEventListener("dala:reset-layout", reset);
+  }, []);
 
   // Socket status + sessions lobby channel.
   useEffect(() => {
@@ -431,6 +458,7 @@ export default function App() {
           creating={creating}
           width={sidebarW}
           onResize={(x) => setSidebarW(clampWidth(x, 180, 440))}
+          onResetWidth={() => setSidebarW(PANEL_W.sidebar)}
           onSelect={(id) => {
             setActiveId(id);
             setNavOpen(false);
@@ -550,6 +578,7 @@ export default function App() {
               </Tooltip>
               <Tooltip label={t("sessionSettings")} description={t("settingsDesc")}>
                 <button
+                  id="session-settings-button"
                   onClick={() => setSettingsFor(active.id)}
                   className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
                 >
@@ -612,7 +641,14 @@ export default function App() {
       </main>
 
       {gitOpen && active && (
-        <GitPanel path={active.cwd} onClose={() => setGitOpen(false)} onError={toast} />
+        <GitPanel
+          path={active.cwd}
+          onClose={() => setGitOpen(false)}
+          onError={toast}
+          width={gitW}
+          onResize={(x) => setGitW(clampWidth(window.innerWidth - x, 280, 800))}
+          onResetWidth={() => setGitW(PANEL_W.git)}
+        />
       )}
 
       {qsOpen && qsSession && (
@@ -629,6 +665,7 @@ export default function App() {
           onClose={closeQuickShell}
           width={qsW}
           onResize={(x) => setQsW(clampWidth(window.innerWidth - x, 380, window.innerWidth - 160))}
+          onResetWidth={() => setQsW(PANEL_W.qs)}
           actionsRef={qsActions}
           onError={toast}
         />
@@ -637,6 +674,9 @@ export default function App() {
       {drawerOpen && active && (
         <FileDrawer
           path={drawerPath ?? active.cwd}
+          width={drawerW}
+          onResize={(x) => setDrawerW(clampWidth(window.innerWidth - x, 260, 720))}
+          onResetWidth={() => setDrawerW(PANEL_W.drawer)}
           followCwd={followCwd}
           onNavigate={(p) => {
             setFollowCwd(false);

@@ -21,6 +21,7 @@ type Props = {
   /** Desktop width in px (draggable via the right-edge handle). */
   width?: number;
   onResize?: (clientX: number) => void;
+  onResetWidth?: () => void;
 };
 
 export default function Sidebar({
@@ -34,15 +35,18 @@ export default function Sidebar({
   onDelete,
   width,
   onResize,
+  onResetWidth,
 }: Props) {
   const { locale, t, setLocale } = useI18n();
 
   return (
     <aside
-      className="relative flex h-full w-64 shrink-0 flex-col border-r border-line bg-bg1"
-      style={width ? { width } : undefined}
+      className="relative flex h-full w-64 shrink-0 flex-col border-r border-line bg-bg1 md:w-[var(--panel-w,16rem)]"
+      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
     >
-      {onResize && <ResizeHandle id="sidebar-resize" edge="right" onResize={onResize} />}
+      {onResize && (
+        <ResizeHandle id="sidebar-resize" edge="right" onResize={onResize} onReset={onResetWidth} />
+      )}
       <div className="flex items-center gap-2 px-4 pt-4 pb-3">
         <span className="font-mono text-[15px] font-semibold tracking-widest text-fg">DALA</span>
         <span

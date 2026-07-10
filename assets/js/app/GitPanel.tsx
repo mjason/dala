@@ -29,6 +29,7 @@ import { FileTypeIcon } from "./fileIcons";
 import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
 import { hasOpenWindows, inTextInput, Kbd, Tooltip } from "./shortcuts";
 import Windowed from "./Windowed";
+import ResizeHandle from "./ResizeHandle";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
 const BRANCH_FIELDS = ["current", "local", "remote"] as unknown as GitBranchesFields;
@@ -64,9 +65,20 @@ type Props = {
   path: string;
   onClose: () => void;
   onError: (message: string) => void;
+  /** Desktop width in px (draggable via the left-edge handle). */
+  width?: number;
+  onResize?: (clientX: number) => void;
+  onResetWidth?: () => void;
 };
 
-export default function GitPanel({ path, onClose, onError }: Props) {
+export default function GitPanel({
+  path,
+  onClose,
+  onError,
+  width,
+  onResize,
+  onResetWidth,
+}: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<"changes" | "history">("changes");
   const [status, setStatus] = useState<Status | null>(null);
@@ -264,8 +276,10 @@ export default function GitPanel({ path, onClose, onError }: Props) {
   return (
     <section
       id="git-panel"
-      className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:static md:z-auto md:w-[22rem]"
+      className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:relative md:z-auto md:w-[var(--panel-w,22rem)]"
+      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
     >
+      {onResize && <ResizeHandle id="git-resize" edge="left" onResize={onResize} onReset={onResetWidth} />}
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">{t("gitTitle")}</span>
         {status?.repo && status.branch && (
