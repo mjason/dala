@@ -239,8 +239,6 @@ body:has(> #app) {
   left: auto !important;
   right: 1px;
   border-radius: 6px;
-  opacity: 0;
-  transition: opacity 150ms linear;
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider {
@@ -248,17 +246,6 @@ body:has(> #app) {
   top: auto !important;
   bottom: 1px;
   border-radius: 6px;
-  opacity: 0;
-  transition: opacity 150ms linear;
-}
-
-/* Strictly macOS: the thumb only materializes when the pointer is near
-   the edge (the 14px strip) or while dragging. Streaming output moves the
-   scroll position constantly, which would otherwise keep the fade-in
-   scrollbar awake the whole time. */
-.xterm .xterm-scrollable-element > .scrollbar:hover > .slider,
-.xterm .xterm-scrollable-element > .scrollbar > .slider.active {
-  opacity: 1;
 }
 
 /* Settings dialog: entrance micro-animation + slim custom sliders. */
