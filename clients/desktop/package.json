@@ -1,7 +1,7 @@
 {
   "name": "dala-desktop",
   "private": true,
-  "version": "0.4.5",
+  "version": "0.5.0",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
