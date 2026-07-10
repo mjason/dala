@@ -17,6 +17,8 @@ export type TermPrefs = {
   smoothScroll: boolean;
   /** Wheel distance multiplier (xterm scrollSensitivity). */
   scrollSensitivity: number;
+  /** Selecting text copies it immediately (canvas text has no native copy). */
+  copyOnSelect: boolean;
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -27,6 +29,7 @@ export const DEFAULT_PREFS: TermPrefs = {
   cursorBlink: true,
   smoothScroll: true,
   scrollSensitivity: 2,
+  copyOnSelect: true,
 };
 
 /** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
@@ -68,6 +71,8 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
       SCROLL_SENSITIVITY_RANGE.min,
       SCROLL_SENSITIVITY_RANGE.max,
     ),
+    copyOnSelect:
+      typeof raw.copyOnSelect === "boolean" ? raw.copyOnSelect : DEFAULT_PREFS.copyOnSelect,
   };
 }
 

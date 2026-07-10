@@ -44,3 +44,33 @@ export function historyLines(stored: number): number {
   const lines = stored > 100_000 ? Math.round(stored / 120) : stored;
   return Math.min(Math.max(lines || 10_000, 1_000), 50_000);
 }
+
+/**
+ * Clipboard write that also works on insecure origins (plain-http LAN
+ * access has no navigator.clipboard): falls back to a transient textarea +
+ * execCommand("copy"), restoring focus afterwards.
+ */
+export async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fall through to execCommand
+  }
+
+  const previous = document.activeElement as HTMLElement | null;
+  const scratch = document.createElement("textarea");
+  scratch.value = text;
+  scratch.style.position = "fixed";
+  scratch.style.opacity = "0";
+  document.body.appendChild(scratch);
+  scratch.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    scratch.remove();
+    previous?.focus?.();
+  }
+  return copied;
+}

@@ -83,6 +83,8 @@ impl Screen {
         out.extend_from_slice(b"\x1bc");
 
         let alt = mode.contains(TermMode::ALT_SCREEN);
+        let mut pen = Pen::default();
+
         if alt {
             out.extend_from_slice(b"\x1b[?1049h");
         } else {
@@ -91,16 +93,20 @@ impl Screen {
             let history = grid.history_size();
             for i in 0..history {
                 let line = Line(i as i32 - history as i32);
-                render_row(&mut out, grid, line, columns);
-                out.extend_from_slice(b"\r\n");
+                // Wrapped rows flow into the next one without an explicit
+                // newline, so xterm re-marks them as one logical line and
+                // copying a long command yields no hard breaks.
+                if !render_row(&mut out, &mut pen, grid, line, columns) {
+                    out.extend_from_slice(b"\r\n");
+                }
             }
         }
 
         for i in 0..screen_lines {
-            if i > 0 {
+            let wrapped = render_row(&mut out, &mut pen, grid, Line(i as i32), columns);
+            if !wrapped && i + 1 < screen_lines {
                 out.extend_from_slice(b"\r\n");
             }
-            render_row(&mut out, grid, Line(i as i32), columns);
         }
 
         // Cursor position is 1-based in CUP.
@@ -150,30 +156,37 @@ fn render_modes(out: &mut Vec<u8>, term: &Term<Quiet>, mode: &TermMode) {
     out.extend_from_slice(format!("\x1b[{decscusr} q").as_bytes());
 }
 
+/// Renders one row. Returns true when the row wraps into the next one, in
+/// which case every column was emitted and no newline must follow — the
+/// terminal's auto-wrap continues the logical line.
 fn render_row(
     out: &mut Vec<u8>,
+    pen: &mut Pen,
     grid: &alacritty_terminal::grid::Grid<Cell>,
     line: Line,
     columns: usize,
-) {
+) -> bool {
     let row = &grid[line];
+    let wrapped = columns > 0 && row[Column(columns - 1)].flags.contains(Flags::WRAPLINE);
 
-    // Trim trailing cells that would render as nothing.
-    let mut end = 0;
-    for i in (0..columns).rev() {
-        let cell = &row[Column(i)];
-        if cell.c != ' '
-            || cell.bg != Color::Named(NamedColor::Background)
-            || cell
-                .flags
-                .intersects(Flags::INVERSE | Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
-        {
-            end = i + 1;
-            break;
+    // Trim trailing cells that would render as nothing (never on wrapped
+    // rows: auto-wrap needs the full width written out).
+    let mut end = if wrapped { columns } else { 0 };
+    if !wrapped {
+        for i in (0..columns).rev() {
+            let cell = &row[Column(i)];
+            if cell.c != ' '
+                || cell.bg != Color::Named(NamedColor::Background)
+                || cell
+                    .flags
+                    .intersects(Flags::INVERSE | Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
+            {
+                end = i + 1;
+                break;
+            }
         }
     }
 
-    let mut pen = Pen::default();
     for i in 0..end {
         let cell = &row[Column(i)];
         if cell
@@ -193,8 +206,13 @@ fn render_row(
         }
     }
 
-    // Reset the pen and wipe whatever an older frame left beyond the trim.
-    out.extend_from_slice(b"\x1b[0m\x1b[K");
+    if !wrapped {
+        // Reset the pen and wipe whatever an older frame left beyond the trim.
+        out.extend_from_slice(b"\x1b[0m\x1b[K");
+        *pen = Pen::default();
+    }
+
+    wrapped
 }
 
 /// Tracks the active SGR state and emits a minimal SGR sequence on change.
@@ -365,6 +383,23 @@ mod tests {
         let out = text(&screen.repaint());
         assert_eq!(out.matches('中').count(), 1);
         assert!(out.contains("中文 ok"));
+    }
+
+    #[test]
+    fn wrapped_lines_carry_no_hard_breaks() {
+        let mut screen = Screen::new(5, 10, 50);
+        // 25 chars in a 10-column terminal: wraps across three rows.
+        screen.advance(b"ABCDEFGHIJKLMNOPQRSTUVWXY");
+        let out = text(&screen.repaint());
+
+        let a = out.find("ABCDEFGHIJ").expect("first segment");
+        let tail = &out[a..];
+        let upto = tail.find("UVWXY").expect("last segment");
+        assert!(
+            !tail[..upto].contains("\r\n"),
+            "wrapped segments must not be separated by newlines: {:?}",
+            &tail[..upto]
+        );
     }
 
     #[test]

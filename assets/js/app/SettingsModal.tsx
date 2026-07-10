@@ -380,6 +380,16 @@ function AppearanceSection() {
         </label>
         <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
           <input
+            id="copy-on-select-checkbox"
+            type="checkbox"
+            checked={prefs.copyOnSelect}
+            onChange={(e) => apply({ copyOnSelect: e.target.checked })}
+            className="h-3.5 w-3.5 accent-[#4cc38a]"
+          />
+          {t("copyOnSelect")}
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+          <input
             id="smooth-scroll-checkbox"
             type="checkbox"
             checked={prefs.smoothScroll}

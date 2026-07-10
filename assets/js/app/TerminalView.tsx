@@ -11,7 +11,7 @@ import {
   onTerminalChannelMessages,
   unsubscribeTerminalChannel,
 } from "../ash_typed_channels";
-import { base64ToBytes } from "./util";
+import { base64ToBytes, writeClipboard } from "./util";
 import { createStreamGate } from "./streamGate";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
@@ -141,8 +141,37 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
       fit.fit();
       term.focus();
 
+      // WebGL draws to a canvas — there is no DOM text for the browser's
+      // native copy — so copying is explicit: Ctrl+C copies when a selection
+      // exists (and interrupts the shell otherwise, Windows Terminal style),
+      // and selecting copies immediately when the preference is on.
+      let livePrefs = prefs;
+      term.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === "keydown" &&
+          event.ctrlKey &&
+          !event.shiftKey &&
+          !event.altKey &&
+          !event.metaKey &&
+          (event.key === "c" || event.key === "C") &&
+          term.hasSelection()
+        ) {
+          void writeClipboard(term.getSelection());
+          term.clearSelection();
+          return false;
+        }
+        return true;
+      });
+      const onMouseUp = () => {
+        if (livePrefs.copyOnSelect && term.hasSelection()) {
+          void writeClipboard(term.getSelection());
+        }
+      };
+      container.addEventListener("mouseup", onMouseUp);
+
       // Appearance settings apply live to every open terminal.
       const stopPrefsSync = onPrefsChange((next) => {
+        livePrefs = next;
         term.options.fontFamily = fontStack(next);
         term.options.fontSize = next.fontSize;
         term.options.lineHeight = next.lineHeight;
@@ -369,6 +398,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
         window.clearInterval(idleTimer);
         window.removeEventListener("resize", onWindowChange);
         document.removeEventListener("visibilitychange", onWindowChange);
+        container.removeEventListener("mouseup", onMouseUp);
         stopPrefsSync();
         inputDisposable.dispose();
         unsubscribeTerminalChannel(channel, refs);
