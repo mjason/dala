@@ -84,12 +84,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-24.04
+          - os: windows-latest
+          # Universal binary: one .dmg for Apple Silicon AND Intel Macs.
+          - os: macos-latest
+            args: --target universal-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add both macOS architectures
+        if: startsWith(matrix.os, 'macos')
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: actions/setup-node@v4
         with:
@@ -122,3 +131,4 @@ jobs:
         with:
           projectPath: clients/desktop
           tagName: ${{ github.ref_name }}
+          args: ${{ matrix.args }}
