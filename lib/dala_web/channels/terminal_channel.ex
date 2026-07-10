@@ -2,17 +2,18 @@ defmodule DalaWeb.TerminalChannel do
   @moduledoc """
   Per-session terminal channel.
 
-  On join, the DETS scrollback is replayed to the client as a series of
-  `replay` events (pushed after the join completes, so chunks broadcast in the
-  meantime are deduplicated client-side via `seq`). Live output arrives as
-  `output` broadcasts from `Dala.Terminal.Server`; keyboard input and resizes
-  come in via `input`/`resize`.
+  On join, the client receives a synthesized repaint (history tail + current
+  screen + terminal modes) rendered by the session's holder-side emulator —
+  the tmux attach model — as `replay` events. For sessions that are no longer
+  running, the holder's final screen file is served instead. Live output
+  arrives as `output` broadcasts from `Dala.Terminal.Server`; overlap with
+  the repaint is deduplicated client-side via `seq`.
   """
 
   use Phoenix.Channel
   use AshTypescript.TypedChannel
 
-  alias Dala.Terminal.Scrollback
+  alias Dala.Terminal.Holder
 
   # Keep pushed frames comfortably small; base64 inflates by 4/3.
   @replay_batch_bytes 192 * 1024
@@ -78,9 +79,33 @@ defmodule DalaWeb.TerminalChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
-    chunks = Scrollback.replay(socket.assigns.session_id)
-    push_replay(socket, chunks)
-    {:noreply, socket}
+    id = socket.assigns.session_id
+
+    if Dala.Terminal.Server.alive?(id) do
+      Dala.Terminal.Server.request_repaint(id, self())
+      # A wedged holder must not leave the client covered forever.
+      Process.send_after(self(), :repaint_timeout, 4_000)
+      {:noreply, assign(socket, :replayed, false)}
+    else
+      # Not running: serve the final screen the holder left behind.
+      {:noreply, push_replay(socket, Holder.read_final(id), 0)}
+    end
+  end
+
+  def handle_info({:repaint, data, seq}, socket) do
+    if socket.assigns[:replayed] do
+      {:noreply, socket}
+    else
+      {:noreply, push_replay(socket, data, seq)}
+    end
+  end
+
+  def handle_info(:repaint_timeout, socket) do
+    if socket.assigns[:replayed] do
+      {:noreply, socket}
+    else
+      {:noreply, push_replay(socket, "", 0)}
+    end
   end
 
   @impl true
@@ -101,28 +126,31 @@ defmodule DalaWeb.TerminalChannel do
 
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
 
-  defp push_replay(socket, chunks) do
-    {batch, batch_bytes, last_seq} =
-      Enum.reduce(chunks, {[], 0, -1}, fn {seq, data}, {batch, bytes, _last} ->
-        if bytes > 0 and bytes + byte_size(data) > @replay_batch_bytes do
-          push_batch(socket, batch, seq - 1, false)
-          {[data], byte_size(data), seq}
-        else
-          {[data | batch], bytes + byte_size(data), seq}
-        end
-      end)
+  # Pushes one repaint as a series of replay batches. Every batch carries the
+  # repaint's seq watermark; the last one is flagged `done` so the client can
+  # uncover and re-enable input.
+  defp push_replay(socket, data, seq) do
+    chunks = chunk_binary(data, @replay_batch_bytes)
 
-    _ = batch_bytes
-    push_batch(socket, batch, last_seq, true)
+    chunks
+    |> Enum.with_index(1)
+    |> Enum.each(fn {chunk, index} ->
+      push(socket, "replay", %{
+        data: Base.encode64(chunk),
+        seq: seq,
+        done: index == length(chunks)
+      })
+    end)
+
+    assign(socket, :replayed, true)
   end
 
-  defp push_batch(socket, reversed_batch, last_seq, done) do
-    data =
-      reversed_batch
-      |> Enum.reverse()
-      |> IO.iodata_to_binary()
-      |> Base.encode64()
+  defp chunk_binary("", _size), do: [""]
 
-    push(socket, "replay", %{data: data, seq: last_seq, done: done})
+  defp chunk_binary(data, size) when byte_size(data) <= size, do: [data]
+
+  defp chunk_binary(data, size) do
+    <<head::binary-size(size), rest::binary>> = data
+    [head | chunk_binary(rest, size)]
   end
 end

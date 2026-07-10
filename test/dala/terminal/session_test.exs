@@ -1,7 +1,7 @@
 defmodule Dala.Terminal.SessionTest do
   use Dala.DataCase, async: false
 
-  alias Dala.Terminal.{Scrollback, Server}
+  alias Dala.Terminal.{Holder, Server}
 
   @moduletag :terminal
 
@@ -10,7 +10,8 @@ defmodule Dala.Terminal.SessionTest do
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
-      Scrollback.clear(session.id)
+      File.rm(Holder.exit_path(to_string(session.id)))
+      File.rm(Holder.final_path(to_string(session.id)))
     end)
 
     session
@@ -31,6 +32,17 @@ defmodule Dala.Terminal.SessionTest do
     end
   end
 
+  # The holder-side emulator's synthesized screen for a running session.
+  defp repaint_text(session_id) do
+    Server.request_repaint(session_id, self())
+
+    receive do
+      {:repaint, data, _seq} -> data
+    after
+      5_000 -> flunk("no repaint from holder")
+    end
+  end
+
   test "create applies defaults and spawns a live shell" do
     session = create_session!()
 
@@ -41,21 +53,24 @@ defmodule Dala.Terminal.SessionTest do
     assert Server.alive?(session.id)
   end
 
-  test "input reaches the shell; output is broadcast and cached in DETS" do
+  test "input reaches the shell; output is broadcast and lands in the repaint" do
     session = create_session!()
     Phoenix.PubSub.subscribe(Dala.PubSub, "terminal:#{session.id}")
 
     Server.input(session.id, "echo dala-$((40 + 2))\r")
 
     assert_receive %Phoenix.Socket.Broadcast{event: "output"}, 5_000
+    eventually(fn -> repaint_text(session.id) =~ "dala-42" end)
+  end
+
+  test "repaint restores modes a TUI enabled" do
+    session = create_session!()
+
+    Server.input(session.id, "printf '\\e[?1002h\\e[?1006h'\r")
 
     eventually(fn ->
-      text =
-        session.id
-        |> Scrollback.replay()
-        |> Enum.map_join(&elem(&1, 1))
-
-      text =~ "dala-42"
+      repaint = repaint_text(session.id)
+      repaint =~ "\e[?1002h" and repaint =~ "\e[?1006h"
     end)
   end
 
@@ -74,13 +89,36 @@ defmodule Dala.Terminal.SessionTest do
     refute Server.alive?(session.id)
   end
 
-  test "restart revives an exited session and scrollback survives" do
+  test "shell exit broadcasts a mode reset and leaves a final screen file" do
+    session = create_session!()
+    Phoenix.PubSub.subscribe(Dala.PubSub, "terminal:#{session.id}")
+
+    Server.input(session.id, "echo last-words\r")
+    eventually(fn -> repaint_text(session.id) =~ "last-words" end)
+
+    Server.stop(session.id)
+    await_exit(session.id)
+
+    # Connected clients must drop stale mouse/paste modes.
+    assert_received_mode_reset()
+
+    # And a disconnected client opening the session later sees the last screen.
+    assert Holder.read_final(to_string(session.id)) =~ "last-words"
+  end
+
+  defp assert_received_mode_reset do
+    receive do
+      %Phoenix.Socket.Broadcast{event: "output", payload: %{data: data}} ->
+        if Base.decode64!(data) =~ "\e[?1000l", do: :ok, else: assert_received_mode_reset()
+    after
+      5_000 -> flunk("mode reset was never broadcast")
+    end
+  end
+
+  test "restart revives an exited session with a fresh screen" do
     session = create_session!()
     Server.input(session.id, "echo before-restart\r")
-
-    eventually(fn ->
-      Scrollback.replay(session.id) |> Enum.map_join(&elem(&1, 1)) =~ "before-restart"
-    end)
+    eventually(fn -> repaint_text(session.id) =~ "before-restart" end)
 
     Server.stop(session.id)
     await_exit(session.id)
@@ -93,51 +131,22 @@ defmodule Dala.Terminal.SessionTest do
     assert Server.alive?(session.id)
     eventually(fn -> Dala.Terminal.get_session!(session.id).status == :running end)
 
-    # history from before the restart is still replayable
-    assert Scrollback.replay(session.id) |> Enum.map_join(&elem(&1, 1)) =~ "before-restart"
+    # A fresh shell means a fresh emulator: no stale final screen shadows it.
+    assert Holder.read_final(to_string(session.id)) == ""
   end
 
-  test "shell exit and restart append a terminal mode reset to the stream" do
-    session = create_session!()
-
-    # like a TUI enabling SGR mouse tracking, then the shell dying
-    Server.input(session.id, "printf '\\e[?1002h\\e[?1006h'\r")
-    eventually(fn -> replay_text(session.id) =~ "\e[?1002h" end)
-
-    Server.stop(session.id)
-    await_exit(session.id)
-
-    # the exit path must switch mouse reporting back off for future replays
-    assert replay_text(session.id) =~ "\e[?1000l\e[?1002l"
-
-    # a fresh PTY attaching to existing scrollback resets modes again
-    {:ok, _pid} =
-      Ash.run_action(
-        Ash.ActionInput.for_action(Dala.Terminal.Session, :restart, %{id: session.id})
-      )
-      |> then(fn {:ok, true} -> {:ok, Server.whereis(session.id)} end)
-
-    eventually(fn ->
-      replay_text(session.id) |> String.split("\e[?1000l") |> length() >= 3
-    end)
-  end
-
-  defp replay_text(session_id) do
-    session_id |> Scrollback.replay() |> Enum.map_join(&elem(&1, 1))
-  end
-
-  test "destroy stops the server and clears the scrollback cache" do
+  test "destroy stops the server and removes holder leftovers" do
     session = create_session!()
     Server.input(session.id, "echo gone\r")
-
-    eventually(fn -> Scrollback.replay(session.id) != [] end)
+    eventually(fn -> repaint_text(session.id) =~ "gone" end)
 
     pid = Server.whereis(session.id)
     ref = Process.monitor(pid)
     :ok = Dala.Terminal.delete_session!(session)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 8_000
 
-    assert Scrollback.replay(session.id) == []
+    assert Holder.read_final(to_string(session.id)) == ""
+    refute File.exists?(Holder.exit_path(to_string(session.id)))
     assert {:error, _not_found} = Dala.Terminal.get_session(session.id)
   end
 end

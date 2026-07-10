@@ -217,8 +217,10 @@ mix phx.server        # http://localhost:4000
 ## 架构速览
 
 - Phoenix + Bandit 服务端，React + xterm.js 前端（Phoenix Channels 传输）
-- 每会话一个 `dala_holder`（Rust）：daemon 化持有 PTY，unix socket 上跑
-  4 字节长度前缀帧协议，8MB 环形缓冲兜住无人连接时的输出
+- 每会话一个 `dala_holder`（Rust）：daemon 化持有 PTY，**内嵌无头终端模拟器**
+  （`alacritty_terminal`）——tmux 模型。attach 拿到的是合成重绘
+  （历史尾部 + 当前屏 + 光标 + 模式），不再重放原始字节流，attach 耗时与
+  历史输出总量无关，vim/htop 这类全屏应用跨重启精确恢复
 - `dala_git`（Rustler + libgit2）：status/diff/stage/patch apply/分支/checkout 全走 NIF
 - SQLite（Ash + Ecto）存账户，DETS 存会话与滚动缓存
 

@@ -1,14 +1,15 @@
 defmodule DalaWeb.TerminalChannelTest do
   use DalaWeb.ChannelCase, async: false
 
-  alias Dala.Terminal.{Scrollback, Server}
+  alias Dala.Terminal.{Holder, Server}
 
   defp create_session! do
     session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
-      Scrollback.clear(session.id)
+      File.rm(Holder.exit_path(to_string(session.id)))
+      File.rm(Holder.final_path(to_string(session.id)))
     end)
 
     session
@@ -20,14 +21,43 @@ defmodule DalaWeb.TerminalChannelTest do
     |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}")
   end
 
-  test "join replays the scrollback cache and reports status" do
+  test "join delivers the holder's synthesized repaint and reports status" do
     session = create_session!()
-    Scrollback.append(session.id, "cached-output")
+
+    # Put something on the screen, then join fresh: the repaint must carry it.
+    Server.input(session.id, "echo repaint-me-$((40 + 2))\r")
+    Process.sleep(300)
 
     assert {:ok, %{status: :running}, _socket} = join!(session.id)
 
-    assert_push "replay", %{data: data, done: true}
-    assert Base.decode64!(data) =~ "cached-output"
+    assert_replay_containing("repaint-me-42")
+  end
+
+  test "join on an exited session serves the final screen file" do
+    session = create_session!()
+    id = to_string(session.id)
+
+    Server.input(session.id, "echo final-words\r")
+    Process.sleep(300)
+
+    pid = Server.whereis(id)
+    ref = Process.monitor(pid)
+    Server.stop(id)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 8_000
+
+    assert {:ok, %{status: :exited}, _socket} = join!(id)
+    assert_replay_containing("final-words")
+  end
+
+  defp assert_replay_containing(text, acc \\ "") do
+    assert_push "replay", %{data: data, done: done}, 5_000
+    acc = acc <> Base.decode64!(data)
+
+    cond do
+      acc =~ text -> :ok
+      done -> flunk("replay finished without containing #{inspect(text)}")
+      true -> assert_replay_containing(text, acc)
+    end
   end
 
   test "join rejects unknown sessions" do

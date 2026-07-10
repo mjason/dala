@@ -6,8 +6,9 @@ defmodule Dala.Terminal.Server do
   The holder — not this process — owns the PTY and the shell, so shells
   survive dala restarts: on init this server reattaches to a live holder when
   one exists and only spawns a fresh shell otherwise. Output frames are
-  persisted to the scrollback cache and broadcast to the `terminal:{id}`
-  channel topic. Session lifecycle changes go through internal Ash actions so
+  broadcast to the `terminal:{id}` channel topic; history lives in the
+  holder's embedded terminal emulator and is delivered as a synthesized
+  repaint when a client attaches (`request_repaint/2`). Session lifecycle changes go through internal Ash actions so
   their PubSub publications reach the typed channels.
   """
 
@@ -15,7 +16,7 @@ defmodule Dala.Terminal.Server do
 
   require Logger
 
-  alias Dala.Terminal.{Holder, Scrollback}
+  alias Dala.Terminal.Holder
 
   @cwd_poll_ms 2_000
   @force_stop_ms 5_000
@@ -34,13 +35,10 @@ defmodule Dala.Terminal.Server do
     VSCODE_INJECTION VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_IPC_HANDLE
   )
 
-  # Replayed scrollback re-applies whatever terminal modes old programs had
-  # enabled (mouse tracking, bracketed paste, alt-screen, hidden cursor).
-  # When the shell those programs lived in is gone, that state is stale and
-  # turns mouse movement into `35;36M`-style input garbage. This sequence
-  # switches every such mode off; it is appended to the stream whenever the
-  # shell dies or a fresh shell attaches to existing scrollback, so replays
-  # always end in a sane state.
+  # When the shell dies, whatever modes its programs had enabled (mouse
+  # tracking, bracketed paste, alt-screen, hidden cursor) are stale on the
+  # connected clients and would turn mouse movement into `35;36M`-style
+  # input garbage — switch them all off.
   @mode_reset "\e[?1000l\e[?1002l\e[?1003l\e[?1005l\e[?1006l" <>
                 "\e[?2004l\e[?1049l\e[?1l\e[?7h\e[?25h\e[0m"
 
@@ -80,6 +78,14 @@ defmodule Dala.Terminal.Server do
       pid -> GenServer.call(pid, :viewport)
     end
   end
+
+  @doc """
+  Asks the holder for a synthesized repaint and delivers it to `client` as a
+  `{:repaint, data, seq}` message. `seq` is the seq of the last output the
+  repaint covers, so the client can deduplicate the live stream against it.
+  """
+  def request_repaint(id, client) when is_pid(client),
+    do: cast_if_alive(id, {:request_repaint, client})
 
   @doc "Kill the shell. The session is marked exited once the holder reports it."
   def stop(id), do: cast_if_alive(id, :shutdown)
@@ -150,7 +156,8 @@ defmodule Dala.Terminal.Server do
       env: [{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}],
       env_remove: @env_remove,
       rows: 24,
-      cols: 80
+      cols: 80,
+      history_lines: history_lines(session.scrollback_limit)
     ]
 
     case Holder.attach_or_spawn(id, opts) do
@@ -162,7 +169,12 @@ defmodule Dala.Terminal.Server do
           # Filled in by the holder's HELLO frame.
           shell_pid: nil,
           cwd: session.cwd,
-          seq: Scrollback.last_seq(id),
+          # Monotonic across restarts so a rejoining client's dedup window
+          # never sees the counter move backwards.
+          seq: System.system_time(:millisecond),
+          # Channels waiting for a holder repaint, in request order (the
+          # holder answers over the same FIFO socket).
+          pending_repaints: :queue.new(),
           # Per-client viewport sizes; the PTY tracks their minimum.
           clients: %{},
           size: {24, 80},
@@ -178,15 +190,6 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_continue(:post_init, state) do
-    Scrollback.set_limit(state.id, state.session.scrollback_limit)
-
-    # A fresh shell attaching to existing scrollback: neutralize terminal
-    # modes left over from the previous shell's programs. A reattached shell
-    # keeps its live modes — resetting them would corrupt running TUIs.
-    if not state.reattached? and Scrollback.last_seq(state.id) >= 0 do
-      emit(state.id, @mode_reset)
-    end
-
     state = %{state | session: Dala.Terminal.mark_running!(state.session)}
     Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
     {:noreply, state}
@@ -221,6 +224,18 @@ defmodule Dala.Terminal.Server do
 
     clients = Map.put(state.clients, client, {rows, cols})
     {:noreply, apply_min_size(%{state | clients: clients})}
+  end
+
+  def handle_cast({:request_repaint, client}, state) do
+    case Holder.send_repaint_req(state.socket) do
+      :ok ->
+        {:noreply, %{state | pending_repaints: :queue.in(client, state.pending_repaints)}}
+
+      {:error, _reason} ->
+        # Holder unreachable — answer empty so the client is not left covered.
+        send(client, {:repaint, "", state.seq})
+        {:noreply, state}
+    end
   end
 
   def handle_cast(:shutdown, state) do
@@ -284,8 +299,19 @@ defmodule Dala.Terminal.Server do
   defp handle_frame(frame_type, payload, state) do
     cond do
       frame_type == Holder.type_output() ->
-        seq = emit(state.id, payload)
-        {:noreply, %{state | seq: seq}}
+        {:noreply, emit(state, payload)}
+
+      frame_type == Holder.type_repaint() ->
+        # The socket is FIFO: every output the repaint covers has already
+        # been processed, so state.seq is exactly the repaint's watermark.
+        case :queue.out(state.pending_repaints) do
+          {{:value, client}, rest} ->
+            send(client, {:repaint, payload, state.seq})
+            {:noreply, %{state | pending_repaints: rest}}
+
+          {:empty, _queue} ->
+            {:noreply, state}
+        end
 
       frame_type == Holder.type_hello() ->
         shell_pid =
@@ -308,9 +334,9 @@ defmodule Dala.Terminal.Server do
   end
 
   defp exit_with_status(status, state) do
-    # Whatever was running is gone; make sure clients (and future replays)
-    # drop its mouse/paste/alt-screen modes.
-    emit(state.id, @mode_reset)
+    # Whatever was running is gone; make sure connected clients drop its
+    # mouse/paste/alt-screen modes.
+    _ = emit(state, @mode_reset)
 
     case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
       {:ok, _session} ->
@@ -357,15 +383,22 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  # Appends to the scrollback cache and broadcasts to connected clients.
-  defp emit(id, data) do
-    seq = Scrollback.append(id, data)
+  # Broadcasts an output chunk to connected clients with the next seq.
+  defp emit(state, data) do
+    seq = state.seq + 1
 
-    DalaWeb.Endpoint.broadcast("terminal:" <> id, "output", %{
+    DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "output", %{
       data: Base.encode64(data),
       seq: seq
     })
 
-    seq
+    %{state | seq: seq}
   end
+
+  # The stored limit is bytes (a UI slider in MB); the emulator wants lines.
+  # ~120 bytes/line keeps the mapping intuitive, clamped to sane bounds.
+  defp history_lines(limit_bytes) when is_integer(limit_bytes) and limit_bytes > 0,
+    do: (limit_bytes / 120) |> round() |> max(2_000) |> min(50_000)
+
+  defp history_lines(_other), do: 10_000
 end

@@ -27,6 +27,10 @@ defmodule Mix.Tasks.Compile.DalaHolder do
       end
 
       File.mkdir_p!(Path.dirname(@target))
+      # Unlink first: overwriting the binary while a holder is executing it
+      # fails with ETXTBSY; removing gives the copy a fresh inode and leaves
+      # running holders on the old image.
+      _ = File.rm(@target)
       File.cp!(Path.join(@crate, "target/release/dala_holder"), @target)
     end
 

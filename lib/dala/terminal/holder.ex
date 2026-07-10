@@ -10,9 +10,11 @@ defmodule Dala.Terminal.Holder do
   @type_hello 0x01
   @type_output 0x02
   @type_exit 0x03
+  @type_repaint 0x04
   @type_input 0x11
   @type_resize 0x12
   @type_kill 0x13
+  @type_repaint_req 0x14
 
   @connect_attempts 40
   @connect_delay_ms 25
@@ -20,6 +22,7 @@ defmodule Dala.Terminal.Holder do
   def type_hello, do: @type_hello
   def type_output, do: @type_output
   def type_exit, do: @type_exit
+  def type_repaint, do: @type_repaint
 
   def dir do
     base = System.get_env("XDG_RUNTIME_DIR") || System.tmp_dir!()
@@ -28,6 +31,7 @@ defmodule Dala.Terminal.Holder do
 
   def socket_path(id), do: Path.join(dir(), id <> ".sock")
   def exit_path(id), do: socket_path(id) <> ".exit"
+  def final_path(id), do: socket_path(id) <> ".final"
 
   @doc "Whether a holder (a live shell) exists for this session."
   def exists?(id), do: File.exists?(socket_path(id))
@@ -54,6 +58,18 @@ defmodule Dala.Terminal.Holder do
   end
 
   @doc """
+  The final screen a holder rendered when its shell exited — shown when a
+  client opens a session that is no longer running. Kept until the session
+  is deleted or a fresh shell replaces it.
+  """
+  def read_final(id) do
+    case File.read(final_path(id)) do
+      {:ok, contents} -> contents
+      {:error, _reason} -> ""
+    end
+  end
+
+  @doc """
   Connects to the session's holder, spawning one (a fresh shell) if none is
   alive. Returns `{:ok, socket, reattached?}`.
   """
@@ -67,6 +83,7 @@ defmodule Dala.Terminal.Holder do
         # stale exit file must not shadow this fresh shell's eventual status.
         _ = File.rm(socket_path(id))
         _ = File.rm(exit_path(id))
+        _ = File.rm(final_path(id))
 
         with :ok <- spawn_holder(id, opts),
              {:ok, socket} <- connect_with_retry(id, @connect_attempts) do
@@ -96,6 +113,9 @@ defmodule Dala.Terminal.Holder do
 
   def send_kill(socket), do: :gen_tcp.send(socket, <<@type_kill>>)
 
+  @doc "Ask the holder for a synthesized full repaint (answered as a REPAINT frame)."
+  def send_repaint_req(socket), do: :gen_tcp.send(socket, <<@type_repaint_req>>)
+
   defp spawn_holder(id, opts) do
     binary = binary_path()
 
@@ -108,7 +128,8 @@ defmodule Dala.Terminal.Holder do
         env: Keyword.get(opts, :env, []) |> Enum.map(&Tuple.to_list/1),
         env_remove: Keyword.get(opts, :env_remove, []),
         rows: Keyword.get(opts, :rows, 24),
-        cols: Keyword.get(opts, :cols, 80)
+        cols: Keyword.get(opts, :cols, 80),
+        history_lines: Keyword.get(opts, :history_lines, 10_000)
       })
 
     File.mkdir_p!(dir())

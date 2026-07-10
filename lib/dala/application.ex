@@ -16,7 +16,6 @@ defmodule Dala.Application do
       {Phoenix.PubSub, name: Dala.PubSub},
       {Registry, keys: :unique, name: Dala.Terminal.Registry},
       {DynamicSupervisor, name: Dala.Terminal.ServerSupervisor, strategy: :one_for_one},
-      Dala.Terminal.Scrollback,
       DalaWeb.Endpoint,
       # After the endpoint: Boot publishes session updates through it.
       Dala.Terminal.Boot,

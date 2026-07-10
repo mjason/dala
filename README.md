@@ -232,9 +232,12 @@ mix phx.server        # http://localhost:4000
 ## Architecture
 
 - Phoenix + Bandit server, React + xterm.js frontend (Phoenix Channels transport)
-- One `dala_holder` (Rust) per session: a daemonized PTY owner speaking a
-  4-byte length-prefixed frame protocol over a unix socket, with an 8 MB ring
-  buffer for output while no server is attached
+- One `dala_holder` (Rust) per session: a daemonized PTY owner with an
+  **embedded headless terminal emulator** (`alacritty_terminal`) — the tmux
+  model. Attaching gets a synthesized repaint (history tail + screen +
+  cursor + modes) instead of a raw byte replay, so attach latency is
+  independent of how much output the session ever produced and alt-screen
+  apps (vim, htop) reattach pixel-perfect
 - `dala_git` (Rustler + libgit2): status/diff/stage/patch-apply/branches/checkout as NIFs
 - SQLite (Ash + Ecto) for accounts, DETS for sessions & scrollback cache
 

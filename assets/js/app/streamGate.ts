@@ -45,8 +45,13 @@ export function createStreamGate(): StreamGate {
       if (awaitingReplay) {
         awaitingReplay = false;
         replaying = true;
+        // The replay defines the new dedup baseline outright: after a server
+        // restart its seq counter may restart lower, and keeping the old
+        // (higher) watermark would silently drop all live output.
+        lastSeq = seq;
+      } else if (seq > lastSeq) {
+        lastSeq = seq;
       }
-      if (seq > lastSeq) lastSeq = seq;
       return { reset, release: done };
     },
 

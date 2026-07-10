@@ -5,18 +5,29 @@
 //! big-endian length prefixed (matching Erlang's `packet: 4`) with a 1-byte
 //! type tag:
 //!
-//!   holder -> client:  0x01 HELLO {json: pid,rows,cols}
-//!                      0x02 OUTPUT <raw bytes>
-//!                      0x03 EXIT   <u32 be status>
-//!   client -> holder:  0x11 INPUT  <raw bytes>
-//!                      0x12 RESIZE <u16 be rows> <u16 be cols>
+//!   holder -> client:  0x01 HELLO   {json: pid,rows,cols,proto}
+//!                      0x02 OUTPUT  <raw bytes>
+//!                      0x03 EXIT    <u32 be status>
+//!                      0x04 REPAINT <synthesized screen bytes>
+//!   client -> holder:  0x11 INPUT   <raw bytes>
+//!                      0x12 RESIZE  <u16 be rows> <u16 be cols>
 //!                      0x13 KILL
+//!                      0x14 REPAINT_REQ
+//!
+//! The holder embeds a headless terminal emulator (alacritty_terminal): all
+//! PTY output feeds a server-side grid + scrollback. REPAINT_REQ answers
+//! with a bounded synthesized repaint (history tail + screen + cursor +
+//! modes) — the tmux attach model — so clients never replay raw history.
+//! Ordering: pending OUTPUT is flushed before the REPAINT is generated, so a
+//! repaint always covers exactly the bytes already sent.
 //!
 //! One client at a time; a new connection kicks the old one. Output produced
 //! while no client is attached accumulates in a bounded ring and is flushed
 //! on (re)connect. When the shell exits the holder writes `{socket}.exit`
 //! with the status (for a dala that reconnects later), best-effort sends
 //! EXIT, unlinks the socket and exits.
+
+mod screen;
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -29,12 +40,16 @@ use std::thread;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 
+use crate::screen::Screen;
+
 const T_HELLO: u8 = 0x01;
 const T_OUTPUT: u8 = 0x02;
 const T_EXIT: u8 = 0x03;
+const T_REPAINT: u8 = 0x04;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
+const T_REPAINT_REQ: u8 = 0x14;
 
 /// Cap on buffered (undelivered) output. Old bytes are dropped first; dala's
 /// scrollback is the durable history, this only bridges reconnect gaps.
@@ -55,6 +70,12 @@ struct Config {
     env_remove: Vec<String>,
     rows: u16,
     cols: u16,
+    #[serde(default = "default_history_lines")]
+    history_lines: usize,
+}
+
+fn default_history_lines() -> usize {
+    10_000
 }
 
 struct Shared {
@@ -64,6 +85,10 @@ struct Shared {
     /// lost the client race and must not clear a newer connection.
     client_gen: u64,
     exit_status: Option<u32>,
+    /// Server-side emulator: grid + scrollback + modes.
+    screen: Screen,
+    /// Repaints requested by the client, served once the ring is drained.
+    repaint_pending: u32,
 }
 
 struct State {
@@ -145,6 +170,8 @@ fn main() {
             client: None,
             client_gen: 0,
             exit_status: None,
+            screen: Screen::new(config.rows, config.cols, config.history_lines),
+            repaint_pending: 0,
         }),
         cond: Condvar::new(),
     });
@@ -159,10 +186,15 @@ fn main() {
                     Ok(0) => break,
                     Ok(n) => {
                         let mut shared = state.shared.lock().unwrap();
-                        shared.ring.extend(&buf[..n]);
-                        let excess = shared.ring.len().saturating_sub(RING_MAX);
-                        if excess > 0 {
-                            shared.ring.drain(..excess);
+                        shared.screen.advance(&buf[..n]);
+                        // The emulator is the durable history; the ring only
+                        // carries live bytes to the attached client.
+                        if shared.client.is_some() {
+                            shared.ring.extend(&buf[..n]);
+                            let excess = shared.ring.len().saturating_sub(RING_MAX);
+                            if excess > 0 {
+                                shared.ring.drain(..excess);
+                            }
                         }
                         state.cond.notify_all();
                     }
@@ -183,55 +215,77 @@ fn main() {
         let state = Arc::clone(&state);
         let socket_path = socket_path.clone();
         thread::spawn(move || {
+            enum Job {
+                Output(Vec<u8>),
+                Repaint(Vec<u8>),
+                Exit(u32, Vec<u8>),
+            }
+
             loop {
-                let (chunk, stream, gen, exited) = {
+                let (job, stream, gen) = {
                     let mut shared = state.shared.lock().unwrap();
                     loop {
-                        let drainable = !shared.ring.is_empty() && shared.client.is_some();
+                        let attached = shared.client.is_some();
+                        let drainable = attached && !shared.ring.is_empty();
+                        let repaint = attached && shared.ring.is_empty() && shared.repaint_pending > 0;
                         let done = shared.exit_status.is_some() && shared.ring.is_empty();
-                        if drainable || done {
+                        if drainable || repaint || done {
                             break;
                         }
                         shared = state.cond.wait(shared).unwrap();
                     }
 
-                    if !shared.ring.is_empty() && shared.client.is_some() {
+                    let stream = shared.client.as_ref().and_then(|s| s.try_clone().ok());
+                    let gen = shared.client_gen;
+
+                    if shared.client.is_some() && !shared.ring.is_empty() {
                         let n = shared.ring.len().min(CHUNK);
-                        let chunk: Vec<u8> = shared.ring.drain(..n).collect();
-                        let stream = shared.client.as_ref().and_then(|s| s.try_clone().ok());
-                        (Some(chunk), stream, shared.client_gen, false)
+                        (Job::Output(shared.ring.drain(..n).collect()), stream, gen)
+                    } else if shared.client.is_some() && shared.repaint_pending > 0 {
+                        shared.repaint_pending -= 1;
+                        (Job::Repaint(shared.screen.repaint()), stream, gen)
                     } else {
-                        let stream = shared.client.as_ref().and_then(|s| s.try_clone().ok());
-                        (None, stream, shared.client_gen, true)
+                        let status = shared.exit_status.unwrap_or(0);
+                        (Job::Exit(status, shared.screen.repaint()), stream, gen)
                     }
                 };
 
-                if let Some(chunk) = chunk {
-                    if let Some(mut stream) = stream {
-                        if write_frame(&mut stream, T_OUTPUT, &chunk).is_err() {
-                            let mut shared = state.shared.lock().unwrap();
-                            // Undeliverable: park the bytes back for the next client.
-                            for byte in chunk.iter().rev() {
-                                shared.ring.push_front(*byte);
-                            }
-                            if shared.client_gen == gen {
-                                shared.client = None;
+                match job {
+                    Job::Output(chunk) => {
+                        if let Some(mut stream) = stream {
+                            if write_frame(&mut stream, T_OUTPUT, &chunk).is_err() {
+                                let mut shared = state.shared.lock().unwrap();
+                                // Undeliverable: park the bytes back for the next client.
+                                for byte in chunk.iter().rev() {
+                                    shared.ring.push_front(*byte);
+                                }
+                                if shared.client_gen == gen {
+                                    shared.client = None;
+                                }
                             }
                         }
                     }
-                    continue;
-                }
-
-                if exited {
-                    let status = state.shared.lock().unwrap().exit_status.unwrap_or(0);
-                    // Durable first: a dala that is down right now finds the
-                    // status on reattach.
-                    let _ = std::fs::write(exit_path(&socket_path), status.to_string());
-                    if let Some(mut stream) = stream {
-                        let _ = write_frame(&mut stream, T_EXIT, &status.to_be_bytes());
+                    Job::Repaint(repaint) => {
+                        if let Some(mut stream) = stream {
+                            if write_frame(&mut stream, T_REPAINT, &repaint).is_err() {
+                                let mut shared = state.shared.lock().unwrap();
+                                if shared.client_gen == gen {
+                                    shared.client = None;
+                                }
+                            }
+                        }
                     }
-                    let _ = std::fs::remove_file(&socket_path);
-                    exit(0);
+                    Job::Exit(status, final_screen) => {
+                        // Durable first: a dala that is down right now finds the
+                        // status and the last screen on reattach.
+                        let _ = std::fs::write(exit_path(&socket_path), status.to_string());
+                        let _ = std::fs::write(final_path(&socket_path), &final_screen);
+                        if let Some(mut stream) = stream {
+                            let _ = write_frame(&mut stream, T_EXIT, &status.to_be_bytes());
+                        }
+                        let _ = std::fs::remove_file(&socket_path);
+                        exit(0);
+                    }
                 }
             }
         });
@@ -242,7 +296,7 @@ fn main() {
         let Ok(mut stream) = stream else { continue };
 
         let hello = format!(
-            "{{\"pid\":{},\"rows\":{},\"cols\":{}}}",
+            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":2}}",
             shell_pid, config.rows, config.cols
         );
         if write_frame(&mut stream, T_HELLO, hello.as_bytes()).is_err() {
@@ -254,6 +308,10 @@ fn main() {
             if let Some(old) = shared.client.take() {
                 let _ = old.shutdown(std::net::Shutdown::Both);
             }
+            // Bytes for the previous client are already folded into the
+            // emulator; the new client starts from a repaint it requests.
+            shared.ring.clear();
+            shared.repaint_pending = 0;
             shared.client = stream.try_clone().ok();
             shared.client_gen += 1;
             state.cond.notify_all();
@@ -277,12 +335,18 @@ fn main() {
                     Ok((T_RESIZE, data)) if data.len() == 4 => {
                         let rows = u16::from_be_bytes([data[0], data[1]]);
                         let cols = u16::from_be_bytes([data[2], data[3]]);
+                        state.shared.lock().unwrap().screen.resize(rows, cols);
                         let _ = master.lock().unwrap().0.resize(PtySize {
                             rows,
                             cols,
                             pixel_width: 0,
                             pixel_height: 0,
                         });
+                    }
+                    Ok((T_REPAINT_REQ, _)) => {
+                        let mut shared = state.shared.lock().unwrap();
+                        shared.repaint_pending += 1;
+                        state.cond.notify_all();
                     }
                     Ok((T_KILL, _)) => {
                         let _ = killer.lock().unwrap().kill();
@@ -307,6 +371,12 @@ unsafe impl Send for SendMaster {}
 fn usage() -> ! {
     eprintln!("usage: dala_holder '<config json>'");
     exit(2);
+}
+
+fn final_path(socket_path: &std::path::Path) -> PathBuf {
+    let mut p = socket_path.as_os_str().to_owned();
+    p.push(".final");
+    PathBuf::from(p)
 }
 
 fn exit_path(socket_path: &std::path::Path) -> PathBuf {

@@ -6,14 +6,16 @@ defmodule Dala.Terminal.Session.Changes.CleanupSession do
   def change(changeset, _opts, _context) do
     changeset
     |> Ash.Changeset.before_transaction(fn changeset ->
-      # Stop the shell and wait for the exit to be recorded, so no final
-      # output lands in the scrollback cache after it is cleared below.
+      # Stop the shell and wait for the exit to be recorded, so the holder's
+      # leftover files below are final before we remove them.
       Dala.Terminal.Server.shutdown_and_wait(changeset.data.id)
       changeset
     end)
     |> Ash.Changeset.after_transaction(fn
       changeset, {:ok, result} ->
-        Dala.Terminal.Scrollback.clear(changeset.data.id)
+        id = to_string(changeset.data.id)
+        _ = File.rm(Dala.Terminal.Holder.exit_path(id))
+        _ = File.rm(Dala.Terminal.Holder.final_path(id))
         {:ok, result}
 
       _changeset, error ->
