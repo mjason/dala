@@ -184,39 +184,6 @@ body:has(> #app) {
   }
 }
 
-/* Let xterm own its box; keep scrollbars quiet and consistent.
-   Firefox only offers auto/thin, but Chromium can go slimmer through the
-   ::-webkit-scrollbar pseudos — which are ignored the moment the standard
-   scrollbar-* properties are set, hence the @supports split. */
-.xterm .xterm-viewport {
-  scrollbar-width: thin;
-  scrollbar-color: #2c3037 transparent;
-}
-
-@supports selector(::-webkit-scrollbar) {
-  .xterm .xterm-viewport {
-    scrollbar-width: auto;
-    scrollbar-color: auto;
-  }
-
-  .xterm .xterm-viewport::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .xterm .xterm-viewport::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-    background: #2c3037;
-    border-radius: 2px;
-  }
-
-  .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
-    background: #3a4048;
-  }
-}
-
 /* Slim scrollbars for every scroll container in the app. Chromium gets
    5px ::-webkit-scrollbar pseudos; Firefox (no webkit pseudos) gets the
    standard properties. The two must not mix: setting scrollbar-width
