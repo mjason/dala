@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { applyUpdate, buildCSRFHeaders, checkUpdate } from "../ash_rpc";
 import { useI18n } from "./i18n";
+import { serverVersion } from "./meta";
 
 type Info = {
   enabled: boolean | null;
@@ -37,9 +38,12 @@ export default function UpdateCheck() {
     };
   }, []);
 
-  if (!info) return null;
+  // The page meta always knows the running server version, so the footer
+  // shows it even before (or without) the update check answering.
+  const current = info?.current ?? serverVersion;
+  if (!current) return null;
 
-  const available = Boolean(info.enabled && info.updateAvailable && info.latest);
+  const available = Boolean(info && info.enabled && info.updateAvailable && info.latest);
 
   const update = async () => {
     setState("updating");
@@ -69,8 +73,8 @@ export default function UpdateCheck() {
   return (
     <div id="update-check" className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[11px] text-fg-muted/70" title={t("version")}>
-          v{info.current}
+        <span id="server-version" className="font-mono text-[11px] text-fg-muted/70" title={t("version")}>
+          v{current}
         </span>
         {available && state === "idle" && (
           <button
@@ -78,7 +82,7 @@ export default function UpdateCheck() {
             onClick={() => void update()}
             className="shrink-0 rounded border border-mint/50 px-1.5 py-0.5 font-mono text-[11px] text-mint transition-colors hover:bg-mint/10"
           >
-            {t("updateTo", { version: `v${info.latest}` })}
+            {t("updateTo", { version: `v${info?.latest}` })}
           </button>
         )}
         {state === "updating" && (

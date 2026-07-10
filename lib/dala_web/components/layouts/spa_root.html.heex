@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
     <meta name="auth-enabled" content={to_string(Dala.Auth.enabled?())} />
+    <meta name="dala-version" content={to_string(Application.spec(:dala, :vsn))} />
     <%= if assigns[:user_email] do %>
       <meta name="user-email" content={@user_email} />
     <% end %>

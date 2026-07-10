@@ -353,8 +353,8 @@ function AppearanceSection() {
         <span className="mt-1 block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>
       </label>
 
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
-        <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5">
+      <div className="space-y-2.5">
+        <div className="flex w-fit items-center gap-0.5 rounded-md border border-line p-0.5">
           {cursorStyles.map(({ value, label }) => (
             <button
               key={value}
@@ -368,6 +368,7 @@ function AppearanceSection() {
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
           <input
             id="cursor-blink-checkbox"
@@ -398,6 +399,7 @@ function AppearanceSection() {
           />
           {t("smoothScroll")}
         </label>
+        </div>
       </div>
     </div>
   );
