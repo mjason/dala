@@ -10,6 +10,8 @@
 
 ---
 
+![Dala — persistent web terminal](docs/screenshots/hero.png)
+
 ## Features
 
 - **Persistent shells** — every session lives in its own PTY holder daemon (dtach model, written in Rust). Restarting or upgrading dala leaves your shells running: tmux durability, browser UI.
@@ -18,6 +20,14 @@
 - **Editing & preview** — CodeMirror 6 syntax-highlighted editor, character-level merge diffs, Markdown/CSV preview.
 - **Screenshots for AI CLIs** — paste an image into the terminal; dala saves it to disk and types the file path for claude code / codex / opencode.
 - **Self-upgrade** — one click in the sidebar updates to the latest GitHub release. Shells stay alive through the restart.
+
+## Screenshots
+
+| Git review — stage/discard per hunk | Line-level staging (`l`) |
+|---|---|
+| ![Git review with per-hunk actions](docs/screenshots/git-review.png) | ![Line-level staging](docs/screenshots/line-select.png) |
+
+![Quick open](docs/screenshots/quick-open.png)
 
 ## Quick start (Linux x86_64)
 

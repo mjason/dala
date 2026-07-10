@@ -10,6 +10,8 @@
 
 ---
 
+![Dala — 持久化 Web 终端](docs/screenshots/hero.png)
+
 ## 特性
 
 - **持久 Shell** — 每个会话跑在独立的 PTY holder 守护进程里（dtach 模型，Rust 实现）。重启、升级 dala，shell 原样存活：tmux 的可靠性，浏览器的界面。
@@ -18,6 +20,14 @@
 - **编辑与预览** — CodeMirror 6 语法高亮编辑器、字符级 merge diff、Markdown/CSV 预览。
 - **贴图给 AI CLI** — 往终端粘贴截图，dala 自动落盘并把文件路径敲进 claude code / codex / opencode 的提示符。
 - **自升级** — 侧栏一键升级到最新 GitHub Release，升级期间 shell 不断线。
+
+## 截图
+
+| Git review——按 hunk 暂存/丢弃 | 行级暂存（`l`） |
+|---|---|
+| ![hunk 级操作](docs/screenshots/git-review.png) | ![行级暂存](docs/screenshots/line-select.png) |
+
+![快速打开](docs/screenshots/quick-open.png)
 
 ## 快速开始（Linux x86_64）
 
