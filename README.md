@@ -132,9 +132,16 @@ Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
 
 ### Directory following & zellij/tmux
 
-The file drawer follows the terminal's working directory. Shells inside
-zellij/tmux live under their own server process where dala cannot see them —
-the fix is the standard **OSC 7** report (multiplexers pass it through).
+The file drawer follows the terminal's working directory. Inside
+zellij/tmux this works **with zero configuration**: when dala detects a
+multiplexer client in the session it asks the multiplexer itself for the
+*focused pane's* directory (zellij via `dump-layout`, tmux via
+`pane_current_path`) — switching panes and tabs follows too. Note that
+multiplexers do *not* forward OSC 7 from their panes, so shell hooks cannot
+cover this case.
+
+Without a multiplexer, the top-level shell is polled (2s); for instant
+`cd` updates you can optionally add the standard **OSC 7** report.
 For zsh (`~/.zshrc`):
 
 ```zsh
@@ -148,9 +155,8 @@ For bash (`~/.bashrc`):
 PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 ```
 
-With this in place, `cd` inside zellij/tmux/nested shells drives the drawer
-in real time. (Many setups — vte.sh, WezTerm/Kitty shell integration —
-already emit OSC 7.)
+(Many setups — vte.sh, WezTerm/Kitty shell integration — already emit
+OSC 7.)
 
 ### Images for AI CLIs
 

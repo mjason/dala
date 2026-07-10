@@ -23,6 +23,23 @@ defmodule Dala.Terminal.Viewers do
 
   def kick_others(_), do: {:error, "shell is not running"}
 
+  @doc """
+  The multiplexer client running under `shell_pid`, if any:
+  `{:zellij, session_name}` | `{:tmux, client_pid}` | `nil`. Used by cwd
+  polling to ask the multiplexer (instead of /proc) where the user is.
+  """
+  def find_mux(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
+    procs = list_procs()
+
+    case find_client(procs, descendants(procs, shell_pid)) do
+      {:zellij, name, _own_pid} -> {:zellij, name}
+      {:tmux, own_pid} -> {:tmux, own_pid}
+      nil -> nil
+    end
+  end
+
+  def find_mux(_), do: nil
+
   defp kick_zellij(procs, subtree, name, own_pid) do
     victims =
       for {pid, _ppid, args} <- procs,

@@ -192,6 +192,9 @@ defmodule Dala.Terminal.Server do
           # Once the stream reports cwd via OSC 7, /proc polling stops: the
           # top-level shell's cwd is stale inside zellij/tmux.
           osc7_cwd?: false,
+          # zellij/tmux client detected under the shell — cwd then comes
+          # from the multiplexer itself (focused pane), not OSC 7 or /proc.
+          mux: nil,
           size: {24, 80},
           reattached?: reattached?
         }
@@ -305,15 +308,37 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_info(:poll_cwd, state) do
-    state =
-      case current_cwd(state.shell_pid) do
-        nil -> state
-        _cwd when state.osc7_cwd? -> state
-        cwd -> apply_cwd(state, cwd)
-      end
+    {state, cwd} = poll_cwd_once(state)
+    state = if cwd, do: apply_cwd(state, cwd), else: state
 
     Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
     {:noreply, state}
+  end
+
+  # zellij/tmux never forward their panes' OSC 7 and their shells live under
+  # a detached server invisible to /proc — while a multiplexer client runs in
+  # this session, ask the multiplexer itself for the focused pane's cwd.
+  # Detection (one ps scan) runs every tick while no mux is known, so
+  # entering zellij/tmux is picked up within a poll interval; a failing query
+  # (the mux session died) falls back to detection on the next tick.
+  defp poll_cwd_once(%{mux: nil} = state) do
+    case Dala.Terminal.Viewers.find_mux(state.shell_pid) do
+      nil ->
+        {state, if(state.osc7_cwd?, do: nil, else: current_cwd(state.shell_pid))}
+
+      mux ->
+        case Dala.Terminal.MuxCwd.cwd(mux) do
+          {:ok, cwd} -> {%{state | mux: mux}, cwd}
+          :error -> {state, nil}
+        end
+    end
+  end
+
+  defp poll_cwd_once(%{mux: mux} = state) do
+    case Dala.Terminal.MuxCwd.cwd(mux) do
+      {:ok, cwd} -> {state, cwd}
+      :error -> {%{state | mux: nil}, nil}
+    end
   end
 
   defp apply_cwd(state, cwd) when cwd == state.cwd, do: state
@@ -335,9 +360,14 @@ defmodule Dala.Terminal.Server do
         {:noreply, emit(state, payload)}
 
       frame_type == Holder.type_cwd() ->
-        # OSC 7 from the stream: sees through zellij/tmux, whose shells run
-        # under a detached server process invisible to /proc polling.
-        {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
+        # OSC 7 from the stream. While a multiplexer runs, only its own
+        # top-level shell can reach us (panes are not forwarded), so its
+        # report would be stale — the mux poll is authoritative then.
+        if state.mux do
+          {:noreply, %{state | osc7_cwd?: true}}
+        else
+          {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
+        end
 
       frame_type == Holder.type_repaint() ->
         # The socket is FIFO: every output the repaint covers has already

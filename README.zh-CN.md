@@ -118,9 +118,14 @@ Diff 窗口：`i` 单栏 · `s` 并排 · `l` 行选模式 · `Alt+Z` 折行。
 
 ### 目录跟随与 zellij/tmux
 
-文件抽屉跟随终端的当前目录。zellij/tmux 里的 shell 挂在它们自己的
-server 进程下，dala 直接感知不到——解决办法是让 shell 通过 **OSC 7**
-上报目录（zellij/tmux 会透传），在 `~/.zshrc` 加：
+文件抽屉跟随终端的当前目录，**zellij/tmux 内部无需任何配置**：dala
+检测到会话里跑着多路复用器后，直接向它查询**聚焦 pane** 的目录
+（zellij 走 `dump-layout`，tmux 走 `pane_current_path`），切 pane、
+切 tab 都会跟。注意 zellij/tmux 并不向外透传 pane 里的 OSC 7，所以
+shell 钩子帮不了这个场景。
+
+不用多路复用器时靠顶层 shell 轮询（2s）即可；想要 `cd` 即时生效，
+可选配 **OSC 7** 上报，在 `~/.zshrc` 加：
 
 ```zsh
 _osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }
@@ -133,7 +138,6 @@ bash 用户（`~/.bashrc`）：
 PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 ```
 
-配置后 zellij/tmux/嵌套 shell 里 `cd` 都会实时驱动文件抽屉。
 （很多发行版的 vte.sh、WezTerm/Kitty 的 shell integration 已自带 OSC 7。）
 
 ### 给 AI CLI 贴图

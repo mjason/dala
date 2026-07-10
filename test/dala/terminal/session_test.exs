@@ -65,6 +65,31 @@ defmodule Dala.Terminal.SessionTest do
     eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
   end
 
+  test "cwd follows the focused pane inside zellij" do
+    if System.find_executable("zellij") do
+      session = create_session!()
+      mux = "dala-test-mux-#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        System.cmd("zellij", ["kill-session", mux], stderr_to_stdout: true)
+        System.cmd("zellij", ["delete-session", mux, "--force"], stderr_to_stdout: true)
+      end)
+
+      Server.input(session.id, "zellij attach --create #{mux}\r")
+
+      # zellij takes a moment to come up; keep issuing cd until the poll
+      # (2s cadence) reports the inner pane's directory.
+      eventually(
+        fn ->
+          Server.input(session.id, "cd /tmp\r")
+          Process.sleep(400)
+          Dala.Terminal.get_session!(session.id).cwd == "/tmp"
+        end,
+        50
+      )
+    end
+  end
+
   test "kick_viewers on a plain shell reports no multiplexer" do
     session = create_session!()
     eventually(fn -> match?({:error, _}, Dala.Terminal.Server.kick_viewers(session.id)) end)
