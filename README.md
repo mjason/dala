@@ -44,6 +44,26 @@ To update later — either click the sidebar update button, or:
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
 ```
 
+## Desktop client
+
+A lightweight Tauri app (Windows / macOS / Linux, ~5 MB) that manages
+multiple dala servers, VS Code style:
+
+- **Servers menu** — switch the current window between servers
+  (`Ctrl/⌘+1..9`), or open a server **in a new window**; one window per
+  server works like VS Code workspaces
+- Sign-in state is kept per server (60-day persistent login), the last-used
+  server reopens on launch
+- Manage servers on the built-in page (`Ctrl/⌘+,`)
+
+Download the installer for your OS from the
+[latest release](https://github.com/mjason/dala/releases/latest)
+(`.msi`/`.exe`, `.dmg`, `.deb`/`.AppImage`), or build it yourself:
+
+```sh
+cd clients/desktop && npm install && npm run tauri build
+```
+
 ## Usage guide
 
 ### Sessions

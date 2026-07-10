@@ -44,6 +44,23 @@ curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
 ```
 
+## 桌面客户端
+
+轻量 Tauri 应用（Windows / macOS / Linux，约 5 MB），VS Code 式管理多台
+dala 服务器：
+
+- **服务器菜单** — 当前窗口一键切换服务器（`Ctrl/⌘+1..9`），
+  或**在新窗口打开**另一台；一窗口一服务器，像 VS Code 的多工作区
+- 每台服务器的登录状态独立保存（60 天免登录），启动直达上次连接的服务器
+- 内置管理页添加/删除服务器（`Ctrl/⌘+,`）
+
+从[最新 Release](https://github.com/mjason/dala/releases/latest)下载对应
+系统的安装包（`.msi`/`.exe`、`.dmg`、`.deb`/`.AppImage`），或自行构建：
+
+```sh
+cd clients/desktop && npm install && npm run tauri build
+```
+
 ## 使用指南
 
 ### 会话
