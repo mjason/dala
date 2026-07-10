@@ -15,6 +15,7 @@ import {
 import { getSocket } from "./socket";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView from "./TerminalView";
+import QuickShellPanel from "./QuickShellPanel";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
 import SettingsModal from "./SettingsModal";
@@ -85,14 +86,36 @@ export default function App() {
     });
   }, []);
 
-  // Trail of visited sessions, so closing a quick shell can land the user
-  // back where they came from. Refs, because the channel handlers below are
-  // registered once and must not see stale state.
+  // Trail of visited sessions plus quick-shell panel state. Refs, because
+  // the channel handlers below are registered once and must not see stale
+  // state.
   const activeIdRef = useRef<string | null>(null);
   const historyRef = useRef<string[]>([]);
   const sessionsRef = useRef<Session[]>([]);
   useEffect(() => {
     sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // The quick shell lives in an overlay panel (not the sidebar): one
+  // ephemeral session, toggled open/closed, maximizable.
+  const [qsId, setQsId] = useState<string | null>(null);
+  const [qsOpen, setQsOpen] = useState(false);
+  const [qsMax, setQsMax] = useState(false);
+  const qsActions = useRef<{ reset: () => void; refit: () => void; focus: () => void } | null>(
+    null,
+  );
+  const qsIdRef = useRef<string | null>(null);
+  qsIdRef.current = qsId;
+  const qsOpenRef = useRef(false);
+  qsOpenRef.current = qsOpen;
+
+  // After a reload the panel state is gone but the ephemeral shell may still
+  // be running — adopt it instead of leaking it, so the next toggle
+  // reconnects to the same shell.
+  useEffect(() => {
+    if (qsIdRef.current) return;
+    const orphan = sessions.find((s) => s.ephemeral);
+    if (orphan) setQsId(orphan.id);
   }, [sessions]);
 
   // Socket status + sessions lobby channel.
@@ -109,8 +132,15 @@ export default function App() {
       session_updated: upsertSession,
       session_deleted: ({ id }) => {
         setSessions((list) => list.filter((s) => s.id !== id));
-        // A quick shell exiting deletes itself while active: return to the
-        // most recently visited session that still exists.
+        // The quick shell destroyed itself (exit/Ctrl+D): drop the panel.
+        if (id === qsIdRef.current) {
+          setQsId(null);
+          setQsOpen(false);
+          setQsMax(false);
+          termActions.current?.focus();
+        }
+        // The active session was deleted: return to the most recently
+        // visited one that still exists.
         if (id === activeIdRef.current) {
           const previous = [...historyRef.current]
             .reverse()
@@ -141,11 +171,17 @@ export default function App() {
     };
   }, [toast, upsertSession, t]);
 
+  // Quick shells (ephemeral) live in their overlay panel, not the sidebar
+  // or the active-session rotation.
   const ordered = useMemo(
-    () => [...sessions].sort((a, b) => a.insertedAt.localeCompare(b.insertedAt)),
+    () =>
+      [...sessions]
+        .filter((s) => !s.ephemeral)
+        .sort((a, b) => a.insertedAt.localeCompare(b.insertedAt)),
     [sessions],
   );
   const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
+  const qsSession = (qsId && sessions.find((s) => s.id === qsId)) || null;
 
   useEffect(() => {
     if (!active) return;
@@ -179,17 +215,39 @@ export default function App() {
     }
   };
 
-  // Quick shell (Ctrl+Shift+`): a fresh shell already cd'd into the active
-  // session's directory — for running vim/git beside a busy shell. Ephemeral:
-  // `exit`/Ctrl+D destroys it and returns to the previous session. Kept in
-  // a ref so the mount-once shortcut handler sees the current session.
-  const quickShellRef = useRef(() => {});
-  quickShellRef.current = () => {
-    void handleCreate({ cwd: active?.cwd || undefined, ephemeral: true }).then(() => {
-      // focus once the new session's terminal has mounted
-      window.setTimeout(() => termActions.current?.focus(), 150);
+  // Quick shell (Ctrl+Shift+` or the header button): an ephemeral terminal
+  // in an overlay panel, opened in the active session's directory — for
+  // vim/git while the main shell is busy. The toggle hides the panel but
+  // keeps the shell; `exit`/Ctrl+D inside it destroys the session, which
+  // closes the panel via the session_deleted broadcast.
+  const toggleQuickShell = async () => {
+    if (qsOpen) {
+      setQsOpen(false);
+      termActions.current?.focus();
+      return;
+    }
+    if (qsId && sessionsRef.current.some((s) => s.id === qsId)) {
+      setQsOpen(true);
+      window.setTimeout(() => qsActions.current?.focus(), 150);
+      return;
+    }
+    const result = await createSession({
+      input: { cwd: active?.cwd || undefined, ephemeral: true },
+      fields: [...SESSION_FIELDS],
+      headers: buildCSRFHeaders(),
     });
+    if (!result.success) {
+      toast(result.errors[0]?.message ?? t("couldNotCreateTerminal"));
+      return;
+    }
+    const session = result.data as unknown as Session;
+    upsertSession(session);
+    setQsId(session.id);
+    setQsOpen(true);
+    window.setTimeout(() => qsActions.current?.focus(), 150);
   };
+  const quickShellRef = useRef(() => {});
+  quickShellRef.current = () => void toggleQuickShell();
 
   const handleRestart = async (id: string) => {
     const result = await restartSession({
@@ -223,15 +281,14 @@ export default function App() {
         return;
       }
 
-      // VS Code pair — Ctrl+` jumps focus back into the terminal from
-      // anywhere; Ctrl+Shift+` opens a NEW shell already cd'd into the
-      // active session's directory (for vim/git beside a busy shell).
-      // macOS eats Cmd+` (window cycling), so it is the Control key there
-      // as well, exactly like VS Code.
+      // VS Code pair — Ctrl+` jumps focus back into the terminal (the quick
+      // shell's, when its panel is open); Ctrl+Shift+` toggles the quick
+      // shell overlay. macOS eats Cmd+` (window cycling), so it is the
+      // Control key there as well, exactly like VS Code.
       if (e.code === "Backquote") {
         e.preventDefault();
         if (e.shiftKey) quickShellRef.current();
-        else termActions.current?.focus();
+        else (qsOpenRef.current ? qsActions : termActions).current?.focus();
         return;
       }
 
@@ -364,10 +421,13 @@ export default function App() {
                 <button
                   id="quick-shell-button"
                   onClick={() => quickShellRef.current()}
-                  disabled={creating}
-                  className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint disabled:opacity-50"
+                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                    qsOpen
+                      ? "border-mint/50 text-mint"
+                      : "border-line text-fg-muted hover:border-mint/60 hover:text-mint"
+                  }`}
                 >
-                  +&gt;_
+                  ⚡&gt;_
                 </button>
               </Tooltip>
               <div className="flex-1" />
@@ -513,6 +573,20 @@ export default function App() {
 
       {gitOpen && active && (
         <GitPanel path={active.cwd} onClose={() => setGitOpen(false)} onError={toast} />
+      )}
+
+      {qsOpen && qsSession && (
+        <QuickShellPanel
+          session={qsSession}
+          maximized={qsMax}
+          onToggleMax={() => setQsMax((v) => !v)}
+          onClose={() => {
+            setQsOpen(false);
+            termActions.current?.focus();
+          }}
+          actionsRef={qsActions}
+          onError={toast}
+        />
       )}
 
       {drawerOpen && active && (

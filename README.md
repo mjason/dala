@@ -96,7 +96,7 @@ size, kill/restart, delete) are behind the `settings` button.
 | `Ctrl+Shift+F` · `⇧⌘F` | Refit terminal width |
 | `Ctrl+Shift+X` · `⇧⌘X` | Reset terminal |
 | `Ctrl+\`` (Control on macOS too — `⌘\`` is taken by the OS) | Focus the terminal from anywhere |
-| `Ctrl+Shift+\`` (or the `+>_` header button) | **Quick shell**: an ephemeral shell already cd'd into the active session's directory (⚡ badge in the sidebar). `exit`/`Ctrl+D` destroys it and returns to the previous session — no leftovers; press again for more |
+| `Ctrl+Shift+\`` (or the `⚡>_` header button) | **Quick shell**: an overlay terminal (slides over the session like the file drawer, one-click fullscreen) already cd'd into the active session's directory. Toggle to hide (the shell stays alive and reconnects); `exit`/`Ctrl+D` inside destroys it — never appears in the sidebar |
 | `Esc` | Close the topmost window |
 
 File drawer: `↑↓` select · `⏎` open · `⌫` parent directory · `Del` delete ·
