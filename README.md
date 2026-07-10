@@ -59,8 +59,9 @@ behave exactly like Chrome on every platform:
 - External links from the terminal open in a built-in browser window
 
 Client releases use their own tags (`client-vX.Y.Z`), independent from
-server releases (`vX.Y.Z`). Download the installer for your OS from the
-[releases page](https://github.com/mjason/dala/releases)
+server releases (`vX.Y.Z`) — so they never carry the "Latest" badge.
+Download the installer for your OS from the
+[client releases](https://github.com/mjason/dala/releases?q=client&expanded=true)
 (`.exe`, `.dmg`, `.deb`/`.AppImage`).
 
 > **macOS**: the universal `.dmg` (Apple Silicon + Intel) is signed and
