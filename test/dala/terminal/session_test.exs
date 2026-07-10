@@ -74,6 +74,15 @@ defmodule Dala.Terminal.SessionTest do
     end)
   end
 
+  test "OSC 7 in the output stream updates the session cwd" do
+    session = create_session!()
+
+    # What a shell integration (or zellij passing it through) emits on chpwd.
+    Server.input(session.id, "printf '\\e]7;file://%s/tmp\\a' \"$HOST\"\r")
+
+    eventually(fn -> Dala.Terminal.get_session!(session.id).cwd == "/tmp" end)
+  end
+
   test "close kills the shell and marks the session exited" do
     session = create_session!()
 

@@ -115,6 +115,28 @@ Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
 - **History** — commit log; multi-file commits get a file rail so you can
   review file by file.
 
+### Directory following & zellij/tmux
+
+The file drawer follows the terminal's working directory. Shells inside
+zellij/tmux live under their own server process where dala cannot see them —
+the fix is the standard **OSC 7** report (multiplexers pass it through).
+For zsh (`~/.zshrc`):
+
+```zsh
+_osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }
+autoload -U add-zsh-hook && add-zsh-hook chpwd _osc7 && _osc7
+```
+
+For bash (`~/.bashrc`):
+
+```bash
+PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+```
+
+With this in place, `cd` inside zellij/tmux/nested shells drives the drawer
+in real time. (Many setups — vte.sh, WezTerm/Kitty shell integration —
+already emit OSC 7.)
+
 ### Images for AI CLIs
 
 Run claude code / codex / opencode inside a dala shell and paste a screenshot

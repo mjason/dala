@@ -177,6 +177,9 @@ defmodule Dala.Terminal.Server do
           pending_repaints: :queue.new(),
           # Per-client viewport sizes; the PTY tracks their minimum.
           clients: %{},
+          # Once the stream reports cwd via OSC 7, /proc polling stops: the
+          # top-level shell's cwd is stale inside zellij/tmux.
+          osc7_cwd?: false,
           size: {24, 80},
           reattached?: reattached?
         }
@@ -287,27 +290,37 @@ defmodule Dala.Terminal.Server do
   def handle_info(:poll_cwd, state) do
     state =
       case current_cwd(state.shell_pid) do
-        nil ->
-          state
-
-        cwd when cwd == state.cwd ->
-          state
-
-        cwd ->
-          case Dala.Terminal.update_cwd(state.session, %{cwd: cwd}) do
-            {:ok, session} -> %{state | cwd: cwd, session: session}
-            {:error, _error} -> state
-          end
+        nil -> state
+        _cwd when state.osc7_cwd? -> state
+        cwd -> apply_cwd(state, cwd)
       end
 
     Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
     {:noreply, state}
   end
 
+  defp apply_cwd(state, cwd) when cwd == state.cwd, do: state
+
+  defp apply_cwd(state, cwd) do
+    if File.dir?(cwd) do
+      case Dala.Terminal.update_cwd(state.session, %{cwd: cwd}) do
+        {:ok, session} -> %{state | cwd: cwd, session: session}
+        {:error, _error} -> state
+      end
+    else
+      state
+    end
+  end
+
   defp handle_frame(frame_type, payload, state) do
     cond do
       frame_type == Holder.type_output() ->
         {:noreply, emit(state, payload)}
+
+      frame_type == Holder.type_cwd() ->
+        # OSC 7 from the stream: sees through zellij/tmux, whose shells run
+        # under a detached server process invisible to /proc polling.
+        {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
 
       frame_type == Holder.type_repaint() ->
         # The socket is FIFO: every output the repaint covers has already

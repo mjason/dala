@@ -9,6 +9,7 @@
 //!                      0x02 OUTPUT  <raw bytes>
 //!                      0x03 EXIT    <u32 be status>
 //!                      0x04 REPAINT <synthesized screen bytes>
+//!                      0x05 CWD     <utf8 path (from OSC 7)>
 //!   client -> holder:  0x11 INPUT   <raw bytes>
 //!                      0x12 RESIZE  <u16 be rows> <u16 be cols>
 //!                      0x13 KILL
@@ -46,6 +47,7 @@ const T_HELLO: u8 = 0x01;
 const T_OUTPUT: u8 = 0x02;
 const T_EXIT: u8 = 0x03;
 const T_REPAINT: u8 = 0x04;
+const T_CWD: u8 = 0x05;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
@@ -92,6 +94,13 @@ struct Shared {
     /// Repaints requested by the client (each with the requester's column
     /// count, 0 = unknown), served once the ring is drained.
     repaint_pending: VecDeque<u16>,
+    /// Latest OSC 7 working directory, pending delivery to the client.
+    /// Multiplexers (zellij/tmux) pass the inner shell's OSC 7 through, so
+    /// this sees the cwd that /proc/<shell>/cwd cannot (their shells live
+    /// under a detached server process).
+    cwd_report: Option<String>,
+    /// Carry-over so OSC 7 sequences split across reads are still found.
+    osc_tail: Vec<u8>,
 }
 
 struct State {
@@ -175,6 +184,8 @@ fn main() {
             exit_status: None,
             screen: Screen::new(config.rows, config.cols, config.history_lines),
             repaint_pending: VecDeque::new(),
+            cwd_report: None,
+            osc_tail: Vec::new(),
         }),
         cond: Condvar::new(),
     });
@@ -190,6 +201,7 @@ fn main() {
                     Ok(n) => {
                         let mut shared = state.shared.lock().unwrap();
                         shared.screen.advance(&buf[..n]);
+                        scan_osc7(&mut shared, &buf[..n]);
                         // The emulator is the durable history; the ring only
                         // carries live bytes to the attached client.
                         if shared.client.is_some() {
@@ -221,6 +233,7 @@ fn main() {
             enum Job {
                 Output(Vec<u8>),
                 Repaint(Vec<u8>),
+                Cwd(String),
                 Exit(u32, Vec<u8>),
             }
 
@@ -232,8 +245,9 @@ fn main() {
                         let drainable = attached && !shared.ring.is_empty();
                         let repaint =
                             attached && shared.ring.is_empty() && !shared.repaint_pending.is_empty();
+                        let cwd = attached && shared.cwd_report.is_some();
                         let done = shared.exit_status.is_some() && shared.ring.is_empty();
-                        if drainable || repaint || done {
+                        if drainable || repaint || cwd || done {
                             break;
                         }
                         shared = state.cond.wait(shared).unwrap();
@@ -245,6 +259,8 @@ fn main() {
                     if shared.client.is_some() && !shared.ring.is_empty() {
                         let n = shared.ring.len().min(CHUNK);
                         (Job::Output(shared.ring.drain(..n).collect()), stream, gen)
+                    } else if shared.client.is_some() && shared.cwd_report.is_some() {
+                        (Job::Cwd(shared.cwd_report.take().unwrap()), stream, gen)
                     } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
                         let cols = shared.repaint_pending.pop_front().unwrap_or(0);
                         // Soft wraps are only correct when the requester's
@@ -265,6 +281,16 @@ fn main() {
                                 // Undeliverable bytes are simply dropped: the
                                 // emulator has them, and any future client
                                 // starts from a repaint that covers them.
+                                let mut shared = state.shared.lock().unwrap();
+                                if shared.client_gen == gen {
+                                    shared.client = None;
+                                }
+                            }
+                        }
+                    }
+                    Job::Cwd(cwd) => {
+                        if let Some(mut stream) = stream {
+                            if write_frame(&mut stream, T_CWD, cwd.as_bytes()).is_err() {
                                 let mut shared = state.shared.lock().unwrap();
                                 if shared.client_gen == gen {
                                     shared.client = None;
@@ -375,6 +401,74 @@ fn main() {
             }
         });
     }
+}
+
+/// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
+/// A small tail is carried between reads so split sequences still match.
+fn scan_osc7(shared: &mut Shared, chunk: &[u8]) {
+    const PREFIX: &[u8] = b"\x1b]7;";
+    const TAIL_KEEP: usize = 1024;
+
+    let mut hay = std::mem::take(&mut shared.osc_tail);
+    hay.extend_from_slice(chunk);
+
+    let mut search_from = 0;
+    while let Some(start) = find(&hay[search_from..], PREFIX).map(|i| i + search_from) {
+        let body_start = start + PREFIX.len();
+        // Terminator: BEL or ST (ESC \).
+        let end = hay[body_start..]
+            .iter()
+            .position(|&b| b == 0x07)
+            .map(|i| (body_start + i, 1))
+            .or_else(|| find(&hay[body_start..], b"\x1b\\").map(|i| (body_start + i, 2)));
+
+        let Some((end, term_len)) = end else {
+            // Unterminated: keep from the sequence start for the next read.
+            shared.osc_tail = hay[start..].to_vec();
+            shared.osc_tail.truncate(TAIL_KEEP);
+            return;
+        };
+
+        if let Ok(url) = std::str::from_utf8(&hay[body_start..end]) {
+            if let Some(path) = url.strip_prefix("file://") {
+                // Strip the host part; percent-decode the path.
+                let path = match path.find('/') {
+                    Some(i) => &path[i..],
+                    None => "/",
+                };
+                if let Some(decoded) = percent_decode(path) {
+                    shared.cwd_report = Some(decoded);
+                }
+            }
+        }
+        search_from = end + term_len;
+    }
+
+    // Keep a tail in case a sequence starts at the very end of this chunk.
+    let keep = hay.len().saturating_sub(PREFIX.len().max(8));
+    shared.osc_tail = hay[keep.max(search_from.min(hay.len()))..].to_vec();
+    shared.osc_tail.truncate(TAIL_KEEP);
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn percent_decode(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 struct SendMaster(Box<dyn MasterPty>);

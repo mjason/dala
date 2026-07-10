@@ -106,6 +106,26 @@ Diff 窗口：`i` 单栏 · `s` 并排 · `l` 行选模式 · `Alt+Z` 折行。
   有冲突的脏工作区会安全报错不强切。
 - **历史** — 提交日志；多文件提交带文件栏，可逐文件审阅。
 
+### 目录跟随与 zellij/tmux
+
+文件抽屉跟随终端的当前目录。zellij/tmux 里的 shell 挂在它们自己的
+server 进程下，dala 直接感知不到——解决办法是让 shell 通过 **OSC 7**
+上报目录（zellij/tmux 会透传），在 `~/.zshrc` 加：
+
+```zsh
+_osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }
+autoload -U add-zsh-hook && add-zsh-hook chpwd _osc7 && _osc7
+```
+
+bash 用户（`~/.bashrc`）：
+
+```bash
+PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+```
+
+配置后 zellij/tmux/嵌套 shell 里 `cd` 都会实时驱动文件抽屉。
+（很多发行版的 vte.sh、WezTerm/Kitty 的 shell integration 已自带 OSC 7。）
+
 ### 给 AI CLI 贴图
 
 在 dala 的 shell 里跑 claude code / codex / opencode，直接粘贴截图
