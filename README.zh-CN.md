@@ -57,9 +57,9 @@ dala 服务器：
 从[最新 Release](https://github.com/mjason/dala/releases/latest)下载对应
 系统的安装包（`.msi`/`.exe`、`.dmg`、`.deb`/`.AppImage`），或自行构建。
 
-> **macOS**：应用未经公证（没有付费的 Apple 开发者账号），首次打开会被
-> Gatekeeper 拦截。执行 `xattr -cr /Applications/Dala.app`，或到
-> 「系统设置 → 隐私与安全性」点「仍要打开」。
+> **macOS**：v0.3.8 起已签名并通过 Apple 公证（Developer ID），
+> universal `.dmg` 同时支持 Apple Silicon 和 Intel，双击直接打开，
+> 无任何 Gatekeeper 弹窗。
 
 源码构建：
 
