@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildCSRFHeaders, deleteEntry, listDirectory } from "../ash_rpc";
 import type { ListDirectoryFields } from "../ash_rpc";
-import { humanBytes } from "./util";
+import { humanBytes, writeClipboard } from "./util";
 import { useI18n } from "./i18n";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
@@ -69,6 +69,11 @@ export default function FileDrawer({
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  // Right-click context menu: the row it targets (null = blank area).
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: TreeRow | null } | null>(
+    null,
+  );
+  const ctxUploadDir = useRef<string | null>(null);
   const [uploading, setUploading] = useState(false);
   // Directory a drag is currently hovering over (drop target highlight).
   const [dropDir, setDropDir] = useState<string | null>(null);
@@ -366,7 +371,8 @@ export default function FileDrawer({
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
             e.target.value = "";
-            const dir = uploadTargetDir();
+            const dir = ctxUploadDir.current ?? uploadTargetDir();
+            ctxUploadDir.current = null;
             if (dir) void uploadTo(dir, files);
           }}
         />
@@ -448,6 +454,16 @@ export default function FileDrawer({
           if (files.length === 0 || !dir) return;
           e.preventDefault();
           void uploadTo(dir, files);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const target = (e.target as HTMLElement).closest("[data-path]");
+          const row = target
+            ? (rows.find(
+                (r) => (r.kind === "dir" || r.kind === "file") && r.path === target.getAttribute("data-path"),
+              ) as TreeRow | undefined)
+            : undefined;
+          setCtxMenu({ x: e.clientX, y: e.clientY, row: row ?? null });
         }}
         className="flex-1 overflow-y-auto py-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-mint/40"
       >
@@ -545,6 +561,94 @@ export default function FileDrawer({
         <KeyHint keys="Esc" label={t("hintDeselect")} />
         <KeyHint keys={`${modLabel}+V`} label={t("hintPaste")} />
       </footer>
+
+      {ctxMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setCtxMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu(null);
+            }}
+          />
+          <div
+            id="drawer-context-menu"
+            className="fixed z-50 min-w-44 rounded-md border border-line bg-bg1 py-1 shadow-xl shadow-black/50"
+            style={{
+              left: Math.min(ctxMenu.x, window.innerWidth - 190),
+              top: Math.min(ctxMenu.y, window.innerHeight - 180),
+            }}
+          >
+            {(() => {
+              const row = ctxMenu.row;
+              const close = () => setCtxMenu(null);
+              const item = (
+                key: string,
+                label: string,
+                onPick: () => void,
+                danger = false,
+              ) => (
+                <button
+                  key={key}
+                  data-ctx-item={key}
+                  onClick={() => {
+                    close();
+                    onPick();
+                  }}
+                  className={`block w-full px-3 py-1.5 text-left font-mono text-xs transition-colors ${
+                    danger
+                      ? "text-fg-muted hover:bg-[#e5716e]/10 hover:text-[#e5716e]"
+                      : "text-fg-muted hover:bg-bg2 hover:text-fg"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+
+              if (row && row.kind === "file") {
+                return [
+                  item("open", t("hintOpen"), () => void openFile(row.path, row.entry.size)),
+                  item("download", t("download"), () => {
+                    const a = document.createElement("a");
+                    a.href = rawFileUrl(row.path, true);
+                    a.click();
+                  }),
+                  item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
+                  item(
+                    "delete",
+                    t("deleteEntry"),
+                    () => setDeleteTarget({ path: row.path, isDir: false, parentDir: row.parentDir }),
+                    true,
+                  ),
+                ];
+              }
+              if (row && row.kind === "dir") {
+                return [
+                  item("upload-here", t("uploadHere"), () => {
+                    ctxUploadDir.current = row.path;
+                    uploadInputRef.current?.click();
+                  }),
+                  item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
+                  item(
+                    "delete",
+                    t("deleteEntry"),
+                    () => setDeleteTarget({ path: row.path, isDir: true, parentDir: row.parentDir }),
+                    true,
+                  ),
+                ];
+              }
+              return [
+                item("upload", t("upload"), () => {
+                  ctxUploadDir.current = root?.path ?? null;
+                  uploadInputRef.current?.click();
+                }),
+                item("copy-path", t("copyPath"), () => void writeClipboard(root?.path ?? "")),
+              ];
+            })()}
+          </div>
+        </>
+      )}
 
       {deleteTarget && (
         <div

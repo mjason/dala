@@ -45,7 +45,10 @@ defmodule DalaWeb.Router do
     auth_routes AuthController, Dala.Accounts.User, path: "/auth"
     sign_out_route AuthController
 
+    # layout: false drops the default Phoenix app header (white navbar) —
+    # the sign-in override styles the full viewport dark by itself.
     sign_in_route auth_routes_prefix: "/auth",
+                  layout: false,
                   on_mount: [{DalaWeb.LiveUserAuth, :live_no_user}],
                   overrides: [
                     DalaWeb.AuthOverrides,
