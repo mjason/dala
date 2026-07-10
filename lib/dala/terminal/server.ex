@@ -395,10 +395,13 @@ defmodule Dala.Terminal.Server do
     %{state | seq: seq}
   end
 
-  # The stored limit is bytes (a UI slider in MB); the emulator wants lines.
-  # ~120 bytes/line keeps the mapping intuitive, clamped to sane bounds.
-  defp history_lines(limit_bytes) when is_integer(limit_bytes) and limit_bytes > 0,
-    do: (limit_bytes / 120) |> round() |> max(2_000) |> min(50_000)
+  # The limit is emulator history lines; values above 100k are legacy byte
+  # limits from the retired DETS cache (~120 bytes/line converts them).
+  defp history_lines(limit) when is_integer(limit) and limit > 100_000,
+    do: (limit / 120) |> round() |> max(1_000) |> min(50_000)
+
+  defp history_lines(limit) when is_integer(limit) and limit > 0,
+    do: limit |> max(1_000) |> min(50_000)
 
   defp history_lines(_other), do: 10_000
 end

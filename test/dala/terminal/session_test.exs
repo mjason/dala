@@ -49,7 +49,7 @@ defmodule Dala.Terminal.SessionTest do
     assert session.status == :running
     assert session.name == "bash"
     assert session.cwd != nil
-    assert session.scrollback_limit == 5_242_880
+    assert session.scrollback_limit == 10_000
     assert Server.alive?(session.id)
   end
 

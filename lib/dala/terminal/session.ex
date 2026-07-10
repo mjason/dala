@@ -200,9 +200,14 @@ defmodule Dala.Terminal.Session do
     end
 
     attribute :scrollback_limit, :integer do
-      description "Maximum bytes of scrollback kept in the DETS cache."
-      constraints min: 65_536, max: 268_435_456
-      default 5_242_880
+      description """
+      History lines kept by the holder's terminal emulator (applied when the
+      shell is next started). Values above 100k are legacy byte limits from
+      the retired DETS cache and are converted on use.
+      """
+
+      constraints min: 1_000, max: 268_435_456
+      default 10_000
       allow_nil? false
       public? true
     end

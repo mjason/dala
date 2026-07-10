@@ -8,7 +8,6 @@ import {
   setScrollbackLimit,
 } from "../ash_rpc";
 import type { Session } from "./Sidebar";
-import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
 import { Kbd, modCombo } from "./shortcuts";
 import {
@@ -21,7 +20,15 @@ import {
 } from "./termPrefs";
 import type { CursorStyle, TermPrefs } from "./termPrefs";
 
-const MB = 1024 * 1024;
+// scrollbackLimit is emulator history lines; values above 100k are legacy
+// byte limits from the retired disk cache (~120 bytes/line converts them).
+const LINES_MIN = 1_000;
+const LINES_MAX = 50_000;
+
+function normalizeLines(stored: number): number {
+  const lines = stored > 100_000 ? Math.round(stored / 120) : stored;
+  return Math.min(Math.max(lines || 10_000, LINES_MIN), LINES_MAX);
+}
 
 type Props = {
   session: Session;
@@ -33,7 +40,7 @@ type Props = {
 export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
   const { t } = useI18n();
   const [name, setName] = useState(session.name);
-  const [limitMb, setLimitMb] = useState(Math.round(session.scrollbackLimit / MB) || 1);
+  const [historyLines, setHistoryLines] = useState(() => normalizeLines(session.scrollbackLimit));
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -53,7 +60,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
       if (!result.success) fail(result.errors);
     }
 
-    const limit = Math.min(Math.max(limitMb, 1), 256) * MB;
+    const limit = Math.min(Math.max(historyLines, LINES_MIN), LINES_MAX);
     if (limit !== session.scrollbackLimit) {
       const result = await setScrollbackLimit({
         identity: session.id,
@@ -132,27 +139,28 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
           <label className="block">
             <span className="mb-1 block text-xs uppercase tracking-wider text-fg-muted">
-              {t("scrollbackCache")} · {humanBytes(limitMb * MB)}
+              {t("scrollbackCache")} · {historyLines.toLocaleString()}
             </span>
             <div className="flex items-center gap-3">
               <input
                 id="scrollback-limit-input"
                 type="range"
-                min={1}
-                max={256}
-                value={limitMb}
-                onChange={(e) => setLimitMb(Number(e.target.value))}
+                min={LINES_MIN}
+                max={LINES_MAX}
+                step={1000}
+                value={historyLines}
+                onChange={(e) => setHistoryLines(Number(e.target.value))}
                 className="flex-1 accent-[#4cc38a]"
               />
               <input
                 type="number"
-                min={1}
-                max={256}
-                value={limitMb}
-                onChange={(e) => setLimitMb(Number(e.target.value) || 1)}
-                className="w-16 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-[13px] text-fg outline-none focus:border-mint/60"
+                min={LINES_MIN}
+                max={LINES_MAX}
+                step={1000}
+                value={historyLines}
+                onChange={(e) => setHistoryLines(Number(e.target.value) || 10_000)}
+                className="w-20 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-[13px] text-fg outline-none focus:border-mint/60"
               />
-              <span className="font-mono text-xs text-fg-muted">MB</span>
             </div>
             <span className="mt-1 block text-xs leading-5 text-fg-muted/80">
               {t("scrollbackHint")}
