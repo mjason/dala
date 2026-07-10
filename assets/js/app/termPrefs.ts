@@ -19,6 +19,9 @@ export type TermPrefs = {
   scrollSensitivity: number;
   /** Selecting text copies it immediately (canvas text has no native copy). */
   copyOnSelect: boolean;
+  /** mosh-style typeahead: printable keys render immediately, the server
+   * echo is reconciled when it arrives — hides the network round-trip. */
+  localEcho: boolean;
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -30,6 +33,7 @@ export const DEFAULT_PREFS: TermPrefs = {
   smoothScroll: true,
   scrollSensitivity: 2,
   copyOnSelect: true,
+  localEcho: false,
 };
 
 /** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
@@ -73,6 +77,7 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
     ),
     copyOnSelect:
       typeof raw.copyOnSelect === "boolean" ? raw.copyOnSelect : DEFAULT_PREFS.copyOnSelect,
+    localEcho: typeof raw.localEcho === "boolean" ? raw.localEcho : DEFAULT_PREFS.localEcho,
   };
 }
 

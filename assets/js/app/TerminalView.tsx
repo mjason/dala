@@ -18,6 +18,7 @@ import { createStreamGate } from "./streamGate";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
+import { createTypeahead } from "./typeahead";
 import { isMac } from "./shortcuts";
 
 const theme = {
@@ -263,11 +264,14 @@ export default function TerminalView({
 
       // See streamGate.ts for the replay/dedup/input-guard invariants.
       const gate = createStreamGate();
+      // Optional mosh-style local echo (appearance setting).
+      const typeahead = createTypeahead(term, () => livePrefs.localEcho);
 
       const refs = onTerminalChannelMessages(channel, {
         replay: (payload) => {
           const { reset, release } = gate.replayBatch(payload.seq, payload.done);
           if (reset) {
+            typeahead.abandon();
             term.reset();
             setReplaying(true);
           }
@@ -285,7 +289,7 @@ export default function TerminalView({
         },
         output: (payload) => {
           if (!gate.acceptOutput(payload.seq)) return;
-          term.write(base64ToBytes(payload.data));
+          term.write(typeahead.reconcile(base64ToBytes(payload.data)));
         },
         cwd: (payload) => {
           cwdChangeRef.current?.(payload.cwd);
@@ -372,6 +376,7 @@ export default function TerminalView({
 
       const inputDisposable = term.onData((data) => {
         if (!gate.acceptInput()) return;
+        typeahead.predict(data);
         phxChannel.push("input", { data });
       });
 
@@ -463,6 +468,7 @@ export default function TerminalView({
         container.removeEventListener("mouseup", onMouseUp);
         stopPrefsSync();
         inputDisposable.dispose();
+        typeahead.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
         term.dispose();

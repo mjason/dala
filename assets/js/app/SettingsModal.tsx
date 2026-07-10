@@ -570,6 +570,12 @@ function AppearanceSection() {
           checked={prefs.smoothScroll}
           onChange={(v) => apply({ smoothScroll: v })}
         />
+        <ToggleRow
+          id="local-echo-checkbox"
+          label={t("localEcho")}
+          checked={prefs.localEcho}
+          onChange={(v) => apply({ localEcho: v })}
+        />
       </div>
     </div>
   );
