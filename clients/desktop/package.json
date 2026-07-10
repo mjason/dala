@@ -11,6 +11,9 @@
     "start": "electron .",
     "build": "electron-builder"
   },
+  "dependencies": {
+    "electron-updater": "^6.6.4"
+  },
   "devDependencies": {
     "electron": "^37.2.0",
     "electron-builder": "^26.0.12"
@@ -34,6 +37,10 @@
         {
           "target": "dmg",
           "arch": ["universal"]
+        },
+        {
+          "target": "zip",
+          "arch": ["universal"]
         }
       ],
       "hardenedRuntime": true,
@@ -53,6 +60,10 @@
       "target": ["AppImage", "deb"],
       "category": "Development",
       "maintainer": "MJ <tywf91@gmail.com>"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://github.com/mjason/dala/releases/download/client-latest"
     }
   }
 }

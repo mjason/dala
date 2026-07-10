@@ -327,19 +327,21 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                         void act(async () => {
                           const result = await kickViewers({
                             input: { id: session.id },
-                            fields: ["multiplexer", "session", "kicked"],
+                            fields: ["multiplexer", "session", "kicked", "error"],
                             headers: buildCSRFHeaders(),
                           });
                           if (result.success) {
                             const data = result.data as unknown as {
                               multiplexer: string;
                               kicked: number;
+                              error: string | null;
                             };
                             onError(
-                              t("kickedViewers", {
-                                count: data.kicked,
-                                mux: data.multiplexer,
-                              }),
+                              data.error ??
+                                t("kickedViewers", {
+                                  count: data.kicked,
+                                  mux: data.multiplexer,
+                                }),
                             );
                           }
                           return result;

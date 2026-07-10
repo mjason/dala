@@ -70,6 +70,10 @@ Download the installer for your OS from the
 > Upgrading from the Tauri client (≤ v0.5.x)? Your server list is imported
 > automatically on first launch.
 
+> **Auto-update**: since client-v0.1.2 the client checks for new versions
+> (on launch and every 4 hours), downloads in the background and offers a
+> one-click restart; File → Check for Updates triggers it manually.
+
 Build from source:
 
 ```sh

@@ -4,6 +4,7 @@ import {
   buildCSRFHeaders,
   createSession,
   deleteSession,
+  kickViewers,
   listSessions,
   restartSession,
 } from "../ash_rpc";
@@ -329,6 +330,32 @@ export default function App() {
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
+  // Kick other zellij/tmux viewers capping this terminal's size, then
+  // reassert our own size.
+  const kickOtherViewers = async () => {
+    if (!active) return;
+    const result = await kickViewers({
+      input: { id: active.id },
+      fields: ["multiplexer", "session", "kicked", "error"],
+      headers: buildCSRFHeaders(),
+    });
+    if (result.success) {
+      const data = result.data as unknown as {
+        multiplexer: string;
+        kicked: number;
+        error: string | null;
+      };
+      if (data.error) {
+        toast(data.error);
+      } else {
+        toast(t("kickedViewers", { count: data.kicked, mux: data.multiplexer }));
+        termActions.current?.refit();
+      }
+    } else {
+      toast(result.errors[0]?.message ?? t("somethingWentWrong"));
+    }
+  };
+
   // Global header shortcuts. Ctrl+Shift/⌘ combos never type into the shell,
   // so they work even while the terminal has focus; plain Ctrl+P inside the
   // terminal stays with readline (previous-history), while ⌘P on macOS is
@@ -556,6 +583,15 @@ export default function App() {
                   }`}
                 >
                   {t("git")}
+                </button>
+              </Tooltip>
+              <Tooltip label={t("kickViewers")} description={t("kickViewersHint")}>
+                <button
+                  id="kick-viewers-header-button"
+                  onClick={() => void kickOtherViewers()}
+                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                >
+                  {t("kickViewersAction")}
                 </button>
               </Tooltip>
               <Tooltip label={t("refitWidth")} description={t("refitDesc")} keys={modShiftCombo("f")}>

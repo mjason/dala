@@ -57,11 +57,18 @@ defmodule Dala.Terminal.Session do
       constraints fields: [
                     multiplexer: [type: :string, allow_nil?: false],
                     session: [type: :string, allow_nil?: false],
-                    kicked: [type: :integer, allow_nil?: false]
+                    kicked: [type: :integer, allow_nil?: false],
+                    error: [type: :string]
                   ]
 
+      # Always {:ok, map}: failure reasons ride in the :error field, because
+      # plain {:error, string} results are classed :unknown and the RPC layer
+      # hides their message from clients.
       run fn input, _context ->
-        Dala.Terminal.Server.kick_viewers(input.arguments.id)
+        case Dala.Terminal.Server.kick_viewers(input.arguments.id) do
+          {:ok, result} -> {:ok, Map.put(result, :error, nil)}
+          {:error, message} -> {:ok, %{multiplexer: "", session: "", kicked: 0, error: message}}
+        end
       end
     end
 

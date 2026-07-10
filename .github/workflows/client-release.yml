@@ -76,9 +76,14 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          # zip / *.yml / *.blockmap feed electron-updater's auto-update
+          # (mac updates via the zip; yml carries versions and hashes).
           files: |
             clients/desktop/dist/*.dmg
+            clients/desktop/dist/*.zip
             clients/desktop/dist/*.exe
             clients/desktop/dist/*.AppImage
             clients/desktop/dist/*.deb
+            clients/desktop/dist/latest*.yml
+            clients/desktop/dist/*.blockmap
           generate_release_notes: true

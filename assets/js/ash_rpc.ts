@@ -1695,11 +1695,11 @@ export type KickViewersInput = {
   id: UUID;
 };
 
-export type KickViewersFields = UnifiedFieldSelection<{multiplexer: string, session: string, kicked: number, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked"}>[];
+export type KickViewersFields = UnifiedFieldSelection<{multiplexer: string, session: string, kicked: number, error: string | null, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked" | "error"}>[];
 
 export type InferKickViewersResult<
   Fields extends KickViewersFields | undefined,
-> = InferResult<{multiplexer: string, session: string, kicked: number, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked"}, Fields>;
+> = InferResult<{multiplexer: string, session: string, kicked: number, error: string | null, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked" | "error"}, Fields>;
 
 export type KickViewersResult<Fields extends KickViewersFields | undefined = undefined> = | { success: true; data: InferKickViewersResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

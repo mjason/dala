@@ -4,7 +4,9 @@
 // bilingual application menu to switch servers, a local management page,
 // a built-in browser window for external links, and a native clipboard
 // bridge for plain-http LAN servers.
-const { app, BrowserWindow, Menu, clipboard, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme } = require("electron");
+const { autoUpdater } = require("electron-updater");
+const { resolveLatestClient, isNewer } = require("./updater");
 const fs = require("fs");
 const path = require("path");
 
@@ -147,6 +149,59 @@ function startupServer() {
 // ---------------------------------------------------------------------------
 // Menu (bilingual labels, same convention as the previous client)
 
+// ---------------------------------------------------------------------------
+// Auto-update: resolve the newest client-v* release, feed it to
+// electron-updater, download in the background, install on restart.
+
+let updateReady = null; // version staged for quitAndInstall
+
+async function checkForUpdates({ interactive } = {}) {
+  if (!app.isPackaged) {
+    if (interactive) {
+      void dialog.showMessageBox({ message: "开发模式不检查更新 (dev build)" });
+    }
+    return;
+  }
+  try {
+    const latest = await resolveLatestClient();
+    if (!latest || !isNewer(latest.version, app.getVersion())) {
+      if (interactive) {
+        void dialog.showMessageBox({
+          message: `已是最新版本 Up to date (v${app.getVersion()})`,
+        });
+      }
+      return;
+    }
+    autoUpdater.setFeedURL({ provider: "generic", url: latest.feedUrl });
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    if (interactive) dialog.showErrorBox("检查更新失败 Update check failed", String(err));
+  }
+}
+
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("error", () => {
+  // Background checks stay silent (offline, deb install, rate limit, …);
+  // interactive failures surface in checkForUpdates above.
+});
+autoUpdater.on("update-downloaded", (info) => {
+  updateReady = info.version;
+  rebuildMenu();
+  void dialog
+    .showMessageBox({
+      type: "info",
+      buttons: ["重启并更新 Restart & Update", "稍后 Later"],
+      defaultId: 0,
+      cancelId: 1,
+      message: `新版本 v${info.version} 已下载 Update downloaded`,
+      detail: "重启应用即完成升级；稍后退出时也会自动安装。\nRestart to apply — or it installs on next quit.",
+    })
+    .then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+});
+
 function rebuildMenu() {
   const isMac = process.platform === "darwin";
   const focused = targetShellWindow();
@@ -192,6 +247,16 @@ function rebuildMenu() {
           accelerator: "CmdOrCtrl+,",
           click: showManagePage,
         },
+        { type: "separator" },
+        updateReady
+          ? {
+              label: `重启并更新 Restart & Update (v${updateReady})`,
+              click: () => autoUpdater.quitAndInstall(),
+            }
+          : {
+              label: "检查更新 Check for Updates…",
+              click: () => void checkForUpdates({ interactive: true }),
+            },
         { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
       ],
@@ -311,6 +376,9 @@ if (!app.requestSingleInstanceLock()) {
     rebuildMenu();
     app.on("browser-window-focus", rebuildMenu);
     createShellWindow(startupServer());
+    // Background update checks: shortly after launch, then every 4 hours.
+    setTimeout(() => void checkForUpdates(), 10_000);
+    setInterval(() => void checkForUpdates(), 4 * 60 * 60 * 1000);
   });
 
   app.on("activate", () => {
