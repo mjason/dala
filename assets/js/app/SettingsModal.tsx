@@ -354,6 +354,16 @@ function AppearanceSection() {
           />
           {t("cursorBlink")}
         </label>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-fg-muted">
+          <input
+            id="smooth-scroll-checkbox"
+            type="checkbox"
+            checked={prefs.smoothScroll}
+            onChange={(e) => apply({ smoothScroll: e.target.checked })}
+            className="h-3.5 w-3.5 accent-[#4cc38a]"
+          />
+          {t("smoothScroll")}
+        </label>
       </div>
     </div>
   );

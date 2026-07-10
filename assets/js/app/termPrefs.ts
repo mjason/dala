@@ -13,6 +13,8 @@ export type TermPrefs = {
   lineHeight: number;
   cursorStyle: CursorStyle;
   cursorBlink: boolean;
+  /** Animated (eased) wheel scrolling instead of per-tick jumps. */
+  smoothScroll: boolean;
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -21,7 +23,11 @@ export const DEFAULT_PREFS: TermPrefs = {
   lineHeight: 1.2,
   cursorStyle: "bar",
   cursorBlink: true,
+  smoothScroll: true,
 };
+
+/** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
+export const SMOOTH_SCROLL_MS = 120;
 
 export const FONT_SIZE_RANGE = { min: 10, max: 24 } as const;
 export const LINE_HEIGHT_RANGE = { min: 1, max: 1.8 } as const;
@@ -51,6 +57,8 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
       : DEFAULT_PREFS.cursorStyle,
     cursorBlink:
       typeof raw.cursorBlink === "boolean" ? raw.cursorBlink : DEFAULT_PREFS.cursorBlink,
+    smoothScroll:
+      typeof raw.smoothScroll === "boolean" ? raw.smoothScroll : DEFAULT_PREFS.smoothScroll,
   };
 }
 

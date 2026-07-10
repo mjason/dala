@@ -15,7 +15,7 @@ import { base64ToBytes } from "./util";
 import { createStreamGate } from "./streamGate";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
-import { fontStack, loadPrefs, onPrefsChange } from "./termPrefs";
+import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 
 const theme = {
   background: "#0b0c0e",
@@ -107,6 +107,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
         letterSpacing: 0,
         cursorBlink: prefs.cursorBlink,
         cursorStyle: prefs.cursorStyle,
+        smoothScrollDuration: prefs.smoothScroll ? SMOOTH_SCROLL_MS : 0,
         scrollback: scrollbackLines ?? 10_000,
         allowTransparency: false,
         allowProposedApi: true,
@@ -143,6 +144,7 @@ export default function TerminalView({ sessionId, scrollbackLines, onCwdChange, 
         term.options.lineHeight = next.lineHeight;
         term.options.cursorStyle = next.cursorStyle;
         term.options.cursorBlink = next.cursorBlink;
+        term.options.smoothScrollDuration = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
         fit.fit();
       });
 
