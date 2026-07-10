@@ -1691,6 +1691,78 @@ export async function validateDeleteSession(
 }
 
 
+export type KickViewersInput = {
+  id: UUID;
+};
+
+export type KickViewersFields = UnifiedFieldSelection<{multiplexer: string, session: string, kicked: number, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked"}>[];
+
+export type InferKickViewersResult<
+  Fields extends KickViewersFields | undefined,
+> = InferResult<{multiplexer: string, session: string, kicked: number, __type: "TypedMap", __primitiveFields: "multiplexer" | "session" | "kicked"}, Fields>;
+
+export type KickViewersResult<Fields extends KickViewersFields | undefined = undefined> = | { success: true; data: InferKickViewersResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Session
+ *
+ * @ashActionType :action
+ */
+export async function kickViewers<Fields extends KickViewersFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: KickViewersInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<KickViewersResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "kick_viewers",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<KickViewersResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Session
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateKickViewers(
+  config: {
+  tenant?: string;
+  input: KickViewersInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "kick_viewers",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type ListSessionsFields = UnifiedFieldSelection<SessionResourceSchema>[];
 
 

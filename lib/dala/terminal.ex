@@ -7,6 +7,7 @@ defmodule Dala.Terminal do
       rpc_action :create_session, :create
       rpc_action :rename_session, :rename
       rpc_action :set_scrollback_limit, :set_scrollback_limit
+      rpc_action :kick_viewers, :kick_viewers
       rpc_action :close_session, :close
       rpc_action :restart_session, :restart
       rpc_action :delete_session, :destroy
@@ -48,6 +49,7 @@ defmodule Dala.Terminal do
       define :get_session, action: :read, get_by: :id
       define :create_session, action: :create
       define :delete_session, action: :destroy
+      define :kick_viewers, action: :kick_viewers, args: [:id]
       define :mark_running, action: :mark_running
       define :mark_exited, action: :mark_exited
       define :update_cwd, action: :update_cwd

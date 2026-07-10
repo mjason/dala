@@ -46,6 +46,25 @@ defmodule Dala.Terminal.Session do
       change Dala.Terminal.Session.Changes.CleanupSession
     end
 
+    action :kick_viewers, :map do
+      description """
+      Detach other zellij/tmux clients of the multiplexer session this
+      terminal's shell is attached to — they cap it to the smallest window.
+      """
+
+      argument :id, :uuid, allow_nil?: false
+
+      constraints fields: [
+                    multiplexer: [type: :string, allow_nil?: false],
+                    session: [type: :string, allow_nil?: false],
+                    kicked: [type: :integer, allow_nil?: false]
+                  ]
+
+      run fn input, _context ->
+        Dala.Terminal.Server.kick_viewers(input.arguments.id)
+      end
+    end
+
     action :close, :boolean do
       description "Kill the shell of a running session. Scrollback is kept."
       argument :id, :uuid, allow_nil?: false

@@ -80,6 +80,18 @@ defmodule Dala.Terminal.Server do
   end
 
   @doc """
+  Detach other zellij/tmux clients of the multiplexer session this shell is
+  attached to (they cap its size to the smallest window). See
+  `Dala.Terminal.Viewers`.
+  """
+  def kick_viewers(id) do
+    case whereis(id) do
+      nil -> {:error, "session is not running"}
+      pid -> GenServer.call(pid, :kick_viewers, 10_000)
+    end
+  end
+
+  @doc """
   Asks the holder for a synthesized repaint and delivers it to `client` as a
   `{:repaint, data, seq}` message. `seq` is the seq of the last output the
   repaint covers, so the client can deduplicate the live stream against it.
@@ -201,6 +213,11 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_call(:viewport, _from, state) do
     {:reply, state.size, state}
+  end
+
+  @impl true
+  def handle_call(:kick_viewers, _from, state) do
+    {:reply, Dala.Terminal.Viewers.kick_others(state.shell_pid), state}
   end
 
   @impl true

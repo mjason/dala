@@ -65,6 +65,13 @@ defmodule Dala.Terminal.SessionTest do
     eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
   end
 
+  test "kick_viewers on a plain shell reports no multiplexer" do
+    session = create_session!()
+    eventually(fn -> match?({:error, _}, Dala.Terminal.Server.kick_viewers(session.id)) end)
+    assert {:error, message} = Dala.Terminal.Server.kick_viewers(session.id)
+    assert message =~ ~r/no zellij|not running/
+  end
+
   test "ephemeral session destroys itself when the shell exits" do
     session = create_session!(%{ephemeral: true})
     assert session.ephemeral

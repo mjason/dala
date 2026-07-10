@@ -84,7 +84,9 @@ The sidebar lists your shells. `+` creates one; each runs on the server inside i
 own holder process, so closing the tab, refreshing, restarting dala or upgrading
 it never kills a shell. A session that *exited* (the process itself ended) shows
 an overlay with a restart button. Per-session settings (rename, scrollback cache
-size, kill/restart, delete) are behind the `settings` button.
+size, kill/restart, delete) are behind the `settings` button; if zellij/tmux
+gets shrunk by a forgotten window elsewhere (blank stripes on the right and
+bottom), "Detach other viewers" in settings kicks the other clients.
 
 ### Keyboard shortcuts
 

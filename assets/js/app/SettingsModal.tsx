@@ -3,6 +3,7 @@ import {
   buildCSRFHeaders,
   closeSession,
   deleteSession,
+  kickViewers,
   renameSession,
   restartSession,
   setScrollbackLimit,
@@ -312,6 +313,45 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                     </button>
                   )}
                 </div>
+                {running && (
+                  <div className="flex items-center justify-between gap-3 border-t border-line/70 pt-2">
+                    <div className="min-w-0">
+                      <span className="block text-[13px] text-fg">{t("kickViewers")}</span>
+                      <span className="block text-xs text-fg-muted/80">
+                        {t("kickViewersHint")}
+                      </span>
+                    </div>
+                    <button
+                      id="kick-viewers-button"
+                      onClick={() =>
+                        void act(async () => {
+                          const result = await kickViewers({
+                            input: { id: session.id },
+                            fields: ["multiplexer", "session", "kicked"],
+                            headers: buildCSRFHeaders(),
+                          });
+                          if (result.success) {
+                            const data = result.data as unknown as {
+                              multiplexer: string;
+                              kicked: number;
+                            };
+                            onError(
+                              t("kickedViewers", {
+                                count: data.kicked,
+                                mux: data.multiplexer,
+                              }),
+                            );
+                          }
+                          return result;
+                        })
+                      }
+                      disabled={busy}
+                      className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[13px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint disabled:opacity-50"
+                    >
+                      {t("kickViewersAction")}
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-3 border-t border-line/70 pt-2">
                   <span className="text-[13px] text-fg">{t("deleteSession")}</span>
                   {confirmDelete ? (
