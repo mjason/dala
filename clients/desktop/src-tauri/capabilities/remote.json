@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "remote-links",
+  "description": "Let pages from connected dala servers ask the shell to open links in a built-in browser window.",
+  "windows": ["*"],
+  "remote": {
+    "urls": ["http://*", "https://*"]
+  },
+  "permissions": ["core:event:default"]
+}

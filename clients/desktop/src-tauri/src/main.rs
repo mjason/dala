@@ -14,6 +14,39 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBui
 
 static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(1);
 
+/// Injected into every window (dala servers included): window.open and
+/// target=_blank links call back into the shell, which opens a built-in
+/// browser window — the webview denies popups by default, so terminal
+/// links and HTML previews would otherwise do nothing.
+const LINK_SCRIPT: &str = r#"
+(function () {
+  if (window.__DALA_LINKS__) return;
+  window.__DALA_LINKS__ = 1;
+  var send = function (url) {
+    try {
+      window.__TAURI__.core.invoke("open_browser", { url: String(url) });
+    } catch (e) {}
+  };
+  var native = window.open;
+  window.open = function (url) {
+    if (url) { send(url); return null; }
+    return native.apply(window, arguments);
+  };
+  document.addEventListener(
+    "click",
+    function (e) {
+      var el = e.target;
+      var a = el && el.closest ? el.closest("a[target=_blank]") : null;
+      if (a && a.href) {
+        e.preventDefault();
+        send(a.href);
+      }
+    },
+    true
+  );
+})();
+"#;
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Config {
     servers: Vec<Server>,
@@ -143,6 +176,7 @@ fn open_window(app: &AppHandle, url: WebviewUrl, title: &str) {
     let _ = WebviewWindowBuilder::new(app, label, url)
         .title(title)
         .inner_size(1280.0, 840.0)
+        .initialization_script(LINK_SCRIPT)
         .build();
 }
 
@@ -210,6 +244,16 @@ fn connect(app: AppHandle, window: WebviewWindow, url: String) -> Result<(), Str
     Ok(())
 }
 
+/// Built-in browser window for links that would otherwise open a popup
+/// (terminal web links, HTML previews, OAuth pages).
+#[tauri::command]
+fn open_browser(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = parse_server_url(&url)?;
+    let title = parsed.host_str().unwrap_or("browser").to_string();
+    open_window(&app, WebviewUrl::External(parsed), &title);
+    Ok(())
+}
+
 #[tauri::command]
 fn open_in_new_window(app: AppHandle, url: String) -> Result<(), String> {
     let cfg = load_config(&app);
@@ -268,7 +312,8 @@ fn main() {
             add_server,
             remove_server,
             connect,
-            open_in_new_window
+            open_in_new_window,
+            open_browser
         ])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         .setup(|app| {

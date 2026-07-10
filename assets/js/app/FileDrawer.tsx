@@ -607,8 +607,16 @@ export default function FileDrawer({
               );
 
               if (row && row.kind === "file") {
+                const html = /\.(html?|xhtml)$/i.test(row.path);
                 return [
                   item("open", t("hintOpen"), () => void openFile(row.path, row.entry.size)),
+                  ...(html
+                    ? [
+                        item("open-browser", t("openInBrowser"), () =>
+                          window.open(rawFileUrl(row.path), "_blank"),
+                        ),
+                      ]
+                    : []),
                   item("download", t("download"), () => {
                     const a = document.createElement("a");
                     a.href = rawFileUrl(row.path, true);
