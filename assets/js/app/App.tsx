@@ -40,6 +40,9 @@ const SESSION_FIELDS = [
 
 type Toast = { id: number; message: string };
 
+const clampWidth = (value: number, min: number, max: number) =>
+  Math.min(Math.max(Math.round(value), min), Math.max(min, max));
+
 export default function App() {
   const { t } = useI18n();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -110,14 +113,26 @@ export default function App() {
 
   const focusQuickShell = () => window.setTimeout(() => qsActions.current?.focus(), 150);
 
-  // After a reload the panel state is gone but ephemeral shells may still be
-  // running — adopt them as tabs instead of leaking them.
+  // Quick shells are disposable — any ephemeral session surviving a reload
+  // is a leftover, so clean it up once the first session list arrives.
+  const qsCleanedRef = useRef(false);
   useEffect(() => {
-    const orphans = sessions.filter((s) => s.ephemeral && !qsRef.current.ids.includes(s.id));
-    if (orphans.length === 0) return;
-    setQsIds((ids) => [...ids, ...orphans.map((o) => o.id).filter((id) => !ids.includes(id))]);
-    setQsActiveId((current) => current ?? orphans[0].id);
+    if (qsCleanedRef.current || sessions.length === 0) return;
+    qsCleanedRef.current = true;
+    for (const orphan of sessions.filter((s) => s.ephemeral)) {
+      void deleteSession({ identity: orphan.id, headers: buildCSRFHeaders() });
+    }
   }, [sessions]);
+
+  // Draggable panel widths, remembered per browser.
+  const [sidebarW, setSidebarW] = useState(() =>
+    clampWidth(Number(localStorage.getItem("dala:sidebar-w")) || 256, 180, 440),
+  );
+  const [qsW, setQsW] = useState(() =>
+    clampWidth(Number(localStorage.getItem("dala:qs-w")) || 800, 380, window.innerWidth - 160),
+  );
+  useEffect(() => localStorage.setItem("dala:sidebar-w", String(sidebarW)), [sidebarW]);
+  useEffect(() => localStorage.setItem("dala:qs-w", String(qsW)), [qsW]);
 
   // Socket status + sessions lobby channel.
   useEffect(() => {
@@ -250,20 +265,24 @@ export default function App() {
     focusQuickShell();
   };
 
+  // Closing the panel (Esc, ✕, or the toggle) destroys every quick shell:
+  // they are scratch paper, not workspaces — reopening starts fresh.
+  const closeQuickShell = () => {
+    const ids = qsRef.current.ids;
+    setQsIds([]);
+    setQsActiveId(null);
+    setQsOpen(false);
+    setQsMax(false);
+    setSessions((list) => list.filter((s) => !ids.includes(s.id)));
+    termActions.current?.focus();
+    for (const id of ids) {
+      void deleteSession({ identity: id, headers: buildCSRFHeaders() });
+    }
+  };
+
   const toggleQuickShell = async () => {
-    if (qsOpen) {
-      setQsOpen(false);
-      termActions.current?.focus();
-      return;
-    }
-    const alive = qsIds.filter((id) => sessionsRef.current.some((s) => s.id === id));
-    if (alive.length > 0) {
-      if (!qsActiveId || !alive.includes(qsActiveId)) setQsActiveId(alive[alive.length - 1]);
-      setQsOpen(true);
-      focusQuickShell();
-      return;
-    }
-    await createQuickShell(active?.cwd);
+    if (qsRef.current.open) closeQuickShell();
+    else await createQuickShell(active?.cwd);
   };
   const quickShellRef = useRef(() => {});
   quickShellRef.current = () => void toggleQuickShell();
@@ -410,6 +429,8 @@ export default function App() {
           activeId={active?.id ?? null}
           connected={connected}
           creating={creating}
+          width={sidebarW}
+          onResize={(x) => setSidebarW(clampWidth(x, 180, 440))}
           onSelect={(id) => {
             setActiveId(id);
             setNavOpen(false);
@@ -605,10 +626,9 @@ export default function App() {
           onAdd={() => void createQuickShell(qsSession.cwd || active?.cwd)}
           maximized={qsMax}
           onToggleMax={() => setQsMax((v) => !v)}
-          onClose={() => {
-            setQsOpen(false);
-            termActions.current?.focus();
-          }}
+          onClose={closeQuickShell}
+          width={qsW}
+          onResize={(x) => setQsW(clampWidth(window.innerWidth - x, 380, window.innerWidth - 160))}
           actionsRef={qsActions}
           onError={toast}
         />

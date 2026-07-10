@@ -1,5 +1,6 @@
 import React from "react";
 import TerminalView from "./TerminalView";
+import ResizeHandle from "./ResizeHandle";
 import { useI18n } from "./i18n";
 import { historyLines, shortPath } from "./util";
 import type { Session } from "./Sidebar";
@@ -14,6 +15,9 @@ type Props = {
   maximized: boolean;
   onToggleMax: () => void;
   onClose: () => void;
+  /** Desktop width in px (draggable via the left-edge handle). */
+  width: number;
+  onResize: (clientX: number) => void;
   actionsRef: React.MutableRefObject<TerminalActions | null>;
   onError: (message: string) => void;
 };
@@ -32,6 +36,8 @@ export default function QuickShellPanel({
   maximized,
   onToggleMax,
   onClose,
+  width,
+  onResize,
   actionsRef,
   onError,
 }: Props) {
@@ -41,11 +47,11 @@ export default function QuickShellPanel({
     <div
       id="quick-shell-panel"
       className={`fixed z-40 flex flex-col bg-bg0 shadow-2xl shadow-black/60 ${
-        maximized
-          ? "inset-0"
-          : "inset-y-0 right-0 w-full border-l border-line sm:w-[min(52rem,78vw)]"
+        maximized ? "inset-0" : "inset-y-0 right-0 border-l border-line"
       }`}
+      style={maximized ? undefined : { width, maxWidth: "100vw" }}
     >
+      {!maximized && <ResizeHandle id="quick-shell-resize" edge="left" onResize={onResize} />}
       {/* h-11 matches the main header, so the split line tops align. */}
       <header
         className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3"

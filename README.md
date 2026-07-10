@@ -96,8 +96,10 @@ size, kill/restart, delete) are behind the `settings` button.
 | `Ctrl+Shift+F` · `⇧⌘F` | Refit terminal width |
 | `Ctrl+Shift+X` · `⇧⌘X` | Reset terminal |
 | `Ctrl+\`` (Control on macOS too — `⌘\`` is taken by the OS) | Focus the terminal from anywhere |
-| `Ctrl+Shift+\`` (or the `⚡>_` header button) | **Quick shell**: an overlay terminal (slides over the session, one-click fullscreen) already cd'd into the active session's directory; `+` in the panel opens more tabs. **Esc hides it** (shells stay alive and reconnect; inside vim & co. Esc belongs to the program); `exit`/`Ctrl+D` destroys a tab — never appears in the sidebar |
+| `Ctrl+Shift+\`` (or the `⚡>_` header button) | **Quick shell**: a disposable overlay terminal (slides over the session, drag its left edge to resize, one-click fullscreen) already cd'd into the active session's directory; `+` in the panel opens more tabs. **Esc closes it** — every quick shell is destroyed on the spot, nothing is kept (inside vim & co. Esc belongs to the program); `exit`/`Ctrl+D` closes a single tab |
 | `Esc` | Close the topmost window |
+
+The sidebar's right edge and the quick shell's left edge are draggable (widths remembered per browser).
 
 File drawer: `↑↓` select · `⏎` open · `⌫` parent directory · `Del` delete ·
 `Esc` deselect (uploads then target the root) · `Ctrl/⌘+V` paste a copied file.

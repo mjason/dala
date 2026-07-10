@@ -5,6 +5,7 @@ import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
 import UpdateCheck from "./UpdateCheck";
+import ResizeHandle from "./ResizeHandle";
 
 export type Session = SessionUpdatedPayload;
 
@@ -17,6 +18,9 @@ type Props = {
   onCreate: () => void;
   onOpenSettings: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Desktop width in px (draggable via the right-edge handle). */
+  width?: number;
+  onResize?: (clientX: number) => void;
 };
 
 export default function Sidebar({
@@ -28,11 +32,17 @@ export default function Sidebar({
   onCreate,
   onOpenSettings,
   onDelete,
+  width,
+  onResize,
 }: Props) {
   const { locale, t, setLocale } = useI18n();
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-bg1">
+    <aside
+      className="relative flex h-full w-64 shrink-0 flex-col border-r border-line bg-bg1"
+      style={width ? { width } : undefined}
+    >
+      {onResize && <ResizeHandle id="sidebar-resize" edge="right" onResize={onResize} />}
       <div className="flex items-center gap-2 px-4 pt-4 pb-3">
         <span className="font-mono text-[15px] font-semibold tracking-widest text-fg">DALA</span>
         <span
