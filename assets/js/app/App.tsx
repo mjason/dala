@@ -252,6 +252,16 @@ export default function App() {
     .filter((s): s is Session => Boolean(s));
   const qsSession = qsSessions.find((s) => s.id === qsActiveId) ?? qsSessions[0] ?? null;
 
+  // Switching sessions: an open composer is where typing continues — put the
+  // focus there (cursor at the end), not in the shell the terminal grabs on
+  // mount. Runs after TerminalView's own mount focus, so it wins.
+  useEffect(() => {
+    if (active && composerOpen[active.id]) {
+      setComposerFocusNonce((n) => n + 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id]);
+
   // Composer open/close changes the terminal's height — refit right away
   // (and once more after the layout settles) so TUIs never sit clipped.
   const activeComposerOpen = active ? Boolean(composerOpen[active.id]) : false;
@@ -477,8 +487,11 @@ export default function App() {
           ? ("bracketed-delayed" as const)
           : app === "claude" || app === "opencode" || app === "gemini"
             ? // Warp sends bare text to these, but a bare multiline paste
-              // would submit at the first newline — bracket those.
-              text.includes("\n")
+              // would submit at the first newline — bracket those. Attachment
+              // paths must also arrive as a paste: the agents' pasted-path
+              // detection (opencode's File chip, Claude Code's [Image #N])
+              // only triggers on bracketed paste, not on typed text.
+              text.includes("\n") || text.includes("dala-paste/")
               ? ("bracketed-delayed" as const)
               : ("delayed" as const)
             : undefined;
