@@ -251,20 +251,29 @@ function Body({ preview, wrap }: { preview: Preview; wrap: boolean }) {
     // html shows its source; the "open in browser" action renders it
     case "html":
     case "text":
-      return <CodeView content={preview.content} fileName={preview.path} wrap={wrap} />;
+      return (
+        <CodeView
+          content={preview.content}
+          fileName={preview.path}
+          wrap={wrap}
+          lspPath={"truncated" in preview && preview.truncated ? undefined : preview.path}
+        />
+      );
   }
 }
 
 function CodeView({
   content,
   fileName,
+  lspPath,
   wrap,
 }: {
   content: string;
   fileName: string;
   wrap: boolean;
+  lspPath?: string;
 }) {
-  return <CmCode content={content} filename={fileName} wrap={wrap} />;
+  return <CmCode content={content} filename={fileName} wrap={wrap} lspPath={lspPath} />;
 }
 
 function CsvTable({ path, content, wrap }: { path: string; content: string; wrap: boolean }) {

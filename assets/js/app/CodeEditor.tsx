@@ -22,8 +22,7 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
-import { lspExtensions, type LspServerInfo } from "./cm/lsp";
-import { buildCSRFHeaders, lspServers } from "../ash_rpc";
+import { lspExtensionsFor } from "./cm/lsp";
 
 type Props = {
   value: string;
@@ -148,29 +147,12 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
     let cancelled = false;
 
     void (async () => {
-      if (!filename || !filename.startsWith("/")) return;
+      if (!filename) return;
       try {
-        const result = await lspServers({
-          input: { path: filename },
-          fields: ["root", "language", "servers"] as never,
-          headers: buildCSRFHeaders(),
-        });
-        if (cancelled || !result.success) return;
-        const data = result.data as unknown as {
-          root: string;
-          language: string | null;
-          servers: LspServerInfo[];
-        };
-        if (!data.language || data.servers.length === 0) return;
+        const extensions = await lspExtensionsFor(filename);
+        if (cancelled || !extensions) return;
         viewRef.current?.dispatch({
-          effects: lspCompartment.current.reconfigure(
-            lspExtensions({
-              root: data.root,
-              path: filename,
-              language: data.language,
-              servers: data.servers,
-            }),
-          ),
+          effects: lspCompartment.current.reconfigure(extensions),
         });
       } catch {
         // No LSP is a fine editor too.

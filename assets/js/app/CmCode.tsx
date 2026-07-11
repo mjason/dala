@@ -5,11 +5,14 @@ import { defaultKeymap } from "@codemirror/commands";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
+import { lspExtensionsFor } from "./cm/lsp";
 
 type Props = {
   content: string;
   filename: string;
   wrap: boolean;
+  /** Absolute path: enables read-only LSP (hover docs + diagnostics). */
+  lspPath?: string;
 };
 
 /**
@@ -17,11 +20,12 @@ type Props = {
  * viewport rendering keeps large files smooth, and Ctrl/Cmd+F searches
  * within the file.
  */
-export default function CmCode({ content, filename, wrap }: Props) {
+export default function CmCode({ content, filename, wrap, lspPath }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
+  const lspCompartment = useRef(new Compartment());
 
   useEffect(() => {
     const host = hostRef.current;
@@ -40,6 +44,7 @@ export default function CmCode({ content, filename, wrap }: Props) {
           keymap.of([...searchKeymap, ...defaultKeymap]),
           wrapCompartment.current.of([]),
           languageCompartment.current.of([]),
+          lspCompartment.current.of([]),
           dalaTheme,
         ],
       }),
@@ -85,6 +90,32 @@ export default function CmCode({ content, filename, wrap }: Props) {
       cancelled = true;
     };
   }, [filename]);
+
+  // Hover docs + diagnostics in previews too — reading code benefits from
+  // the docs as much as writing it (readOnly: completion stays off).
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      if (!lspPath) return;
+      try {
+        const extensions = await lspExtensionsFor(lspPath, true);
+        if (cancelled || !extensions) return;
+        viewRef.current?.dispatch({
+          effects: lspCompartment.current.reconfigure(extensions),
+        });
+      } catch {
+        // previews work fine without LSP
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      viewRef.current?.dispatch({
+        effects: lspCompartment.current.reconfigure([]),
+      });
+    };
+  }, [lspPath]);
 
   // The absolute box gives CodeMirror a *definite* height: percentage
   // heights resolve to auto inside max-h/auto-height windows on Chromium,
