@@ -1,8 +1,8 @@
 import React, { useEffect, useRef } from "react";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
+import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
+import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 
@@ -69,22 +69,31 @@ export default function ComposerEditor({
                 run: (v) => !v.composing && cbs.current.onArrow(-1),
               },
               {
+                // Menu open: Tab picks. Otherwise: a professional editor's
+                // Tab — indent the selection/line.
                 key: "Tab",
-                run: (v) => !v.composing && cbs.current.onPick(),
+                run: (v) => {
+                  if (v.composing) return false;
+                  if (cbs.current.onPick()) return true;
+                  return indentMore(v);
+                },
+                shift: indentLess,
               },
               {
+                // Enter is a newline (with markdown list/quote continuation),
+                // like an editor — sending is Shift+Enter.
                 key: "Enter",
                 run: (v) => {
                   if (v.composing) return false;
                   if (cbs.current.onPick()) return true;
-                  cbs.current.onEnter();
-                  return true;
+                  return insertNewlineContinueMarkup(v);
                 },
               },
               {
                 key: "Shift-Enter",
                 run: (v) => {
-                  v.dispatch(v.state.replaceSelection("\n"));
+                  if (v.composing) return false;
+                  cbs.current.onEnter();
                   return true;
                 },
               },

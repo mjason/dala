@@ -405,11 +405,19 @@ export default function App() {
     }
   };
 
+  // The shortcut is a three-state cycle: closed → open+focus; open but
+  // unfocused (e.g. after an auto-open) → just focus, cursor at the end;
+  // open and focused → close back to the terminal.
   const toggleComposer = () => {
     const id = activeIdRef.current;
     if (!id) return;
+    const editorFocused = Boolean(document.activeElement?.closest?.("#composer-editor"));
     setComposerOpen((m) => {
       const open = !!m[id];
+      if (open && !editorFocused) {
+        setComposerFocusNonce((n) => n + 1);
+        return m;
+      }
       if (!open) {
         setComposerFocusNonce((n) => n + 1);
         void foregroundApp({

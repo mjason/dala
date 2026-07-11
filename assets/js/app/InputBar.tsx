@@ -295,7 +295,7 @@ export default function InputBar({
           disabled={!value.trim()}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-mint px-2.5 py-1 text-[12px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40"
         >
-          {t("inputBarSend")} <Kbd>⏎</Kbd>
+          {t("inputBarSend")} <Kbd>⇧⏎</Kbd>
         </button>
         <button
           id="input-bar-mention"

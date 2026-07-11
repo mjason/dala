@@ -91,7 +91,7 @@ cd clients/desktop && npm install && npm run build
 | `Ctrl+Shift+G` · `⇧⌘G` | Git 面板 |
 | `Ctrl+Shift+F` · `⇧⌘F` | 重排终端宽度 |
 | `Ctrl+Shift+X` · `⇧⌘X` | 重置终端 |
-| `Ctrl+Shift+K` · `⇧⌘K`（或点终端底部输入条）| **Composer**（Warp 式富输入）：中文零延迟组稿、Enter 整句送入 Claude Code/opencode、`@` 引用文件、`+` 附件；占位符自动识别前台 agent |
+| `Ctrl+Shift+K` · `⇧⌘K`（或点终端底部输入条）| **Composer**（Warp 式富输入）：CodeMirror Markdown 编辑器（代码块高亮、Tab 缩进、Enter 换行）、**Shift+Enter 整句送入** Claude Code/opencode、`@` 引用文件、`/` 命令补全（含自定义命令/skills）、`+` 附件 |
 | `Ctrl+\``（Mac 也是 Control 键——`⌘\`` 被系统的窗口切换占用） | 从任何地方聚焦回终端 |
 | `Ctrl+Shift+\``（或顶栏 `⚡>_` 按钮） | **快速 shell**：一次性弹层终端（盖在当前会话上，左缘可拖宽，可一键全屏），秒开且直接落在当前会话目录，面板内 `+` 可开多个标签。**Esc 即关**——所有快速 shell 当场销毁，用完就没有（vim 等全屏程序里 Esc 归程序）；单个标签也可 `exit`/`Ctrl+D` 关闭 |
 | `Esc` | 关闭最顶层窗口 |
