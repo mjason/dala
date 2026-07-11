@@ -177,7 +177,15 @@ defmodule Dala.Terminal.Server do
     opts = [
       shell: session.shell,
       cwd: session.cwd,
-      env: [{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}],
+      env: [
+        {"TERM", "xterm-256color"},
+        {"COLORTERM", "truecolor"},
+        # Advertise Warp's open cli-agent notification protocol: the agent
+        # plugins (claude-code-warp, opencode-warp, …) emit OSC 777 events
+        # only when these are present.
+        {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
+        {"WARP_CLIENT_VERSION", "dala"}
+      ],
       env_remove: @env_remove,
       rows: 24,
       cols: 80,
@@ -408,6 +416,10 @@ defmodule Dala.Terminal.Server do
           {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
         end
 
+      frame_type == Holder.type_agent() ->
+        broadcast_agent_event(state, payload)
+        {:noreply, state}
+
       frame_type == Holder.type_repaint() ->
         state = flush_now(state)
 
@@ -511,6 +523,75 @@ defmodule Dala.Terminal.Server do
   end
 
   # Broadcasts an output chunk to connected clients with the next seq.
+  # OSC agent notifications from the holder: `title \x1f body`. Structured
+  # events (title `warp://cli-agent`, Warp's open protocol) carry a JSON
+  # payload from the agent's plugin hooks; OSC 9 ("osc9") and generic OSC 777
+  # notifications become plain "notify"/"stop" events. Broadcast on the
+  # sessions lobby so the client can notify for background sessions too.
+  defp broadcast_agent_event(state, payload) do
+    case parse_agent_event(payload) do
+      nil ->
+        :ok
+
+      event ->
+        DalaWeb.Endpoint.broadcast("sessions", "agent_event", Map.put(event, :id, state.id))
+    end
+  end
+
+  defp parse_agent_event(payload) do
+    case :binary.split(payload, <<0x1F>>) do
+      ["warp://cli-agent", body] ->
+        case Jason.decode(body) do
+          {:ok, %{"event" => event} = raw} ->
+            %{
+              agent: raw["agent"] || "unknown",
+              event: event,
+              project: raw["project"],
+              summary: raw["summary"],
+              query: raw["query"],
+              response: raw["response"],
+              toolName: raw["tool_name"],
+              toolInput: tool_preview(raw["tool_input"])
+            }
+
+          _ ->
+            nil
+        end
+
+      ["osc9", body] ->
+        %{
+          agent: "unknown",
+          event: "notify",
+          summary: body,
+          project: nil,
+          query: nil,
+          response: nil,
+          toolName: nil,
+          toolInput: nil
+        }
+
+      [title, body] ->
+        %{
+          agent: "unknown",
+          event: "notify",
+          summary: "#{title}: #{body}",
+          project: nil,
+          query: nil,
+          response: nil,
+          toolName: nil,
+          toolInput: nil
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp tool_preview(%{"command" => command}) when is_binary(command), do: command
+  defp tool_preview(%{"file_path" => path}) when is_binary(path), do: path
+  defp tool_preview(%{"filePath" => path}) when is_binary(path), do: path
+  defp tool_preview(_), do: nil
+
   # Warp's rich-input strategies are per agent; the client picks one based
   # on this classification.
   defp classify_app(nil), do: "shell"

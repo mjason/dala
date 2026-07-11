@@ -635,6 +635,7 @@ export type ValidationResult =
 
 
 
+export type AgentEventPayload = {id: string, agent: string, event: string, project: string | null, summary: string | null, query: string | null, response: string | null, toolName: string | null, toolInput: string | null};
 export type CwdPayload = {id: UUID, cwd: string};
 export type ExitPayload = {id: UUID, exitCode: number | null};
 export type OutputPayload = {data: string, seq: number};
@@ -652,6 +653,7 @@ export type SessionsChannel = {
 };
 
 export type SessionsChannelEvents = {
+  agent_event: AgentEventPayload;
   session_created: SessionCreatedPayload;
   session_deleted: SessionDeletedPayload;
   session_updated: SessionUpdatedPayload;

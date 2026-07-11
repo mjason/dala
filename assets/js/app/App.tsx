@@ -14,11 +14,12 @@ import {
   onSessionsChannelMessages,
   unsubscribeSessionsChannel,
 } from "../ash_typed_channels";
+import type { AgentEventPayload } from "../ash_types";
 import { getSocket } from "./socket";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView, { type TerminalActions } from "./TerminalView";
 import QuickShellPanel from "./QuickShellPanel";
-import InputBar from "./InputBar";
+import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
 import SettingsModal from "./SettingsModal";
@@ -76,6 +77,13 @@ export default function App() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [inputBarOpen, setInputBarOpen] = useState(false);
   const [composerApp, setComposerApp] = useState<string | null>(null);
+  const [composerDraft, setComposerDraft] = useState("");
+  const [composerFocusNonce, setComposerFocusNonce] = useState(0);
+  // Agent activity per session (from OSC 777 plugin events): drives the
+  // sidebar dots, notifications and the composer auto-toggle.
+  const [agentStatus, setAgentStatus] = useState<
+    Record<string, { state: "working" | "attention" | "done"; at: number }>
+  >({});
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
@@ -176,6 +184,7 @@ export default function App() {
     const refs = onSessionsChannelMessages(channel, {
       session_created: upsertSession,
       session_updated: upsertSession,
+      agent_event: (payload) => agentEventRef.current(payload),
       session_deleted: ({ id }) => {
         setSessions((list) => list.filter((s) => s.id !== id));
         // A quick shell destroyed itself (exit/Ctrl+D): drop its tab, and
@@ -333,9 +342,70 @@ export default function App() {
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
+  const agentEventRef = useRef<(p: AgentEventPayload) => void>(() => {});
+  agentEventRef.current = (p) => {
+    const state = ["permission_request", "question_asked", "idle_prompt"].includes(p.event)
+      ? ("attention" as const)
+      : ["prompt_submit", "tool_complete", "session_start"].includes(p.event)
+        ? ("working" as const)
+        : ["stop", "notify"].includes(p.event)
+          ? ("done" as const)
+          : null;
+    if (!state) return;
+    setAgentStatus((m) => ({ ...m, [p.id]: { state, at: Date.now() } }));
+
+    // Warp's auto-toggle state machine, for the active session only:
+    // blocked → close the composer (the approval wants raw terminal keys);
+    // working/done → open it, without stealing focus.
+    if (p.id === activeIdRef.current) {
+      if (state === "attention") {
+        setInputBarOpen(false);
+      } else {
+        if (p.agent in AGENT_LABELS) setComposerApp(p.agent);
+        setInputBarOpen(true);
+      }
+    }
+
+    // Notify when the user is elsewhere (other session, other window).
+    const important = ["stop", "permission_request", "question_asked", "idle_prompt", "notify"];
+    if (!important.includes(p.event)) return;
+    if (!document.hidden && p.id === activeIdRef.current) return;
+    const session = sessionsRef.current.find((s) => s.id === p.id);
+    const title = `${AGENT_LABELS[p.agent] ?? p.agent} · ${session?.name ?? "dala"}`;
+    const body =
+      p.summary ||
+      p.query ||
+      (p.event === "stop"
+        ? t("agentEventStop")
+        : p.event === "idle_prompt"
+          ? t("agentEventIdle")
+          : p.event === "question_asked"
+            ? t("agentEventQuestion")
+            : t("agentEventPermission"));
+    const show = () => {
+      const n = new Notification(title, { body, tag: `dala-agent-${p.id}` });
+      n.onclick = () => {
+        window.focus();
+        setActiveId(p.id);
+        n.close();
+      };
+    };
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      show();
+    } else if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      void Notification.requestPermission().then((perm) => {
+        if (perm === "granted") show();
+        else toast(`${title}: ${body}`);
+      });
+    } else {
+      toast(`${title}: ${body}`);
+    }
+  };
+
   const toggleComposer = () => {
     setInputBarOpen((open) => {
       if (!open && active) {
+        setComposerFocusNonce((n) => n + 1);
         setComposerApp(null);
         void foregroundApp({
           input: { id: active.id },
@@ -476,8 +546,18 @@ export default function App() {
         }
       }
     };
+    // Desktop client menu accelerators (⌘K composer, ⌘J quick shell).
+    const onMenu = (e: Event) => {
+      const action = (e as CustomEvent).detail;
+      if (action === "composer") toggleComposerRef.current();
+      if (action === "quick-shell") quickShellRef.current();
+    };
+    window.addEventListener("dala:menu", onMenu);
     window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
+    return () => {
+      window.removeEventListener("dala:menu", onMenu);
+      window.removeEventListener("keydown", handler, true);
+    };
   }, []);
 
   const openQuickFile = async (path: string) => {
@@ -542,12 +622,18 @@ export default function App() {
           activeId={active?.id ?? null}
           connected={connected}
           creating={creating}
+          agentStatus={agentStatus}
           width={sidebarW}
           onResize={(x) => setSidebarW(clampWidth(x, 180, 440))}
           onResetWidth={() => setSidebarW(PANEL_W.sidebar)}
           onSelect={(id) => {
             setActiveId(id);
             setNavOpen(false);
+            setAgentStatus((m) =>
+              m[id] && m[id].state !== "working"
+                ? Object.fromEntries(Object.entries(m).filter(([k]) => k !== id))
+                : m,
+            );
           }}
           onCreate={() => void handleCreate()}
           onOpenSettings={setSettingsFor}
@@ -754,6 +840,9 @@ export default function App() {
               <InputBar
                 root={active.cwd}
                 app={composerApp}
+                value={composerDraft}
+                onChange={setComposerDraft}
+                focusNonce={composerFocusNonce}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
                 onClose={() => {

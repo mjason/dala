@@ -131,6 +131,23 @@ Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
 - **History** — commit log; multi-file commits get a file rail so you can
   review file by file.
 
+### Agent awareness (Claude Code / opencode / Codex…)
+
+dala speaks Warp's open cli-agent protocol (OSC 777). Install the agent's
+plugin (e.g. `claude plugin install warp@claude-code-warp`, or add
+`opencode-warp` to opencode) and you get:
+
+- **Notifications** when a task finishes / awaits your approval / asks you a
+  question while you're on another session or away (click jumps to it)
+- **Sidebar status dots**: ✳ working (mint pulse) / ⏳ needs you (amber
+  pulse) / ✓ done (blue, cleared when viewed)
+- **Composer auto-toggle**: opens while the agent works or finishes (without
+  stealing focus), closes when an approval wants raw terminal keys
+
+Codex needs no plugin (its native OSC 9 notifications work). Note that
+zellij/tmux do not forward inner OSC, and sessions started before an
+upgrade need their shell restarted (holders outlive releases).
+
 ### Directory following & zellij/tmux
 
 The file drawer follows the terminal's working directory. Inside

@@ -139,6 +139,13 @@ function openBrowserWindow(url) {
 
 // The dala window that server-switching actions should act on: the focused
 // one, else the most recently focused shell window, else none.
+// Forward a menu action to the web app in the focused dala window; the
+// page listens for "dala:menu" CustomEvents (see preload.js).
+function sendMenuAction(action) {
+  const win = targetShellWindow();
+  if (win) win.webContents.send("dala:menu", action);
+}
+
 function targetShellWindow() {
   const focused = BrowserWindow.getFocusedWindow();
   if (focused && focused.isDalaShell) return focused;
@@ -307,6 +314,17 @@ function rebuildMenu() {
     {
       label: "视图 View",
       submenu: [
+        {
+          label: "输入条 Composer",
+          accelerator: "CmdOrCtrl+K",
+          click: () => sendMenuAction("composer"),
+        },
+        {
+          label: "快速 Shell Quick Shell",
+          accelerator: "CmdOrCtrl+J",
+          click: () => sendMenuAction("quick-shell"),
+        },
+        { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },

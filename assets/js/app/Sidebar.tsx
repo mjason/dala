@@ -18,6 +18,8 @@ type Props = {
   onCreate: () => void;
   onOpenSettings: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Agent activity per session (OSC 777 events): overrides the status dot. */
+  agentStatus?: Record<string, { state: "working" | "attention" | "done" }>;
   /** Desktop width in px (draggable via the right-edge handle). */
   width?: number;
   onResize?: (clientX: number) => void;
@@ -33,6 +35,7 @@ export default function Sidebar({
   onCreate,
   onOpenSettings,
   onDelete,
+  agentStatus,
   width,
   onResize,
   onResetWidth,
@@ -90,9 +93,13 @@ export default function Sidebar({
               }`}
             >
               <span
-                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                  s.status === "running" ? "bg-mint" : "bg-fg-muted/50"
-                }`}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${(() => {
+                  const agent = agentStatus?.[s.id]?.state;
+                  if (agent === "attention") return "animate-pulse bg-[#d9a860]";
+                  if (agent === "working") return "animate-pulse bg-mint";
+                  if (agent === "done") return "bg-[#6d9fd6]";
+                  return s.status === "running" ? "bg-mint" : "bg-fg-muted/50";
+                })()}`}
               />
               <div className="min-w-0 flex-1">
                 <div className="truncate font-mono text-sm">{s.name}</div>

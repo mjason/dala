@@ -136,6 +136,10 @@ defmodule Dala.Terminal.Session do
     update :notify_replay do
       require_atomic? false
     end
+
+    update :notify_agent do
+      require_atomic? false
+    end
   end
 
   pub_sub do
@@ -196,6 +200,25 @@ defmodule Dala.Terminal.Session do
         ]
       ],
       transform: fn _notification -> %{data: "", seq: 0} end
+
+    publish :notify_agent, ["sessions"],
+      event: "agent_event",
+      public?: true,
+      returns: :map,
+      constraints: [
+        fields: [
+          id: [type: :string, allow_nil?: false],
+          agent: [type: :string, allow_nil?: false],
+          event: [type: :string, allow_nil?: false],
+          project: [type: :string],
+          summary: [type: :string],
+          query: [type: :string],
+          response: [type: :string],
+          toolName: [type: :string],
+          toolInput: [type: :string]
+        ]
+      ],
+      transform: fn _notification -> %{id: "", agent: "", event: ""} end
 
     publish :notify_replay, ["terminal", :id],
       event: "replay",

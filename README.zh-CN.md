@@ -117,6 +117,23 @@ Diff 窗口：`i` 单栏 · `s` 并排 · `l` 行选模式 · `Alt+Z` 折行。
   有冲突的脏工作区会安全报错不强切。
 - **历史** — 提交日志；多文件提交带文件栏，可逐文件审阅。
 
+### Agent 感知（Claude Code / opencode / Codex…）
+
+dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应插件
+（如 `claude plugin install warp@claude-code-warp`、opencode 加
+`opencode-warp`）后：
+
+- **通知**：任务完成 / 等待授权 / 向你提问时，若你在别的会话或切走了
+  窗口，弹系统通知（点击直达该会话）
+- **侧栏状态点**：✳ 干活中（薄荷脉冲）/ ⏳ 等你（琥珀脉冲）/ ✓ 完成
+  （蓝色，点开会话即清除）
+- **Composer 自动开合**：agent 干活/完成时自动展开输入条备稿（不抢
+  焦点），等待授权时自动收起（授权要在终端里按键）
+
+Codex 无需插件（原生 OSC 9 通知即可触发完成提醒）。注意 zellij/tmux
+不透传内层 OSC，插件事件在多路复用器里收不到。已运行的旧会话需重启
+其 shell 才启用（holder 随发版更新，但存量进程仍是旧的）。
+
 ### 目录跟随与 zellij/tmux
 
 文件抽屉跟随终端的当前目录，**zellij/tmux 内部无需任何配置**：dala

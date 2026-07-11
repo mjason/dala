@@ -90,6 +90,20 @@ defmodule Dala.Terminal.SessionTest do
     end
   end
 
+  test "OSC 777 agent events reach the sessions topic" do
+    session = create_session!()
+    Phoenix.PubSub.subscribe(Dala.PubSub, "sessions")
+
+    json = ~s({"agent":"claude","event":"stop","summary":"done!"})
+    Server.input(session.id, "printf '\\e]777;notify;warp://cli-agent;#{json}\\a'\r")
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent_event", payload: payload}, 5_000
+    assert payload.agent == "claude"
+    assert payload.event == "stop"
+    assert payload.summary == "done!"
+    assert payload.id == to_string(session.id)
+  end
+
   test "foreground_app reports the process owning the tty" do
     session = create_session!()
     eventually(fn -> match?({:ok, %{app: "shell"}}, Server.foreground_app(session.id)) end)

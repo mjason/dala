@@ -12,6 +12,7 @@ defmodule Dala.Terminal.Holder do
   @type_exit 0x03
   @type_repaint 0x04
   @type_cwd 0x05
+  @type_agent 0x06
   @type_input 0x11
   @type_resize 0x12
   @type_kill 0x13
@@ -25,6 +26,7 @@ defmodule Dala.Terminal.Holder do
   def type_exit, do: @type_exit
   def type_repaint, do: @type_repaint
   def type_cwd, do: @type_cwd
+  def type_agent, do: @type_agent
 
   def dir do
     base = System.get_env("XDG_RUNTIME_DIR") || System.tmp_dir!()

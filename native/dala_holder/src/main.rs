@@ -48,6 +48,7 @@ const T_OUTPUT: u8 = 0x02;
 const T_EXIT: u8 = 0x03;
 const T_REPAINT: u8 = 0x04;
 const T_CWD: u8 = 0x05;
+const T_AGENT: u8 = 0x06;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
@@ -99,7 +100,10 @@ struct Shared {
     /// this sees the cwd that /proc/<shell>/cwd cannot (their shells live
     /// under a detached server process).
     cwd_report: Option<String>,
-    /// Carry-over so OSC 7 sequences split across reads are still found.
+    /// Structured agent notifications (OSC 777 warp://cli-agent, OSC 9),
+    /// pending delivery as T_AGENT frames: `title \x1f body`.
+    agent_reports: VecDeque<Vec<u8>>,
+    /// Carry-over so OSC sequences split across reads are still found.
     osc_tail: Vec<u8>,
 }
 
@@ -185,6 +189,7 @@ fn main() {
             screen: Screen::new(config.rows, config.cols, config.history_lines),
             repaint_pending: VecDeque::new(),
             cwd_report: None,
+            agent_reports: VecDeque::new(),
             osc_tail: Vec::new(),
         }),
         cond: Condvar::new(),
@@ -201,7 +206,16 @@ fn main() {
                     Ok(n) => {
                         let mut shared = state.shared.lock().unwrap();
                         shared.screen.advance(&buf[..n]);
-                        scan_osc7(&mut shared, &buf[..n]);
+                        {
+                            let mut out = OscOut::default();
+                            let mut tail = std::mem::take(&mut shared.osc_tail);
+                            scan_osc(&mut tail, &buf[..n], &mut out);
+                            shared.osc_tail = tail;
+                            if out.cwd.is_some() {
+                                shared.cwd_report = out.cwd;
+                            }
+                            shared.agent_reports.extend(out.agents);
+                        }
                         // The emulator is the durable history; the ring only
                         // carries live bytes to the attached client.
                         if shared.client.is_some() {
@@ -234,6 +248,7 @@ fn main() {
                 Output(Vec<u8>),
                 Repaint(Vec<u8>),
                 Cwd(String),
+                Agent(Vec<u8>),
                 Exit(u32, Vec<u8>),
             }
 
@@ -246,8 +261,9 @@ fn main() {
                         let repaint =
                             attached && shared.ring.is_empty() && !shared.repaint_pending.is_empty();
                         let cwd = attached && shared.cwd_report.is_some();
+                        let agent = attached && !shared.agent_reports.is_empty();
                         let done = shared.exit_status.is_some() && shared.ring.is_empty();
-                        if drainable || repaint || cwd || done {
+                        if drainable || repaint || cwd || agent || done {
                             break;
                         }
                         shared = state.cond.wait(shared).unwrap();
@@ -261,6 +277,8 @@ fn main() {
                         (Job::Output(shared.ring.drain(..n).collect()), stream, gen)
                     } else if shared.client.is_some() && shared.cwd_report.is_some() {
                         (Job::Cwd(shared.cwd_report.take().unwrap()), stream, gen)
+                    } else if shared.client.is_some() && !shared.agent_reports.is_empty() {
+                        (Job::Agent(shared.agent_reports.pop_front().unwrap()), stream, gen)
                     } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
                         let cols = shared.repaint_pending.pop_front().unwrap_or(0);
                         // Soft wraps are only correct when the requester's
@@ -291,6 +309,16 @@ fn main() {
                     Job::Cwd(cwd) => {
                         if let Some(mut stream) = stream {
                             if write_frame(&mut stream, T_CWD, cwd.as_bytes()).is_err() {
+                                let mut shared = state.shared.lock().unwrap();
+                                if shared.client_gen == gen {
+                                    shared.client = None;
+                                }
+                            }
+                        }
+                    }
+                    Job::Agent(payload) => {
+                        if let Some(mut stream) = stream {
+                            if write_frame(&mut stream, T_AGENT, &payload).is_err() {
                                 let mut shared = state.shared.lock().unwrap();
                                 if shared.client_gen == gen {
                                     shared.client = None;
@@ -405,11 +433,27 @@ fn main() {
 
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
 /// A small tail is carried between reads so split sequences still match.
-fn scan_osc7(shared: &mut Shared, chunk: &[u8]) {
-    const PREFIX: &[u8] = b"\x1b]7;";
-    const TAIL_KEEP: usize = 1024;
+/// Parsed results of one scan pass.
+#[derive(Default)]
+struct OscOut {
+    cwd: Option<String>,
+    /// `title \x1f body` payloads for T_AGENT frames.
+    agents: Vec<Vec<u8>>,
+}
 
-    let mut hay = std::mem::take(&mut shared.osc_tail);
+/// Scans output for the OSC sequences dala understands:
+///   7   — cwd report (`file://host/path`)
+///   777 — `notify;<title>;<body>`: desktop notifications; with title
+///         `warp://cli-agent` the body is a structured agent event JSON
+///         (Warp's open cli-agent protocol, emitted by the agent plugins)
+///   9   — plain notification text (e.g. Codex's native notifications)
+/// Sequences may split across reads; an unterminated candidate is carried
+/// over in `tail` (bounded, so a huge unrelated OSC cannot pin memory).
+fn scan_osc(tail: &mut Vec<u8>, chunk: &[u8], out: &mut OscOut) {
+    const PREFIX: &[u8] = b"\x1b]";
+    const TAIL_KEEP: usize = 8192;
+
+    let mut hay = std::mem::take(tail);
     hay.extend_from_slice(chunk);
 
     let mut search_from = 0;
@@ -424,30 +468,45 @@ fn scan_osc7(shared: &mut Shared, chunk: &[u8]) {
 
         let Some((end, term_len)) = end else {
             // Unterminated: keep from the sequence start for the next read.
-            shared.osc_tail = hay[start..].to_vec();
-            shared.osc_tail.truncate(TAIL_KEEP);
+            *tail = hay[start..].to_vec();
+            tail.truncate(TAIL_KEEP);
             return;
         };
 
-        if let Ok(url) = std::str::from_utf8(&hay[body_start..end]) {
-            if let Some(path) = url.strip_prefix("file://") {
-                // Strip the host part; percent-decode the path.
-                let path = match path.find('/') {
-                    Some(i) => &path[i..],
-                    None => "/",
-                };
-                if let Some(decoded) = percent_decode(path) {
-                    shared.cwd_report = Some(decoded);
+        let body = &hay[body_start..end];
+        if let Some(url) = body.strip_prefix(b"7;") {
+            if let Ok(url) = std::str::from_utf8(url) {
+                if let Some(path) = url.strip_prefix("file://") {
+                    let path = match path.find('/') {
+                        Some(i) => &path[i..],
+                        None => "/",
+                    };
+                    if let Some(decoded) = percent_decode(path) {
+                        out.cwd = Some(decoded);
+                    }
                 }
             }
+        } else if let Some(rest) = body.strip_prefix(b"777;notify;") {
+            // rest = <title>;<body> — the body itself may contain ';'.
+            if let Some(sep) = rest.iter().position(|&b| b == b';') {
+                let mut payload = rest[..sep].to_vec();
+                payload.push(0x1f);
+                payload.extend_from_slice(&rest[sep + 1..]);
+                out.agents.push(payload);
+            }
+        } else if let Some(text) = body.strip_prefix(b"9;") {
+            let mut payload = b"osc9".to_vec();
+            payload.push(0x1f);
+            payload.extend_from_slice(text);
+            out.agents.push(payload);
         }
         search_from = end + term_len;
     }
 
     // Keep a tail in case a sequence starts at the very end of this chunk.
     let keep = hay.len().saturating_sub(PREFIX.len().max(8));
-    shared.osc_tail = hay[keep.max(search_from.min(hay.len()))..].to_vec();
-    shared.osc_tail.truncate(TAIL_KEEP);
+    *tail = hay[keep.max(search_from.min(hay.len()))..].to_vec();
+    tail.truncate(TAIL_KEEP);
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -570,3 +629,52 @@ fn read_frame(stream: &mut UnixStream) -> std::io::Result<(u8, Vec<u8>)> {
     Ok((frame_type, payload))
 }
 
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn run(chunks: &[&[u8]]) -> (Option<String>, Vec<Vec<u8>>) {
+        let mut tail = Vec::new();
+        let mut out = OscOut::default();
+        for c in chunks {
+            scan_osc(&mut tail, c, &mut out);
+        }
+        (out.cwd, out.agents)
+    }
+
+    #[test]
+    fn parses_osc7_cwd() {
+        let (cwd, _) = run(&[b"junk\x1b]7;file://host/tmp/x\x07more"]);
+        assert_eq!(cwd.as_deref(), Some("/tmp/x"));
+    }
+
+    #[test]
+    fn parses_osc777_agent_event() {
+        let (_, agents) = run(&[b"\x1b]777;notify;warp://cli-agent;{\"event\":\"stop\"}\x07"]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0],
+            b"warp://cli-agent\x1f{\"event\":\"stop\"}".to_vec()
+        );
+    }
+
+    #[test]
+    fn parses_osc9_plain_notification() {
+        let (_, agents) = run(&[b"\x1b]9;task finished\x1b\\"]);
+        assert_eq!(agents[0], b"osc9\x1ftask finished".to_vec());
+    }
+
+    #[test]
+    fn survives_split_across_reads() {
+        let (_, agents) = run(&[b"\x1b]777;noti", b"fy;warp://cli-agent;{}", b"\x07"]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0], b"warp://cli-agent\x1f{}".to_vec());
+    }
+
+    #[test]
+    fn body_may_contain_semicolons() {
+        let (_, agents) = run(&[b"\x1b]777;notify;t;a;b;c\x07"]);
+        assert_eq!(agents[0], b"t\x1fa;b;c".to_vec());
+    }
+}

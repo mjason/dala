@@ -16,6 +16,11 @@ const invoke = async (cmd, args) => {
 
 contextBridge.exposeInMainWorld("dala", { invoke });
 
+// Menu accelerators (⌘K composer, ⌘J quick shell) forwarded to the page.
+ipcRenderer.on("dala:menu", (_event, action) => {
+  window.dispatchEvent(new CustomEvent("dala:menu", { detail: action }));
+});
+
 // Same contract the web app already probes for: a function returning a
 // promise. Chromium's navigator.clipboard needs a secure context, which
 // plain-http LAN servers are not — this always works.

@@ -11,12 +11,17 @@ type Props = {
   root: string;
   /** Foreground app in the session ("claude", "shell", …) for the placeholder. */
   app: string | null;
+  /** Draft lives in the parent so agent-driven auto close/open keeps it. */
+  value: string;
+  onChange: (value: string) => void;
+  /** Bumped on user-initiated opens; auto-opens must not steal focus. */
+  focusNonce: number;
   onSend: (text: string, submit: boolean) => void;
   onClose: () => void;
   onError: (message: string) => void;
 };
 
-const AGENT_LABELS: Record<string, string> = {
+export const AGENT_LABELS: Record<string, string> = {
   claude: "Claude Code",
   opencode: "opencode",
   codex: "Codex",
@@ -38,9 +43,18 @@ function mentionAt(value: string, cursor: number): { start: number; query: strin
  * whole line at once. Works for plain shell commands and agent prompts;
  * `@` fuzzy-references files under the session's directory.
  */
-export default function InputBar({ root, app, onSend, onClose, onError }: Props) {
+export default function InputBar({
+  root,
+  app,
+  value,
+  onChange,
+  focusNonce,
+  onSend,
+  onClose,
+  onError,
+}: Props) {
   const { t } = useI18n();
-  const [value, setValue] = useState("");
+  const setValue = onChange;
   const [files, setFiles] = useState<string[] | null>(null);
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -48,8 +62,8 @@ export default function InputBar({ root, app, onSend, onClose, onError }: Props)
   const attachRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    ref.current?.focus();
-  }, []);
+    if (focusNonce > 0) ref.current?.focus();
+  }, [focusNonce]);
 
   // File list loads lazily on the first `@`, once per composer open.
   useEffect(() => {
@@ -118,7 +132,7 @@ export default function InputBar({ root, app, onSend, onClose, onError }: Props)
         });
         if (result.success) {
           const path = (result.data as unknown as { path: string }).path;
-          setValue((v) => (v && !v.endsWith(" ") ? `${v} ${path} ` : `${v}${path} `));
+          setValue(value && !value.endsWith(" ") ? `${value} ${path} ` : `${value}${path} `);
         } else {
           onError(result.errors[0]?.message ?? t("uploadFailed"));
         }

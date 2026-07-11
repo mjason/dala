@@ -14,6 +14,7 @@ defmodule DalaWeb.SessionsChannel do
       publish :session_created
       publish :session_updated
       publish :session_deleted
+      publish :agent_event
     end
   end
 
