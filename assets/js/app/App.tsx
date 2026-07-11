@@ -75,6 +75,7 @@ export default function App() {
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [inputBarOpen, setInputBarOpen] = useState(false);
+  const [composerApp, setComposerApp] = useState<string | null>(null);
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
@@ -313,6 +314,7 @@ export default function App() {
     if (qsRef.current.open) closeQuickShell();
     else await createQuickShell(active?.cwd);
   };
+  const toggleComposerRef = useRef(() => {});
   const quickShellRef = useRef(() => {});
   quickShellRef.current = () => void toggleQuickShell();
 
@@ -330,6 +332,28 @@ export default function App() {
     termActions.current?.refit();
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
+
+  const toggleComposer = () => {
+    setInputBarOpen((open) => {
+      if (!open && active) {
+        setComposerApp(null);
+        void foregroundApp({
+          input: { id: active.id },
+          fields: ["app", "cmdline"],
+          headers: buildCSRFHeaders(),
+        }).then((result) => {
+          if (result.success) {
+            const app = (result.data as unknown as { app: string }).app;
+            setComposerApp(app === "shell" || app === "unknown" ? null : app);
+          }
+        });
+      } else if (open) {
+        termActions.current?.focus();
+      }
+      return !open;
+    });
+  };
+  toggleComposerRef.current = toggleComposer;
 
   // Deliver input-bar text with the right per-agent strategy (ported from
   // Warp): ask the server what runs in the session's foreground first.
@@ -396,6 +420,14 @@ export default function App() {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
 
+      // Warp's composer key: Ctrl+G everywhere (⌘G too on mac). Steals
+      // readline's rarely-used C-g abort, as Warp does.
+      if (!e.shiftKey && key === "g") {
+        e.preventDefault();
+        toggleComposerRef.current();
+        return;
+      }
+
       if (!e.shiftKey && key === "p") {
         const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
         if (inTerminal && !e.metaKey) return;
@@ -447,7 +479,7 @@ export default function App() {
             return;
           case "k":
             e.preventDefault();
-            setInputBarOpen((v) => !v);
+            toggleComposerRef.current();
             return;
         }
       }
@@ -563,11 +595,11 @@ export default function App() {
               <Tooltip
                 label={t("inputBarTitle")}
                 description={t("inputBarHint")}
-                keys={modShiftCombo("k")}
+                keys={isMac ? "⌘G" : "Ctrl+G"}
               >
                 <button
                   id="input-bar-button"
-                  onClick={() => setInputBarOpen((v) => !v)}
+                  onClick={() => toggleComposer()}
                   className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
                     inputBarOpen
                       ? "border-mint/50 text-mint"
@@ -711,7 +743,10 @@ export default function App() {
 
             {inputBarOpen && (
               <InputBar
+                root={active.cwd}
+                app={composerApp}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
+                onError={toast}
                 onClose={() => {
                   setInputBarOpen(false);
                   termActions.current?.focus();
