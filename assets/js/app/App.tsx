@@ -370,12 +370,13 @@ export default function App() {
     setAgentStatus((m) => ({ ...m, [p.id]: { state, at: Date.now() } }));
 
     // Warp's auto-toggle state machine, per session (background sessions
-    // included — their composer is ready when you switch back): blocked →
-    // close (the approval wants raw terminal keys); working/done → open,
-    // without stealing focus.
-    if (state === "attention") {
+    // included — their composer is ready when you switch back): approvals and
+    // questions want raw terminal keys → close; working/done → open, without
+    // stealing focus. idle_prompt is "waiting for your input" — exactly when
+    // the composer is useful, so it never closes it.
+    if (["permission_request", "question_asked"].includes(p.event)) {
       setComposerOpen((m) => ({ ...m, [p.id]: false }));
-    } else {
+    } else if (state !== "attention") {
       if (p.agent in AGENT_LABELS) {
         setComposerApps((apps) => ({ ...apps, [p.id]: p.agent }));
       }

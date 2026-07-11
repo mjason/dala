@@ -7,6 +7,11 @@ import { collectTransferFiles } from "./pasteFiles";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 
+// The last focus request already honored. Module-scoped so it survives the
+// editor remounting: agent events re-open (remount) the composer with the
+// nonce unchanged, and mounting must NOT steal focus from the terminal then.
+let consumedFocusNonce = 0;
+
 type Props = {
   value: string;
   onChange: (value: string) => void;
@@ -180,7 +185,8 @@ export default function ComposerEditor({
   // User-initiated opens focus with the cursor at the END of the draft.
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || focusNonce === 0) return;
+    if (!view || focusNonce === 0 || focusNonce === consumedFocusNonce) return;
+    consumedFocusNonce = focusNonce;
     view.focus();
     view.dispatch({ selection: { anchor: view.state.doc.length } });
   }, [focusNonce]);

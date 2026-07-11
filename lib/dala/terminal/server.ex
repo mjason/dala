@@ -531,9 +531,12 @@ defmodule Dala.Terminal.Server do
   defp broadcast_agent_event(state, payload) do
     case parse_agent_event(payload) do
       nil ->
-        :ok
+        Logger.debug(
+          "agent event unparsed (#{state.id}): #{inspect(payload, printable_limit: 200)}"
+        )
 
       event ->
+        Logger.debug("agent event (#{state.id}): #{event.agent}/#{event.event}")
         DalaWeb.Endpoint.broadcast("sessions", "agent_event", Map.put(event, :id, state.id))
     end
   end
