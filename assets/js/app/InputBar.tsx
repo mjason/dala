@@ -69,7 +69,7 @@ export default function InputBar({
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slash, setSlash] = useState<string | null>(null);
-  const [commands, setCommands] = useState<string[] | null>(null);
+  const [commands, setCommands] = useState<{ name: string; description: string }[] | null>(null);
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
@@ -97,7 +97,7 @@ export default function InputBar({
   }, [mention !== null]);
 
   const matches = useMemo(
-    () => (mention ? rankFiles(mention.query, files ?? [], 8) : []),
+    () => (mention ? rankFiles(mention.query, files ?? [], 60) : []),
     [mention, files],
   );
 
@@ -106,12 +106,15 @@ export default function InputBar({
     let stale = false;
     void agentCommands({
       input: { id: sessionId },
-      fields: ["app", "commands"],
+      fields: ["app", "commands"] as never,
       headers: buildCSRFHeaders(),
     }).then((result) => {
       if (stale) return;
       if (result.success) {
-        const data = result.data as unknown as { app: string; commands: string[] };
+        const data = result.data as unknown as {
+          app: string;
+          commands: { name: string; description: string }[];
+        };
         setCommands(data.commands);
         setDetectedApp(data.app === "shell" || data.app === "unknown" ? null : data.app);
       } else {
@@ -126,7 +129,7 @@ export default function InputBar({
 
   const slashMatches = useMemo(() => {
     if (slash === null) return [];
-    return (commands ?? []).filter((c) => c.startsWith(slash)).slice(0, 10);
+    return (commands ?? []).filter((c) => c.name.startsWith(slash));
   }, [slash, commands]);
 
   const pickMention = (path: string) => {
@@ -140,8 +143,14 @@ export default function InputBar({
     setMention(null);
   };
 
-  const pickSlash = (command: string) => {
-    setValue(command + " " + value.slice((slash ?? "").length).trimStart());
+  useEffect(() => {
+    document
+      .querySelector("#mention-menu [data-menu-selected], #slash-menu [data-menu-selected]")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [mentionIndex]);
+
+  const pickSlash = (command: { name: string }) => {
+    setValue(command.name + " " + value.slice((slash ?? "").length).trimStart());
     setSlash(null);
   };
 
@@ -185,21 +194,29 @@ export default function InputBar({
       {slash !== null && slashMatches.length > 0 && !mention && (
         <div
           id="slash-menu"
-          className="absolute bottom-full left-3 z-10 mb-1 max-h-64 w-72 overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+          className="absolute bottom-full left-3 z-10 mb-1 max-h-72 w-[34rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
         >
           {slashMatches.map((c, i) => (
             <button
-              key={c}
-              data-slash-item={c}
+              key={c.name}
+              data-slash-item={c.name}
+              data-menu-selected={i === mentionIndex || undefined}
               onMouseDown={(e) => {
                 e.preventDefault();
                 pickSlash(c);
               }}
-              className={`block w-full truncate px-3 py-1 text-left font-mono text-[13px] ${
-                i === mentionIndex ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
+              className={`flex w-full items-baseline gap-3 px-3 py-1 text-left ${
+                i === mentionIndex ? "bg-bg2" : "hover:bg-bg2/50"
               }`}
             >
-              {c}
+              <span
+                className={`shrink-0 font-mono text-[13px] ${
+                  i === mentionIndex ? "text-mint" : "text-fg"
+                }`}
+              >
+                {c.name}
+              </span>
+              <span className="truncate text-[12px] text-fg-muted/70">{c.description}</span>
             </button>
           ))}
         </div>
@@ -213,6 +230,7 @@ export default function InputBar({
             <button
               key={m.path}
               data-mention-item={m.path}
+              data-menu-selected={i === mentionIndex || undefined}
               onMouseDown={(e) => {
                 e.preventDefault();
                 pickMention(m.path);

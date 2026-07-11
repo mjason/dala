@@ -68,7 +68,18 @@ defmodule Dala.Terminal.Session do
 
       constraints fields: [
                     app: [type: :string, allow_nil?: false],
-                    commands: [type: {:array, :string}, allow_nil?: false]
+                    commands: [
+                      type: {:array, Ash.Type.Map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            name: [type: :string, allow_nil?: false],
+                            description: [type: :string, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
                   ]
 
       run fn input, _context ->

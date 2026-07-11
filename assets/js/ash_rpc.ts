@@ -1493,11 +1493,11 @@ export type AgentCommandsInput = {
   id: UUID;
 };
 
-export type AgentCommandsFields = UnifiedFieldSelection<{app: string, commands: Array<string>, __type: "TypedMap", __primitiveFields: "app" | "commands"}>[];
+export type AgentCommandsFields = UnifiedFieldSelection<{app: string, commands: Array<{name: string, description: string, __type: "TypedMap", __primitiveFields: "name" | "description"}>, __type: "TypedMap", __primitiveFields: "app"}>[];
 
 export type InferAgentCommandsResult<
   Fields extends AgentCommandsFields | undefined,
-> = InferResult<{app: string, commands: Array<string>, __type: "TypedMap", __primitiveFields: "app" | "commands"}, Fields>;
+> = InferResult<{app: string, commands: Array<{name: string, description: string, __type: "TypedMap", __primitiveFields: "name" | "description"}>, __type: "TypedMap", __primitiveFields: "app"}, Fields>;
 
 export type AgentCommandsResult<Fields extends AgentCommandsFields | undefined = undefined> = | { success: true; data: InferAgentCommandsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
