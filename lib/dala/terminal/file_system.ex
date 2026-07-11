@@ -228,6 +228,18 @@ defmodule Dala.Terminal.FileSystem do
                           ]
                         ]
                       ]
+                    ],
+                    checked: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            path: [type: :string, allow_nil?: false],
+                            found: [type: :boolean, allow_nil?: false]
+                          ]
+                        ]
+                      ]
                     ]
                   ]
 
@@ -236,13 +248,11 @@ defmodule Dala.Terminal.FileSystem do
       run fn input, _context ->
         path = Path.expand(input.arguments.path)
         root = project_root(Path.dirname(path))
+        probe = Dala.Lsp.Discovery.probe(root, path)
 
-        servers =
-          for server <- Dala.Lsp.Discovery.servers(root, path) do
-            %{id: server.id, name: server.name}
-          end
+        servers = for server <- probe.servers, do: %{id: server.id, name: server.name}
 
-        {:ok, %{root: root, language: Dala.Lsp.Discovery.language_of(path), servers: servers}}
+        {:ok, %{root: root, language: probe.language, servers: servers, checked: probe.checked}}
       end
     end
 

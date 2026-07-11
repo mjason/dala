@@ -70,6 +70,31 @@ defmodule Dala.Lsp.DiscoveryTest do
     assert [%{command: [^bin, "--stdio"]}] = Discovery.servers(root, "main.py")
   end
 
+  test "probe records every candidate checked, found or not", %{root: root} do
+    bin = fake_bin(root, ".venv/bin/pyright-langserver")
+
+    probe = Discovery.probe(root, "main.py")
+    assert probe.language == "python"
+    assert [%{name: "pyright"}] = probe.servers
+    assert Enum.any?(probe.checked, &(&1.path == bin and &1.found))
+    assert Enum.any?(probe.checked, &(not &1.found))
+  end
+
+  test "probe with nothing found still explains itself", %{root: root} do
+    File.mkdir_p!(Path.join(root, ".dala"))
+
+    File.write!(
+      Path.join(root, ".dala/lsp.json"),
+      ~s({"rust": [{"command": ["tools/missing-lsp"]}]})
+    )
+
+    probe = Discovery.probe(root, "main.rs")
+    assert probe.language == "rust"
+    assert probe.servers == []
+    assert [%{found: false, path: path}] = probe.checked
+    assert path =~ "missing-lsp"
+  end
+
   test "language ids cover the wired languages" do
     assert Discovery.language_of("a.py") == "python"
     assert Discovery.language_of("a.rs") == "rust"

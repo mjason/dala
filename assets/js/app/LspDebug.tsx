@@ -47,6 +47,7 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
   const [resolved, setResolved] = useState<{
     language: string | null;
     names: string[];
+    checked: { path: string; found: boolean }[];
   } | null>(null);
 
   // What discovery decides for THIS file — shown even before (or without)
@@ -57,15 +58,20 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
       try {
         const result = await lspServers({
           input: { path },
-          fields: ["root", "language", "servers"] as never,
+          fields: ["root", "language", "servers", "checked"] as never,
           headers: buildCSRFHeaders(),
         });
         if (disposed || !result.success) return;
         const data = result.data as unknown as {
           language: string | null;
           servers: { name: string }[];
+          checked: { path: string; found: boolean }[];
         };
-        setResolved({ language: data.language, names: data.servers.map((s) => s.name) });
+        setResolved({
+          language: data.language,
+          names: data.servers.map((s) => s.name),
+          checked: data.checked ?? [],
+        });
       } catch {
         // fine without
       }
@@ -115,6 +121,21 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
               : resolved.names.length === 0
                 ? t("lspNoInstalledServers", { language: resolved.language })
                 : `${resolved.language} → ${resolved.names.join(" + ")}`}
+            {resolved.checked.length > 0 && (
+              <details className="mt-2" open={resolved.names.length === 0}>
+                <summary className="cursor-pointer">{t("lspProbedPaths")}</summary>
+                <div className="mt-1 space-y-0.5">
+                  {resolved.checked.map((candidate, i) => (
+                    <div key={i} className="truncate">
+                      <span className={candidate.found ? "text-mint" : "text-fg-muted/60"}>
+                        {candidate.found ? "✓" : "✗"}
+                      </span>{" "}
+                      {candidate.path}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         )}
         {servers === null ? (

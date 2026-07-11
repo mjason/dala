@@ -13,15 +13,35 @@ defmodule Dala.Lsp.Discovery do
   Relative commands resolve against the root. Several servers may attach to
   one file (basedpyright for Python itself + `dm lsp` for the DSL inside
   `ctx.dsl("...")` strings).
-  """
 
-  @mason_bin Path.join([System.user_home() || "/", ".local/share/nvim/mason/bin"])
+  Candidate paths are checked explicitly (`~/.local/bin`, `~/.cargo/bin`,
+  Mason) besides PATH — under systemd the service PATH is minimal, and these
+  must be RUNTIME lookups: a release is compiled on CI where $HOME is not the
+  user's.
+  """
 
   @doc "Servers for `path` under `root`: `[%{id, name, command}]` in spawn order."
   def servers(root, path) do
+    probe(root, path).servers
+  end
+
+  @doc """
+  Like `servers/2`, plus the probe trace: every candidate checked and whether
+  it exists — the debug window's answer to "why didn't my LSP start".
+  """
+  def probe(root, path) do
     case language_of(path) do
-      nil -> []
-      language -> language |> resolve(root) |> Enum.with_index() |> Enum.map(&describe/1)
+      nil ->
+        %{language: nil, servers: [], checked: []}
+
+      language ->
+        {commands, checked} = resolve(language, root)
+
+        %{
+          language: language,
+          servers: commands |> Enum.with_index() |> Enum.map(&describe/1),
+          checked: checked
+        }
     end
   end
 
@@ -57,7 +77,14 @@ defmodule Dala.Lsp.Discovery do
   defp resolve(language, root) do
     case configured(root)[language] do
       commands when is_list(commands) and commands != [] ->
-        Enum.map(commands, &absolutize(&1, root))
+        commands = Enum.map(commands, &absolutize(&1, root))
+
+        checked =
+          for [bin | _] <- commands do
+            %{path: bin <> " (.dala/lsp.json)", found: File.regular?(bin)}
+          end
+
+        {Enum.filter(commands, fn [bin | _] -> File.regular?(bin) end), checked}
 
       _ ->
         discover(language, root)
@@ -92,56 +119,82 @@ defmodule Dala.Lsp.Discovery do
     [resolved | args]
   end
 
+  # Runtime, not compile time: releases are built on CI under a foreign $HOME.
+  defp home(rel), do: Path.join(System.user_home() || "/", rel)
+  defp mason_bin(name), do: home(".local/share/nvim/mason/bin/#{name}")
+  defp local_bin(name), do: home(".local/bin/#{name}")
+
   defp discover("python", root) do
-    pyright =
+    {pyright, checked_pyright} =
       first_existing([
         {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
         {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]},
         {System.find_executable("basedpyright-langserver"), ["--stdio"]},
         {System.find_executable("pyright-langserver"), ["--stdio"]},
-        {Path.join(@mason_bin, "pyright-langserver"), ["--stdio"]}
+        {local_bin("basedpyright-langserver"), ["--stdio"]},
+        {local_bin("pyright-langserver"), ["--stdio"]},
+        {mason_bin("basedpyright-langserver"), ["--stdio"]},
+        {mason_bin("pyright-langserver"), ["--stdio"]}
       ])
 
     # dark-magician workspaces (marked by dmagic.py) ship a DSL server that
     # rides alongside pyright on the same .py files.
-    dm =
+    {dm, checked_dm} =
       if File.regular?(Path.join(root, "dmagic.py")) do
         first_existing([{Path.join(root, ".venv/bin/dm"), ["lsp"]}])
       else
-        []
+        {[], []}
       end
 
-    pyright ++ dm
+    {pyright ++ dm, checked_pyright ++ checked_dm}
   end
 
   defp discover("rust", _root) do
     first_existing([
       {System.find_executable("rust-analyzer"), []},
-      {Path.join([System.user_home() || "/", ".cargo/bin/rust-analyzer"]), []}
+      {home(".cargo/bin/rust-analyzer"), []},
+      {local_bin("rust-analyzer"), []}
     ])
   end
 
   defp discover("elixir", _root) do
     first_existing([
       {System.find_executable("elixir-ls"), []},
-      {Path.join(@mason_bin, "elixir-ls"), []}
+      {local_bin("elixir-ls"), []},
+      {home(".local/elixir-ls/language_server.sh"), []},
+      {mason_bin("elixir-ls"), []}
     ])
   end
 
   defp discover("lua", _root) do
     first_existing([
       {System.find_executable("lua-language-server"), []},
-      {Path.join(@mason_bin, "lua-language-server"), []}
+      {local_bin("lua-language-server"), []},
+      {mason_bin("lua-language-server"), []}
     ])
   end
 
-  defp discover(_language, _root), do: []
+  defp discover(_language, _root), do: {[], []}
 
-  # The first candidate whose binary exists, as a one-element list of commands.
+  # First candidate whose binary exists wins; every probe is recorded so the
+  # debug window can show what was looked at and what was missing.
   defp first_existing(candidates) do
-    Enum.find_value(candidates, [], fn
-      {nil, _args} -> nil
-      {bin, args} -> if File.regular?(bin), do: [[bin | args]]
-    end)
+    checked =
+      candidates
+      |> Enum.reject(fn {bin, _args} -> is_nil(bin) end)
+      |> Enum.uniq_by(fn {bin, _args} -> bin end)
+      |> Enum.map(fn {bin, _args} -> %{path: bin, found: File.regular?(bin)} end)
+
+    commands =
+      case Enum.find(checked, & &1.found) do
+        nil ->
+          []
+
+        %{path: bin} ->
+          {_bin, args} = Enum.find(candidates, fn {b, _} -> b == bin end)
+          [[bin | args]]
+      end
+
+    {commands, checked}
   end
 end

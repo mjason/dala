@@ -352,7 +352,7 @@ function JsonView({ content, wrap }: { content: string; wrap: boolean }) {
   }, [content]);
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {!formatted.ok && (
         <div className="border-b border-line px-3 py-1.5 font-mono text-[11px] text-danger">
           {t("invalidJson")}
