@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.0"
+  }
+}

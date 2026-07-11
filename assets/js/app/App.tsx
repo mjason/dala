@@ -75,9 +75,11 @@ export default function App() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
-  const [inputBarOpen, setInputBarOpen] = useState(false);
-  const [composerApp, setComposerApp] = useState<string | null>(null);
-  const [composerDraft, setComposerDraft] = useState("");
+  // Composer is per-session: each session keeps its own open flag, draft
+  // and detected foreground agent — switching sessions never mixes them.
+  const [composerOpen, setComposerOpen] = useState<Record<string, boolean>>({});
+  const [composerApps, setComposerApps] = useState<Record<string, string | null>>({});
+  const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   // Agent activity per session (from OSC 777 plugin events): drives the
   // sidebar dots, notifications and the composer auto-toggle.
@@ -354,16 +356,17 @@ export default function App() {
     if (!state) return;
     setAgentStatus((m) => ({ ...m, [p.id]: { state, at: Date.now() } }));
 
-    // Warp's auto-toggle state machine, for the active session only:
-    // blocked → close the composer (the approval wants raw terminal keys);
-    // working/done → open it, without stealing focus.
-    if (p.id === activeIdRef.current) {
-      if (state === "attention") {
-        setInputBarOpen(false);
-      } else {
-        if (p.agent in AGENT_LABELS) setComposerApp(p.agent);
-        setInputBarOpen(true);
+    // Warp's auto-toggle state machine, per session (background sessions
+    // included — their composer is ready when you switch back): blocked →
+    // close (the approval wants raw terminal keys); working/done → open,
+    // without stealing focus.
+    if (state === "attention") {
+      setComposerOpen((m) => ({ ...m, [p.id]: false }));
+    } else {
+      if (p.agent in AGENT_LABELS) {
+        setComposerApps((apps) => ({ ...apps, [p.id]: p.agent }));
       }
+      setComposerOpen((m) => ({ ...m, [p.id]: true }));
     }
 
     // Notify when the user is elsewhere (other session, other window).
@@ -403,24 +406,29 @@ export default function App() {
   };
 
   const toggleComposer = () => {
-    setInputBarOpen((open) => {
-      if (!open && active) {
+    const id = activeIdRef.current;
+    if (!id) return;
+    setComposerOpen((m) => {
+      const open = !!m[id];
+      if (!open) {
         setComposerFocusNonce((n) => n + 1);
-        setComposerApp(null);
         void foregroundApp({
-          input: { id: active.id },
+          input: { id },
           fields: ["app", "cmdline"],
           headers: buildCSRFHeaders(),
         }).then((result) => {
           if (result.success) {
             const app = (result.data as unknown as { app: string }).app;
-            setComposerApp(app === "shell" || app === "unknown" ? null : app);
+            setComposerApps((apps) => ({
+              ...apps,
+              [id]: app === "shell" || app === "unknown" ? null : app,
+            }));
           }
         });
-      } else if (open) {
+      } else {
         termActions.current?.focus();
       }
-      return !open;
+      return { ...m, [id]: !open };
     });
   };
   toggleComposerRef.current = toggleComposer;
@@ -679,7 +687,7 @@ export default function App() {
                   id="input-bar-button"
                   onClick={() => toggleComposer()}
                   className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
-                    inputBarOpen
+                    composerOpen[active.id]
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
                   }`}
@@ -819,7 +827,7 @@ export default function App() {
               )}
             </div>
 
-            {!inputBarOpen && (
+            {!composerOpen[active.id] && (
               <button
                 id="composer-strip"
                 onClick={() => toggleComposer()}
@@ -836,17 +844,18 @@ export default function App() {
                 <Kbd>{modShiftCombo("k")}</Kbd>
               </button>
             )}
-            {inputBarOpen && (
+            {composerOpen[active.id] && (
               <InputBar
+                key={active.id}
                 root={active.cwd}
-                app={composerApp}
-                value={composerDraft}
-                onChange={setComposerDraft}
+                app={composerApps[active.id] ?? null}
+                value={composerDrafts[active.id] ?? ""}
+                onChange={(v) => setComposerDrafts((d) => ({ ...d, [active.id]: v }))}
                 focusNonce={composerFocusNonce}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
                 onClose={() => {
-                  setInputBarOpen(false);
+                  setComposerOpen((m) => ({ ...m, [active.id]: false }));
                   termActions.current?.focus();
                 }}
               />

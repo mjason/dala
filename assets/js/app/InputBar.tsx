@@ -5,6 +5,7 @@ import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 import { Kbd, modShiftCombo } from "./shortcuts";
+import ComposerEditor from "./ComposerEditor";
 
 type Props = {
   /** Root for @-mention file search — the active session's cwd. */
@@ -28,6 +29,37 @@ export const AGENT_LABELS: Record<string, string> = {
   gemini: "Gemini",
   copilot: "Copilot",
 };
+
+/** Common slash commands per agent, offered when the draft starts with "/".
+ * Curated from each CLI's built-ins — the agents' own dynamic menus need
+ * per-keystroke input, so the composer keeps a static catalog. */
+const SLASH_COMMANDS: Record<string, string[]> = {
+  claude: [
+    "/clear", "/compact", "/config", "/context", "/cost", "/doctor",
+    "/export", "/help", "/hooks", "/init", "/mcp", "/memory", "/model",
+    "/output-style", "/permissions", "/plugin", "/resume", "/review",
+    "/rewind", "/status", "/todos", "/usage", "/vim",
+  ],
+  opencode: [
+    "/compact", "/editor", "/exit", "/help", "/init", "/models", "/new",
+    "/redo", "/sessions", "/share", "/theme", "/undo",
+  ],
+  codex: [
+    "/approvals", "/compact", "/diff", "/init", "/logout", "/mcp",
+    "/mention", "/model", "/new", "/quit", "/review", "/status",
+  ],
+  gemini: [
+    "/about", "/auth", "/chat", "/clear", "/compress", "/copy", "/docs",
+    "/help", "/mcp", "/memory", "/quit", "/stats", "/theme", "/tools",
+  ],
+};
+
+/** The `/command` being typed at the START of the draft, if any. */
+function slashAt(value: string, cursor: number): string | null {
+  if (!value.startsWith("/")) return null;
+  const token = value.slice(0, cursor);
+  return /^\/[a-z-]*$/.test(token) ? token : null;
+}
 
 /** The `@token` currently being typed at the cursor, if any. */
 function mentionAt(value: string, cursor: number): { start: number; query: string } | null {
@@ -58,12 +90,9 @@ export default function InputBar({
   const [files, setFiles] = useState<string[] | null>(null);
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const [slash, setSlash] = useState<string | null>(null);
+  const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (focusNonce > 0) ref.current?.focus();
-  }, [focusNonce]);
 
   // File list loads lazily on the first `@`, once per composer open.
   useEffect(() => {
@@ -92,25 +121,26 @@ export default function InputBar({
     [mention, files],
   );
 
-  const syncMention = (nextValue: string, cursor: number) => {
-    setMention(mentionAt(nextValue, cursor));
-    setMentionIndex(0);
-  };
+  const slashMatches = useMemo(() => {
+    if (slash === null || !app) return [];
+    const catalog = SLASH_COMMANDS[app] ?? [];
+    return catalog.filter((c) => c.startsWith(slash)).slice(0, 10);
+  }, [slash, app]);
 
   const pickMention = (path: string) => {
     if (!mention) return;
     // Agents understand the `@file` convention; a plain shell command wants
     // the bare path.
     const inserted = app && AGENT_LABELS[app] ? `@${path}` : path;
-    const cursor = ref.current?.selectionStart ?? value.length;
+    const cursor = cursorRef.current || value.length;
     const next = `${value.slice(0, mention.start)}${inserted} ${value.slice(cursor)}`;
     setValue(next);
     setMention(null);
-    requestAnimationFrame(() => {
-      const pos = mention.start + inserted.length + 1;
-      ref.current?.setSelectionRange(pos, pos);
-      ref.current?.focus();
-    });
+  };
+
+  const pickSlash = (command: string) => {
+    setValue(command + " " + value.slice((slash ?? "").length).trimStart());
+    setSlash(null);
   };
 
   const send = () => {
@@ -140,7 +170,6 @@ export default function InputBar({
         onError(t("uploadFailed"));
       }
     }
-    ref.current?.focus();
   };
 
   const agentLabel = app ? AGENT_LABELS[app] : null;
@@ -150,6 +179,28 @@ export default function InputBar({
 
   return (
     <div id="input-bar" className="relative shrink-0 border-t border-line bg-bg1 px-3 pt-2 pb-1.5">
+      {slash !== null && slashMatches.length > 0 && !mention && (
+        <div
+          id="slash-menu"
+          className="absolute bottom-full left-3 z-10 mb-1 max-h-64 w-72 overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+        >
+          {slashMatches.map((c, i) => (
+            <button
+              key={c}
+              data-slash-item={c}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pickSlash(c);
+              }}
+              className={`block w-full truncate px-3 py-1 text-left font-mono text-[13px] ${
+                i === mentionIndex ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
       {mention && matches.length > 0 && (
         <div
           id="mention-menu"
@@ -173,55 +224,47 @@ export default function InputBar({
         </div>
       )}
 
-      <textarea
-        ref={ref}
-        id="input-bar-textarea"
+      <ComposerEditor
         value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          syncMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-        }}
-        onKeyDown={(e) => {
-          if (mention && matches.length > 0) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setMentionIndex((i) => Math.min(i + 1, matches.length - 1));
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setMentionIndex((i) => Math.max(i - 1, 0));
-              return;
-            }
-            if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
-              e.preventDefault();
-              pickMention(matches[mentionIndex].path);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setMention(null);
-              return;
-            }
-          }
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            send();
-            return;
-          }
-          if (e.key === "Escape") {
-            e.preventDefault();
-            onClose();
-          }
-        }}
-        onClick={(e) => {
-          const el = e.currentTarget;
-          syncMention(el.value, el.selectionStart ?? el.value.length);
+        onChange={(next) => {
+          setValue(next);
         }}
         placeholder={placeholder}
-        rows={Math.min(6, Math.max(1, value.split("\n").length))}
-        spellCheck={false}
-        className="max-h-40 w-full resize-none rounded-md border border-line bg-bg0 px-3 py-1.5 font-mono text-[14px] leading-6 text-fg outline-none transition-colors placeholder:text-fg-muted/50 focus:border-mint/60"
+        focusNonce={focusNonce}
+        onEnter={send}
+        onEscape={() => {
+          if (mention) setMention(null);
+          else if (slash !== null) setSlash(null);
+          else onClose();
+        }}
+        onArrow={(dir) => {
+          if (mention && matches.length > 0) {
+            setMentionIndex((i) => Math.max(0, Math.min(i + dir, matches.length - 1)));
+            return true;
+          }
+          if (slashMatches.length > 0) {
+            setMentionIndex((i) => Math.max(0, Math.min(i + dir, slashMatches.length - 1)));
+            return true;
+          }
+          return false;
+        }}
+        onPick={() => {
+          if (mention && matches.length > 0) {
+            pickMention(matches[mentionIndex].path);
+            return true;
+          }
+          if (slashMatches.length > 0) {
+            pickSlash(slashMatches[Math.min(mentionIndex, slashMatches.length - 1)]);
+            return true;
+          }
+          return false;
+        }}
+        onCursor={(text, pos) => {
+          cursorRef.current = pos;
+          setMention(mentionAt(text, pos));
+          setSlash(slashAt(text, pos));
+          setMentionIndex(0);
+        }}
       />
 
       <div className="mt-1 flex items-center gap-2">
@@ -236,18 +279,8 @@ export default function InputBar({
         <button
           id="input-bar-mention"
           onClick={() => {
-            const el = ref.current;
-            if (!el) return;
-            const cursor = el.selectionStart ?? value.length;
-            const prefix = value.slice(0, cursor);
-            const inject = prefix === "" || prefix.endsWith(" ") ? "@" : " @";
-            const next = value.slice(0, cursor) + inject + value.slice(cursor);
-            setValue(next);
-            requestAnimationFrame(() => {
-              el.setSelectionRange(cursor + inject.length, cursor + inject.length);
-              el.focus();
-              syncMention(next, cursor + inject.length);
-            });
+            const inject = value === "" || value.endsWith(" ") ? "@" : " @";
+            setValue(value + inject);
           }}
           className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
           title={t("composerMention")}
