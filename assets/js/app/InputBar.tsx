@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { buildCSRFHeaders, listFiles, savePastedFile } from "../ash_rpc";
+import { agentCommands, buildCSRFHeaders, listFiles, savePastedFile } from "../ash_rpc";
 import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
@@ -8,6 +8,7 @@ import { Kbd, modShiftCombo } from "./shortcuts";
 import ComposerEditor from "./ComposerEditor";
 
 type Props = {
+  sessionId: string;
   /** Root for @-mention file search — the active session's cwd. */
   root: string;
   /** Foreground app in the session ("claude", "shell", …) for the placeholder. */
@@ -28,30 +29,6 @@ export const AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   gemini: "Gemini",
   copilot: "Copilot",
-};
-
-/** Common slash commands per agent, offered when the draft starts with "/".
- * Curated from each CLI's built-ins — the agents' own dynamic menus need
- * per-keystroke input, so the composer keeps a static catalog. */
-const SLASH_COMMANDS: Record<string, string[]> = {
-  claude: [
-    "/clear", "/compact", "/config", "/context", "/cost", "/doctor",
-    "/export", "/help", "/hooks", "/init", "/mcp", "/memory", "/model",
-    "/output-style", "/permissions", "/plugin", "/resume", "/review",
-    "/rewind", "/status", "/todos", "/usage", "/vim",
-  ],
-  opencode: [
-    "/compact", "/editor", "/exit", "/help", "/init", "/models", "/new",
-    "/redo", "/sessions", "/share", "/theme", "/undo",
-  ],
-  codex: [
-    "/approvals", "/compact", "/diff", "/init", "/logout", "/mcp",
-    "/mention", "/model", "/new", "/quit", "/review", "/status",
-  ],
-  gemini: [
-    "/about", "/auth", "/chat", "/clear", "/compress", "/copy", "/docs",
-    "/help", "/mcp", "/memory", "/quit", "/stats", "/theme", "/tools",
-  ],
 };
 
 /** The `/command` being typed at the START of the draft, if any. */
@@ -76,6 +53,7 @@ function mentionAt(value: string, cursor: number): { start: number; query: strin
  * `@` fuzzy-references files under the session's directory.
  */
 export default function InputBar({
+  sessionId,
   root,
   app,
   value,
@@ -91,6 +69,8 @@ export default function InputBar({
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slash, setSlash] = useState<string | null>(null);
+  const [commands, setCommands] = useState<string[] | null>(null);
+  const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
 
@@ -121,17 +101,39 @@ export default function InputBar({
     [mention, files],
   );
 
+  useEffect(() => {
+    if (slash === null || commands !== null) return;
+    let stale = false;
+    void agentCommands({
+      input: { id: sessionId },
+      fields: ["app", "commands"],
+      headers: buildCSRFHeaders(),
+    }).then((result) => {
+      if (stale) return;
+      if (result.success) {
+        const data = result.data as unknown as { app: string; commands: string[] };
+        setCommands(data.commands);
+        setDetectedApp(data.app === "shell" || data.app === "unknown" ? null : data.app);
+      } else {
+        setCommands([]);
+      }
+    });
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slash !== null]);
+
   const slashMatches = useMemo(() => {
-    if (slash === null || !app) return [];
-    const catalog = SLASH_COMMANDS[app] ?? [];
-    return catalog.filter((c) => c.startsWith(slash)).slice(0, 10);
-  }, [slash, app]);
+    if (slash === null) return [];
+    return (commands ?? []).filter((c) => c.startsWith(slash)).slice(0, 10);
+  }, [slash, commands]);
 
   const pickMention = (path: string) => {
     if (!mention) return;
     // Agents understand the `@file` convention; a plain shell command wants
     // the bare path.
-    const inserted = app && AGENT_LABELS[app] ? `@${path}` : path;
+    const inserted = (app ?? detectedApp) && AGENT_LABELS[(app ?? detectedApp)!] ? `@${path}` : path;
     const cursor = cursorRef.current || value.length;
     const next = `${value.slice(0, mention.start)}${inserted} ${value.slice(cursor)}`;
     setValue(next);
@@ -172,7 +174,8 @@ export default function InputBar({
     }
   };
 
-  const agentLabel = app ? AGENT_LABELS[app] : null;
+  const effectiveApp = app ?? detectedApp;
+  const agentLabel = effectiveApp ? AGENT_LABELS[effectiveApp] : null;
   const placeholder = agentLabel
     ? t("composerAgentPlaceholder", { agent: agentLabel })
     : t("composerShellPlaceholder");

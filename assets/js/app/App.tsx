@@ -847,6 +847,7 @@ export default function App() {
             {composerOpen[active.id] && (
               <InputBar
                 key={active.id}
+                sessionId={active.id}
                 root={active.cwd}
                 app={composerApps[active.id] ?? null}
                 value={composerDrafts[active.id] ?? ""}

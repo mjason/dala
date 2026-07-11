@@ -7,6 +7,7 @@ defmodule Dala.Terminal do
       rpc_action :create_session, :create
       rpc_action :rename_session, :rename
       rpc_action :set_scrollback_limit, :set_scrollback_limit
+      rpc_action :agent_commands, :agent_commands
       rpc_action :foreground_app, :foreground_app
       rpc_action :kick_viewers, :kick_viewers
       rpc_action :close_session, :close
@@ -50,6 +51,7 @@ defmodule Dala.Terminal do
       define :get_session, action: :read, get_by: :id
       define :create_session, action: :create
       define :delete_session, action: :destroy
+      define :agent_commands, action: :agent_commands, args: [:id]
       define :foreground_app, action: :foreground_app, args: [:id]
       define :kick_viewers, action: :kick_viewers, args: [:id]
       define :mark_running, action: :mark_running

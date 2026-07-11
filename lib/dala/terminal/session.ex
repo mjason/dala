@@ -61,6 +61,24 @@ defmodule Dala.Terminal.Session do
       end
     end
 
+    action :agent_commands, :map do
+      description "Slash commands available in the session's foreground agent."
+
+      argument :id, :uuid, allow_nil?: false
+
+      constraints fields: [
+                    app: [type: :string, allow_nil?: false],
+                    commands: [type: {:array, :string}, allow_nil?: false]
+                  ]
+
+      run fn input, _context ->
+        with {:ok, %{app: app}} <- Dala.Terminal.Server.foreground_app(input.arguments.id) do
+          session = Dala.Terminal.get_session!(input.arguments.id)
+          {:ok, %{app: app, commands: Dala.Terminal.AgentCommands.list(app, session.cwd)}}
+        end
+      end
+    end
+
     action :kick_viewers, :map do
       description """
       Detach other zellij/tmux clients of the multiplexer session this

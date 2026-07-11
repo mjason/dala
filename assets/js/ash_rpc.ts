@@ -1489,6 +1489,78 @@ export async function validateGitUnstage(
 }
 
 
+export type AgentCommandsInput = {
+  id: UUID;
+};
+
+export type AgentCommandsFields = UnifiedFieldSelection<{app: string, commands: Array<string>, __type: "TypedMap", __primitiveFields: "app" | "commands"}>[];
+
+export type InferAgentCommandsResult<
+  Fields extends AgentCommandsFields | undefined,
+> = InferResult<{app: string, commands: Array<string>, __type: "TypedMap", __primitiveFields: "app" | "commands"}, Fields>;
+
+export type AgentCommandsResult<Fields extends AgentCommandsFields | undefined = undefined> = | { success: true; data: InferAgentCommandsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Session
+ *
+ * @ashActionType :action
+ */
+export async function agentCommands<Fields extends AgentCommandsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: AgentCommandsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<AgentCommandsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "agent_commands",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<AgentCommandsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Session
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateAgentCommands(
+  config: {
+  tenant?: string;
+  input: AgentCommandsInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "agent_commands",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type CloseSessionInput = {
   id: UUID;
 };
