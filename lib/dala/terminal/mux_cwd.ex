@@ -37,6 +37,45 @@ defmodule Dala.Terminal.MuxCwd do
 
   def cwd(_), do: :error
 
+  @doc "Command running in the focused pane (e.g. \"claude\"), or :error."
+  def focused_command({:zellij, session}) do
+    with {:ok, layout} <- run("zellij", ["--session", session, "action", "dump-layout"]) do
+      tab = focused_tab_body(layout)
+
+      command =
+        ~r/^\s*pane\b[^\n]*\bfocus=true[^\n]*$/m
+        |> Regex.scan(tab, capture: :first)
+        |> List.flatten()
+        |> Enum.reverse()
+        |> Enum.find_value(fn line ->
+          case Regex.run(~r/\bcommand="([^"]+)"/, line) do
+            [_, command] -> command
+            _ -> nil
+          end
+        end)
+
+      if command, do: {:ok, command}, else: :error
+    end
+  end
+
+  def focused_command({:tmux, client_pid}) do
+    with {:ok, out} <-
+           run("tmux", [
+             "display-message",
+             "-c",
+             tty_of(client_pid),
+             "-p",
+             "\#{pane_current_command}"
+           ]),
+         command when command != "" <- String.trim(out) do
+      {:ok, command}
+    else
+      _ -> :error
+    end
+  end
+
+  def focused_command(_), do: :error
+
   # --- zellij layout parsing ------------------------------------------------
   #
   # dump-layout is KDL. The session-level `cwd "/base"` node factors out the

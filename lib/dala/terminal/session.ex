@@ -46,6 +46,21 @@ defmodule Dala.Terminal.Session do
       change Dala.Terminal.Session.Changes.CleanupSession
     end
 
+    action :foreground_app, :map do
+      description "The CLI agent running in the session's foreground, if any."
+
+      argument :id, :uuid, allow_nil?: false
+
+      constraints fields: [
+                    app: [type: :string, allow_nil?: false],
+                    cmdline: [type: :string, allow_nil?: false]
+                  ]
+
+      run fn input, _context ->
+        Dala.Terminal.Server.foreground_app(input.arguments.id)
+      end
+    end
+
     action :kick_viewers, :map do
       description """
       Detach other zellij/tmux clients of the multiplexer session this

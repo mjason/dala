@@ -91,13 +91,20 @@ class Osc52Provider implements IClipboardProvider {
   }
 }
 
+/** How composed text + Enter reach the foreground app's PTY. Ported from
+ * Warp's per-agent rich-input strategies (app/src/terminal/view/
+ * use_agent_footer): Codex's paste-burst heuristics swallow a rapid Enter
+ * (bracketed paste + immediate CR), while Claude/opencode/Gemini ignore a
+ * CR that arrives in the same buffer as the text (bare text + delayed CR). */
+export type SendStrategy = "inline" | "bracketed" | "delayed" | "bracketed-delayed";
+
 export type TerminalActions = {
   reset: () => void;
   refit: () => void;
   focus: () => void;
-  /** Deliver text composed in the native input bar: bracketed paste when
-   * the foreground app enabled it, plus optional Enter to submit. */
-  sendText: (text: string, submit: boolean) => void;
+  /** Deliver text composed in the native input bar using the given
+   * per-agent strategy (see SendStrategy). */
+  sendText: (text: string, submit: boolean, strategy?: SendStrategy) => void;
 };
 
 type Props = {
@@ -335,13 +342,34 @@ export default function TerminalView({
         // Ctrl-L: ask the shell to redraw a fresh prompt after the clear.
         phxChannel.push("input", { data: "\f" });
       };
-      const sendText = (text: string, submit: boolean) => {
+      const sendText = (text: string, submit: boolean, strategy?: SendStrategy) => {
         if (!gate.acceptInput() || !text) return;
-        const data = term.modes.bracketedPasteMode
-          ? `\x1b[200~${text}\x1b[201~`
-          : text;
-        phxChannel.push("input", { data });
-        if (submit) phxChannel.push("input", { data: "\r" });
+        const mode: SendStrategy =
+          strategy ?? (term.modes.bracketedPasteMode ? "bracketed" : "inline");
+        const bracket = mode === "bracketed" || mode === "bracketed-delayed";
+        const push = (data: string) => phxChannel.push("input", { data });
+
+        // Claude Code's `!` (bash) / `&` (background) mode prefixes must
+        // arrive alone first, so the agent switches modes before the text.
+        let body = text;
+        let delayExtra = 0;
+        if ((body.startsWith("!") || body.startsWith("&")) && body.length > 1 && !bracket) {
+          push(body[0]);
+          body = body.slice(1);
+          delayExtra = 50;
+        }
+
+        const sendBody = () => {
+          push(bracket ? `\x1b[200~${body}\x1b[201~` : body);
+          if (!submit) return;
+          if (mode === "delayed" || mode === "bracketed-delayed") {
+            window.setTimeout(() => push("\r"), mode === "bracketed-delayed" ? 300 : 50);
+          } else {
+            push("\r");
+          }
+        };
+        if (delayExtra) window.setTimeout(sendBody, delayExtra);
+        else sendBody();
       };
       if (actionsRef) {
         actionsRef.current = { reset, refit, focus: () => term.focus(), sendText };

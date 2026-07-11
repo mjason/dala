@@ -4,6 +4,7 @@ import {
   buildCSRFHeaders,
   createSession,
   deleteSession,
+  foregroundApp,
   kickViewers,
   listSessions,
   restartSession,
@@ -328,6 +329,36 @@ export default function App() {
     // immediately instead of waiting for a resize event.
     termActions.current?.refit();
     window.setTimeout(() => termActions.current?.refit(), 200);
+  };
+
+  // Deliver input-bar text with the right per-agent strategy (ported from
+  // Warp): ask the server what runs in the session's foreground first.
+  const sendToForegroundApp = async (text: string, submit: boolean) => {
+    if (!active) return;
+    let app = "unknown";
+    try {
+      const result = await foregroundApp({
+        input: { id: active.id },
+        fields: ["app", "cmdline"],
+        headers: buildCSRFHeaders(),
+      });
+      if (result.success) app = (result.data as unknown as { app: string }).app;
+    } catch {
+      // fall through with "unknown"
+    }
+    const strategy =
+      app === "codex"
+        ? ("bracketed" as const)
+        : app === "copilot"
+          ? ("bracketed-delayed" as const)
+          : app === "claude" || app === "opencode" || app === "gemini"
+            ? // Warp sends bare text to these, but a bare multiline paste
+              // would submit at the first newline — bracket those.
+              text.includes("\n")
+              ? ("bracketed-delayed" as const)
+              : ("delayed" as const)
+            : undefined;
+    termActions.current?.sendText(text, submit, strategy);
   };
 
   // Kick other zellij/tmux viewers capping this terminal's size, then
@@ -680,7 +711,7 @@ export default function App() {
 
             {inputBarOpen && (
               <InputBar
-                onSend={(text, submit) => termActions.current?.sendText(text, submit)}
+                onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onClose={() => {
                   setInputBarOpen(false);
                   termActions.current?.focus();

@@ -80,6 +80,18 @@ defmodule Dala.Terminal.Server do
   end
 
   @doc """
+  The CLI agent (claude/opencode/codex/gemini/copilot) running in the
+  foreground of this session, "shell" at a plain prompt, or "unknown".
+  Sees through zellij/tmux via the focused pane's command.
+  """
+  def foreground_app(id) do
+    case whereis(id) do
+      nil -> {:error, "session is not running"}
+      pid -> GenServer.call(pid, :foreground_app, 5_000)
+    end
+  end
+
+  @doc """
   Detach other zellij/tmux clients of the multiplexer session this shell is
   attached to (they cap its size to the smallest window). See
   `Dala.Terminal.Viewers`.
@@ -222,6 +234,23 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_call(:viewport, _from, state) do
     {:reply, state.size, state}
+  end
+
+  @impl true
+  def handle_call(:foreground_app, _from, state) do
+    cmdline =
+      case state.mux do
+        nil ->
+          Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
+
+        mux ->
+          case Dala.Terminal.MuxCwd.focused_command(mux) do
+            {:ok, command} -> command
+            :error -> nil
+          end
+      end
+
+    {:reply, {:ok, %{app: classify_app(cmdline), cmdline: cmdline || ""}}, state}
   end
 
   @impl true
@@ -482,6 +511,23 @@ defmodule Dala.Terminal.Server do
   end
 
   # Broadcasts an output chunk to connected clients with the next seq.
+  # Warp's rich-input strategies are per agent; the client picks one based
+  # on this classification.
+  defp classify_app(nil), do: "shell"
+
+  defp classify_app(cmdline) do
+    down = String.downcase(cmdline)
+
+    cond do
+      down =~ "claude" -> "claude"
+      down =~ "opencode" -> "opencode"
+      down =~ "codex" -> "codex"
+      down =~ "gemini" -> "gemini"
+      down =~ "copilot" -> "copilot"
+      true -> "unknown"
+    end
+  end
+
   defp buffer_output(state, data) do
     if state.out_timer do
       %{state | out_buf: [data | state.out_buf]}

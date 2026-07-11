@@ -40,6 +40,30 @@ defmodule Dala.Terminal.Viewers do
 
   def find_mux(_), do: nil
 
+  @doc """
+  The command line of the foreground process on the shell's terminal — the
+  process group owning the tty (tpgid from /proc/<pid>/stat) — e.g. a running
+  CLI agent. Returns nil at a plain prompt (the shell owns the tty itself).
+  """
+  def foreground_cmdline(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
+    with {:ok, stat} <- File.read("/proc/#{shell_pid}/stat"),
+         # Fields come after the last ")" (comm may itself contain parens).
+         [{idx, _len} | _] <- Enum.reverse(:binary.matches(stat, ")")),
+         rest <- binary_part(stat, idx + 1, byte_size(stat) - idx - 1),
+         fields <- String.split(rest),
+         tpgid_s when is_binary(tpgid_s) <- Enum.at(fields, 5),
+         {tpgid, ""} <- Integer.parse(tpgid_s),
+         true <- tpgid > 0 and tpgid != shell_pid,
+         {:ok, cmdline} <- File.read("/proc/#{tpgid}/cmdline"),
+         cmd when cmd != "" <- cmdline |> String.split(<<0>>, trim: true) |> Enum.join(" ") do
+      cmd
+    else
+      _ -> nil
+    end
+  end
+
+  def foreground_cmdline(_), do: nil
+
   defp kick_zellij(procs, subtree, name, own_pid) do
     victims =
       for {pid, _ppid, args} <- procs,

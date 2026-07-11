@@ -1691,6 +1691,78 @@ export async function validateDeleteSession(
 }
 
 
+export type ForegroundAppInput = {
+  id: UUID;
+};
+
+export type ForegroundAppFields = UnifiedFieldSelection<{app: string, cmdline: string, __type: "TypedMap", __primitiveFields: "app" | "cmdline"}>[];
+
+export type InferForegroundAppResult<
+  Fields extends ForegroundAppFields | undefined,
+> = InferResult<{app: string, cmdline: string, __type: "TypedMap", __primitiveFields: "app" | "cmdline"}, Fields>;
+
+export type ForegroundAppResult<Fields extends ForegroundAppFields | undefined = undefined> = | { success: true; data: InferForegroundAppResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Session
+ *
+ * @ashActionType :action
+ */
+export async function foregroundApp<Fields extends ForegroundAppFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ForegroundAppInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ForegroundAppResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "foreground_app",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ForegroundAppResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Session
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateForegroundApp(
+  config: {
+  tenant?: string;
+  input: ForegroundAppInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "foreground_app",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type KickViewersInput = {
   id: UUID;
 };

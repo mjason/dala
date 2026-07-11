@@ -90,6 +90,14 @@ defmodule Dala.Terminal.SessionTest do
     end
   end
 
+  test "foreground_app reports the process owning the tty" do
+    session = create_session!()
+    eventually(fn -> match?({:ok, %{app: "shell"}}, Server.foreground_app(session.id)) end)
+
+    Server.input(session.id, "sleep 5\r")
+    eventually(fn -> match?({:ok, %{cmdline: "sleep 5"}}, Server.foreground_app(session.id)) end)
+  end
+
   test "kick_viewers on a plain shell reports no multiplexer" do
     session = create_session!()
     eventually(fn -> match?({:error, _}, Dala.Terminal.Server.kick_viewers(session.id)) end)
