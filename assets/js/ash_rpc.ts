@@ -2298,6 +2298,81 @@ export async function validateSetScrollbackLimit(
 }
 
 
+export type TranscribeInput = {
+  endpoint: string;
+  model: string;
+  apiKey?: string | null;
+  audioBase64: string;
+};
+
+export type TranscribeFields = UnifiedFieldSelection<{text: string | null, error: string | null, __type: "TypedMap", __primitiveFields: "text" | "error"}>[];
+
+export type InferTranscribeResult<
+  Fields extends TranscribeFields | undefined,
+> = InferResult<{text: string | null, error: string | null, __type: "TypedMap", __primitiveFields: "text" | "error"}, Fields>;
+
+export type TranscribeResult<Fields extends TranscribeFields | undefined = undefined> = | { success: true; data: InferTranscribeResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Speech
+ *
+ * @ashActionType :action
+ */
+export async function transcribe<Fields extends TranscribeFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: TranscribeInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<TranscribeResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "transcribe",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<TranscribeResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Speech
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateTranscribe(
+  config: {
+  tenant?: string;
+  input: TranscribeInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "transcribe",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type ApplyUpdateFields = UnifiedFieldSelection<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}>[];
 
 export type InferApplyUpdateResult<

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { agentCommands, buildCSRFHeaders, listFiles, savePastedFile } from "../ash_rpc";
+import { agentCommands, buildCSRFHeaders, listFiles, savePastedFile, transcribe } from "../ash_rpc";
+import { blobToBase64, loadSpeechPrefs, startRecording, type Recorder } from "./speech";
 import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
@@ -73,6 +74,55 @@ export default function InputBar({
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
+  const [voice, setVoice] = useState<"idle" | "recording" | "busy">("idle");
+  const recorderRef = useRef<Recorder | null>(null);
+
+  // Push-to-talk: click starts the mic, click again stops → transcribe →
+  // the text lands at the end of the draft.
+  const toggleVoice = async () => {
+    if (voice === "busy") return;
+    if (voice === "recording") {
+      setVoice("busy");
+      try {
+        const wav = await recorderRef.current!.stop();
+        recorderRef.current = null;
+        const prefs = loadSpeechPrefs();
+        const result = await transcribe({
+          input: {
+            endpoint: prefs.endpoint,
+            model: prefs.model,
+            apiKey: prefs.apiKey || undefined,
+            audioBase64: await blobToBase64(wav),
+          },
+          fields: ["text", "error"] as never,
+          headers: buildCSRFHeaders(),
+        });
+        const data = result.success
+          ? (result.data as unknown as { text: string | null; error: string | null })
+          : null;
+        if (!data || data.error || !data.text) {
+          onError(data?.error ?? t("speechFailed"));
+        } else {
+          setValue(value === "" || value.endsWith(" ") ? value + data.text : value + " " + data.text);
+        }
+      } catch (error) {
+        onError(error instanceof Error ? error.message : t("speechFailed"));
+      } finally {
+        setVoice("idle");
+      }
+      return;
+    }
+    if (!loadSpeechPrefs().endpoint) {
+      onError(t("speechNotConfigured"));
+      return;
+    }
+    try {
+      recorderRef.current = await startRecording();
+      setVoice("recording");
+    } catch {
+      onError(t("speechMicDenied"));
+    }
+  };
 
   // File list loads lazily on the first `@`, once per composer open.
   useEffect(() => {
@@ -333,6 +383,24 @@ export default function InputBar({
             e.target.value = "";
           }}
         />
+        <button
+          id="input-bar-voice"
+          onClick={() => void toggleVoice()}
+          className={[
+            "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors",
+            voice === "recording"
+              ? "animate-pulse border-red-400/70 text-red-400"
+              : voice === "busy"
+                ? "border-line text-fg-muted opacity-60"
+                : "border-line text-fg-muted hover:border-mint/60 hover:text-mint",
+          ].join(" ")}
+          title={voice === "recording" ? t("speechStop") : t("speechStart")}
+        >
+          <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="6" y="2" width="4" height="7" rx="2" />
+            <path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14" strokeLinecap="round" />
+          </svg>
+        </button>
         {agentLabel && (
           <span className="rounded-full bg-mint/10 px-2 py-0.5 font-mono text-[11px] text-mint">
             {agentLabel}

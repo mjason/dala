@@ -15,6 +15,10 @@ defmodule Dala.Terminal do
       rpc_action :delete_session, :destroy
     end
 
+    resource Dala.Terminal.Speech do
+      rpc_action :transcribe, :transcribe
+    end
+
     resource Dala.Terminal.FileSystem do
       rpc_action :list_directory, :list_directory
       rpc_action :list_files, :list_files
@@ -61,6 +65,7 @@ defmodule Dala.Terminal do
     end
 
     resource Dala.Terminal.FileSystem
+    resource Dala.Terminal.Speech
     resource Dala.Terminal.Git
     resource Dala.Terminal.Updater
   end

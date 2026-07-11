@@ -68,6 +68,20 @@ export type SessionAttributesOnlySchema = {
 };
 
 
+// Speech Schema
+export type SpeechResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type SpeechAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Updater Schema
 export type UpdaterResourceSchema = {
   __type: "Resource";
@@ -184,6 +198,15 @@ export type SessionFilterInput = {
 
 
 };
+export type SpeechFilterInput = {
+  and?: Array<SpeechFilterInput>;
+  or?: Array<SpeechFilterInput>;
+  not?: Array<SpeechFilterInput>;
+
+
+
+
+};
 export type UpdaterFilterInput = {
   and?: Array<UpdaterFilterInput>;
   or?: Array<UpdaterFilterInput>;
@@ -204,8 +227,10 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
 
+
 export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "ephemeral", "insertedAt", "updatedAt"] as const;
 export type SessionSortField = (typeof sessionSortFields)[number];
+
 
 
 

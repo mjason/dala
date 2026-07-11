@@ -22,6 +22,7 @@ import {
   savePrefs,
 } from "./termPrefs";
 import type { CursorStyle, TermPrefs } from "./termPrefs";
+import { loadSpeechPrefs, saveSpeechPrefs, type SpeechPrefs } from "./speech";
 
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
@@ -389,7 +390,10 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
               </div>
             </>
           ) : (
-            <AppearanceSection />
+            <>
+              <AppearanceSection />
+              <SpeechSection />
+            </>
           )}
         </div>
 
@@ -576,6 +580,63 @@ function AppearanceSection() {
           checked={prefs.localEcho}
           onChange={(v) => apply({ localEcho: v })}
         />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Voice input: an OpenAI-compatible transcription endpoint (vLLM Whisper
+ * serving etc.). Browser-local like the appearance prefs — changes persist
+ * as you type, no save step.
+ */
+function SpeechSection() {
+  const { t } = useI18n();
+  const [prefs, setPrefs] = useState<SpeechPrefs>(loadSpeechPrefs);
+
+  const apply = (patch: Partial<SpeechPrefs>) => setPrefs(saveSpeechPrefs(patch));
+
+  const inputClass =
+    "w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60";
+
+  return (
+    <div className="mt-6 space-y-4 border-t border-line pt-5">
+      <div>
+        <div className="text-[13px] font-medium text-fg">{t("speechSection")}</div>
+        <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechSectionDesc")}</p>
+      </div>
+      <div>
+        <FieldLabel>{t("speechEndpoint")}</FieldLabel>
+        <input
+          id="speech-endpoint-input"
+          value={prefs.endpoint}
+          onChange={(e) => apply({ endpoint: e.target.value.trim() })}
+          placeholder="http://127.0.0.1:8000/v1"
+          className={inputClass}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <FieldLabel>{t("speechModel")}</FieldLabel>
+          <input
+            id="speech-model-input"
+            value={prefs.model}
+            onChange={(e) => apply({ model: e.target.value.trim() })}
+            placeholder="whisper-large-v3"
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <FieldLabel>{t("speechApiKey")}</FieldLabel>
+          <input
+            id="speech-api-key-input"
+            type="password"
+            value={prefs.apiKey}
+            onChange={(e) => apply({ apiKey: e.target.value.trim() })}
+            placeholder={t("optional")}
+            className={inputClass}
+          />
+        </div>
       </div>
     </div>
   );
