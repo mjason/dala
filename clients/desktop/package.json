@@ -53,7 +53,9 @@
       "notarize": true,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "语音输入需要使用麦克风 Voice input uses the microphone."
-      }
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
       "sign": false

@@ -127,9 +127,16 @@ export default function InputBar({
     try {
       recorderRef.current = await startRecording();
       setVoice("recording");
-    } catch {
+    } catch (error) {
+      const name = error instanceof DOMException ? error.name : "";
       onError(
-        window.isSecureContext === false ? t("speechInsecureContext") : t("speechMicDenied"),
+        window.isSecureContext === false || !navigator.mediaDevices
+          ? t("speechInsecureContext")
+          : name === "NotAllowedError" || name === "SecurityError"
+            ? t("speechMicSystemDenied")
+            : name === "NotFoundError" || name === "OverconstrainedError"
+              ? t("speechNoMic")
+              : `${t("speechMicDenied")}${name ? ` (${name})` : ""}`,
       );
     }
   };
