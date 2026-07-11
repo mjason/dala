@@ -30,6 +30,7 @@ defmodule DalaWeb.Router do
     get "/", PageController, :index
     get "/files/raw", FileController, :raw
     get "/lsp/ws", LspController, :ws
+    get "/lsp/debug", LspController, :debug
   end
 
   scope "/", DalaWeb do

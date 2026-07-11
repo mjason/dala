@@ -9,6 +9,7 @@ import { FileTypeIcon } from "./fileIcons";
 import Windowed from "./Windowed";
 import { Kbd, modCombo } from "./shortcuts";
 import CodeEditor from "./CodeEditor";
+import LspDebug from "./LspDebug";
 import CmCode from "./CmCode";
 
 const CSV_MAX_ROWS = 500;
@@ -38,6 +39,7 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
   const { t } = useI18n();
   const [wrap, setWrap] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [lspDebugOpen, setLspDebugOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -133,6 +135,14 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
   const actions = editing ? (
     <>
       <button
+        id="lsp-debug-button"
+        onClick={() => setLspDebugOpen(true)}
+        className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:text-fg"
+        title={t("lspDebugTitle")}
+      >
+        {t("lspDebugOpen")}
+      </button>
+      <button
         id="cancel-edit-button"
         onClick={cancelEditing}
         disabled={saving}
@@ -206,6 +216,8 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
       ) : (
         <Body preview={preview} wrap={wrap} />
       )}
+      {/* Stacked on top so the editor (and its LSP connections) stays alive. */}
+      {lspDebugOpen && <LspDebug path={preview.path} onClose={() => setLspDebugOpen(false)} />}
     </Windowed>
   );
 }

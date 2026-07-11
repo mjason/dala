@@ -15,6 +15,7 @@ defmodule Dala.Application do
       {DNSCluster, query: Application.get_env(:dala, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Dala.PubSub},
       {Registry, keys: :unique, name: Dala.Terminal.Registry},
+      Dala.Lsp.Debug,
       {DynamicSupervisor, name: Dala.Terminal.ServerSupervisor, strategy: :one_for_one},
       DalaWeb.Endpoint,
       # After the endpoint: Boot publishes session updates through it.

@@ -22,4 +22,15 @@ defmodule DalaWeb.LspController do
   end
 
   def ws(conn, _params), do: send_resp(conn, 400, "missing root/path/server")
+
+  @doc """
+  Bridge registry as JSON: which servers run for which files, traffic
+  counters, recent messages, current diagnostics and the stderr tail.
+  The editor's debug window reads this — and so can an AI agent:
+
+      curl http://127.0.0.1:4000/lsp/debug
+  """
+  def debug(conn, _params) do
+    json(conn, %{servers: Dala.Lsp.Debug.snapshot()})
+  end
 end
