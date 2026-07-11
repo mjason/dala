@@ -4,7 +4,7 @@
 // bilingual application menu to switch servers, a local management page,
 // a built-in browser window for external links, and a native clipboard
 // bridge for plain-http LAN servers.
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeTheme } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const fs = require("fs");
@@ -357,6 +357,30 @@ ipcMain.handle("clip_write", (_event, text) => {
   clipboard.writeText(String(text ?? ""));
 });
 
+// Native OS notifications (Notification Center on macOS, toasts on Windows)
+// for agent events on remote server pages — the web Notification API needs
+// per-origin permission prompts and renders as browser notifications; the
+// Electron one is the platform's own. Click focuses the window that sent it
+// and tells the page which session to jump to.
+ipcMain.handle("notify", (event, payload) => {
+  if (!Notification.isSupported()) return false;
+  const title = String(payload?.title ?? "Dala");
+  const body = String(payload?.body ?? "");
+  const tag = String(payload?.tag ?? "");
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const n = new Notification({ title, body });
+  n.on("click", () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      win.webContents.send("dala:notify-click", tag);
+    }
+  });
+  n.show();
+  return true;
+});
+
 ipcMain.handle("list_servers", (event) => {
   assertManagePage(event);
   return config;
@@ -411,6 +435,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => createShellWindow(startupServer()));
+
+  // Windows toasts require a stable AppUserModelID matching the installer's.
+  app.setAppUserModelId("com.manjialin.dala");
 
   app.whenReady().then(() => {
     // Dark window chrome (title bar on macOS/Windows) regardless of the

@@ -409,6 +409,16 @@ export default function App() {
           : p.event === "question_asked"
             ? t("agentEventQuestion")
             : t("agentEventPermission"));
+    // Inside the desktop client, use the OS's own notifications (Notification
+    // Center / Windows toasts) via the preload bridge — no permission prompt,
+    // native look. Click-to-jump comes back as a "dala:notify-click" event.
+    const nativeNotify = (
+      window as { __DALA_NOTIFY__?: (p: { title: string; body: string; tag: string }) => Promise<unknown> }
+    ).__DALA_NOTIFY__;
+    if (nativeNotify) {
+      void nativeNotify({ title, body, tag: p.id });
+      return;
+    }
     const show = () => {
       const n = new Notification(title, { body, tag: `dala-agent-${p.id}` });
       n.onclick = () => {
@@ -595,10 +605,17 @@ export default function App() {
       if (action === "composer") toggleComposerRef.current();
       if (action === "quick-shell") quickShellRef.current();
     };
+    // Clicking a native client notification jumps to the session it came from.
+    const onNotifyClick = (event: Event) => {
+      const id = String((event as CustomEvent).detail ?? "");
+      if (id && sessionsRef.current.some((s) => s.id === id)) setActiveId(id);
+    };
     window.addEventListener("dala:menu", onMenu);
+    window.addEventListener("dala:notify-click", onNotifyClick);
     window.addEventListener("keydown", handler, true);
     return () => {
       window.removeEventListener("dala:menu", onMenu);
+      window.removeEventListener("dala:notify-click", onNotifyClick);
       window.removeEventListener("keydown", handler, true);
     };
   }, []);

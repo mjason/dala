@@ -21,6 +21,20 @@ ipcRenderer.on("dala:menu", (_event, action) => {
   window.dispatchEvent(new CustomEvent("dala:menu", { detail: action }));
 });
 
+// Native OS notifications: the page calls __DALA_NOTIFY__ instead of the web
+// Notification API when running inside the client; clicks come back as a
+// "dala:notify-click" CustomEvent carrying the tag (session id).
+contextBridge.exposeInMainWorld("__DALA_NOTIFY__", (payload) =>
+  invoke("notify", {
+    title: String(payload?.title ?? ""),
+    body: String(payload?.body ?? ""),
+    tag: String(payload?.tag ?? ""),
+  })
+);
+ipcRenderer.on("dala:notify-click", (_event, tag) => {
+  window.dispatchEvent(new CustomEvent("dala:notify-click", { detail: tag }));
+});
+
 // Same contract the web app already probes for: a function returning a
 // promise. Chromium's navigator.clipboard needs a secure context, which
 // plain-http LAN servers are not — this always works.
