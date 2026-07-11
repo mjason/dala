@@ -31,6 +31,18 @@ defmodule DalaWeb.LspController do
       curl http://127.0.0.1:4000/lsp/debug
   """
   def debug(conn, _params) do
-    json(conn, %{servers: Dala.Lsp.Debug.snapshot()})
+    if allowed_debug?(conn) do
+      json(conn, %{servers: Dala.Lsp.Debug.snapshot()})
+    else
+      conn |> put_status(:unauthorized) |> json(%{error: "authentication required"})
+    end
+  end
+
+  # Auth-enabled servers still answer loopback callers without a session:
+  # local processes (AI agents in the terminal) already have shell access,
+  # and this endpoint is read-only health data.
+  defp allowed_debug?(conn) do
+    not Dala.Auth.enabled?() or conn.assigns[:current_user] != nil or
+      conn.remote_ip in [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
   end
 end

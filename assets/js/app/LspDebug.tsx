@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Windowed from "./Windowed";
 import { useI18n } from "./i18n";
+import { buildCSRFHeaders, lspServers } from "../ash_rpc";
 
 type RecentMessage = { dir: "in" | "out"; at: number; preview: string };
 
@@ -43,6 +44,36 @@ function age(since: number) {
 export default function LspDebug({ path, onClose }: { path: string; onClose: () => void }) {
   const { t } = useI18n();
   const [servers, setServers] = useState<BridgeEntry[] | null>(null);
+  const [resolved, setResolved] = useState<{
+    language: string | null;
+    names: string[];
+  } | null>(null);
+
+  // What discovery decides for THIS file — shown even before (or without)
+  // any connection, so an empty registry explains itself.
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const result = await lspServers({
+          input: { path },
+          fields: ["root", "language", "servers"] as never,
+          headers: buildCSRFHeaders(),
+        });
+        if (disposed || !result.success) return;
+        const data = result.data as unknown as {
+          language: string | null;
+          servers: { name: string }[];
+        };
+        setResolved({ language: data.language, names: data.servers.map((s) => s.name) });
+      } catch {
+        // fine without
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [path]);
 
   useEffect(() => {
     let disposed = false;
@@ -75,6 +106,17 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
   return (
     <Windowed id="lsp-debug" onClose={onClose} title={t("lspDebugTitle")}>
       <div className="flex h-full flex-col gap-3 overflow-y-auto p-4 font-mono text-xs">
+        {resolved && (
+          <div className="rounded-lg border border-line/70 bg-bg0 p-3 text-fg-muted">
+            <span className="text-fg">{path.split("/").pop()}</span>
+            {" · "}
+            {resolved.language === null
+              ? t("lspNoLanguage")
+              : resolved.names.length === 0
+                ? t("lspNoInstalledServers", { language: resolved.language })
+                : `${resolved.language} → ${resolved.names.join(" + ")}`}
+          </div>
+        )}
         {servers === null ? (
           <div className="text-fg-muted">…</div>
         ) : list.length === 0 ? (

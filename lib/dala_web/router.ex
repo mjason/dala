@@ -30,6 +30,13 @@ defmodule DalaWeb.Router do
     get "/", PageController, :index
     get "/files/raw", FileController, :raw
     get "/lsp/ws", LspController, :ws
+  end
+
+  scope "/", DalaWeb do
+    pipe_through :browser
+
+    # Self-guarding: signed-in users AND loopback peers (AI agents run on
+    # this host and already own a shell — reading LSP health adds nothing).
     get "/lsp/debug", LspController, :debug
   end
 

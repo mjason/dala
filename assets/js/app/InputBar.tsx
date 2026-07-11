@@ -77,6 +77,14 @@ export default function InputBar({
   const [voice, setVoice] = useState<"idle" | "recording" | "busy">("idle");
   const recorderRef = useRef<Recorder | null>(null);
 
+  // The app-level shortcut (mod+shift+M / client menu) pokes us here.
+  const toggleVoiceRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    const onVoice = () => void toggleVoiceRef.current();
+    window.addEventListener("dala:voice", onVoice);
+    return () => window.removeEventListener("dala:voice", onVoice);
+  }, []);
+
   // Push-to-talk: click starts the mic, click again stops → transcribe →
   // the text lands at the end of the draft.
   const toggleVoice = async () => {
@@ -120,9 +128,12 @@ export default function InputBar({
       recorderRef.current = await startRecording();
       setVoice("recording");
     } catch {
-      onError(t("speechMicDenied"));
+      onError(
+        window.isSecureContext === false ? t("speechInsecureContext") : t("speechMicDenied"),
+      );
     }
   };
+  toggleVoiceRef.current = toggleVoice;
 
   // File list loads lazily on the first `@`, once per composer open.
   useEffect(() => {
@@ -394,7 +405,7 @@ export default function InputBar({
                 ? "border-line text-fg-muted opacity-60"
                 : "border-line text-fg-muted hover:border-mint/60 hover:text-mint",
           ].join(" ")}
-          title={voice === "recording" ? t("speechStop") : t("speechStart")}
+          title={`${voice === "recording" ? t("speechStop") : t("speechStart")} · ${modShiftCombo("m")}`}
         >
           <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="6" y="2" width="4" height="7" rx="2" />

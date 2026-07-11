@@ -161,6 +161,14 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
     </>
   ) : (
     <>
+      <button
+        id="lsp-debug-button-preview"
+        onClick={() => setLspDebugOpen(true)}
+        className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:text-fg"
+        title={t("lspDebugTitle")}
+      >
+        {t("lspDebugOpen")}
+      </button>
       {WRAPPABLE.has(preview.kind) && (
         <button
           id="wrap-toggle-button"

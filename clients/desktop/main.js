@@ -4,7 +4,7 @@
 // bilingual application menu to switch servers, a local management page,
 // a built-in browser window for external links, and a native clipboard
 // bridge for plain-http LAN servers.
-const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeTheme, session, systemPreferences } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const fs = require("fs");
@@ -324,6 +324,11 @@ function rebuildMenu() {
           accelerator: "CmdOrCtrl+J",
           click: () => sendMenuAction("quick-shell"),
         },
+        {
+          label: "语音输入 Voice Input",
+          accelerator: "CmdOrCtrl+Shift+M",
+          click: () => sendMenuAction("voice"),
+        },
         { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
@@ -439,11 +444,49 @@ if (!app.requestSingleInstanceLock()) {
   // Windows toasts require a stable AppUserModelID matching the installer's.
   app.setAppUserModelId("com.manjialin.dala");
 
+  // getUserMedia (voice input) requires a secure context; dala servers on a
+  // LAN are plain http. Chromium accepts an explicit allow-list, which must
+  // be set before the app is ready — so newly added servers get microphone
+  // access after the next client restart.
+  config = loadConfig();
+  const insecureOrigins = [
+    ...new Set(
+      config.servers
+        .map((server) => {
+          try {
+            const url = new URL(server.url);
+            const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+            return url.protocol === "http:" && !local ? url.origin : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+    ),
+  ];
+  if (insecureOrigins.length > 0) {
+    app.commandLine.appendSwitch(
+      "unsafely-treat-insecure-origin-as-secure",
+      insecureOrigins.join(",")
+    );
+  }
+
   app.whenReady().then(() => {
+    // Grant page permission requests (mic for voice input, notifications);
+    // on macOS the SYSTEM permission needs its own ask.
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      if (permission === "media" && process.platform === "darwin") {
+        systemPreferences
+          .askForMediaAccess("microphone")
+          .then(() => callback(true))
+          .catch(() => callback(true));
+        return;
+      }
+      callback(true);
+    });
     // Dark window chrome (title bar on macOS/Windows) regardless of the
     // system theme — the app itself is dark, a white title bar clashes.
     nativeTheme.themeSource = "dark";
-    config = loadConfig();
     rebuildMenu();
     app.on("browser-window-focus", rebuildMenu);
     createShellWindow(startupServer());

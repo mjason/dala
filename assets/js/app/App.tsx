@@ -475,6 +475,23 @@ export default function App() {
   };
   toggleComposerRef.current = toggleComposer;
 
+  // Voice shortcut: make sure the composer is open, then hand off to the
+  // input bar (start recording / stop+transcribe on the second press).
+  const voiceShortcutRef = useRef<() => void>(() => {});
+  voiceShortcutRef.current = () => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    let delay = 0;
+    setComposerOpen((m) => {
+      if (!m[id]) {
+        delay = 200;
+        return { ...m, [id]: true };
+      }
+      return m;
+    });
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("dala:voice")), delay);
+  };
+
   // Deliver input-bar text with the right per-agent strategy (ported from
   // Warp): ask the server what runs in the session's foreground first.
   const sendToForegroundApp = async (text: string, submit: boolean) => {
@@ -596,6 +613,10 @@ export default function App() {
             e.preventDefault();
             toggleComposerRef.current();
             return;
+          case "m":
+            e.preventDefault();
+            voiceShortcutRef.current();
+            return;
         }
       }
     };
@@ -604,6 +625,7 @@ export default function App() {
       const action = (e as CustomEvent).detail;
       if (action === "composer") toggleComposerRef.current();
       if (action === "quick-shell") quickShellRef.current();
+      if (action === "voice") voiceShortcutRef.current();
     };
     // Clicking a native client notification jumps to the session it came from.
     const onNotifyClick = (event: Event) => {
