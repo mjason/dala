@@ -1,11 +1,9 @@
 import React from "react";
-import TerminalView from "./TerminalView";
+import TerminalView, { type TerminalActions } from "./TerminalView";
 import ResizeHandle from "./ResizeHandle";
 import { useI18n } from "./i18n";
 import { historyLines, shortPath } from "./util";
 import type { Session } from "./Sidebar";
-
-type TerminalActions = { reset: () => void; refit: () => void; focus: () => void };
 
 type Props = {
   sessions: Session[];

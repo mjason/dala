@@ -4,7 +4,7 @@ defmodule Dala.MixProject do
   def project do
     [
       app: :dala,
-      version: "0.5.24",
+      version: "0.5.25",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,

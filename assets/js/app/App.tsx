@@ -15,8 +15,9 @@ import {
 } from "../ash_typed_channels";
 import { getSocket } from "./socket";
 import Sidebar, { Session } from "./Sidebar";
-import TerminalView from "./TerminalView";
+import TerminalView, { type TerminalActions } from "./TerminalView";
 import QuickShellPanel from "./QuickShellPanel";
+import InputBar from "./InputBar";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
 import SettingsModal from "./SettingsModal";
@@ -72,10 +73,11 @@ export default function App() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [inputBarOpen, setInputBarOpen] = useState(false);
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
-  const termActions = useRef<{ reset: () => void; refit: () => void; focus: () => void } | null>(null);
+  const termActions = useRef<TerminalActions | null>(null);
 
   const toast = useCallback((message: string) => {
     const id = ++toastSeq.current;
@@ -109,9 +111,7 @@ export default function App() {
   const [qsActiveId, setQsActiveId] = useState<string | null>(null);
   const [qsOpen, setQsOpen] = useState(false);
   const [qsMax, setQsMax] = useState(false);
-  const qsActions = useRef<{ reset: () => void; refit: () => void; focus: () => void } | null>(
-    null,
-  );
+  const qsActions = useRef<TerminalActions | null>(null);
   const qsRef = useRef({ ids: [] as string[], activeId: null as string | null, open: false });
   qsRef.current = { ids: qsIds, activeId: qsActiveId, open: qsOpen };
 
@@ -414,6 +414,10 @@ export default function App() {
             e.preventDefault();
             termActions.current?.reset();
             return;
+          case "k":
+            e.preventDefault();
+            setInputBarOpen((v) => !v);
+            return;
         }
       }
     };
@@ -523,6 +527,26 @@ export default function App() {
                   }`}
                 >
                   ⚡&gt;_
+                </button>
+              </Tooltip>
+              <Tooltip
+                label={t("inputBarTitle")}
+                description={t("inputBarHint")}
+                keys={modShiftCombo("k")}
+              >
+                <button
+                  id="input-bar-button"
+                  onClick={() => setInputBarOpen((v) => !v)}
+                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                    inputBarOpen
+                      ? "border-mint/50 text-mint"
+                      : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+                  }`}
+                >
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="1.5" y="4" width="13" height="8" rx="1.5" />
+                    <path d="M4 9.5h8" strokeLinecap="round" />
+                  </svg>
                 </button>
               </Tooltip>
               <div className="flex-1" />
@@ -653,6 +677,16 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {inputBarOpen && (
+              <InputBar
+                onSend={(text, submit) => termActions.current?.sendText(text, submit)}
+                onClose={() => {
+                  setInputBarOpen(false);
+                  termActions.current?.focus();
+                }}
+              />
+            )}
           </>
         ) : (
           <div className="relative grid flex-1 place-items-center">

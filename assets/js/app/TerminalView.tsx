@@ -91,7 +91,14 @@ class Osc52Provider implements IClipboardProvider {
   }
 }
 
-type TerminalActions = { reset: () => void; refit: () => void; focus: () => void };
+export type TerminalActions = {
+  reset: () => void;
+  refit: () => void;
+  focus: () => void;
+  /** Deliver text composed in the native input bar: bracketed paste when
+   * the foreground app enabled it, plus optional Enter to submit. */
+  sendText: (text: string, submit: boolean) => void;
+};
 
 type Props = {
   sessionId: string;
@@ -328,7 +335,17 @@ export default function TerminalView({
         // Ctrl-L: ask the shell to redraw a fresh prompt after the clear.
         phxChannel.push("input", { data: "\f" });
       };
-      if (actionsRef) actionsRef.current = { reset, refit, focus: () => term.focus() };
+      const sendText = (text: string, submit: boolean) => {
+        if (!gate.acceptInput() || !text) return;
+        const data = term.modes.bracketedPasteMode
+          ? `\x1b[200~${text}\x1b[201~`
+          : text;
+        phxChannel.push("input", { data });
+        if (submit) phxChannel.push("input", { data: "\r" });
+      };
+      if (actionsRef) {
+        actionsRef.current = { reset, refit, focus: () => term.focus(), sendText };
+      }
 
       // Fallback: a session with no replay (or a lost done frame) must not
       // stay covered.
