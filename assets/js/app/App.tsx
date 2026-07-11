@@ -424,6 +424,10 @@ export default function App() {
       // readline's rarely-used C-g abort, as Warp does.
       if (!e.shiftKey && key === "g") {
         e.preventDefault();
+        // Also stop the capture-phase propagation: xterm would otherwise
+        // still transmit 0x07, and Claude Code binds Ctrl+G itself (opens
+        // $EDITOR) — the composer replaces that role.
+        e.stopPropagation();
         toggleComposerRef.current();
         return;
       }
