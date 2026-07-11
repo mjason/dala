@@ -242,26 +242,50 @@ function multiHover(handles: ClientHandle[], documentUri: string): Extension {
   return hoverTooltip(async (view, pos): Promise<Tooltip | null> => {
     const position = offsetToPos(view.state.doc, pos);
 
+    type HoverRange = { start?: { line: number; character: number }; end?: { line: number; character: number } };
     const answers = await Promise.all(
       handles.map(async ({ client, ready, capabilities }) => {
-        if (!ready() || !capabilities()?.hoverProvider) return "";
+        if (!ready() || !capabilities()?.hoverProvider) return null;
         try {
           const result = (await client.textDocumentHover({
             textDocument: { uri: documentUri },
             position,
-          })) as { contents?: HoverContents } | null;
-          return hoverText(result?.contents).trim();
+          })) as { contents?: HoverContents; range?: HoverRange } | null;
+          const text = hoverText(result?.contents).trim();
+          return text ? { text, range: result?.range } : null;
         } catch {
-          return "";
+          return null;
         }
       }),
     );
 
-    const merged = answers.filter(Boolean).join("\n\n---\n\n");
+    const nonEmpty = answers.filter(Boolean) as { text: string; range?: HoverRange }[];
+    const merged = nonEmpty.map((a) => a.text).join("\n\n---\n\n");
     if (!merged) return null;
 
+    // The tooltip stays up while the pointer is inside pos..end (or the
+    // tooltip itself) — a bare point would close it on the first pixel of
+    // mouse movement. Prefer the server-reported symbol range, fall back to
+    // the word under the pointer.
+    let from = pos;
+    let to: number | undefined;
+    const range = nonEmpty.find((a) => a.range)?.range;
+    const rangeFrom = posToOffset(view.state.doc, range?.start);
+    const rangeTo = posToOffset(view.state.doc, range?.end);
+    if (rangeFrom != null && rangeTo != null && rangeTo > rangeFrom) {
+      from = rangeFrom;
+      to = rangeTo;
+    } else {
+      const word = view.state.wordAt(pos);
+      if (word) {
+        from = word.from;
+        to = word.to;
+      }
+    }
+
     return {
-      pos,
+      pos: from,
+      end: to,
       create: () => {
         const dom = document.createElement("div");
         dom.className = "cm-lsp-hover";
