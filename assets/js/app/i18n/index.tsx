@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
+import React, { useEffect, createContext, useCallback, useContext, useMemo, useState } from "react";
 import { de, en, es, fr, ja, ko, pt, ru, zhCN, zhTW } from "./locales";
 import type { Messages } from "./locales";
 
@@ -96,8 +96,20 @@ const I18nContext = createContext<I18n>({
   setLocale: () => undefined,
 });
 
+// Inside the desktop client, the application menu follows the language
+// picked here — report it to the main process (best effort, web is a no-op).
+function reportLocaleToClient(locale: Locale) {
+  const bridge = (window as { dala?: { invoke: (cmd: string, args: unknown) => Promise<unknown> } })
+    .dala;
+  if (bridge) void bridge.invoke("set_locale", { locale }).catch(() => undefined);
+}
+
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  useEffect(() => {
+    reportLocaleToClient(locale);
+  }, [locale]);
 
   const setLocale = useCallback((next: Locale) => {
     try {

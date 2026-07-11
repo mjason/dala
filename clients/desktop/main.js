@@ -7,6 +7,7 @@
 const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeTheme, session, systemPreferences } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
+const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
 const fs = require("fs");
 const path = require("path");
 
@@ -17,6 +18,15 @@ const WINDOW_ICON = path.join(__dirname, "build", "icon.png");
 // Config: { servers: [{ name, url }], last: url | null }
 
 let config = { servers: [], last: null };
+
+// Menu language: whatever the dala page reports (its own language picker),
+// falling back to the system locale until the first report arrives.
+let menuLocale = null;
+
+function t(key, params) {
+  const locale = menuLocale || detectLocale(app.getLocale());
+  return translate(locale, key, params);
+}
 
 const configFile = () => path.join(app.getPath("userData"), "servers.json");
 
@@ -40,7 +50,8 @@ function normalizeConfig(raw) {
     .filter((s) => typeof s?.url === "string" && s.url)
     .map((s) => ({ name: typeof s.name === "string" && s.name ? s.name : s.url, url: s.url }));
   const last = typeof raw?.last === "string" ? raw.last : null;
-  return { servers, last };
+  const locale = normalizeLocale(raw?.locale) || null;
+  return { servers, last, locale };
 }
 
 function loadConfig() {
@@ -54,7 +65,7 @@ function loadConfig() {
     if (imported.servers.length > 0) saveConfig(imported);
     return imported;
   } catch {
-    return { servers: [], last: null };
+    return { servers: [], last: null, locale: null };
   }
 }
 
@@ -191,7 +202,7 @@ let updateReady = null; // version staged for quitAndInstall
 async function checkForUpdates({ interactive } = {}) {
   if (!app.isPackaged) {
     if (interactive) {
-      void dialog.showMessageBox({ message: "开发模式不检查更新 (dev build)" });
+      void dialog.showMessageBox({ message: t("devNoUpdates") });
     }
     return;
   }
@@ -200,7 +211,7 @@ async function checkForUpdates({ interactive } = {}) {
     if (!latest || !isNewer(latest.version, app.getVersion())) {
       if (interactive) {
         void dialog.showMessageBox({
-          message: `已是最新版本 Up to date (v${app.getVersion()})`,
+          message: t("upToDate", { version: app.getVersion() }),
         });
       }
       return;
@@ -208,7 +219,7 @@ async function checkForUpdates({ interactive } = {}) {
     autoUpdater.setFeedURL({ provider: "generic", url: latest.feedUrl });
     await autoUpdater.checkForUpdates();
   } catch (err) {
-    if (interactive) dialog.showErrorBox("检查更新失败 Update check failed", String(err));
+    if (interactive) dialog.showErrorBox(t("updateFailed"), String(err));
   }
 }
 
@@ -224,11 +235,11 @@ autoUpdater.on("update-downloaded", (info) => {
   void dialog
     .showMessageBox({
       type: "info",
-      buttons: ["重启并更新 Restart & Update", "稍后 Later"],
+      buttons: [t("restartNow"), t("later")],
       defaultId: 0,
       cancelId: 1,
-      message: `新版本 v${info.version} 已下载 Update downloaded`,
-      detail: "重启应用即完成升级；稍后退出时也会自动安装。\nRestart to apply — or it installs on next quit.",
+      message: t("updateDownloaded", { version: info.version }),
+      detail: t("updateDetail"),
     })
     .then(({ response }) => {
       if (response === 0) autoUpdater.quitAndInstall();
@@ -268,26 +279,26 @@ function rebuildMenu() {
         }]
       : []),
     {
-      label: "文件 File",
+      label: t("file"),
       submenu: [
         {
-          label: "新建窗口 New Window",
+          label: t("newWindow"),
           accelerator: "CmdOrCtrl+Shift+N",
           click: () => createShellWindow(null),
         },
         {
-          label: "管理服务器 Manage Servers…",
+          label: t("manageServers"),
           accelerator: "CmdOrCtrl+,",
           click: showManagePage,
         },
         { type: "separator" },
         updateReady
           ? {
-              label: `重启并更新 Restart & Update (v${updateReady})`,
+              label: t("restartUpdate", { version: updateReady }),
               click: () => autoUpdater.quitAndInstall(),
             }
           : {
-              label: "检查更新 Check for Updates…",
+              label: t("checkUpdates"),
               click: () => void checkForUpdates({ interactive: true }),
             },
         { type: "separator" },
@@ -298,34 +309,34 @@ function rebuildMenu() {
     // makes ⌘C/⌘V work in the terminal on macOS.
     { role: "editMenu" },
     {
-      label: "服务器 Servers",
+      label: t("servers"),
       submenu: [
         ...serverItems,
         ...(config.servers.length > 0 ? [{ type: "separator" }] : []),
         {
-          label: "在新窗口打开 Open in New Window",
+          label: t("openInNewWindow"),
           enabled: config.servers.length > 0,
           submenu: newWindowItems,
         },
         { type: "separator" },
-        { label: "管理服务器 Manage Servers…", click: showManagePage },
+        { label: t("manageServers"), click: showManagePage },
       ],
     },
     {
-      label: "视图 View",
+      label: t("view"),
       submenu: [
         {
-          label: "输入条 Composer",
+          label: t("composer"),
           accelerator: "CmdOrCtrl+K",
           click: () => sendMenuAction("composer"),
         },
         {
-          label: "快速 Shell Quick Shell",
+          label: t("quickShell"),
           accelerator: "CmdOrCtrl+J",
           click: () => sendMenuAction("quick-shell"),
         },
         {
-          label: "语音输入 Voice Input",
+          label: t("voiceInput"),
           accelerator: "CmdOrCtrl+Shift+M",
           click: () => sendMenuAction("voice"),
         },
@@ -360,6 +371,16 @@ function assertManagePage(event) {
 
 ipcMain.handle("clip_write", (_event, text) => {
   clipboard.writeText(String(text ?? ""));
+});
+
+// The dala page reports its UI language; the application menu follows it.
+ipcMain.handle("set_locale", (_event, { locale } = {}) => {
+  const normalized = normalizeLocale(locale);
+  if (!normalized || normalized === menuLocale) return;
+  menuLocale = normalized;
+  config.locale = normalized;
+  saveConfig(config);
+  rebuildMenu();
 });
 
 // Native OS notifications (Notification Center on macOS, toasts on Windows)
@@ -449,6 +470,7 @@ if (!app.requestSingleInstanceLock()) {
   // be set before the app is ready — so newly added servers get microphone
   // access after the next client restart.
   config = loadConfig();
+  menuLocale = config.locale || null;
   const insecureOrigins = [
     ...new Set(
       config.servers

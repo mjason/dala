@@ -30,7 +30,8 @@
       "main.js",
       "preload.js",
       "updater.js",
-      "src/**"
+      "src/**",
+      "menu-locales.js"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
