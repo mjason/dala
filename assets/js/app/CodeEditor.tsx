@@ -22,6 +22,8 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
+import { lspExtensions, type LspServerInfo } from "./cm/lsp";
+import { buildCSRFHeaders, lspServers } from "../ash_rpc";
 
 type Props = {
   value: string;
@@ -46,6 +48,7 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
 
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
+  const lspCompartment = useRef(new Compartment());
 
   useEffect(() => {
     const host = hostRef.current;
@@ -85,6 +88,7 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
         ]),
         wrapCompartment.current.of([]),
         languageCompartment.current.of([]),
+        lspCompartment.current.of([]),
         dalaTheme,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
@@ -134,6 +138,51 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
 
     return () => {
       cancelled = true;
+    };
+  }, [filename]);
+
+  // Language servers: resolved per project root on the server (venv-local
+  // installs, dm lsp for dark-magician workspaces, .dala/lsp.json overrides),
+  // then one WebSocket-bridged client per server attaches to this document.
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      if (!filename || !filename.startsWith("/")) return;
+      try {
+        const result = await lspServers({
+          input: { path: filename },
+          fields: ["root", "language", "servers"] as never,
+          headers: buildCSRFHeaders(),
+        });
+        if (cancelled || !result.success) return;
+        const data = result.data as unknown as {
+          root: string;
+          language: string | null;
+          servers: LspServerInfo[];
+        };
+        if (!data.language || data.servers.length === 0) return;
+        viewRef.current?.dispatch({
+          effects: lspCompartment.current.reconfigure(
+            lspExtensions({
+              root: data.root,
+              path: filename,
+              language: data.language,
+              servers: data.servers,
+            }),
+          ),
+        });
+      } catch {
+        // No LSP is a fine editor too.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      // Detaching the plugins closes their WebSockets (autoClose).
+      viewRef.current?.dispatch({
+        effects: lspCompartment.current.reconfigure([]),
+      });
     };
   }, [filename]);
 

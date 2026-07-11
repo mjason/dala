@@ -207,6 +207,45 @@ defmodule Dala.Terminal.FileSystem do
       end
     end
 
+    action :lsp_servers, :map do
+      description """
+      Language servers that should attach to a file: resolved per project
+      root (git toplevel of the file's directory), project-local installs
+      first, plus workspace extras like dark-magician's `dm lsp`.
+      """
+
+      constraints fields: [
+                    root: [type: :string, allow_nil?: false],
+                    language: [type: :string],
+                    servers: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            id: [type: :integer, allow_nil?: false],
+                            name: [type: :string, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+
+      run fn input, _context ->
+        path = Path.expand(input.arguments.path)
+        root = project_root(Path.dirname(path))
+
+        servers =
+          for server <- Dala.Lsp.Discovery.servers(root, path) do
+            %{id: server.id, name: server.name}
+          end
+
+        {:ok, %{root: root, language: Dala.Lsp.Discovery.language_of(path), servers: servers}}
+      end
+    end
+
     action :save_pasted_file, :map do
       description """
       Persist a file pasted or dropped into the web terminal (typically a
@@ -384,5 +423,15 @@ defmodule Dala.Terminal.FileSystem do
         end
       end)
     end
+  end
+
+  # LSP servers live where the project starts, not necessarily the file's dir.
+  defp project_root(dir) do
+    case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _ -> dir
+    end
+  rescue
+    _ -> dir
   end
 end

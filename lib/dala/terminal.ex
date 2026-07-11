@@ -21,6 +21,7 @@ defmodule Dala.Terminal do
       rpc_action :read_file, :read_file
       rpc_action :write_file, :write_file
       rpc_action :save_pasted_file, :save_pasted_file
+      rpc_action :lsp_servers, :lsp_servers
       rpc_action :delete_entry, :delete_entry
     end
 

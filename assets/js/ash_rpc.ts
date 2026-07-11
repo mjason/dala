@@ -417,6 +417,78 @@ export async function validateListFiles(
 }
 
 
+export type LspServersInput = {
+  path: string;
+};
+
+export type LspServersFields = UnifiedFieldSelection<{root: string, language: string | null, servers: Array<{id: number, name: string, __type: "TypedMap", __primitiveFields: "id" | "name"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}>[];
+
+export type InferLspServersResult<
+  Fields extends LspServersFields | undefined,
+> = InferResult<{root: string, language: string | null, servers: Array<{id: number, name: string, __type: "TypedMap", __primitiveFields: "id" | "name"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}, Fields>;
+
+export type LspServersResult<Fields extends LspServersFields | undefined = undefined> = | { success: true; data: InferLspServersResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function lspServers<Fields extends LspServersFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: LspServersInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<LspServersResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "lsp_servers",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<LspServersResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateLspServers(
+  config: {
+  tenant?: string;
+  input: LspServersInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "lsp_servers",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type ReadFileInput = {
   path: string;
   maxBytes?: number | null;
