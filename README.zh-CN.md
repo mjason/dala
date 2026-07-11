@@ -119,9 +119,26 @@ Diff 窗口：`i` 单栏 · `s` 并排 · `l` 行选模式 · `Alt+Z` 折行。
 
 ### Agent 感知（Claude Code / opencode / Codex…）
 
-dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应插件
-（如 `claude plugin install warp@claude-code-warp`、opencode 加
-`opencode-warp`）后：
+dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应
+插件后即可启用（一次性配置）：
+
+**Claude Code**（在 Claude Code 里执行，装完重启它或 `/reload-plugins`）：
+
+```
+/plugin marketplace add warpdotdev/claude-code-warp
+/plugin install warp@claude-code-warp
+```
+
+**opencode**（`opencode.json` 加一行）：
+
+```json
+{ "plugin": ["@warp-dot-dev/opencode-warp"] }
+```
+
+**Codex**：无需插件，原生通知即可。**Gemini CLI**：装
+`warpdotdev/gemini-cli-warp`（见其仓库 README）。
+
+启用后：
 
 - **通知**：任务完成 / 等待授权 / 向你提问时，若你在别的会话或切走了
   窗口，弹系统通知（点击直达该会话）

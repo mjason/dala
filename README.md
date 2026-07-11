@@ -134,8 +134,25 @@ Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
 ### Agent awareness (Claude Code / opencode / Codex…)
 
 dala speaks Warp's open cli-agent protocol (OSC 777). Install the agent's
-plugin (e.g. `claude plugin install warp@claude-code-warp`, or add
-`opencode-warp` to opencode) and you get:
+plugin once and you get the integration:
+
+**Claude Code** (run inside Claude Code, then restart it or `/reload-plugins`):
+
+```
+/plugin marketplace add warpdotdev/claude-code-warp
+/plugin install warp@claude-code-warp
+```
+
+**opencode** (add to `opencode.json`):
+
+```json
+{ "plugin": ["@warp-dot-dev/opencode-warp"] }
+```
+
+**Codex** needs no plugin (native notifications). **Gemini CLI**: install
+`warpdotdev/gemini-cli-warp` (see its README).
+
+With that in place:
 
 - **Notifications** when a task finishes / awaits your approval / asks you a
   question while you're on another session or away (click jumps to it)
