@@ -420,18 +420,6 @@ export default function App() {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
 
-      // Warp's composer key: Ctrl+G everywhere (⌘G too on mac). Steals
-      // readline's rarely-used C-g abort, as Warp does.
-      if (!e.shiftKey && key === "g") {
-        e.preventDefault();
-        // Also stop the capture-phase propagation: xterm would otherwise
-        // still transmit 0x07, and Claude Code binds Ctrl+G itself (opens
-        // $EDITOR) — the composer replaces that role.
-        e.stopPropagation();
-        toggleComposerRef.current();
-        return;
-      }
-
       if (!e.shiftKey && key === "p") {
         const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
         if (inTerminal && !e.metaKey) return;
@@ -599,7 +587,7 @@ export default function App() {
               <Tooltip
                 label={t("inputBarTitle")}
                 description={t("inputBarHint")}
-                keys={isMac ? "⌘G" : "Ctrl+G"}
+                keys={modShiftCombo("k")}
               >
                 <button
                   id="input-bar-button"
@@ -745,6 +733,23 @@ export default function App() {
               )}
             </div>
 
+            {!inputBarOpen && (
+              <button
+                id="composer-strip"
+                onClick={() => toggleComposer()}
+                className="group flex h-8 shrink-0 items-center gap-2 border-t border-line bg-bg1 px-3 text-left transition-colors hover:bg-bg2/60"
+              >
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-colors group-hover:text-mint" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="1.5" y="4" width="13" height="8" rx="1.5" />
+                  <path d="M4 9.5h8" strokeLinecap="round" />
+                </svg>
+                <span className="truncate font-mono text-[12px] text-fg-muted/70 transition-colors group-hover:text-fg-muted">
+                  {t("composerStripHint")}
+                </span>
+                <div className="flex-1" />
+                <Kbd>{modShiftCombo("k")}</Kbd>
+              </button>
+            )}
             {inputBarOpen && (
               <InputBar
                 root={active.cwd}

@@ -4,7 +4,7 @@ import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
-import { Kbd } from "./shortcuts";
+import { Kbd, modShiftCombo } from "./shortcuts";
 
 type Props = {
   /** Root for @-mention file search — the active session's cwd. */
@@ -270,7 +270,7 @@ export default function InputBar({ root, app, onSend, onClose, onError }: Props)
           {shortPath(root, 40)}
         </span>
         <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-fg-muted/60 sm:inline-flex">
-          {t("composerHide")} <Kbd>^G</Kbd>
+          {t("composerHide")} <Kbd>{modShiftCombo("k")}</Kbd>
         </span>
       </div>
     </div>

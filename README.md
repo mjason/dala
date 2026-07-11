@@ -101,7 +101,7 @@ bottom), "Detach other viewers" in settings kicks the other clients.
 | `Ctrl+Shift+G` · `⇧⌘G` | Git panel |
 | `Ctrl+Shift+F` · `⇧⌘F` | Refit terminal width |
 | `Ctrl+Shift+X` · `⇧⌘X` | Reset terminal |
-| `Ctrl+Shift+K` · `⇧⌘K` | **Native input bar** (Warp-style): compose long CJK locally with zero latency, Enter delivers the whole line at once — the TUI redraws once instead of per keystroke |
+| `Ctrl+Shift+K` · `⇧⌘K` (or click the strip below the terminal) | **Composer** (Warp-style rich input): zero-latency CJK composing, Enter delivers the whole line to Claude Code/opencode, `@` references files, `+` attaches; the placeholder auto-detects the foreground agent |
 | `Ctrl+\`` (Control on macOS too — `⌘\`` is taken by the OS) | Focus the terminal from anywhere |
 | `Ctrl+Shift+\`` (or the `⚡>_` header button) | **Quick shell**: a disposable overlay terminal (slides over the session, drag its left edge to resize, one-click fullscreen) already cd'd into the active session's directory; `+` in the panel opens more tabs. **Esc closes it** — every quick shell is destroyed on the spot, nothing is kept (inside vim & co. Esc belongs to the program); `exit`/`Ctrl+D` closes a single tab |
 | `Esc` | Close the topmost window |
