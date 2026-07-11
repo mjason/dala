@@ -3,6 +3,7 @@ import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
 import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
+import { collectTransferFiles } from "./pasteFiles";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 
@@ -20,6 +21,8 @@ type Props = {
   onPick: () => boolean;
   /** Cursor/document sync for @-mention tracking. */
   onCursor: (text: string, pos: number) => void;
+  /** Local files pasted or dropped into the editor (uploaded by the parent). */
+  onFiles: (files: File[]) => void;
 };
 
 /**
@@ -37,13 +40,14 @@ export default function ComposerEditor({
   onArrow,
   onPick,
   onCursor,
+  onFiles,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const placeholderCompartment = useRef(new Compartment());
   // The latest callbacks, visible to the once-registered keymap.
-  const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor });
-  cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor };
+  const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles });
+  cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -118,9 +122,26 @@ export default function ComposerEditor({
               );
             }
           }),
+          // Local files pasted or dropped land as uploads, like the terminal.
+          EditorView.domEventHandlers({
+            paste: (event) => {
+              const files = collectTransferFiles(event.clipboardData);
+              if (files.length === 0) return false;
+              event.preventDefault();
+              cbs.current.onFiles(files);
+              return true;
+            },
+            drop: (event) => {
+              const files = collectTransferFiles(event.dataTransfer);
+              if (files.length === 0) return false;
+              event.preventDefault();
+              cbs.current.onFiles(files);
+              return true;
+            },
+          }),
           dalaTheme,
           EditorView.theme({
-            "&": { maxHeight: "13.5rem", fontSize: "14px" },
+            "&": { fontSize: "14px" },
             ".cm-scroller": { fontFamily: "inherit", lineHeight: "1.5" },
             ".cm-content": { padding: "6px 10px" },
           }),
@@ -168,7 +189,9 @@ export default function ComposerEditor({
     <div
       ref={hostRef}
       id="composer-editor"
-      className="min-h-[2.4rem] w-full overflow-hidden rounded-md border border-line bg-bg0 font-mono transition-colors focus-within:border-mint/60"
+      // Fixed height: growing per typed line would reflow the terminal (and
+      // its TUI) on every wrap — resize exactly once per open/close.
+      className="h-[7.5rem] w-full overflow-hidden rounded-md border border-line bg-bg0 font-mono transition-colors focus-within:border-mint/60"
     />
   );
 }

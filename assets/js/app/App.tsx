@@ -129,6 +129,7 @@ export default function App() {
 
   const focusQuickShell = () => window.setTimeout(() => qsActions.current?.focus(), 150);
 
+
   // Quick shells are disposable — any ephemeral session surviving a reload
   // is a leftover, so clean it up once the first session list arrives.
   const qsCleanedRef = useRef(false);
@@ -250,6 +251,18 @@ export default function App() {
     .map((id) => sessions.find((s) => s.id === id))
     .filter((s): s is Session => Boolean(s));
   const qsSession = qsSessions.find((s) => s.id === qsActiveId) ?? qsSessions[0] ?? null;
+
+  // Composer open/close changes the terminal's height — refit right away
+  // (and once more after the layout settles) so TUIs never sit clipped.
+  const activeComposerOpen = active ? Boolean(composerOpen[active.id]) : false;
+  useEffect(() => {
+    const t1 = window.setTimeout(() => termActions.current?.refit(), 50);
+    const t2 = window.setTimeout(() => termActions.current?.refit(), 300);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [activeComposerOpen]);
 
   useEffect(() => {
     if (!active) return;

@@ -286,6 +286,11 @@ export default function InputBar({
           setSlash(slashAt(text, pos));
           setMentionIndex(0);
         }}
+        onFiles={(files) => {
+          const list = new DataTransfer();
+          for (const f of files) list.items.add(f);
+          void attach(list.files);
+        }}
       />
 
       <div className="mt-1 flex items-center gap-2">
