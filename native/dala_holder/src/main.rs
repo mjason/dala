@@ -293,49 +293,13 @@ fn main() {
                 };
 
                 match job {
-                    Job::Output(chunk) => {
-                        if let Some(mut stream) = stream {
-                            if write_frame(&mut stream, T_OUTPUT, &chunk).is_err() {
-                                // Undeliverable bytes are simply dropped: the
-                                // emulator has them, and any future client
-                                // starts from a repaint that covers them.
-                                let mut shared = state.shared.lock().unwrap();
-                                if shared.client_gen == gen {
-                                    shared.client = None;
-                                }
-                            }
-                        }
-                    }
-                    Job::Cwd(cwd) => {
-                        if let Some(mut stream) = stream {
-                            if write_frame(&mut stream, T_CWD, cwd.as_bytes()).is_err() {
-                                let mut shared = state.shared.lock().unwrap();
-                                if shared.client_gen == gen {
-                                    shared.client = None;
-                                }
-                            }
-                        }
-                    }
-                    Job::Agent(payload) => {
-                        if let Some(mut stream) = stream {
-                            if write_frame(&mut stream, T_AGENT, &payload).is_err() {
-                                let mut shared = state.shared.lock().unwrap();
-                                if shared.client_gen == gen {
-                                    shared.client = None;
-                                }
-                            }
-                        }
-                    }
-                    Job::Repaint(repaint) => {
-                        if let Some(mut stream) = stream {
-                            if write_frame(&mut stream, T_REPAINT, &repaint).is_err() {
-                                let mut shared = state.shared.lock().unwrap();
-                                if shared.client_gen == gen {
-                                    shared.client = None;
-                                }
-                            }
-                        }
-                    }
+                    // Undeliverable frames are simply dropped: the emulator
+                    // has the bytes, and any future client starts from a
+                    // repaint that covers them.
+                    Job::Output(chunk) => send_or_drop(&state, stream, gen, T_OUTPUT, &chunk),
+                    Job::Cwd(cwd) => send_or_drop(&state, stream, gen, T_CWD, cwd.as_bytes()),
+                    Job::Agent(payload) => send_or_drop(&state, stream, gen, T_AGENT, &payload),
+                    Job::Repaint(repaint) => send_or_drop(&state, stream, gen, T_REPAINT, &repaint),
                     Job::Exit(status, final_screen) => {
                         // Durable first: a dala that is down right now finds the
                         // status and the last screen on reattach.
@@ -607,7 +571,21 @@ fn daemonize(socket_path: &std::path::Path) {
     }
 }
 
-fn write_frame(stream: &mut UnixStream, frame_type: u8, payload: &[u8]) -> std::io::Result<()> {
+/// Writes one frame to the (possibly already replaced) client; on failure,
+/// detaches the client — but only if it is still the same connection
+/// generation, so a newer client is never clobbered by a stale write.
+fn send_or_drop(state: &State, stream: Option<UnixStream>, gen: u64, frame_type: u8, payload: &[u8]) {
+    if let Some(mut stream) = stream {
+        if write_frame(&mut stream, frame_type, payload).is_err() {
+            let mut shared = state.shared.lock().unwrap();
+            if shared.client_gen == gen {
+                shared.client = None;
+            }
+        }
+    }
+}
+
+fn write_frame(stream: &mut impl Write, frame_type: u8, payload: &[u8]) -> std::io::Result<()> {
     let len = (payload.len() + 1) as u32;
     stream.write_all(&len.to_be_bytes())?;
     stream.write_all(&[frame_type])?;
@@ -615,7 +593,7 @@ fn write_frame(stream: &mut UnixStream, frame_type: u8, payload: &[u8]) -> std::
     stream.flush()
 }
 
-fn read_frame(stream: &mut UnixStream) -> std::io::Result<(u8, Vec<u8>)> {
+fn read_frame(stream: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     let mut header = [0u8; 4];
     stream.read_exact(&mut header)?;
     let len = u32::from_be_bytes(header) as usize;
@@ -629,6 +607,221 @@ fn read_frame(stream: &mut UnixStream) -> std::io::Result<(u8, Vec<u8>)> {
     Ok((frame_type, payload))
 }
 
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Serializes a frame into a byte buffer.
+    fn framed(frame_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, frame_type, payload).unwrap();
+        buf
+    }
+
+    #[test]
+    fn wire_format_is_len_prefix_type_tag_payload() {
+        let buf = framed(T_OUTPUT, b"hi");
+        // 4-byte BE length (payload + 1 type byte), then tag, then payload.
+        assert_eq!(buf, [0, 0, 0, 3, T_OUTPUT, b'h', b'i']);
+    }
+
+    #[test]
+    fn round_trips_normal_frame() {
+        let buf = framed(T_INPUT, b"echo hello\n");
+        let (ty, payload) = read_frame(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(ty, T_INPUT);
+        assert_eq!(payload, b"echo hello\n");
+    }
+
+    #[test]
+    fn round_trips_empty_payload() {
+        let buf = framed(T_KILL, b"");
+        assert_eq!(buf, [0, 0, 0, 1, T_KILL]);
+        let (ty, payload) = read_frame(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(ty, T_KILL);
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn round_trips_every_frame_type_byte_exact() {
+        let types = [
+            T_HELLO, T_OUTPUT, T_EXIT, T_REPAINT, T_CWD, T_AGENT, T_INPUT, T_RESIZE, T_KILL,
+            T_REPAINT_REQ,
+        ];
+        for &ty in &types {
+            // Payload exercises all byte values including 0x00 and 0xff.
+            let payload: Vec<u8> = (0..=255u8).collect();
+            let buf = framed(ty, &payload);
+            let (got_ty, got_payload) = read_frame(&mut Cursor::new(buf)).unwrap();
+            assert_eq!(got_ty, ty);
+            assert_eq!(got_payload, payload);
+        }
+    }
+
+    #[test]
+    fn rejects_zero_length_frame() {
+        let buf = vec![0u8, 0, 0, 0];
+        let err = read_frame(&mut Cursor::new(buf)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn rejects_oversized_frame() {
+        // Declared length just over the 16 MiB cap; no payload needed —
+        // the cap check happens before any payload read.
+        let len = (16 * 1024 * 1024 + 1) as u32;
+        let buf = len.to_be_bytes().to_vec();
+        let err = read_frame(&mut Cursor::new(buf)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn accepts_frame_at_exact_size_cap() {
+        let payload = vec![0xabu8; 16 * 1024 * 1024 - 1];
+        let buf = framed(T_OUTPUT, &payload);
+        let (ty, got) = read_frame(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(ty, T_OUTPUT);
+        assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn truncated_header_is_err() {
+        let buf = vec![0u8, 0, 0]; // only 3 of 4 header bytes
+        assert!(read_frame(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn truncated_payload_is_err() {
+        let mut buf = framed(T_OUTPUT, b"full payload");
+        buf.truncate(buf.len() - 3);
+        assert!(read_frame(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn reads_consecutive_frames_from_one_stream() {
+        let mut buf = framed(T_CWD, b"/tmp");
+        buf.extend(framed(T_EXIT, &7u32.to_be_bytes()));
+        let mut cur = Cursor::new(buf);
+        let (t1, p1) = read_frame(&mut cur).unwrap();
+        let (t2, p2) = read_frame(&mut cur).unwrap();
+        assert_eq!((t1, p1.as_slice()), (T_CWD, b"/tmp".as_slice()));
+        assert_eq!(t2, T_EXIT);
+        assert_eq!(u32::from_be_bytes(p2.try_into().unwrap()), 7);
+    }
+}
+
+#[cfg(test)]
+mod percent_decode_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_escaped_slash() {
+        assert_eq!(percent_decode("%2Ftmp%2Fx").as_deref(), Some("/tmp/x"));
+    }
+
+    #[test]
+    fn passes_literal_text_through() {
+        assert_eq!(
+            percent_decode("/home/mj/dev").as_deref(),
+            Some("/home/mj/dev")
+        );
+    }
+
+    #[test]
+    fn decodes_mixed_case_hex_and_spaces() {
+        assert_eq!(
+            percent_decode("/a%20b/%C3%A9").as_deref(),
+            Some("/a b/é")
+        );
+    }
+
+    #[test]
+    fn truncated_escape_at_end_is_literal() {
+        // "%2" at end: not enough bytes to decode, kept verbatim.
+        assert_eq!(percent_decode("/tmp/x%2").as_deref(), Some("/tmp/x%2"));
+        assert_eq!(percent_decode("/tmp/x%").as_deref(), Some("/tmp/x%"));
+    }
+
+    #[test]
+    fn invalid_hex_pair_is_none() {
+        assert_eq!(percent_decode("/tmp/%zz/x"), None);
+    }
+
+    #[test]
+    fn double_percent_before_hex_is_none() {
+        // "%%4" parses "%4" as the hex pair, which is invalid.
+        assert_eq!(percent_decode("%%41"), None);
+    }
+
+    #[test]
+    fn bare_double_percent_at_end_is_literal() {
+        assert_eq!(percent_decode("/x%%").as_deref(), Some("/x%%"));
+    }
+
+    #[test]
+    fn invalid_utf8_after_decode_is_none() {
+        assert_eq!(percent_decode("/x%FF/y"), None);
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn minimal_config_gets_defaults() {
+        let json = r#"{"socket":"/tmp/h.sock","shell":"/bin/zsh","rows":24,"cols":80}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.socket, "/tmp/h.sock");
+        assert_eq!(config.shell, "/bin/zsh");
+        assert_eq!(config.rows, 24);
+        assert_eq!(config.cols, 80);
+        assert!(config.args.is_empty());
+        assert_eq!(config.cwd, "");
+        assert!(config.env.is_empty());
+        assert!(config.env_remove.is_empty());
+        assert_eq!(config.history_lines, 10_000);
+    }
+
+    #[test]
+    fn full_config_parses() {
+        let json = r#"{
+            "socket": "/run/dala/s1.sock",
+            "shell": "/usr/bin/fish",
+            "args": ["-l", "-i"],
+            "cwd": "/home/mj",
+            "env": [["TERM", "xterm-256color"], ["LANG", "en_US.UTF-8"]],
+            "env_remove": ["CLAUDECODE"],
+            "rows": 50,
+            "cols": 120,
+            "history_lines": 5000
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.socket, "/run/dala/s1.sock");
+        assert_eq!(config.shell, "/usr/bin/fish");
+        assert_eq!(config.args, vec!["-l", "-i"]);
+        assert_eq!(config.cwd, "/home/mj");
+        assert_eq!(
+            config.env,
+            vec![
+                ("TERM".to_string(), "xterm-256color".to_string()),
+                ("LANG".to_string(), "en_US.UTF-8".to_string()),
+            ]
+        );
+        assert_eq!(config.env_remove, vec!["CLAUDECODE"]);
+        assert_eq!(config.rows, 50);
+        assert_eq!(config.cols, 120);
+        assert_eq!(config.history_lines, 5000);
+    }
+
+    #[test]
+    fn missing_required_field_is_err() {
+        let json = r#"{"socket":"/tmp/h.sock","rows":24,"cols":80}"#;
+        assert!(serde_json::from_str::<Config>(json).is_err());
+    }
+}
 
 #[cfg(test)]
 mod scan_tests {
