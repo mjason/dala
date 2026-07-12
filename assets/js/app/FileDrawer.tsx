@@ -1,7 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buildCSRFHeaders, deleteEntry, listDirectory } from "../ash_rpc";
-import { call } from "./rpc";
-import type { ListDirectoryFields } from "../ash_rpc";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { humanBytes, writeClipboard } from "./util";
 import { useI18n } from "./i18n";
 import FilePreview, { type Preview } from "./FilePreview";
@@ -11,34 +8,13 @@ import { FileTypeIcon } from "./fileIcons";
 import { collectTransferFiles } from "./pasteFiles";
 import { Kbd, KeyHint, modLabel } from "./shortcuts";
 import ResizeHandle from "./ResizeHandle";
+import { buildTreeRows, crumbs, relativePath } from "./fileDrawer/tree";
+import type { DeleteTarget, SelectableRow, TreeRow } from "./fileDrawer/tree";
+import { Chevron, DownloadIcon, Row, UploadIcon } from "./fileDrawer/rows";
+import { useDirTree } from "./fileDrawer/useDirTree";
+import { useFileOps } from "./fileDrawer/useFileOps";
 
-// "entries" as a leaf field returns the full entry maps; the generated
-// selection type has no shape for arrays of typed maps, hence the cast.
-const DIR_FIELDS = ["path", "parent", "entries"] as unknown as ListDirectoryFields;
-
-
-export type Entry = {
-  name: string;
-  type: string;
-  symlink: boolean;
-  size: number;
-  mtime: string | null;
-};
-
-type Listing = {
-  path: string;
-  parent: string | null;
-  entries: Entry[];
-};
-
-type TreeRow =
-  | { kind: "up"; path: string }
-  | { kind: "dir" | "file"; path: string; entry: Entry; depth: number; parentDir: string }
-  | { kind: "note"; id: string; text: string; depth: number };
-
-type SelectableRow = Exclude<TreeRow, { kind: "note" }>;
-
-type DeleteTarget = { path: string; isDir: boolean; parentDir: string };
+export type { Entry } from "./fileDrawer/tree";
 
 type Props = {
   path: string;
@@ -53,20 +29,6 @@ type Props = {
   onResetWidth?: () => void;
 };
 
-function join(dir: string, name: string): string {
-  return `${dir === "/" ? "" : dir}/${name}`;
-}
-
-/** VS Code-style relative path from the drawer root to a target. */
-function relativePath(from: string, to: string): string {
-  const f = from.split("/").filter(Boolean);
-  const s = to.split("/").filter(Boolean);
-  let i = 0;
-  while (i < f.length && i < s.length && f[i] === s[i]) i++;
-  const parts = [...Array(f.length - i).fill(".."), ...s.slice(i)];
-  return parts.length ? parts.join("/") : ".";
-}
-
 export default function FileDrawer({
   path,
   followCwd,
@@ -79,10 +41,8 @@ export default function FileDrawer({
   onResetWidth,
 }: Props) {
   const { t } = useI18n();
-  const [root, setRoot] = useState<Listing | null>(null);
-  const [children, setChildren] = useState<Record<string, Entry[]>>({});
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
+  const { root, children, expanded, loadingDirs, refreshDir, refreshAll, toggleDir, expandDir } =
+    useDirTree(path, onError);
   const [showHidden, setShowHidden] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [editOnOpen, setEditOnOpen] = useState(false);
@@ -94,140 +54,20 @@ export default function FileDrawer({
     null,
   );
   const ctxUploadDir = useRef<string | null>(null);
-  const [uploading, setUploading] = useState(false);
   // Directory a drag is currently hovering over (drop target highlight).
   const [dropDir, setDropDir] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
-  const fetchDir = useCallback(
-    async (target: string): Promise<Listing | null> => {
-      const result = await call<Listing>(listDirectory, {
-        input: { path: target },
-        fields: DIR_FIELDS,
-      });
-      if (result.ok) return result.data;
-      onError(result.error || t("couldNotListDirectory"));
-      return null;
+  const { uploading, uploadTo, deleteEntryAt } = useFileOps({
+    onError,
+    refreshDir,
+    expandDir,
+    onDeleted: (target) => {
+      if (selectedPath === target.path) setSelectedPath(null);
+      if (preview && preview.path.startsWith(target.path)) setPreview(null);
     },
-    [onError, t],
-  );
-
-  const refreshDir = useCallback(
-    async (dir: string) => {
-      const listing = await fetchDir(dir);
-      if (listing) setChildren((prev) => ({ ...prev, [dir]: listing.entries }));
-    },
-    [fetchDir],
-  );
-
-  // (Re)load the tree root whenever the drawer path changes.
-  useEffect(() => {
-    let stale = false;
-    void fetchDir(path).then((listing) => {
-      if (stale || !listing) return;
-      setRoot(listing);
-      setChildren({ [listing.path]: listing.entries });
-      setExpanded(new Set([listing.path]));
-    });
-    return () => {
-      stale = true;
-    };
-  }, [path, fetchDir]);
-
-  // External changes (terminal commands, agents deleting/creating files)
-  // don't announce themselves — a watch socket does: the server runs
-  // inotifywait (or mtime polling) on the expanded directories and pushes
-  // {"changed": dir}. Silent refresh; reconnects with backoff.
-  const refreshSilent = useCallback(
-    async (dir: string) => {
-      const result = await call<Listing>(listDirectory, {
-        input: { path: dir },
-        fields: DIR_FIELDS,
-      });
-      if (result.ok) {
-        setChildren((prev) => ({ ...prev, [dir]: result.data.entries }));
-      }
-    },
-    [],
-  );
-
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
-  const watchRef = useRef<WebSocket | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    let socket: WebSocket | null = null;
-    let retry: number | undefined;
-
-    const connect = () => {
-      if (disposed) return;
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      socket = new WebSocket(`${proto}://${window.location.host}/files/watch`);
-      watchRef.current = socket;
-      socket.onopen = () => {
-        socket?.send(JSON.stringify({ watch: [...expandedRef.current] }));
-      };
-      socket.onmessage = (event) => {
-        try {
-          const body = JSON.parse(String(event.data)) as { changed?: string };
-          if (body.changed) void refreshSilent(body.changed);
-        } catch {
-          // ignore malformed frames
-        }
-      };
-      socket.onclose = () => {
-        watchRef.current = null;
-        if (!disposed) retry = window.setTimeout(connect, 3000);
-      };
-    };
-    connect();
-
-    return () => {
-      disposed = true;
-      window.clearTimeout(retry);
-      socket?.close();
-    };
-  }, [refreshSilent]);
-
-  // Keep the server's watch list in sync with what is expanded on screen.
-  useEffect(() => {
-    const socket = watchRef.current;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ watch: [...expanded] }));
-    }
-  }, [expanded]);
-
-  // Manual refresh: refetch everything visible right now.
-  const refreshAll = useCallback(() => {
-    for (const dir of expandedRef.current) void refreshSilent(dir);
-  }, [refreshSilent]);
-
-  const toggleDir = async (dirPath: string) => {
-    if (expanded.has(dirPath)) {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        next.delete(dirPath);
-        return next;
-      });
-      return;
-    }
-
-    if (!children[dirPath]) {
-      setLoadingDirs((prev) => new Set(prev).add(dirPath));
-      const listing = await fetchDir(dirPath);
-      setLoadingDirs((prev) => {
-        const next = new Set(prev);
-        next.delete(dirPath);
-        return next;
-      });
-      if (!listing) return;
-      setChildren((prev) => ({ ...prev, [dirPath]: listing.entries }));
-    }
-
-    setExpanded((prev) => new Set(prev).add(dirPath));
-  };
+  });
 
   const openFile = async (filePath: string, size: number, opts: { edit?: boolean } = {}) => {
     setPreviewLoading(filePath);
@@ -251,99 +91,19 @@ export default function FileDrawer({
     return root?.path ?? null;
   };
 
-  const uploadTo = async (dir: string, files: File[]) => {
-    if (files.length === 0) return;
-    setUploading(true);
-
-    for (const file of files) {
-      const form = new FormData();
-      form.append("dir", dir);
-      form.append("file", file);
-
-      try {
-        const response = await fetch("/files/upload", {
-          method: "POST",
-          headers: buildCSRFHeaders(),
-          body: form,
-        });
-        if (!response.ok) {
-          let message = t("uploadFailed");
-          try {
-            message = (await response.json()).error ?? message;
-          } catch {
-            // Non-JSON error body: keep the generic message.
-          }
-          onError(message);
-        }
-      } catch {
-        onError(t("uploadFailed"));
-      }
-    }
-
-    setUploading(false);
-    await refreshDir(dir);
-    // Make the destination visible so the new files show up immediately.
-    setExpanded((prev) => new Set(prev).add(dir));
-  };
-
   const confirmDelete = async () => {
     const target = deleteTarget;
     if (!target) return;
     setDeleteTarget(null);
-
-    const result = await call<unknown>(deleteEntry, {
-      input: { path: target.path },
-      fields: ["path"],
-    });
-    if (!result.ok) {
-      onError(result.error || t("somethingWentWrong"));
-      return;
-    }
-
-    if (selectedPath === target.path) setSelectedPath(null);
-    if (preview && preview.path.startsWith(target.path)) setPreview(null);
-    await refreshDir(target.parentDir);
+    await deleteEntryAt(target);
   };
 
   // The tree flattened to visible rows — one source of truth for both
   // rendering and keyboard navigation.
-  const rows = useMemo<TreeRow[]>(() => {
-    const out: TreeRow[] = [];
-    if (root?.parent != null) out.push({ kind: "up", path: root.parent });
-
-    const walk = (dirPath: string, depth: number) => {
-      const all = children[dirPath];
-      if (!all) return;
-
-      const entries = all.filter((entry) => showHidden || !entry.name.startsWith("."));
-      const hiddenCount = all.length - entries.length;
-
-      for (const entry of entries) {
-        const entryPath = join(dirPath, entry.name);
-        if (entry.type === "directory") {
-          out.push({ kind: "dir", path: entryPath, entry, depth, parentDir: dirPath });
-          if (expanded.has(entryPath)) walk(entryPath, depth + 1);
-        } else {
-          out.push({ kind: "file", path: entryPath, entry, depth, parentDir: dirPath });
-        }
-      }
-
-      if (hiddenCount > 0 && !showHidden) {
-        out.push({
-          kind: "note",
-          id: dirPath + ":hidden",
-          text: t("hiddenCount", { count: hiddenCount }),
-          depth,
-        });
-      }
-      if (all.length === 0) {
-        out.push({ kind: "note", id: dirPath + ":empty", text: t("emptyDirectory"), depth });
-      }
-    };
-
-    if (root) walk(root.path, 0);
-    return out;
-  }, [root, children, expanded, showHidden, t]);
+  const rows = useMemo<TreeRow[]>(
+    () => buildTreeRows(root, children, expanded, showHidden, t),
+    [root, children, expanded, showHidden, t],
+  );
 
   const selectable = useMemo(
     () => rows.filter((row): row is SelectableRow => row.kind !== "note"),
@@ -863,111 +623,5 @@ export default function FileDrawer({
         />
       )}
     </section>
-  );
-}
-
-function crumbs(path: string): { label: string; path: string }[] {
-  if (path === "/") return [{ label: "/", path: "/" }];
-  const parts = path.split("/").filter(Boolean);
-  const out = [{ label: "/", path: "/" }];
-  let acc = "";
-  for (const part of parts) {
-    acc += "/" + part;
-    out.push({ label: part, path: acc });
-  }
-  return out;
-}
-
-function Row({
-  path,
-  dropDir,
-  dropTarget,
-  depth,
-  icon,
-  extraIcon,
-  name,
-  detail,
-  symlink,
-  loading,
-  selected,
-  onClick,
-  actions,
-}: {
-  path: string;
-  dropDir?: string | null;
-  dropTarget?: boolean;
-  depth: number;
-  icon: React.ReactNode;
-  extraIcon: React.ReactNode;
-  name: string;
-  detail?: string;
-  symlink?: boolean;
-  loading?: boolean;
-  selected?: boolean;
-  onClick: () => void;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <div
-      role="treeitem"
-      aria-selected={selected}
-      data-path={path}
-      data-dropdir={dropDir ?? undefined}
-      onClick={onClick}
-      className={`group flex w-full cursor-pointer items-center gap-1.5 px-3 py-[5px] text-left transition-colors ${
-        selected ? "bg-bg2 " : "hover:bg-bg2/70"
-      } ${dropTarget ? "bg-mint/10" : ""}`}
-      style={{ paddingLeft: 12 + depth * 14 }}
-    >
-      <span className="grid w-3.5 shrink-0 place-items-center text-fg-muted">{icon}</span>
-      <span className="shrink-0 text-fg-muted">{extraIcon}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">
-        {name}
-        {symlink && <span className="text-fg-muted"> ⇢</span>}
-      </span>
-      {actions && (
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">{actions}</span>
-      )}
-      {loading ? (
-        <span className="shrink-0 font-mono text-[11px] text-mint">…</span>
-      ) : (
-        detail && (
-          <span className="shrink-0 font-mono text-[11px] text-fg-muted group-hover:hidden">
-            {detail}
-          </span>
-        )
-      )}
-    </div>
-  );
-}
-
-function Chevron({ open, loading }: { open: boolean; loading: boolean }) {
-  if (loading) return <span className="font-mono text-[11px] text-mint">…</span>;
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-    >
-      <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function UploadIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M8 10.5v-7M4.5 6.5 8 3l3.5 3.5M3 12.5h10" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function DownloadIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M8 3v7M4.5 6.5 8 10l3.5-3.5M3 12.5h10" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }

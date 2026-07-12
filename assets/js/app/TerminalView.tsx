@@ -16,9 +16,9 @@ import {
 import { base64ToBytes, writeClipboard } from "./util";
 import { createStreamGate } from "./streamGate";
 import { createAckCounter } from "./flowControl";
-import { savePastedFile } from "../ash_rpc";
-import { call } from "./rpc";
-import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
+import { collectTransferFiles } from "./pasteFiles";
+import { pastedPathsText, uploadPastedFiles } from "./pastedFileUpload";
+import { resolveSendMode, sendComposedText, type SendStrategy } from "./terminalSend";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
 import { isMac } from "./shortcuts";
@@ -93,12 +93,7 @@ class Osc52Provider implements IClipboardProvider {
   }
 }
 
-/** How composed text + Enter reach the foreground app's PTY. Ported from
- * Warp's per-agent rich-input strategies (app/src/terminal/view/
- * use_agent_footer): Codex's paste-burst heuristics swallow a rapid Enter
- * (bracketed paste + immediate CR), while Claude/opencode/Gemini ignore a
- * CR that arrives in the same buffer as the text (bare text + delayed CR). */
-export type SendStrategy = "inline" | "bracketed" | "delayed" | "bracketed-delayed";
+export type { SendStrategy } from "./terminalSend";
 
 export type TerminalActions = {
   reset: () => void;
@@ -437,32 +432,10 @@ export default function TerminalView({
         // Empty text with submit=true is a bare "press Enter" (the composer
         // submits separately after pasting attachments).
         if (!gate.acceptInput() || (!text && !submit)) return;
-        const mode: SendStrategy =
-          strategy ?? (term.modes.bracketedPasteMode ? "bracketed" : "inline");
-        const bracket = mode === "bracketed" || mode === "bracketed-delayed";
-        const push = (data: string) => phxChannel.push("input", { data });
-
-        // Claude Code's `!` (bash) / `&` (background) mode prefixes must
-        // arrive alone first, so the agent switches modes before the text.
-        let body = text;
-        let delayExtra = 0;
-        if ((body.startsWith("!") || body.startsWith("&")) && body.length > 1 && !bracket) {
-          push(body[0]);
-          body = body.slice(1);
-          delayExtra = 50;
-        }
-
-        const sendBody = () => {
-          if (body) push(bracket ? `\x1b[200~${body}\x1b[201~` : body);
-          if (!submit) return;
-          if (mode === "delayed" || mode === "bracketed-delayed") {
-            window.setTimeout(() => push("\r"), mode === "bracketed-delayed" ? 300 : 50);
-          } else {
-            push("\r");
-          }
-        };
-        if (delayExtra) window.setTimeout(sendBody, delayExtra);
-        else sendBody();
+        const mode = resolveSendMode(strategy, term.modes.bracketedPasteMode);
+        sendComposedText(text, submit, mode, (data) =>
+          phxChannel.push("input", { data }),
+        );
       };
       if (actionsRef) {
         actionsRef.current = { reset, refit, focus: () => term.focus(), sendText };
@@ -523,25 +496,11 @@ export default function TerminalView({
       // dropping a file onto a native terminal. Text-only pastes fall through
       // to xterm's own handler.
       const uploadFiles = async (files: File[]) => {
-        const paths: string[] = [];
-        for (const file of files) {
-          try {
-            const contentBase64 = await fileToBase64(file);
-            const result = await call<{ path: string }>(savePastedFile, {
-              input: { name: pasteName(file), contentBase64 },
-              fields: ["path"],
-            });
-            if (result.ok) {
-              paths.push(result.data.path);
-            } else {
-              errorRef.current?.(result.error || "could not upload pasted file");
-            }
-          } catch (error) {
-            errorRef.current?.(error instanceof Error ? error.message : "could not read file");
-          }
-        }
+        const paths = await uploadPastedFiles(files, (message) =>
+          errorRef.current?.(message),
+        );
         if (paths.length > 0 && !disposed) {
-          term.paste(paths.join(" ") + " ");
+          term.paste(pastedPathsText(paths));
           term.focus();
         }
       };

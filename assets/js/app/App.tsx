@@ -1,21 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Channel } from "phoenix";
-import {
-  createSession,
-  deleteSession,
-  foregroundApp,
-  kickViewers,
-  listSessions,
-  restartSession,
-} from "../ash_rpc";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createSession, deleteSession, foregroundApp, kickViewers } from "../ash_rpc";
 import { call } from "./rpc";
-import {
-  createSessionsChannel,
-  onSessionsChannelMessages,
-  unsubscribeSessionsChannel,
-} from "../ash_typed_channels";
 import type { AgentEventPayload } from "../ash_types";
-import { getSocket } from "./socket";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView, { type TerminalActions } from "./TerminalView";
 import QuickShellPanel from "./QuickShellPanel";
@@ -27,45 +13,17 @@ import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
-import {
-  BINDINGS,
-  comboToAccelerator,
-  loadBindings,
-  matchCombo,
-  onBindingsChange,
-} from "./keybindings";
-import { notificationsEnabled } from "./notifyPrefs";
+import { useSessions, SESSION_FIELDS } from "./hooks/useSessions";
+import { usePanelLayout, clampWidth, PANEL_W } from "./hooks/usePanelLayout";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { useNotifications, agentStateFor } from "./hooks/useNotifications";
 import { historyLines, shortPath } from "./util";
 import { useI18n } from "./i18n";
 
-const SESSION_FIELDS = [
-  "id",
-  "name",
-  "shell",
-  "cwd",
-  "status",
-  "exitCode",
-  "scrollbackLimit",
-  "ephemeral",
-  "insertedAt",
-] as const;
-
 type Toast = { id: number; message: string };
-
-const clampWidth = (value: number, min: number, max: number) =>
-  Math.min(Math.max(Math.round(value), min), Math.max(min, max));
-
-/** Default panel widths in px (352 = the former w-[22rem]). */
-const PANEL_W = { sidebar: 256, qs: 800, drawer: 352, git: 352 };
 
 export default function App() {
   const { t } = useI18n();
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(
-    () => localStorage.getItem("dala:active") || null,
-  );
-  const [connected, setConnected] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   // Desktop sidebar collapse (VS Code's Ctrl/Cmd+B), remembered per browser.
   const [sidebarHidden, setSidebarHidden] = useState(
@@ -106,26 +64,6 @@ export default function App() {
     window.setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), 5000);
   }, []);
 
-  const upsertSession = useCallback((session: Session) => {
-    setSessions((list) => {
-      const idx = list.findIndex((s) => s.id === session.id);
-      if (idx === -1) return [...list, session];
-      const next = [...list];
-      next[idx] = session;
-      return next;
-    });
-  }, []);
-
-  // Trail of visited sessions plus quick-shell panel state. Refs, because
-  // the channel handlers below are registered once and must not see stale
-  // state.
-  const activeIdRef = useRef<string | null>(null);
-  const historyRef = useRef<string[]>([]);
-  const sessionsRef = useRef<Session[]>([]);
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-
   // The quick shells live in one overlay panel (not the sidebar): ephemeral
   // sessions as tabs, toggled open/closed, maximizable.
   const [qsIds, setQsIds] = useState<string[]>([]);
@@ -138,123 +76,55 @@ export default function App() {
 
   const focusQuickShell = () => window.setTimeout(() => qsActions.current?.focus(), 150);
 
+  const agentEventRef = useRef<(p: AgentEventPayload) => void>(() => {});
 
-  // Quick shells are disposable — any ephemeral session surviving a reload
-  // is a leftover, so clean it up once the first session list arrives.
-  const qsCleanedRef = useRef(false);
-  useEffect(() => {
-    if (qsCleanedRef.current || sessions.length === 0) return;
-    qsCleanedRef.current = true;
-    for (const orphan of sessions.filter((s) => s.ephemeral)) {
-      void call<unknown>(deleteSession, { identity: orphan.id });
-    }
-  }, [sessions]);
-
-  // Draggable panel widths, remembered per browser. Double-clicking a
-  // handle resets that panel; settings has a reset-all button (it fires
-  // the dala:reset-layout event).
-  const [sidebarW, setSidebarW] = useState(() =>
-    clampWidth(Number(localStorage.getItem("dala:sidebar-w")) || PANEL_W.sidebar, 180, 440),
-  );
-  const [qsW, setQsW] = useState(() =>
-    clampWidth(
-      Number(localStorage.getItem("dala:qs-w")) || PANEL_W.qs,
-      380,
-      window.innerWidth - 160,
-    ),
-  );
-  const [drawerW, setDrawerW] = useState(() =>
-    clampWidth(Number(localStorage.getItem("dala:drawer-w")) || PANEL_W.drawer, 260, 720),
-  );
-  const [gitW, setGitW] = useState(() =>
-    clampWidth(Number(localStorage.getItem("dala:git-w")) || PANEL_W.git, 280, 800),
-  );
-  useEffect(() => localStorage.setItem("dala:sidebar-w", String(sidebarW)), [sidebarW]);
-  useEffect(() => localStorage.setItem("dala:qs-w", String(qsW)), [qsW]);
-  useEffect(() => localStorage.setItem("dala:drawer-w", String(drawerW)), [drawerW]);
-  useEffect(() => localStorage.setItem("dala:git-w", String(gitW)), [gitW]);
-  useEffect(() => {
-    const reset = () => {
-      setSidebarW(PANEL_W.sidebar);
-      setQsW(PANEL_W.qs);
-      setDrawerW(PANEL_W.drawer);
-      setGitW(PANEL_W.git);
-    };
-    window.addEventListener("dala:reset-layout", reset);
-    return () => window.removeEventListener("dala:reset-layout", reset);
-  }, []);
-
-  // Socket status + sessions lobby channel.
-  useEffect(() => {
-    const socket = getSocket();
-    const openRef = socket.onOpen(() => setConnected(true));
-    const closeRef = socket.onClose(() => setConnected(false));
-    setConnected(socket.isConnected());
-
-    const channel = createSessionsChannel(socket);
-    const phxChannel = channel as unknown as Channel;
-    const refs = onSessionsChannelMessages(channel, {
-      session_created: upsertSession,
-      session_updated: upsertSession,
-      agent_event: (payload) => agentEventRef.current(payload),
-      session_deleted: ({ id }) => {
-        setSessions((list) => list.filter((s) => s.id !== id));
-        // A quick shell destroyed itself (exit/Ctrl+D): drop its tab, and
-        // the whole panel when it was the last one.
-        if (qsRef.current.ids.includes(id)) {
-          const rest = qsRef.current.ids.filter((x) => x !== id);
-          setQsIds(rest);
-          if (rest.length === 0) {
-            setQsOpen(false);
-            setQsMax(false);
-            setQsActiveId(null);
-            termActions.current?.focus();
-          } else if (qsRef.current.activeId === id) {
-            setQsActiveId(rest[rest.length - 1]);
-            if (qsRef.current.open) focusQuickShell();
-          }
+  const {
+    sessions,
+    setSessions,
+    upsertSession,
+    ordered,
+    active,
+    activeId,
+    setActiveId,
+    connected,
+    creating,
+    activeIdRef,
+    sessionsRef,
+    handleCreate: createMainSession,
+    handleRestart: restartMainSession,
+    handleDelete,
+  } = useSessions({
+    toast,
+    onAgentEvent: (payload) => agentEventRef.current(payload),
+    onSessionDeleted: (id) => {
+      // A quick shell destroyed itself (exit/Ctrl+D): drop its tab, and
+      // the whole panel when it was the last one.
+      if (qsRef.current.ids.includes(id)) {
+        const rest = qsRef.current.ids.filter((x) => x !== id);
+        setQsIds(rest);
+        if (rest.length === 0) {
+          setQsOpen(false);
+          setQsMax(false);
+          setQsActiveId(null);
+          termActions.current?.focus();
+        } else if (qsRef.current.activeId === id) {
+          setQsActiveId(rest[rest.length - 1]);
+          if (qsRef.current.open) focusQuickShell();
         }
-        // The active session was deleted: return to the most recently
-        // visited one that still exists.
-        if (id === activeIdRef.current) {
-          const previous = [...historyRef.current]
-            .reverse()
-            .find((h) => h !== id && sessionsRef.current.some((s) => s.id === h));
-          if (previous) setActiveId(previous);
-        }
-      },
-    });
-    phxChannel.join();
-
-    void (async () => {
-      const result = await call<Session[]>(listSessions, {
-        fields: [...SESSION_FIELDS],
-        sort: "insertedAt",
-      });
-      if (result.ok) {
-        setSessions(result.data);
-      } else {
-        toast(result.error || t("couldNotLoadSessions"));
       }
-    })();
+    },
+  });
 
-    return () => {
-      unsubscribeSessionsChannel(channel, refs);
-      phxChannel.leave();
-      socket.off([openRef, closeRef]);
-    };
-  }, [toast, upsertSession, t]);
+  const { sidebarW, setSidebarW, qsW, setQsW, drawerW, setDrawerW, gitW, setGitW } =
+    usePanelLayout();
 
-  // Quick shells (ephemeral) live in their overlay panel, not the sidebar
-  // or the active-session rotation.
-  const ordered = useMemo(
-    () =>
-      [...sessions]
-        .filter((s) => !s.ephemeral)
-        .sort((a, b) => a.insertedAt.localeCompare(b.insertedAt)),
-    [sessions],
-  );
-  const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
+  const { notifyAgentEvent } = useNotifications({
+    activeIdRef,
+    sessionsRef,
+    toast,
+    onJump: setActiveId,
+  });
+
   const qsSessions = qsIds
     .map((id) => sessions.find((s) => s.id === id))
     .filter((s): s is Session => Boolean(s));
@@ -282,35 +152,14 @@ export default function App() {
     };
   }, [activeComposerOpen]);
 
-  useEffect(() => {
-    if (!active) return;
-    localStorage.setItem("dala:active", active.id);
-    activeIdRef.current = active.id;
-    const trail = historyRef.current.filter((id) => id !== active.id);
-    trail.push(active.id);
-    historyRef.current = trail.slice(-20);
-  }, [active?.id]);
-
   // Keep the drawer on the terminal's cwd while following.
   useEffect(() => {
     if (followCwd && active) setDrawerPath(active.cwd);
   }, [followCwd, active?.id, active?.cwd]);
 
   const handleCreate = async (input: { cwd?: string; ephemeral?: boolean } = {}) => {
-    setCreating(true);
-    const result = await call<Session>(createSession, {
-      input,
-      fields: [...SESSION_FIELDS],
-    });
-    setCreating(false);
-    if (result.ok) {
-      const session = result.data;
-      upsertSession(session);
-      setActiveId(session.id);
-      setNavOpen(false);
-    } else {
-      toast(result.error || t("couldNotCreateTerminal"));
-    }
+    const session = await createMainSession(input);
+    if (session) setNavOpen(false);
   };
 
   // Quick shells (Ctrl+Shift+` or the header button): ephemeral terminals
@@ -359,26 +208,16 @@ export default function App() {
   quickShellRef.current = () => void toggleQuickShell();
 
   const handleRestart = async (id: string) => {
-    const result = await call<unknown>(restartSession, { input: { id } });
-    if (!result.ok) {
-      toast(result.error || t("couldNotRestart"));
-      return;
-    }
+    const ok = await restartMainSession(id);
+    if (!ok) return;
     // The revived shell is a fresh PTY at the default size — push our real size
     // immediately instead of waiting for a resize event.
     termActions.current?.refit();
     window.setTimeout(() => termActions.current?.refit(), 200);
   };
 
-  const agentEventRef = useRef<(p: AgentEventPayload) => void>(() => {});
   agentEventRef.current = (p) => {
-    const state = ["permission_request", "question_asked", "idle_prompt"].includes(p.event)
-      ? ("attention" as const)
-      : ["prompt_submit", "tool_complete", "session_start"].includes(p.event)
-        ? ("working" as const)
-        : ["stop", "notify"].includes(p.event)
-          ? ("done" as const)
-          : null;
+    const state = agentStateFor(p.event);
     if (!state) return;
     setAgentStatus((m) => ({ ...m, [p.id]: { state, at: Date.now() } }));
 
@@ -402,51 +241,7 @@ export default function App() {
       setComposerOpen((m) => ({ ...m, [p.id]: true }));
     }
 
-    // Notify when the user is elsewhere (other session, other window).
-    if (!notificationsEnabled()) return;
-    const important = ["stop", "permission_request", "question_asked", "idle_prompt", "notify"];
-    if (!important.includes(p.event)) return;
-    if (!document.hidden && p.id === activeIdRef.current) return;
-    const session = sessionsRef.current.find((s) => s.id === p.id);
-    const title = `${AGENT_LABELS[p.agent] ?? p.agent} · ${session?.name ?? "dala"}`;
-    const body =
-      p.summary ||
-      p.query ||
-      (p.event === "stop"
-        ? t("agentEventStop")
-        : p.event === "idle_prompt"
-          ? t("agentEventIdle")
-          : p.event === "question_asked"
-            ? t("agentEventQuestion")
-            : t("agentEventPermission"));
-    // Inside the desktop client, use the OS's own notifications (Notification
-    // Center / Windows toasts) via the preload bridge — no permission prompt,
-    // native look. Click-to-jump comes back as a "dala:notify-click" event.
-    const nativeNotify = (
-      window as { __DALA_NOTIFY__?: (p: { title: string; body: string; tag: string }) => Promise<unknown> }
-    ).__DALA_NOTIFY__;
-    if (nativeNotify) {
-      void nativeNotify({ title, body, tag: p.id });
-      return;
-    }
-    const show = () => {
-      const n = new Notification(title, { body, tag: `dala-agent-${p.id}` });
-      n.onclick = () => {
-        window.focus();
-        setActiveId(p.id);
-        n.close();
-      };
-    };
-    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      show();
-    } else if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      void Notification.requestPermission().then((perm) => {
-        if (perm === "granted") show();
-        else toast(`${title}: ${body}`);
-      });
-    } else {
-      toast(`${title}: ${body}`);
-    }
+    notifyAgentEvent(p);
   };
 
   // The shortcut is a three-state cycle: closed → open+focus; open but
@@ -582,144 +377,36 @@ export default function App() {
     }
   };
 
-  // Global shortcuts, resolved through the customizable keybinding registry
-  // (Settings → Shortcuts). Plain Ctrl+letter combos inside the terminal
-  // defer to readline (Ctrl+P history, Ctrl+B backward-char) unless ⌘ was
-  // used — the historical behavior, now applied to whatever the user bound.
-  const bindingsRef = useRef(loadBindings());
-  useEffect(() => onBindingsChange((map) => (bindingsRef.current = map)), []);
+  const toggleDrawer = () => {
+    setDrawerOpen((v) => !v);
+    setGitOpen(false);
+  };
+  const toggleGit = () => {
+    setGitOpen((v) => !v);
+    setDrawerOpen(false);
+  };
 
-  // Desktop client: mirror the menu-bar shortcuts into real accelerators.
-  useEffect(() => {
-    const report = (map: Record<string, string>) => {
-      const bridge = (
-        window as { dala?: { invoke: (cmd: string, args: unknown) => Promise<unknown> } }
-      ).dala;
-      if (!bridge) return;
-      const accelerators: Record<string, string> = {};
-      for (const spec of BINDINGS) {
-        if (!spec.clientMenu) continue;
-        const accelerator = comboToAccelerator(map[spec.id] ?? spec.default);
-        if (accelerator) accelerators[spec.id] = accelerator;
-      }
-      void bridge.invoke("set_shortcuts", accelerators).catch(() => undefined);
-    };
-    report(bindingsRef.current);
-    return onBindingsChange(report);
-  }, []);
-
-  useEffect(() => {
-    const actions: Record<string, (e: KeyboardEvent) => void> = {
-      quickOpen: (e) => {
-        const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
-        if (inTerminal && !e.metaKey && !e.shiftKey) return;
-        e.preventDefault();
-        setQuickOpen(true);
-      },
-      sidebar: (e) => {
-        const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
-        if (inTerminal && !e.metaKey && !e.shiftKey) return;
-        e.preventDefault();
-        toggleSidebar();
-      },
-      quickShell: (e) => {
-        e.preventDefault();
-        quickShellRef.current();
-      },
-      focusTerminal: (e) => {
-        e.preventDefault();
-        (qsRef.current.open ? qsActions : termActions).current?.focus();
-      },
-      drawer: (e) => {
-        e.preventDefault();
-        setDrawerOpen((v) => !v);
-        setGitOpen(false);
-      },
-      git: (e) => {
-        e.preventDefault();
-        setGitOpen((v) => !v);
-        setDrawerOpen(false);
-      },
-      refit: (e) => {
-        e.preventDefault();
-        termActions.current?.refit();
-      },
-      resetTerminal: (e) => {
-        e.preventDefault();
-        termActions.current?.reset();
-      },
-      composer: (e) => {
-        e.preventDefault();
-        toggleComposerRef.current();
-      },
-      voice: (e) => {
-        e.preventDefault();
-        voiceShortcutRef.current();
-      },
-      composerMention: (e) => {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerMention" }));
-      },
-      composerAttach: (e) => {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerAttach" }));
-      },
-    };
-
-    const handler = (e: KeyboardEvent) => {
-      const map = bindingsRef.current;
-      for (const id of Object.keys(actions)) {
-        const combo = map[id];
-        if (combo && matchCombo(e, combo)) {
-          actions[id](e);
-          return;
-        }
-      }
-    };
-    // Desktop client menu accelerators (⌘K composer, ⌘J quick shell).
-    const onMenu = (e: Event) => {
-      const action = (e as CustomEvent).detail;
-      if (action === "composer") toggleComposerRef.current();
-      if (action === "quick-shell") quickShellRef.current();
-      if (action === "voice") voiceShortcutRef.current();
-    };
-    // Clicking a native client notification jumps to the session it came from.
-    const onNotifyClick = (event: Event) => {
-      const id = String((event as CustomEvent).detail ?? "");
-      if (id && sessionsRef.current.some((s) => s.id === id)) setActiveId(id);
-    };
-    window.addEventListener("dala:menu", onMenu);
-    window.addEventListener("dala:notify-click", onNotifyClick);
-    window.addEventListener("keydown", handler, true);
-    return () => {
-      window.removeEventListener("dala:menu", onMenu);
-      window.removeEventListener("dala:notify-click", onNotifyClick);
-      window.removeEventListener("keydown", handler, true);
-    };
-  }, []);
+  useGlobalShortcuts({
+    termActions,
+    qsActions,
+    qsRef,
+    quickShellRef,
+    toggleComposerRef,
+    voiceShortcutRef,
+    toggleSidebar,
+    openQuickOpen: () => setQuickOpen(true),
+    toggleDrawer,
+    toggleGit,
+    onNotifyClick: (id) => {
+      if (sessionsRef.current.some((s) => s.id === id)) setActiveId(id);
+    },
+  });
 
   const openQuickFile = async (path: string) => {
     setQuickOpen(false);
     const result = await loadPreview(path);
     if (result.ok) setQuickPreview(result.preview);
     else toast(result.message ?? t("couldNotReadFile"));
-  };
-
-  const deleting = useRef(new Set<string>());
-  const handleDelete = async (id: string) => {
-    if (deleting.current.has(id)) return;
-    deleting.current.add(id);
-    try {
-      const result = await call<unknown>(deleteSession, { identity: id });
-      if (result.ok) {
-        setSessions((list) => list.filter((s) => s.id !== id));
-        if (activeId === id) setActiveId(null);
-      } else {
-        toast(result.error || t("somethingWentWrong"));
-      }
-    } finally {
-      deleting.current.delete(id);
-    }
   };
 
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
@@ -859,10 +546,7 @@ export default function App() {
               <Tooltip label={t("filesTitle")} description={t("filesDesc")} keys={modShiftCombo("e")}>
                 <button
                   id="toggle-drawer-button"
-                  onClick={() => {
-                    setDrawerOpen((v) => !v);
-                    setGitOpen(false);
-                  }}
+                  onClick={toggleDrawer}
                   className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
                     drawerOpen
                       ? "border-mint/50 text-mint"
@@ -875,10 +559,7 @@ export default function App() {
               <Tooltip label={t("gitTitle")} description={t("gitDesc")} keys={modShiftCombo("g")}>
                 <button
                   id="toggle-git-button"
-                  onClick={() => {
-                    setGitOpen((v) => !v);
-                    setDrawerOpen(false);
-                  }}
+                  onClick={toggleGit}
                   className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
                     gitOpen
                       ? "border-mint/50 text-mint"

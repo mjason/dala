@@ -1,12 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
-  gitBranches,
   gitCheckout,
   gitCommit,
   gitDiff,
   gitDiscard,
   gitApplyPatch,
-  gitFileAt,
   gitLog,
   gitShow,
   gitStage,
@@ -14,7 +12,6 @@ import {
   gitUnstage,
 } from "../ash_rpc";
 import type {
-  GitBranchesFields,
   GitCommitFields,
   GitDiffFields,
   GitLogFields,
@@ -25,42 +22,18 @@ import { call, type RpcOutcome } from "./rpc";
 import { TextArea } from "./ui";
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
-import { parseDiff } from "./diffParse";
-import { FileTypeIcon } from "./fileIcons";
-import DiffView, { type DiffDisplayMode, type DiffSidesProvider } from "./DiffView";
-import { hasOpenWindows, inTextInput, Kbd, Tooltip } from "./shortcuts";
-import Windowed from "./Windowed";
+import { hasOpenWindows, inTextInput, Tooltip } from "./shortcuts";
 import ResizeHandle from "./ResizeHandle";
+import type { BranchInfo, Commit, DiffContext, DiffTarget, GitFile, Status } from "./gitPanel/types";
+import BranchControls from "./gitPanel/BranchControls";
+import HistoryView from "./gitPanel/HistoryView";
+import DiffModal from "./gitPanel/DiffModal";
+import { FileRow, GroupLabel } from "./gitPanel/fileRows";
 
 const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
-const BRANCH_FIELDS = ["current", "local", "remote"] as unknown as GitBranchesFields;
 const LOG_FIELDS = ["commits"] as unknown as GitLogFields;
 const DIFF_FIELDS: GitDiffFields = ["diff", "binary", "truncated"];
 const SHOW_FIELDS: GitShowFields = ["text", "truncated"];
-
-type GitFile = { path: string; status: string; staged: boolean; unstaged: boolean };
-type Status = { repo: boolean; root: string | null; branch: string | null; files: GitFile[] };
-type Commit = { hash: string; author: string; date: string; subject: string };
-type BranchInfo = { name: string; current: boolean };
-type Branches = { current: string | null; local: BranchInfo[]; remote: BranchInfo[] };
-
-/** Revisions to fetch full file contents from, powering the merge view. */
-type DiffRevs = { repo: string; oldRev: string; newRev: string };
-
-/** Which side of the index a working diff shows (Fork's two lists). */
-type DiffContext = "unstaged" | "staged";
-
-type DiffTarget =
-  | {
-      kind: "file";
-      title: string;
-      text: string;
-      truncated: boolean;
-      revs?: DiffRevs;
-      context: DiffContext;
-      file: GitFile;
-    }
-  | { kind: "commit"; title: string; text: string; truncated: boolean; revs?: DiffRevs };
 
 type Props = {
   path: string;
@@ -233,26 +206,7 @@ export default function GitPanel({
   const staged = status?.files.filter((f) => f.staged) ?? [];
   const unstaged = status?.files.filter((f) => f.unstaged) ?? [];
 
-  const [branchMenu, setBranchMenu] = useState(false);
-  const [branches, setBranches] = useState<Branches | null>(null);
-
-  const openBranchMenu = async () => {
-    setBranchMenu(true);
-    setBranches(null);
-    const result = await call<Branches>(gitBranches, {
-      input: { path: root ?? path },
-      fields: BRANCH_FIELDS,
-    });
-    if (result.ok) {
-      setBranches(result.data);
-    } else {
-      setBranchMenu(false);
-      onError(result.error || t("somethingWentWrong"));
-    }
-  };
-
   const switchBranch = async (branch: BranchInfo) => {
-    setBranchMenu(false);
     if (branch.current) return;
     setBusy(`checkout:${branch.name}`);
     const result = await call<unknown>(gitCheckout, {
@@ -278,62 +232,12 @@ export default function GitPanel({
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">{t("gitTitle")}</span>
         {status?.repo && status.branch && (
-          <div className="relative min-w-0">
-            <button
-              id="branch-menu-button"
-              onClick={() => (branchMenu ? setBranchMenu(false) : void openBranchMenu())}
-              title={t("branches")}
-              className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-xs text-mint transition-colors hover:bg-bg2"
-            >
-              <BranchIcon />
-              <span className="truncate">{status.branch}</span>
-              <svg viewBox="0 0 16 16" className="h-2.5 w-2.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-            {branchMenu && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setBranchMenu(false)} />
-                <div
-                  id="branch-menu"
-                  className="absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-line bg-bg1 py-1 shadow-xl shadow-black/40"
-                >
-                  {branches === null ? (
-                    <div className="px-3 py-2 text-xs text-fg-muted">…</div>
-                  ) : (
-                    <>
-                      <div className="px-2.5 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-fg-muted">
-                        {t("localBranches")}
-                      </div>
-                      {branches.local.map((branch) => (
-                        <BranchRow
-                          key={branch.name}
-                          branch={branch}
-                          current={Boolean(branch.current) || branch.name === branches.current}
-                          onClick={() => void switchBranch(branch)}
-                        />
-                      ))}
-                      {branches.remote.length > 0 && (
-                        <>
-                          <div className="mt-1 border-t border-line/60 px-2.5 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                            {t("remoteBranches")}
-                          </div>
-                          {branches.remote.map((branch) => (
-                            <BranchRow
-                              key={branch.name}
-                              branch={branch}
-                              current={false}
-                              onClick={() => void switchBranch(branch)}
-                            />
-                          ))}
-                        </>
-                      )}
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          <BranchControls
+            path={root ?? path}
+            branch={status.branch}
+            onError={onError}
+            onSwitch={(branch) => void switchBranch(branch)}
+          />
         )}
         <div className="flex-1" />
         <button
@@ -512,25 +416,7 @@ export default function GitPanel({
               </div>
             </>
           ) : (
-            <div id="git-history" className="flex-1 overflow-y-auto py-1">
-              {commits?.length === 0 && (
-                <div className="px-3 py-8 text-center text-[13px] text-fg-muted">{t("noChanges")}</div>
-              )}
-              {commits?.map((c) => (
-                <button
-                  key={c.hash}
-                  onClick={() => void openCommit(c)}
-                  className="flex w-full flex-col gap-0.5 border-b border-line/40 px-3 py-2 text-left transition-colors hover:bg-bg2/70"
-                >
-                  <span className="truncate font-mono text-[13px] text-fg">{c.subject}</span>
-                  <span className="flex items-center gap-2 font-mono text-[11px] text-fg-muted">
-                    <span className="text-[#d9a860]">{c.hash}</span>
-                    <span className="truncate">{c.author}</span>
-                    <span className="shrink-0">{formatDate(c.date)}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
+            <HistoryView commits={commits} onOpen={(c) => void openCommit(c)} />
           )}
         </>
       )}
@@ -544,387 +430,4 @@ export default function GitPanel({
       {target && <DiffModal target={target} onClose={() => setTarget(null)} onHunk={applyHunk} />}
     </section>
   );
-}
-
-function GroupLabel({
-  children,
-  action,
-}: {
-  children: React.ReactNode;
-  action?: { id: string; label: string; onClick: () => void };
-}) {
-  return (
-    <div className="flex items-center px-3 pb-0.5 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-muted/70">
-      {children}
-      <div className="flex-1" />
-      {action && (
-        <button
-          id={action.id}
-          onClick={action.onClick}
-          className="rounded border border-line px-1.5 py-px normal-case tracking-normal text-fg-muted transition-colors hover:border-mint/50 hover:text-mint"
-        >
-          {action.label}
-        </button>
-      )}
-    </div>
-  );
-}
-
-type RowAction = {
-  key: string;
-  label: string;
-  title: string;
-  danger?: boolean;
-  onClick: () => void;
-};
-
-function FileRow({
-  file,
-  busy,
-  onOpen,
-  actions,
-}: {
-  file: GitFile;
-  busy: string | null;
-  onOpen: () => void;
-  actions: RowAction[];
-}) {
-  return (
-    <div className="group flex items-center gap-2 px-3 py-[5px] transition-colors hover:bg-bg2/70">
-      <StatusBadge status={file.status} />
-      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-        <FileTypeIcon name={file.path} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">{file.path}</span>
-      </button>
-      {busy === `diff:${file.path}` && <span className="font-mono text-[11px] text-mint">…</span>}
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        {actions.map((action) => (
-          <button
-            key={action.key}
-            onClick={action.onClick}
-            disabled={busy === `${action.key}:${file.path}`}
-            title={action.title}
-            className={`grid h-5 w-5 place-items-center rounded font-mono text-sm leading-none transition-colors disabled:opacity-40 ${
-              action.danger
-                ? "text-fg-muted hover:bg-danger/20 hover:text-danger"
-                : "text-fg-muted hover:bg-mint/20 hover:text-mint"
-            }`}
-          >
-            {action.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const code = status === "??" ? "?" : status.trim().slice(0, 1) || "·";
-  const color = useMemo(() => {
-    switch (code) {
-      case "A":
-      case "?":
-        return "text-mint";
-      case "M":
-        return "text-[#d9a860]";
-      case "D":
-        return "text-danger";
-      case "R":
-      case "C":
-        return "text-[#6d9fd6]";
-      default:
-        return "text-fg-muted";
-    }
-  }, [code]);
-
-  return (
-    <span className={`w-4 shrink-0 text-center font-mono text-xs font-semibold ${color}`}>{code}</span>
-  );
-}
-
-function DiffModal({
-  target,
-  onClose,
-  onHunk,
-}: {
-  target: DiffTarget;
-  onClose: () => void;
-  onHunk?: (patch: string, applyTo: "index" | "workdir") => Promise<void>;
-}) {
-  const { t } = useI18n();
-  const [mode, setMode] = useState<DiffDisplayMode>("inline");
-  const [wrap, setWrap] = useState(true);
-  const [onlyFile, setOnlyFile] = useState<string | null>(null);
-
-  // Commit patches usually span several files — offer a Fork-style file rail
-  // so each one can be reviewed on its own.
-  const commitFiles = useMemo(
-    () => (target.kind === "commit" ? parseDiff(target.text).files : []),
-    [target],
-  );
-  useEffect(() => {
-    setOnlyFile(null);
-  }, [target]);
-
-  // Fork-style per-hunk operations. Unstaged view: stage (apply forward to
-  // the index — the old side IS the index, so the patch applies cleanly) or
-  // discard (apply reverse to the working tree). Staged view: unstage
-  // (apply reverse to the index).
-  const chunkActionsFor = useMemo(() => {
-    if (!onHunk || target.kind !== "file") return undefined;
-    if (target.context === "unstaged") {
-      return () => [
-        {
-          label: t("stageHunk"),
-          lineLabel: t("stageLines"),
-          kind: "primary" as const,
-          onClick: (patch: { forward: string; reverse: string }) =>
-            void onHunk(patch.forward, "index"),
-        },
-        {
-          label: t("discardHunk"),
-          lineLabel: t("discardLines"),
-          kind: "danger" as const,
-          onClick: (patch: { forward: string; reverse: string }, source?: "hunk" | "lines") => {
-            if (!confirm(t(source === "lines" ? "discardLinesConfirm" : "discardHunkConfirm")))
-              return;
-            void onHunk(patch.reverse, "workdir");
-          },
-        },
-      ];
-    }
-    return () => [
-      {
-        label: t("unstageHunk"),
-        lineLabel: t("unstageLines"),
-        kind: "primary" as const,
-        onClick: (patch: { forward: string; reverse: string }) =>
-          void onHunk(patch.reverse, "index"),
-      },
-    ];
-  }, [onHunk, target, t]);
-
-  const hasLineMode = chunkActionsFor !== undefined;
-  const modeOptions: { value: DiffDisplayMode; label: string; key: string }[] = [
-    { value: "inline", label: t("diffInline"), key: "i" },
-    { value: "split", label: t("diffSplit"), key: "s" },
-    ...(hasLineMode ? [{ value: "lines" as const, label: t("diffLines"), key: "l" }] : []),
-  ];
-
-  // i / s / l switch inline/split/line-select, Alt+Z toggles wrapping —
-  // skipped while typing (e.g. in the diff's search panel).
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === "KeyZ") {
-        e.preventDefault();
-        setWrap((v) => !v);
-        return;
-      }
-      if (e.ctrlKey || e.metaKey || e.altKey || inTextInput(e)) return;
-      if (e.key === "i") setMode("inline");
-      if (e.key === "s") setMode("split");
-      if (e.key === "l" && hasLineMode) setMode("lines");
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [hasLineMode]);
-
-  // With revisions known, each file upgrades to the syntax-highlighted merge
-  // view by fetching its full old/new contents; binary/oversized files (or
-  // fetch failures) keep the plain hunk rendering.
-  const sidesFor = useMemo<DiffSidesProvider | undefined>(() => {
-    const revs = target.revs;
-    if (!revs) return undefined;
-
-    const fetchSide = async (rev: string, file: string): Promise<string> => {
-      if (!file) return "";
-      const result = await call<{
-        content: string;
-        binary: boolean;
-        truncated: boolean;
-        missing: boolean;
-      }>(gitFileAt, {
-        input: { path: revs.repo, rev, file },
-        fields: ["content", "binary", "truncated", "missing"],
-      });
-      if (!result.ok) throw new Error("unavailable");
-      const data = result.data;
-      if (data.binary || data.truncated) throw new Error("not renderable");
-      return data.missing ? "" : data.content;
-    };
-
-    return async (file) => {
-      try {
-        const [oldText, newText] = await Promise.all([
-          fetchSide(revs.oldRev, file.oldPath),
-          fetchSide(revs.newRev, file.newPath),
-        ]);
-        return { oldText, newText };
-      } catch {
-        return null;
-      }
-    };
-  }, [target]);
-
-  const title = (
-    <span className="truncate font-mono text-[13px] text-fg">{target.title}</span>
-  );
-
-  const actions = (
-    <>
-      {target.truncated && (
-        <span className="shrink-0 font-mono text-[11px] text-fg-muted">{t("diffTruncated")}</span>
-      )}
-      <div className="hidden shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5 sm:flex">
-        {modeOptions.map(({ value, label, key }) => (
-          <button
-            key={value}
-            data-diff-mode={value}
-            onClick={() => setMode(value)}
-            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
-              mode === value ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
-            }`}
-          >
-            {label} <Kbd>{key}</Kbd>
-          </button>
-        ))}
-      </div>
-      <button
-        id="diff-wrap-toggle-button"
-        onClick={() => setWrap((v) => !v)}
-        className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
-          wrap ? "border-mint/50 text-mint" : "border-line text-fg-muted hover:text-fg"
-        }`}
-        title={`${t("wrapLines")} · Alt+Z`}
-      >
-        {t("wrapLines")} <Kbd>Alt+Z</Kbd>
-      </button>
-    </>
-  );
-
-  const diff = (
-    <DiffView
-      text={target.text}
-      mode={mode}
-      wrap={wrap}
-      sidesFor={sidesFor}
-      chunkActionsFor={chunkActionsFor}
-      onlyFile={onlyFile}
-    />
-  );
-
-  return (
-    <Windowed id="diff-view" onClose={onClose} title={title} actions={actions}>
-      {commitFiles.length > 1 ? (
-        <div className="flex h-full min-h-0">
-          <aside
-            id="commit-file-list"
-            className="w-48 shrink-0 overflow-y-auto border-r border-line bg-bg1/50 py-1 sm:w-60"
-          >
-            <FileRailEntry
-              active={onlyFile === null}
-              onClick={() => setOnlyFile(null)}
-              label={t("allFiles")}
-              additions={commitFiles.reduce((n, f) => n + f.additions, 0)}
-              deletions={commitFiles.reduce((n, f) => n + f.deletions, 0)}
-            />
-            {commitFiles.map((file) => {
-              const path = file.newPath || file.oldPath;
-              return (
-                <FileRailEntry
-                  key={path}
-                  active={onlyFile === path}
-                  onClick={() => setOnlyFile(path)}
-                  label={path}
-                  icon={<FileTypeIcon name={path} />}
-                  additions={file.additions}
-                  deletions={file.deletions}
-                />
-              );
-            })}
-          </aside>
-          <div className="min-w-0 flex-1 overflow-auto">{diff}</div>
-        </div>
-      ) : (
-        diff
-      )}
-    </Windowed>
-  );
-}
-
-function FileRailEntry({
-  active,
-  onClick,
-  label,
-  icon,
-  additions,
-  deletions,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  icon?: React.ReactNode;
-  additions: number;
-  deletions: number;
-}) {
-  return (
-    <button
-      data-commit-file={label}
-      onClick={onClick}
-      title={label}
-      className={`flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-[11px] transition-colors ${
-        active ? "bg-bg2 text-fg" : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
-      }`}
-    >
-      {icon}
-      <span className="min-w-0 flex-1 truncate" dir="rtl">
-        <bdi>{label}</bdi>
-      </span>
-      <span className="shrink-0 text-[10px]">
-        <span className="text-[#5fbf87]">+{additions}</span>{" "}
-        <span className="text-[#e5716e]">−{deletions}</span>
-      </span>
-    </button>
-  );
-}
-
-function BranchRow({
-  branch,
-  current,
-  onClick,
-}: {
-  branch: BranchInfo;
-  current: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      data-branch={branch.name}
-      onClick={onClick}
-      className={`flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-xs transition-colors ${
-        current ? "text-mint" : "text-fg-muted hover:bg-bg2/70 hover:text-fg"
-      }`}
-    >
-      <span className="w-3 shrink-0 text-center">{current ? "✓" : ""}</span>
-      <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-    </button>
-  );
-}
-
-function BranchIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.3">
-      <circle cx="4" cy="4" r="1.7" />
-      <circle cx="4" cy="12" r="1.7" />
-      <circle cx="12" cy="5" r="1.7" />
-      <path d="M4 5.7v4.6M12 6.7c0 2.6-4 2.3-6.3 3.6" />
-    </svg>
-  );
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
