@@ -475,10 +475,12 @@ export default function FileDrawer({
         <button
           id="drawer-refresh-button"
           onClick={refreshAll}
-          className="rounded-md border border-line px-1.5 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:text-fg"
+          className="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
           title={t("refresh")}
         >
-          ⟳
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
         <button
           onClick={onToggleFollow}
