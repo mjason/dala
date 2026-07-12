@@ -10,8 +10,16 @@ defmodule Dala.Lsp.Discovery do
       { "python": [ { "command": [".venv/bin/basedpyright-langserver", "--stdio"] },
                     { "command": [".venv/bin/dm", "lsp"] } ] }
 
-  Relative commands resolve against the root. Several servers may attach to
-  one file (basedpyright for Python itself + `dm lsp` for the DSL inside
+  A root-level `dala.jsonc` works too (comments allowed) under an `lsp` key:
+
+      {
+        // project-wide dala config
+        "lsp": { "python": [ { "command": ["$HOME/tools/my-lsp", "--stdio"] } ] }
+      }
+
+  Command words expand `~`, `$VAR`/`${VAR}` and `${root}` (the project root);
+  relative paths resolve against the root. Several servers may attach to one
+  file (basedpyright for Python itself + `dm lsp` for the DSL inside
   `ctx.dsl("...")` strings).
 
   Candidate paths are checked explicitly (`~/.local/bin`, `~/.cargo/bin`,
@@ -81,7 +89,7 @@ defmodule Dala.Lsp.Discovery do
 
         checked =
           for [bin | _] <- commands do
-            %{path: bin <> " (.dala/lsp.json)", found: File.regular?(bin)}
+            %{path: bin <> " (dala.jsonc)", found: File.regular?(bin)}
           end
 
         {Enum.filter(commands, fn [bin | _] -> File.regular?(bin) end), checked}
@@ -91,20 +99,94 @@ defmodule Dala.Lsp.Discovery do
     end
   end
 
-  # `.dala/lsp.json`: { "<language>": [ { "command": [...] } ] }
+  # `dala.jsonc` (root-level, "lsp" key, comments ok) or `.dala/lsp.json`
+  # (whole file is the language map): { "<language>": [ { "command": [...] } ] }
   defp configured(root) do
-    with {:ok, body} <- File.read(Path.join(root, ".dala/lsp.json")),
-         {:ok, %{} = map} <- Jason.decode(body) do
-      Map.new(map, fn {language, entries} ->
-        commands =
-          for %{"command" => [_ | _] = command} <- List.wrap(entries),
-              Enum.all?(command, &is_binary/1),
-              do: command
+    jsonc =
+      with {:ok, body} <- File.read(Path.join(root, "dala.jsonc")),
+           {:ok, %{"lsp" => %{} = map}} <- Jason.decode(strip_jsonc(body)) do
+        map
+      else
+        _ -> nil
+      end
 
-        {language, commands}
+    legacy =
+      with {:ok, body} <- File.read(Path.join(root, ".dala/lsp.json")),
+           {:ok, %{} = map} <- Jason.decode(body) do
+        map
+      else
+        _ -> nil
+      end
+
+    case jsonc || legacy do
+      nil ->
+        %{}
+
+      map ->
+        Map.new(map, fn {language, entries} ->
+          commands =
+            for %{"command" => [_ | _] = command} <- List.wrap(entries),
+                Enum.all?(command, &is_binary/1),
+                do: Enum.map(command, &expand_vars(&1, root))
+
+          {language, commands}
+        end)
+    end
+  end
+
+  # //-comments and /* */-comments outside strings, plus trailing commas —
+  # enough JSONC for a config file without pulling in a parser dependency.
+  defp strip_jsonc(body) do
+    body
+    |> scan_jsonc([], :code)
+    |> IO.iodata_to_binary()
+    |> String.replace(~r/,(\s*[}\]])/, "\\1")
+  end
+
+  defp scan_jsonc(<<>>, acc, _state), do: Enum.reverse(acc)
+
+  defp scan_jsonc(<<?\\, ?", rest::binary>>, acc, :string),
+    do: scan_jsonc(rest, ["\\\"" | acc], :string)
+
+  defp scan_jsonc(<<?", rest::binary>>, acc, :string), do: scan_jsonc(rest, [?" | acc], :code)
+
+  defp scan_jsonc(<<c::utf8, rest::binary>>, acc, :string),
+    do: scan_jsonc(rest, [<<c::utf8>> | acc], :string)
+
+  defp scan_jsonc(<<?", rest::binary>>, acc, :code), do: scan_jsonc(rest, [?" | acc], :string)
+  defp scan_jsonc(<<"//", rest::binary>>, acc, :code), do: scan_jsonc(rest, acc, :line_comment)
+  defp scan_jsonc(<<"/*", rest::binary>>, acc, :code), do: scan_jsonc(rest, acc, :block_comment)
+
+  defp scan_jsonc(<<c::utf8, rest::binary>>, acc, :code),
+    do: scan_jsonc(rest, [<<c::utf8>> | acc], :code)
+
+  defp scan_jsonc(<<?\n, rest::binary>>, acc, :line_comment),
+    do: scan_jsonc(rest, [?\n | acc], :code)
+
+  defp scan_jsonc(<<_c::utf8, rest::binary>>, acc, :line_comment),
+    do: scan_jsonc(rest, acc, :line_comment)
+
+  defp scan_jsonc(<<"*/", rest::binary>>, acc, :block_comment), do: scan_jsonc(rest, acc, :code)
+
+  defp scan_jsonc(<<_c::utf8, rest::binary>>, acc, :block_comment),
+    do: scan_jsonc(rest, acc, :block_comment)
+
+  # `~` and env vars in configured commands: "$HOME/x", "${HOME}/x",
+  # "${root}/tools/lsp", "~/bin/lsp".
+  defp expand_vars(word, root) do
+    word =
+      word
+      |> String.replace("${root}", root)
+      |> then(fn w ->
+        Regex.replace(~r/\$\{(\w+)\}|\$(\w+)/, w, fn _, braced, bare ->
+          System.get_env(if(braced != "", do: braced, else: bare)) || ""
+        end)
       end)
-    else
-      _ -> %{}
+
+    case word do
+      "~/" <> rest -> Path.join(System.user_home() || "/", rest)
+      "~" -> System.user_home() || "~"
+      other -> other
     end
   end
 

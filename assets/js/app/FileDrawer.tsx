@@ -135,6 +135,36 @@ export default function FileDrawer({
     };
   }, [path, fetchDir]);
 
+  // External changes (terminal commands, agents deleting/creating files)
+  // don't announce themselves — poll the expanded directories while the
+  // drawer is open. Silent: transient failures (dir deleted mid-poll) just
+  // wait for the next tick instead of toasting.
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  useEffect(() => {
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        for (const dir of expandedRef.current) {
+          const result = await listDirectory({
+            input: { path: dir },
+            fields: DIR_FIELDS,
+            headers: buildCSRFHeaders(),
+          }).catch(() => null);
+          if (disposed) return;
+          if (result?.success) {
+            const listing = result.data as unknown as Listing;
+            setChildren((prev) => ({ ...prev, [dir]: listing.entries }));
+          }
+        }
+      })();
+    }, 4000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const toggleDir = async (dirPath: string) => {
     if (expanded.has(dirPath)) {
       setExpanded((prev) => {
