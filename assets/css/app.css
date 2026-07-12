@@ -375,5 +375,8 @@ body:has(> #app) {
  * on the parent is invisible to it and overshoots the row count (clipped
  * TUI bottom bars). */
 .xterm {
-  padding: 8px 12px;
+  /* Asymmetric on purpose: the row grid rarely divides the height exactly,
+   * and the leftover lands at the bottom — keep the bottom inset minimal so
+   * leftover + inset never reads as a chunky frame under TUI status bars. */
+  padding: 6px 12px 2px;
 }
