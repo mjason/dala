@@ -380,3 +380,11 @@ body:has(> #app) {
    * leftover + inset never reads as a chunky frame under TUI status bars. */
   padding: 6px 12px 2px;
 }
+
+/* The viewport is absolutely positioned over the WHOLE .xterm (padding
+ * included) and defaults to pure black — with padding on .xterm it peeks
+ * out as a black frame around the canvas. Pin it to the terminal theme
+ * background. */
+.xterm .xterm-viewport {
+  background-color: #0b0c0e !important;
+}
