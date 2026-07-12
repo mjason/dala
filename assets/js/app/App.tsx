@@ -545,8 +545,15 @@ export default function App() {
     if (paths.length > 0) {
       const rest = text.replace(pathPattern, "").replace(/[ \t]{2,}/g, " ").trim();
       const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const image = /\.(png|jpe?g|gif|webp|bmp|svg|tiff?)$/i;
       for (const path of paths) {
-        termActions.current?.sendText(path + " ", false, "bracketed");
+        // Text files: Claude Code and Gemini attach @path references inline
+        // (content lands in context, no Read round-trip, no permission
+        // prompt); opencode/codex read bare paths. Images keep bare paths —
+        // that's what all the image-attachment detectors key on.
+        const prefix =
+          !image.test(path) && (app === "claude" || app === "gemini") ? "@" : "";
+        termActions.current?.sendText(prefix + path + " ", false, "bracketed");
         await wait(200);
       }
       if (rest) {
