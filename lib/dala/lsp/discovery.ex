@@ -19,8 +19,10 @@ defmodule Dala.Lsp.Discovery do
 
   Command words expand `~`, `$VAR`/`${VAR}` and `${root}` (the project root);
   relative paths resolve against the root. Several servers may attach to one
-  file (basedpyright for Python itself + `dm lsp` for the DSL inside
-  `ctx.dsl("...")` strings).
+  file — e.g. basedpyright for Python itself plus a framework's own DSL
+  server declared in dala.jsonc. Discovery itself only knows UNIVERSAL
+  conventions (venvs, PATH, ~/.local/bin, mason); anything framework-specific
+  belongs in the project's dala.jsonc.
 
   Candidate paths are checked explicitly (`~/.local/bin`, `~/.cargo/bin`,
   Mason) besides PATH — under systemd the service PATH is minimal, and these
@@ -31,6 +33,31 @@ defmodule Dala.Lsp.Discovery do
   @doc "Servers for `path` under `root`: `[%{id, name, command}]` in spawn order."
   def servers(root, path) do
     probe(root, path).servers
+  end
+
+  @doc """
+  Full resolution from an absolute file path: the effective project root and
+  the servers. Monorepos work two ways — a nested `dala.jsonc` in the
+  sub-project (nearest one wins), or the top config's `"projects"` map:
+
+      { "lsp": { "elixir": [...] },
+        "projects": { "assets": { "lsp": { "typescript": [...] } } } }
+
+  A file under `assets/` then resolves with root (LSP rootUri + cwd) at
+  `<config dir>/assets`.
+  """
+  def probe_file(path) do
+    dir = Path.dirname(path)
+
+    case nearest_config_dir(dir) do
+      nil ->
+        root = git_toplevel(dir) || dir
+        Map.put(probe(root, path), :root, root)
+
+      config_dir ->
+        {root, scoped} = scope_for(config_dir, path)
+        Map.put(probe_scoped(root, path, scoped), :root, root)
+    end
   end
 
   @doc """
@@ -63,6 +90,15 @@ defmodule Dala.Lsp.Discovery do
       ".exs" -> "elixir"
       ".heex" -> "elixir"
       ".lua" -> "lua"
+      ".ts" -> "typescript"
+      ".tsx" -> "typescript"
+      ".mts" -> "typescript"
+      ".cts" -> "typescript"
+      ".js" -> "javascript"
+      ".jsx" -> "javascript"
+      ".mjs" -> "javascript"
+      ".cjs" -> "javascript"
+      ".go" -> "go"
       _ -> nil
     end
   end
@@ -82,17 +118,115 @@ defmodule Dala.Lsp.Discovery do
     end
   end
 
+  # Walk up from the file's directory to the nearest dala.jsonc /
+  # .dala/lsp.json, stopping at the git toplevel (inclusive) or $HOME.
+  defp nearest_config_dir(dir) do
+    top = git_toplevel(dir)
+    home = System.user_home()
+
+    Stream.iterate(dir, &Path.dirname/1)
+    |> Enum.reduce_while(nil, fn current, _acc ->
+      cond do
+        File.regular?(Path.join(current, "dala.jsonc")) or
+            File.regular?(Path.join(current, ".dala/lsp.json")) ->
+          {:halt, current}
+
+        current == top or current == home or Path.dirname(current) == current ->
+          {:halt, nil}
+
+        true ->
+          {:cont, nil}
+      end
+    end)
+  end
+
+  defp git_toplevel(dir) do
+    case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # The `"projects"` map scopes files to sub-projects: the LONGEST relative
+  # path prefix that contains the file wins, and becomes the root.
+  defp scope_for(config_dir, path) do
+    projects =
+      case read_config(config_dir) do
+        %{"projects" => %{} = map} -> map
+        _ -> %{}
+      end
+
+    relative = Path.relative_to(path, config_dir)
+
+    match =
+      projects
+      |> Map.keys()
+      |> Enum.filter(fn sub ->
+        sub != "" and String.starts_with?(relative, String.trim_trailing(sub, "/") <> "/")
+      end)
+      |> Enum.max_by(&String.length/1, fn -> nil end)
+
+    case match do
+      nil ->
+        {config_dir, nil}
+
+      sub ->
+        sub_dir = Path.join(config_dir, sub)
+
+        lsp =
+          case projects[sub] do
+            %{"lsp" => %{} = map} -> normalize_lsp(map, sub_dir)
+            _ -> %{}
+          end
+
+        {sub_dir, lsp}
+    end
+  end
+
+  # Like probe/2 but with an already-scoped config (a "projects" entry).
+  # An empty scoped map falls back to universal discovery at the sub-root.
+  defp probe_scoped(root, path, nil), do: probe(root, path)
+
+  defp probe_scoped(root, path, scoped) do
+    case language_of(path) do
+      nil ->
+        %{language: nil, servers: [], checked: []}
+
+      language ->
+        {commands, checked} =
+          case scoped[language] do
+            commands when is_list(commands) and commands != [] ->
+              check_configured(commands, root)
+
+            _ ->
+              discover(language, root)
+          end
+
+        %{
+          language: language,
+          servers: commands |> Enum.with_index() |> Enum.map(&describe/1),
+          checked: checked
+        }
+    end
+  end
+
+  defp check_configured(commands, root) do
+    commands = Enum.map(commands, &absolutize(&1, root))
+
+    checked =
+      for [bin | _] <- commands do
+        %{path: bin <> " (dala.jsonc)", found: File.regular?(bin)}
+      end
+
+    {Enum.filter(commands, fn [bin | _] -> File.regular?(bin) end), checked}
+  end
+
   defp resolve(language, root) do
     case configured(root)[language] do
       commands when is_list(commands) and commands != [] ->
-        commands = Enum.map(commands, &absolutize(&1, root))
-
-        checked =
-          for [bin | _] <- commands do
-            %{path: bin <> " (dala.jsonc)", found: File.regular?(bin)}
-          end
-
-        {Enum.filter(commands, fn [bin | _] -> File.regular?(bin) end), checked}
+        check_configured(commands, root)
 
       _ ->
         discover(language, root)
@@ -102,36 +236,44 @@ defmodule Dala.Lsp.Discovery do
   # `dala.jsonc` (root-level, "lsp" key, comments ok) or `.dala/lsp.json`
   # (whole file is the language map): { "<language>": [ { "command": [...] } ] }
   defp configured(root) do
+    case read_config(root) do
+      %{"lsp" => %{} = map} -> normalize_lsp(map, root)
+      %{"__legacy__" => %{} = map} -> normalize_lsp(map, root)
+      _ -> %{}
+    end
+  end
+
+  # Raw parsed config for a directory: dala.jsonc wins over .dala/lsp.json
+  # (which is wrapped as __legacy__ since its whole body is the lsp map).
+  defp read_config(dir) do
     jsonc =
-      with {:ok, body} <- File.read(Path.join(root, "dala.jsonc")),
-           {:ok, %{"lsp" => %{} = map}} <- Jason.decode(strip_jsonc(body)) do
+      with {:ok, body} <- File.read(Path.join(dir, "dala.jsonc")),
+           {:ok, %{} = map} <- Jason.decode(strip_jsonc(body)) do
         map
       else
         _ -> nil
       end
 
     legacy =
-      with {:ok, body} <- File.read(Path.join(root, ".dala/lsp.json")),
+      with {:ok, body} <- File.read(Path.join(dir, ".dala/lsp.json")),
            {:ok, %{} = map} <- Jason.decode(body) do
-        map
+        %{"__legacy__" => map}
       else
         _ -> nil
       end
 
-    case jsonc || legacy do
-      nil ->
-        %{}
+    jsonc || legacy || %{}
+  end
 
-      map ->
-        Map.new(map, fn {language, entries} ->
-          commands =
-            for %{"command" => [_ | _] = command} <- List.wrap(entries),
-                Enum.all?(command, &is_binary/1),
-                do: Enum.map(command, &expand_vars(&1, root))
+  defp normalize_lsp(map, root) do
+    Map.new(map, fn {language, entries} ->
+      commands =
+        for %{"command" => [_ | _] = command} <- List.wrap(entries),
+            Enum.all?(command, &is_binary/1),
+            do: Enum.map(command, &expand_vars(&1, root))
 
-          {language, commands}
-        end)
-    end
+      {language, commands}
+    end)
   end
 
   # //-comments and /* */-comments outside strings, plus trailing commas —
@@ -207,28 +349,16 @@ defmodule Dala.Lsp.Discovery do
   defp local_bin(name), do: home(".local/bin/#{name}")
 
   defp discover("python", root) do
-    {pyright, checked_pyright} =
-      first_existing([
-        {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
-        {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]},
-        {System.find_executable("basedpyright-langserver"), ["--stdio"]},
-        {System.find_executable("pyright-langserver"), ["--stdio"]},
-        {local_bin("basedpyright-langserver"), ["--stdio"]},
-        {local_bin("pyright-langserver"), ["--stdio"]},
-        {mason_bin("basedpyright-langserver"), ["--stdio"]},
-        {mason_bin("pyright-langserver"), ["--stdio"]}
-      ])
-
-    # dark-magician workspaces (marked by dmagic.py) ship a DSL server that
-    # rides alongside pyright on the same .py files.
-    {dm, checked_dm} =
-      if File.regular?(Path.join(root, "dmagic.py")) do
-        first_existing([{Path.join(root, ".venv/bin/dm"), ["lsp"]}])
-      else
-        {[], []}
-      end
-
-    {pyright ++ dm, checked_pyright ++ checked_dm}
+    first_existing([
+      {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
+      {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]},
+      {System.find_executable("basedpyright-langserver"), ["--stdio"]},
+      {System.find_executable("pyright-langserver"), ["--stdio"]},
+      {local_bin("basedpyright-langserver"), ["--stdio"]},
+      {local_bin("pyright-langserver"), ["--stdio"]},
+      {mason_bin("basedpyright-langserver"), ["--stdio"]},
+      {mason_bin("pyright-langserver"), ["--stdio"]}
+    ])
   end
 
   defp discover("rust", _root) do
@@ -253,6 +383,23 @@ defmodule Dala.Lsp.Discovery do
       {System.find_executable("lua-language-server"), []},
       {local_bin("lua-language-server"), []},
       {mason_bin("lua-language-server"), []}
+    ])
+  end
+
+  defp discover(language, _root) when language in ["typescript", "javascript"] do
+    first_existing([
+      {System.find_executable("typescript-language-server"), ["--stdio"]},
+      {local_bin("typescript-language-server"), ["--stdio"]},
+      {mason_bin("typescript-language-server"), ["--stdio"]}
+    ])
+  end
+
+  defp discover("go", _root) do
+    first_existing([
+      {System.find_executable("gopls"), []},
+      {home("go/bin/gopls"), []},
+      {local_bin("gopls"), []},
+      {mason_bin("gopls"), []}
     ])
   end
 

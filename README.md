@@ -199,6 +199,51 @@ Run claude code / codex / opencode inside a dala shell and paste a screenshot
 (`Ctrl/⌘+V`): dala stores it under the session directory and types its path
 into the prompt — the same flow those CLIs support in a native terminal.
 
+## Project config: dala.jsonc
+
+Everything works with zero configuration — the file editor's LSP resolves
+servers per project automatically (a Python venv's basedpyright, rust-analyzer,
+elixir-ls, typescript-language-server, gopls… probed from the venv, PATH,
+`~/.local/bin`, `~/.cargo/bin` and Mason). A `dala.jsonc` at the project root
+takes over when the defaults aren't enough. Comments and trailing commas are
+allowed.
+
+```jsonc
+{
+  // Override which language servers attach, per language. Several servers
+  // can share one file (e.g. a framework's DSL server next to pyright).
+  "lsp": {
+    "python": [
+      { "command": [".venv/bin/basedpyright-langserver", "--stdio"] },
+      { "command": [".venv/bin/dm", "lsp"] },          // framework DSL server
+    ],
+  },
+
+  // Monorepos: map sub-projects to their own root. The longest matching
+  // path prefix wins; the LSP rootUri and working directory land there.
+  "projects": {
+    "assets": {                                         // frontend at <root>/assets
+      "lsp": { "typescript": [ { "command": ["node_modules/.bin/tsls", "--stdio"] } ] },
+    },
+    "clients/desktop": {},                              // {} = auto-discovery at that root
+  },
+}
+```
+
+Rules:
+
+- **Command words expand** `~`, `$VAR` / `${VAR}` and `${root}` (the project
+  root). Relative paths resolve against the root.
+- **Nearest config wins**: a `dala.jsonc` inside a sub-directory beats the
+  top-level one for files under it — an alternative to `"projects"`.
+- A `"projects"` entry without `"lsp"` still moves the root: auto-discovery
+  then runs *at the sub-project* (its venv, its node_modules).
+- The legacy `.dala/lsp.json` (the bare `lsp` map as the whole file) keeps
+  working; `dala.jsonc` wins when both exist.
+- The editor's **LSP debug window** shows, per file, which config applied and
+  every probed path (found or missing) — same data at `GET /lsp/debug` for
+  AI agents.
+
 ## Application guide
 
 - **Long-running AI agents.** Kick off a multi-hour agent run, close the

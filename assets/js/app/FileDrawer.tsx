@@ -136,34 +136,75 @@ export default function FileDrawer({
   }, [path, fetchDir]);
 
   // External changes (terminal commands, agents deleting/creating files)
-  // don't announce themselves — poll the expanded directories while the
-  // drawer is open. Silent: transient failures (dir deleted mid-poll) just
-  // wait for the next tick instead of toasting.
+  // don't announce themselves — a watch socket does: the server runs
+  // inotifywait (or mtime polling) on the expanded directories and pushes
+  // {"changed": dir}. Silent refresh; reconnects with backoff.
+  const refreshSilent = useCallback(
+    async (dir: string) => {
+      const result = await listDirectory({
+        input: { path: dir },
+        fields: DIR_FIELDS,
+        headers: buildCSRFHeaders(),
+      }).catch(() => null);
+      if (result?.success) {
+        const listing = result.data as unknown as Listing;
+        setChildren((prev) => ({ ...prev, [dir]: listing.entries }));
+      }
+    },
+    [],
+  );
+
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
+  const watchRef = useRef<WebSocket | null>(null);
+
   useEffect(() => {
     let disposed = false;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        for (const dir of expandedRef.current) {
-          const result = await listDirectory({
-            input: { path: dir },
-            fields: DIR_FIELDS,
-            headers: buildCSRFHeaders(),
-          }).catch(() => null);
-          if (disposed) return;
-          if (result?.success) {
-            const listing = result.data as unknown as Listing;
-            setChildren((prev) => ({ ...prev, [dir]: listing.entries }));
-          }
+    let socket: WebSocket | null = null;
+    let retry: number | undefined;
+
+    const connect = () => {
+      if (disposed) return;
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      socket = new WebSocket(`${proto}://${window.location.host}/files/watch`);
+      watchRef.current = socket;
+      socket.onopen = () => {
+        socket?.send(JSON.stringify({ watch: [...expandedRef.current] }));
+      };
+      socket.onmessage = (event) => {
+        try {
+          const body = JSON.parse(String(event.data)) as { changed?: string };
+          if (body.changed) void refreshSilent(body.changed);
+        } catch {
+          // ignore malformed frames
         }
-      })();
-    }, 4000);
+      };
+      socket.onclose = () => {
+        watchRef.current = null;
+        if (!disposed) retry = window.setTimeout(connect, 3000);
+      };
+    };
+    connect();
+
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      window.clearTimeout(retry);
+      socket?.close();
     };
-  }, []);
+  }, [refreshSilent]);
+
+  // Keep the server's watch list in sync with what is expanded on screen.
+  useEffect(() => {
+    const socket = watchRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ watch: [...expanded] }));
+    }
+  }, [expanded]);
+
+  // Manual refresh: refetch everything visible right now.
+  const refreshAll = useCallback(() => {
+    for (const dir of expandedRef.current) void refreshSilent(dir);
+  }, [refreshSilent]);
 
   const toggleDir = async (dirPath: string) => {
     if (expanded.has(dirPath)) {
@@ -431,6 +472,14 @@ export default function FileDrawer({
             if (dir) void uploadTo(dir, files);
           }}
         />
+        <button
+          id="drawer-refresh-button"
+          onClick={refreshAll}
+          className="rounded-md border border-line px-1.5 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:text-fg"
+          title={t("refresh")}
+        >
+          ⟳
+        </button>
         <button
           onClick={onToggleFollow}
           className={`rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition-colors ${

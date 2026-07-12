@@ -181,6 +181,48 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'"${PROMPT_COMMAND
 （`Ctrl/⌘+V`）：dala 把图片存到会话目录并把路径敲进提示符——
 和原生终端里这些 CLI 支持的流程一致。
 
+## 项目配置：dala.jsonc
+
+一切默认零配置——编辑器的 LSP 按项目自动解析服务器（Python venv 里的
+basedpyright、rust-analyzer、elixir-ls、typescript-language-server、gopls……
+依次探测 venv、PATH、`~/.local/bin`、`~/.cargo/bin`、Mason）。默认不够用时，
+在项目根放一个 `dala.jsonc` 接管。支持注释和尾逗号。
+
+```jsonc
+{
+  // 按语言覆盖挂载的语言服务器。同一个文件可以挂多个
+  // （比如框架自带的 DSL 服务器和 pyright 并行）。
+  "lsp": {
+    "python": [
+      { "command": [".venv/bin/basedpyright-langserver", "--stdio"] },
+      { "command": [".venv/bin/dm", "lsp"] },          // 框架 DSL 服务器
+    ],
+  },
+
+  // monorepo：把子项目映射到各自的根。路径前缀最长匹配生效；
+  // LSP 的 rootUri 和工作目录都落在子项目。
+  "projects": {
+    "assets": {                                         // 前端在 <root>/assets
+      "lsp": { "typescript": [ { "command": ["node_modules/.bin/tsls", "--stdio"] } ] },
+    },
+    "clients/desktop": {},                              // {} = 在该子根自动探测
+  },
+}
+```
+
+规则：
+
+- **命令词支持变量展开**：`~`、`$VAR` / `${VAR}`、`${root}`（项目根）。
+  相对路径按项目根解析。
+- **就近配置优先**：子目录里的 `dala.jsonc` 对其下的文件覆盖顶层配置——
+  和 `"projects"` 二选一均可。
+- `"projects"` 条目即使没写 `"lsp"` 也会改变根：自动探测会在*子项目*
+  进行（它自己的 venv、它自己的 node_modules）。
+- 旧格式 `.dala/lsp.json`（整个文件就是 lsp 映射）继续兼容；
+  两者并存时 `dala.jsonc` 优先。
+- 编辑器的 **LSP 调试窗**逐文件显示命中的配置和每个探测路径（✓/✗）——
+  同样的数据在 `GET /lsp/debug`，AI agent 可直接读取。
+
 ## 应用指南
 
 - **长时间跑 AI agent。** 发起一个几小时的 agent 任务，合上笔记本，之后在任何

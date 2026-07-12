@@ -29,6 +29,14 @@ defmodule DalaWeb.FileController do
   def raw(conn, _params), do: send_resp(conn, 400, "missing path")
 
   @doc """
+  WebSocket: directory-change notifications for the file drawer. The client
+  sends {"watch": [dirs]}, the server pushes {"changed": dir}.
+  """
+  def watch(conn, _params) do
+    WebSockAdapter.upgrade(conn, DalaWeb.FileWatchSocket, %{}, timeout: :infinity)
+  end
+
+  @doc """
   Multipart upload into a directory (the file manager's upload button and
   drag&drop). Name collisions never overwrite — the upload gets a `-N`
   suffix instead, like a browser download would.

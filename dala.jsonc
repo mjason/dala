@@ -1,0 +1,13 @@
+{
+  // dala 项目配置（配置规则见 README「dala.jsonc」一节）。
+  //
+  // 这是一个 monorepo：Elixir 服务端在根目录，前端在 assets/，
+  // Electron 客户端在 clients/desktop/。"projects" 按路径前缀把
+  // 文件划给子项目——LSP 的 root（rootUri / 工作目录）落在子目录。
+  "projects": {
+    // 前端：TypeScript/React，root 必须是 assets/（tsconfig.json 所在地）
+    "assets": {},
+    // 客户端：纯 JS Electron 主进程
+    "clients/desktop": {},
+  },
+}

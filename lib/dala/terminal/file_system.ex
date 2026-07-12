@@ -247,12 +247,12 @@ defmodule Dala.Terminal.FileSystem do
 
       run fn input, _context ->
         path = Path.expand(input.arguments.path)
-        root = project_root(Path.dirname(path))
-        probe = Dala.Lsp.Discovery.probe(root, path)
+        probe = Dala.Lsp.Discovery.probe_file(path)
 
         servers = for server <- probe.servers, do: %{id: server.id, name: server.name}
 
-        {:ok, %{root: root, language: probe.language, servers: servers, checked: probe.checked}}
+        {:ok,
+         %{root: probe.root, language: probe.language, servers: servers, checked: probe.checked}}
       end
     end
 
@@ -433,15 +433,5 @@ defmodule Dala.Terminal.FileSystem do
         end
       end)
     end
-  end
-
-  # LSP servers live where the project starts, not necessarily the file's dir.
-  defp project_root(dir) do
-    case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
-      {out, 0} -> String.trim(out)
-      _ -> dir
-    end
-  rescue
-    _ -> dir
   end
 end
