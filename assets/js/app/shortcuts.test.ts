@@ -121,6 +121,20 @@ describe("inTextInput", () => {
     expect(shortcuts.inTextInput({ target: child })).toBe(true);
   });
 
+  it("recognizes bare `contenteditable` and plaintext-only variants", () => {
+    const bare = document.createElement("div");
+    bare.setAttribute("contenteditable", "");
+    expect(shortcuts.inTextInput({ target: bare })).toBe(true);
+
+    const child = document.createElement("span");
+    bare.appendChild(child);
+    expect(shortcuts.inTextInput({ target: child })).toBe(true);
+
+    const plain = document.createElement("div");
+    plain.setAttribute("contenteditable", "plaintext-only");
+    expect(shortcuts.inTextInput({ target: plain })).toBe(true);
+  });
+
   it("rejects plain elements, contenteditable=false and missing targets", () => {
     expect(shortcuts.inTextInput({ target: document.createElement("div") })).toBe(false);
 

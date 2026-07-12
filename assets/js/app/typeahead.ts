@@ -57,7 +57,10 @@ export function createTypeahead(term: Terminal, enabled: () => boolean) {
       // strings and readline may render it anywhere — leave it to the echo.
       if (data.length !== 1) return;
       const code = data.charCodeAt(0);
-      if (code < 0x20 || code === 0x7f) return;
+      // > 0x7e: a lone CJK/accented char would echo back as multi-byte
+      // UTF-8 (mismatching the char-vs-byte reconcile) and its width-2
+      // cell makes the 1-column erase leave half a glyph behind.
+      if (code < 0x20 || code > 0x7e) return;
       // Soft-wrap at the right edge makes the cursor math ambiguous.
       if (term.buffer.active.cursorX >= term.cols - 2) return;
       pending += data;

@@ -17,6 +17,16 @@ export async function loadPreview(
   const kind = previewKind(path);
 
   if (kind === "image") {
+    // The bytes are served by URL; only the size needs the server. A caller
+    // without one (quick-open) used to show "0 bytes" — ask for metadata,
+    // and on failure still show the preview.
+    if (size <= 0) {
+      const meta = await call<{ size: number }>(readFile, {
+        input: { path },
+        fields: ["path", "size"],
+      });
+      if (meta.ok) size = meta.data.size;
+    }
     return { ok: true, preview: { kind: "image", path, size } };
   }
 

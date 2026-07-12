@@ -151,6 +151,16 @@ describe("reconciliation with the server echo", () => {
     expect(text(out)).toBe("\x1b[2D\x1b[Kaxz");
   });
 
+  it("never predicts a single non-ASCII character (CJK/accented)", () => {
+    const { term, writes } = makeTerm();
+    const ta = createTypeahead(term, () => true);
+    for (const ch of ["中", "é", "あ"]) ta.predict(ch);
+    expect(writes).toEqual([]);
+    // and nothing pending: a later echo must pass through untouched
+    const echo = new TextEncoder().encode("x");
+    expect(ta.reconcile(echo)).toEqual(echo);
+  });
+
   it("passes binary (non-UTF-8) bytes through byte-for-byte", () => {
     const { term } = makeTerm();
     const ta = createTypeahead(term, () => true);

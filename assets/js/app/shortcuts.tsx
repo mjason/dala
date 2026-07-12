@@ -18,7 +18,10 @@ export function modShiftCombo(key: string): string {
 export function inTextInput(e: { target: EventTarget | null }): boolean {
   const el = e.target as HTMLElement | null;
   if (!el) return false;
-  if (el.closest?.("input, textarea, select, [contenteditable=true]")) return true;
+  // [contenteditable] matches the bare attribute and "plaintext-only" too;
+  // only an explicit ="false" opts out.
+  if (el.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])'))
+    return true;
   return false;
 }
 

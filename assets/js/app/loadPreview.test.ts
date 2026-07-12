@@ -29,6 +29,31 @@ describe("loadPreview", () => {
     expect(readFileMock).not.toHaveBeenCalled();
   });
 
+  it("image WITHOUT a caller size asks the server instead of showing 0 bytes", async () => {
+    mockRead({ success: true, data: { path: "shots/screen.png", size: 4321 } });
+
+    const result = await loadPreview("shots/screen.png");
+
+    expect(result).toEqual({
+      ok: true,
+      preview: { kind: "image", path: "shots/screen.png", size: 4321 },
+    });
+    // metadata only — the image bytes are served by URL, not RPC
+    const args = readFileMock.mock.calls[0][0];
+    expect(args.fields).not.toContain("content");
+  });
+
+  it("image size lookup failure still shows the preview (size 0)", async () => {
+    mockRead({ success: false, errors: [{ message: "gone" }] });
+
+    const result = await loadPreview("shots/screen.png");
+
+    expect(result).toEqual({
+      ok: true,
+      preview: { kind: "image", path: "shots/screen.png", size: 0 },
+    });
+  });
+
   it("reads text files via RPC with CSRF headers", async () => {
     mockRead({
       success: true,
