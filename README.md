@@ -227,6 +227,13 @@ allowed.
     },
     "clients/desktop": {},                              // {} = auto-discovery at that root
   },
+
+  // Voice input: hotwords sent as the Whisper prompt, so transcription
+  // spells your jargon right. Per project — editable from Settings, which
+  // reads/writes the nearest dala.jsonc (created here when missing).
+  "speech": {
+    "hotwords": "dala, zellij, Phoenix LiveView, basedpyright",
+  },
 }
 ```
 

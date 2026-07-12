@@ -126,6 +126,7 @@ export default function InputBar({
             endpoint: prefs.endpoint,
             model: prefs.model,
             apiKey: prefs.apiKey || undefined,
+            cwd: root,
             audioBase64: await blobToBase64(wav),
           },
           fields: ["text", "error"] as never,

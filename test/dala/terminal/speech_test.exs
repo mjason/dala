@@ -68,6 +68,72 @@ defmodule Dala.Terminal.SpeechTest do
     refute request =~ "authorization"
   end
 
+  test "hotwords prompt rides along in the multipart form" do
+    {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
+
+    run_transcribe(%{
+      endpoint: "http://127.0.0.1:#{port}/v1",
+      model: "m",
+      prompt: "dala, zellij, Elixir, Phoenix LiveView, opencode",
+      audio_base64: Base.encode64("x")
+    })
+
+    request = Task.await(task)
+    assert request =~ ~s(name="prompt")
+    assert request =~ "Phoenix LiveView"
+  end
+
+  test "empty prompt is omitted entirely" do
+    {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
+
+    run_transcribe(%{
+      endpoint: "http://127.0.0.1:#{port}/v1",
+      model: "m",
+      prompt: "",
+      audio_base64: Base.encode64("x")
+    })
+
+    request = Task.await(task)
+    refute request =~ ~s(name="prompt")
+  end
+
+  test "without an explicit prompt, hotwords come from the project's dala.jsonc via cwd" do
+    dir = Path.join(System.tmp_dir!(), "dala-speech-cwd-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    File.write!(Path.join(dir, "dala.jsonc"), ~s({ "speech": { "hotwords": "basedpyright" } }))
+
+    {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
+
+    run_transcribe(%{
+      endpoint: "http://127.0.0.1:#{port}/v1",
+      model: "m",
+      cwd: dir,
+      audio_base64: Base.encode64("x")
+    })
+
+    request = Task.await(task)
+    assert request =~ ~s(name="prompt")
+    assert request =~ "basedpyright"
+  end
+
+  test "cwd without any dala.jsonc sends no prompt at all" do
+    dir = Path.join(System.tmp_dir!(), "dala-speech-none-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
+
+    run_transcribe(%{
+      endpoint: "http://127.0.0.1:#{port}/v1",
+      model: "m",
+      cwd: dir,
+      audio_base64: Base.encode64("x")
+    })
+
+    refute Task.await(task) =~ ~s(name="prompt")
+  end
+
   test "api key becomes a bearer header" do
     {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
 

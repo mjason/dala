@@ -150,7 +150,7 @@ defmodule Dala.Lsp.Discovery do
     end)
   end
 
-  defp git_toplevel(dir) do
+  def git_toplevel(dir) do
     case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
       {out, 0} -> String.trim(out)
       _ -> nil
@@ -304,7 +304,7 @@ defmodule Dala.Lsp.Discovery do
 
   # //-comments and /* */-comments outside strings, plus trailing commas —
   # enough JSONC for a config file without pulling in a parser dependency.
-  defp strip_jsonc(body) do
+  def strip_jsonc(body) do
     body
     |> scan_jsonc([], :code)
     |> IO.iodata_to_binary()

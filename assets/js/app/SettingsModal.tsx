@@ -7,6 +7,8 @@ import {
   renameSession,
   restartSession,
   setScrollbackLimit,
+  setSpeechHotwords,
+  speechHotwordsConfig,
 } from "../ash_rpc";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
@@ -406,7 +408,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             <>
               <AppearanceSection />
               <NotificationsSection />
-              <SpeechSection />
+              <SpeechSection root={session.cwd} />
             </>
           )}
         </div>
@@ -627,14 +629,56 @@ function AppearanceSection() {
  * serving etc.). Browser-local like the appearance prefs — changes persist
  * as you type, no save step.
  */
-function SpeechSection() {
+function SpeechSection({ root }: { root: string }) {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<SpeechPrefs>(loadSpeechPrefs);
   const [mics, setMics] = useState<{ deviceId: string; label: string }[]>([]);
+  // Hotwords are per-project: they live in the dala.jsonc nearest to the
+  // session's cwd (created there when missing), not in browser storage.
+  const [hotwords, setHotwords] = useState("");
+  const [hotwordsPath, setHotwordsPath] = useState("");
+  const [hotwordsState, setHotwordsState] = useState<"idle" | "dirty" | "saved" | "error">(
+    "idle",
+  );
 
   useEffect(() => {
     void listMicrophones().then(setMics);
   }, []);
+
+  useEffect(() => {
+    let stale = false;
+    void speechHotwordsConfig({
+      input: { dir: root },
+      fields: ["path", "exists", "hotwords"],
+      headers: buildCSRFHeaders(),
+    }).then((result) => {
+      if (stale || !result.success) return;
+      const data = result.data as { path: string; hotwords: string | null };
+      setHotwords(data.hotwords ?? "");
+      setHotwordsPath(data.path);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [root]);
+
+  const saveHotwords = async () => {
+    if (hotwordsState !== "dirty") return;
+    const result = await setSpeechHotwords({
+      input: { dir: root, hotwords },
+      fields: ["path", "error"],
+      headers: buildCSRFHeaders(),
+    });
+    const data = result.success
+      ? (result.data as { path: string | null; error: string | null })
+      : null;
+    if (data && !data.error) {
+      if (data.path) setHotwordsPath(data.path);
+      setHotwordsState("saved");
+    } else {
+      setHotwordsState("error");
+    }
+  };
 
   const apply = (patch: Partial<SpeechPrefs>) => setPrefs(saveSpeechPrefs(patch));
 
@@ -673,6 +717,30 @@ function SpeechSection() {
           ))}
         </select>
         <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechMicHint")}</p>
+      </div>
+      <div>
+        <FieldLabel>{t("speechHotwords")}</FieldLabel>
+        <textarea
+          id="speech-hotwords-input"
+          value={hotwords}
+          onChange={(e) => {
+            setHotwords(e.target.value);
+            setHotwordsState("dirty");
+          }}
+          onBlur={() => void saveHotwords()}
+          placeholder="dala, zellij, Elixir, Phoenix LiveView, opencode, basedpyright…"
+          rows={2}
+          className="w-full resize-y rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60"
+        />
+        <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechHotwordsHint")}</p>
+        <p className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-fg-muted/70">
+          <span id="speech-hotwords-status">
+            {hotwordsState === "saved" ? "✓" : hotwordsState === "error" ? "✗" : ""}
+          </span>
+          <span className="truncate" title={hotwordsPath}>
+            {hotwordsPath}
+          </span>
+        </p>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>

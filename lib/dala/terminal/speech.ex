@@ -37,6 +37,13 @@ defmodule Dala.Terminal.Speech do
       argument :model, :string, allow_nil?: false
       argument :api_key, :string
 
+      # Whisper "prompt": a vocabulary hint — jargon listed here (library
+      # names, project terms) biases the transcription toward the right
+      # spellings. When absent, the hotwords from the project's dala.jsonc
+      # (nearest to `cwd`) are used.
+      argument :prompt, :string
+      argument :cwd, :string
+
       argument :audio_base64, :string do
         allow_nil? false
         constraints trim?: false
@@ -46,14 +53,77 @@ defmodule Dala.Terminal.Speech do
         with {:ok, audio} <- Base.decode64(input.arguments.audio_base64),
              :ok <- check_size(audio),
              {:ok, url} <- transcription_url(input.arguments.endpoint) do
-          request(url, input.arguments.model, Map.get(input.arguments, :api_key), audio)
+          prompt =
+            case Map.get(input.arguments, :prompt) do
+              p when is_binary(p) and p != "" -> p
+              _ -> project_hotwords(Map.get(input.arguments, :cwd))
+            end
+
+          request(
+            url,
+            input.arguments.model,
+            Map.get(input.arguments, :api_key),
+            prompt,
+            audio
+          )
         else
           :error -> {:ok, %{text: nil, error: "invalid base64 audio"}}
           {:error, message} -> {:ok, %{text: nil, error: message}}
         end
       end
     end
+
+    action :hotwords_config, :map do
+      description """
+      The speech hotwords stored in the project's dala.jsonc (nearest to
+      `dir`, walking up to the git toplevel), and the file that holds them.
+      """
+
+      constraints fields: [
+                    path: [type: :string],
+                    exists: [type: :boolean],
+                    hotwords: [type: :string, allow_nil?: true]
+                  ]
+
+      argument :dir, :string, allow_nil?: false
+
+      run fn input, _context ->
+        {:ok, Dala.ProjectConfig.speech_hotwords(Path.expand(input.arguments.dir))}
+      end
+    end
+
+    action :set_hotwords, :map do
+      description """
+      Write speech hotwords into the project's dala.jsonc — the nearest
+      existing config wins; otherwise one is created inside `dir`.
+      Comments in an existing file are preserved.
+      """
+
+      constraints fields: [
+                    path: [type: :string, allow_nil?: true],
+                    error: [type: :string, allow_nil?: true]
+                  ]
+
+      argument :dir, :string, allow_nil?: false
+      argument :hotwords, :string, constraints: [trim?: false, allow_empty?: true]
+
+      run fn input, _context ->
+        dir = Path.expand(input.arguments.dir)
+        words = Map.get(input.arguments, :hotwords) || ""
+
+        case Dala.ProjectConfig.put_speech_hotwords(dir, words) do
+          {:ok, path} -> {:ok, %{path: path, error: nil}}
+          {:error, message} -> {:ok, %{path: nil, error: message}}
+        end
+      end
+    end
   end
+
+  defp project_hotwords(cwd) when is_binary(cwd) and cwd != "" do
+    Dala.ProjectConfig.speech_hotwords(Path.expand(cwd)).hotwords
+  end
+
+  defp project_hotwords(_cwd), do: nil
 
   defp check_size(audio) when byte_size(audio) > @audio_max_bytes,
     do: {:error, "audio too large (max #{div(@audio_max_bytes, 1024 * 1024)} MB)"}
@@ -76,21 +146,28 @@ defmodule Dala.Terminal.Speech do
     end
   end
 
-  defp request(url, model, api_key, audio) do
+  defp request(url, model, api_key, prompt, audio) do
     headers =
       case api_key do
         key when is_binary(key) and key != "" -> [{"authorization", "Bearer #{key}"}]
         _ -> []
       end
 
+    prompt_field =
+      case prompt do
+        p when is_binary(p) and p != "" -> [prompt: p]
+        _ -> []
+      end
+
     result =
       Req.post(url,
         headers: headers,
-        form_multipart: [
-          model: model,
-          response_format: "json",
-          file: {audio, filename: "audio.wav", content_type: "audio/wav"}
-        ],
+        form_multipart:
+          [
+            model: model,
+            response_format: "json",
+            file: {audio, filename: "audio.wav", content_type: "audio/wav"}
+          ] ++ prompt_field,
         connect_options: [timeout: 10_000],
         receive_timeout: 120_000,
         retry: false
