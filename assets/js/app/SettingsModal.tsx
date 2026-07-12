@@ -438,6 +438,24 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 function AppearanceSection() {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<TermPrefs>(loadPrefs);
+  // Live terminal geometry — the ground truth for clipping bug reports:
+  // wrapper (clipping box) / container (fit target) / screen (canvas),
+  // devicePixelRatio (includes browser zoom).
+  const [geometry, setGeometry] = useState("");
+  useEffect(() => {
+    const read = () => {
+      const container = document.querySelector(".xterm")?.parentElement;
+      const wrapper = container?.parentElement?.parentElement;
+      const screen = document.querySelector(".xterm-screen");
+      if (!container || !screen) return;
+      setGeometry(
+        `wrap ${wrapper?.clientHeight ?? "?"} · box ${container.clientHeight} · canvas ${screen.clientHeight} · dpr ${window.devicePixelRatio}`,
+      );
+    };
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const apply = (patch: Partial<TermPrefs>) => setPrefs(savePrefs(patch));
 
@@ -455,6 +473,11 @@ function AppearanceSection() {
           {typeof document !== "undefined" && document.documentElement.dataset.termRenderer && (
             <span className="ml-2 font-mono text-[10px] uppercase text-fg-muted/60">
               {t("renderer")}: {document.documentElement.dataset.termRenderer}
+            </span>
+          )}
+          {geometry && (
+            <span id="terminal-geometry" className="ml-2 font-mono text-[10px] text-fg-muted/60">
+              {geometry}
             </span>
           )}
         </span>
