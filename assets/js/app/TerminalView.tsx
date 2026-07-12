@@ -15,6 +15,7 @@ import {
 } from "../ash_typed_channels";
 import { base64ToBytes, writeClipboard } from "./util";
 import { createStreamGate } from "./streamGate";
+import { createAckCounter } from "./flowControl";
 import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
@@ -282,8 +283,34 @@ export default function TerminalView({
       // Optional mosh-style local echo (appearance setting).
       const typeahead = createTypeahead(term, () => livePrefs.localEcho);
 
+      // Flow control: acknowledge bytes once xterm has PARSED them, so the
+      // server can bound the in-flight backlog per client (and skip-to-
+      // repaint on slow links). Counting parsed bytes — not received ones —
+      // also covers renderer backpressure.
+      const flowStats = ((window as unknown as Record<string, unknown>).__dalaFlow = {
+        acked: 0,
+        resets: 0,
+      });
+      const ackCounter = createAckCounter((bytes, alt) => {
+        flowStats.acked += bytes;
+        phxChannel.push("ack", { bytes, alt });
+      });
+      const writeCounted = (data: Uint8Array | string, done?: () => void) => {
+        const size = typeof data === "string" ? data.length : data.byteLength;
+        term.write(data, () => {
+          ackCounter.consumed(size, term.buffer.active.type === "alternate");
+          done?.();
+        });
+      };
+
       const refs = onTerminalChannelMessages(channel, {
         replay: (payload) => {
+          // reset flag = mid-session flow-control snapshot: treat it as a
+          // fresh join so the screen clears and the seq baseline moves.
+          if ((payload as { reset?: boolean }).reset) {
+            gate.joined();
+            flowStats.resets += 1;
+          }
           const { reset, release } = gate.replayBatch(payload.seq, payload.done);
           if (reset) {
             typeahead.abandon();
@@ -293,18 +320,18 @@ export default function TerminalView({
 
           const data = payload.data ? base64ToBytes(payload.data) : "";
           if (release) {
-            term.write(data, () => {
+            writeCounted(data, () => {
               gate.replayParsed();
               term.scrollToBottom();
               setReplaying(false);
             });
           } else {
-            term.write(data);
+            writeCounted(data);
           }
         },
         output: (payload) => {
           if (!gate.acceptOutput(payload.seq)) return;
-          term.write(typeahead.reconcile(base64ToBytes(payload.data)));
+          writeCounted(typeahead.reconcile(base64ToBytes(payload.data)));
         },
         cwd: (payload) => {
           cwdChangeRef.current?.(payload.cwd);
@@ -579,6 +606,7 @@ export default function TerminalView({
         stopPrefsSync();
         inputDisposable.dispose();
         typeahead.dispose();
+        ackCounter.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
         term.dispose();

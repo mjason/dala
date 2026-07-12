@@ -70,3 +70,29 @@ describe("createStreamGate", () => {
     expect(gate.acceptInput()).toBe(true);
   });
 });
+
+describe("flow-control skip repaint", () => {
+  it("mid-session flow replay resets, rebaselines seq and guards input", () => {
+    const gate = createStreamGate();
+    gate.joined();
+    expect(gate.replayBatch(10, true)).toEqual({ reset: true, release: true });
+    gate.replayParsed();
+    expect(gate.acceptOutput(11)).toBe(true);
+    expect(gate.acceptOutput(12)).toBe(true);
+
+    // Link fell behind: server skipped seqs 13..99 and sends a repaint.
+    // The client treats it as a fresh join so the screen resets.
+    gate.joined();
+    const flow = gate.replayBatch(100, true);
+    expect(flow.reset).toBe(true);
+    expect(flow.release).toBe(true);
+    // auto-responses to replayed escape sequences must not reach the PTY
+    expect(gate.acceptInput()).toBe(false);
+    gate.replayParsed();
+    expect(gate.acceptInput()).toBe(true);
+
+    // pre-skip stragglers are dropped, post-repaint output flows
+    expect(gate.acceptOutput(99)).toBe(false);
+    expect(gate.acceptOutput(101)).toBe(true);
+  });
+});

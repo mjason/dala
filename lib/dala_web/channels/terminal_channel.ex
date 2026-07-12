@@ -15,6 +15,23 @@ defmodule DalaWeb.TerminalChannel do
 
   alias Dala.Terminal.Holder
 
+  # Output flow control (per client): once the client starts acking parsed
+  # bytes, sent-minus-acked is capped by a watermark. Past it the channel
+  # DROPS chunks; when the acks drain it requests one repaint snapshot and
+  # resumes — the backlog ahead of a keystroke echo stays bounded on slow
+  # links (mosh's state-sync idea). Clients that never ack (older bundles)
+  # get the full stream, exactly as before.
+  intercept ["output"]
+
+  # Alt screen (TUIs — no scrollback to lose): skip aggressively.
+  @high_water_alt 128 * 1024
+  # Normal buffer: skipping costs scrollback lines, so only cap pathological
+  # floods.
+  @high_water_normal 768 * 1024
+  @low_water 32 * 1024
+  # Acks lost / client wedged: force the repaint rather than staying dark.
+  @flow_deadline_ms 4_000
+
   # Keep pushed frames comfortably small; base64 inflates by 4/3.
   @replay_batch_bytes 192 * 1024
   @max_rows 500
@@ -40,8 +57,19 @@ defmodule DalaWeb.TerminalChannel do
 
         {rows, cols} = Dala.Terminal.Server.viewport(session_id) || {24, 80}
 
-        {:ok, %{status: session.status, cwd: session.cwd, rows: rows, cols: cols},
-         assign(socket, :session_id, session.id)}
+        socket =
+          socket
+          |> assign(:session_id, session.id)
+          |> assign(:fc, %{
+            enabled: false,
+            alt: false,
+            sent: 0,
+            acked: 0,
+            skipping: false,
+            repaint_requested: false
+          })
+
+        {:ok, %{status: session.status, cwd: session.cwd, rows: rows, cols: cols}, socket}
 
       {:error, _error} ->
         {:error, %{reason: "not_found"}}
@@ -94,11 +122,27 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   def handle_info({:repaint, data, seq}, socket) do
-    if socket.assigns[:replayed] do
-      {:noreply, socket}
-    else
-      {:noreply, push_replay(socket, data, seq)}
+    fc = socket.assigns.fc
+
+    cond do
+      fc.skipping and fc.repaint_requested ->
+        # Flow-control snapshot: client resets and continues from seq.
+        socket = push_replay(socket, data, seq, true)
+        # sent counts the snapshot too — the client acks those bytes as it
+        # parses them, keeping the cumulative ledger consistent.
+        fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
+        {:noreply, assign(socket, :fc, fc)}
+
+      socket.assigns[:replayed] ->
+        {:noreply, socket}
+
+      true ->
+        {:noreply, push_replay(socket, data, seq)}
     end
+  end
+
+  def handle_info(:flow_repaint_deadline, socket) do
+    {:noreply, maybe_flow_repaint(socket, force: true)}
   end
 
   def handle_info(:repaint_timeout, socket) do
@@ -106,6 +150,29 @@ defmodule DalaWeb.TerminalChannel do
       {:noreply, socket}
     else
       {:noreply, push_replay(socket, "", 0)}
+    end
+  end
+
+  @impl true
+  def handle_out("output", %{data: encoded} = payload, socket) do
+    fc = socket.assigns.fc
+    size = decoded_size(encoded)
+
+    cond do
+      not fc.enabled ->
+        push(socket, "output", payload)
+        {:noreply, socket}
+
+      fc.skipping ->
+        {:noreply, socket}
+
+      fc.sent - fc.acked + size > high_water(fc) ->
+        Process.send_after(self(), :flow_repaint_deadline, @flow_deadline_ms)
+        {:noreply, assign(socket, :fc, %{fc | skipping: true})}
+
+      true ->
+        push(socket, "output", payload)
+        {:noreply, assign(socket, :fc, %{fc | sent: fc.sent + size})}
     end
   end
 
@@ -143,12 +210,58 @@ defmodule DalaWeb.TerminalChannel do
     {:noreply, socket}
   end
 
+  def handle_in("ack", %{"bytes" => bytes} = payload, socket) when is_integer(bytes) do
+    fc = socket.assigns.fc
+
+    fc = %{
+      fc
+      | enabled: true,
+        acked: fc.acked + max(bytes, 0),
+        alt: payload["alt"] == true
+    }
+
+    {:noreply, maybe_flow_repaint(assign(socket, :fc, fc))}
+  end
+
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
+
+  defp high_water(%{alt: true}), do: @high_water_alt
+  defp high_water(_fc), do: @high_water_normal
+
+  # Base64 payload → decoded byte count, without decoding.
+  defp decoded_size(encoded) do
+    padding =
+      case encoded do
+        <<_::binary>> when binary_part(encoded, byte_size(encoded) - 2, 2) == "==" -> 2
+        <<_::binary>> when binary_part(encoded, byte_size(encoded) - 1, 1) == "=" -> 1
+        _ -> 0
+      end
+
+    div(byte_size(encoded), 4) * 3 - padding
+  rescue
+    _ -> byte_size(encoded)
+  end
+
+  # While skipping: once the client's acks have drained the backlog (or the
+  # deadline fired), ask the session server for one repaint snapshot.
+  defp maybe_flow_repaint(socket, opts \\ []) do
+    fc = socket.assigns.fc
+    drained = fc.sent - fc.acked <= @low_water
+
+    if fc.skipping and not fc.repaint_requested and (drained or opts[:force]) do
+      Dala.Terminal.Server.request_repaint(socket.assigns.session_id, self())
+      assign(socket, :fc, %{fc | repaint_requested: true})
+    else
+      socket
+    end
+  end
 
   # Pushes one repaint as a series of replay batches. Every batch carries the
   # repaint's seq watermark; the last one is flagged `done` so the client can
-  # uncover and re-enable input.
-  defp push_replay(socket, data, seq) do
+  # uncover and re-enable input. `reset` marks a mid-session flow-control
+  # snapshot: the client must clear the screen first (a join-time replay
+  # resets implicitly).
+  defp push_replay(socket, data, seq, reset \\ false) do
     chunks = chunk_binary(data, @replay_batch_bytes)
 
     chunks
@@ -157,7 +270,8 @@ defmodule DalaWeb.TerminalChannel do
       push(socket, "replay", %{
         data: Base.encode64(chunk),
         seq: seq,
-        done: index == length(chunks)
+        done: index == length(chunks),
+        reset: reset
       })
     end)
 
