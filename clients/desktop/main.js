@@ -8,6 +8,7 @@ const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nati
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
+const { normalizeConfig } = require("./src/config");
 const fs = require("fs");
 const path = require("path");
 
@@ -51,15 +52,6 @@ function legacyConfigFile() {
     default:
       return path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), id, "servers.json");
   }
-}
-
-function normalizeConfig(raw) {
-  const servers = (Array.isArray(raw?.servers) ? raw.servers : [])
-    .filter((s) => typeof s?.url === "string" && s.url)
-    .map((s) => ({ name: typeof s.name === "string" && s.name ? s.name : s.url, url: s.url }));
-  const last = typeof raw?.last === "string" ? raw.last : null;
-  const locale = normalizeLocale(raw?.locale) || null;
-  return { servers, last, locale };
 }
 
 function loadConfig() {

@@ -8,5 +8,10 @@ export default defineConfig({
     include: ["js/**/*.test.{ts,tsx}"],
     setupFiles: ["./vitest.setup.ts"],
     globals: false,
+    coverage: {
+      provider: "v8",
+      include: ["js/app/**/*.{ts,tsx}"],
+      exclude: ["js/app/**/*.test.{ts,tsx}"],
+    },
   },
 });
