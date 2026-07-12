@@ -729,7 +729,7 @@ function ShortcutsSection() {
               <button
                 data-shortcut-row={spec.id}
                 onClick={() => setRecording(recording === spec.id ? null : spec.id)}
-                className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[12px] transition-colors ${
+                className={`kbd-combo shrink-0 rounded-md border px-2 py-1 text-[12px] transition-colors ${
                   recording === spec.id
                     ? "border-mint/60 text-mint"
                     : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"

@@ -362,3 +362,10 @@ body:has(> #app) {
   border: 0;
   border-top: 1px solid var(--color-line, #2a2d33);
 }
+
+/* Key-combo text (⇧⌘K …): the bundled Inter Kbd subset renders modifier
+ * glyphs and letters from ONE font with one baseline. Use this class for
+ * any combo rendered as plain text (the <Kbd> badge applies it already). */
+.kbd-combo {
+  font-family: var(--font-kbd);
+}
