@@ -23,6 +23,14 @@ let config = { servers: [], last: null };
 // falling back to the system locale until the first report arrives.
 let menuLocale = null;
 
+// Menu accelerators reported by the page (Settings → Shortcuts); defaults
+// match the web app's until the first report arrives.
+let menuShortcuts = {
+  composer: "CmdOrCtrl+Shift+K",
+  quickShell: "Ctrl+Shift+`",
+  voice: "CmdOrCtrl+Shift+M",
+};
+
 function t(key, params) {
   const locale = menuLocale || detectLocale(app.getLocale());
   return translate(locale, key, params);
@@ -327,17 +335,17 @@ function rebuildMenu() {
       submenu: [
         {
           label: t("composer"),
-          accelerator: "CmdOrCtrl+K",
+          accelerator: menuShortcuts.composer,
           click: () => sendMenuAction("composer"),
         },
         {
           label: t("quickShell"),
-          accelerator: "CmdOrCtrl+J",
+          accelerator: menuShortcuts.quickShell,
           click: () => sendMenuAction("quick-shell"),
         },
         {
           label: t("voiceInput"),
-          accelerator: "CmdOrCtrl+Shift+M",
+          accelerator: menuShortcuts.voice,
           click: () => sendMenuAction("voice"),
         },
         { type: "separator" },
@@ -371,6 +379,19 @@ function assertManagePage(event) {
 
 ipcMain.handle("clip_write", (_event, text) => {
   clipboard.writeText(String(text ?? ""));
+});
+
+// Custom shortcuts from the page become real menu accelerators.
+ipcMain.handle("set_shortcuts", (_event, accelerators = {}) => {
+  let changed = false;
+  for (const key of Object.keys(menuShortcuts)) {
+    const value = accelerators[key];
+    if (typeof value === "string" && value && value !== menuShortcuts[key]) {
+      menuShortcuts[key] = value;
+      changed = true;
+    }
+  }
+  if (changed) rebuildMenu();
 });
 
 // The dala page reports its UI language; the application menu follows it.

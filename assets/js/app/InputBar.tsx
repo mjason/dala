@@ -6,6 +6,7 @@ import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 import { Kbd, modShiftCombo } from "./shortcuts";
+import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "./keybindings";
 import ComposerEditor from "./ComposerEditor";
 
 type Props = {
@@ -19,6 +20,8 @@ type Props = {
   onChange: (value: string) => void;
   /** Bumped on user-initiated opens; auto-opens must not steal focus. */
   focusNonce: number;
+  focusConsumed: number;
+  onFocusConsumed: (nonce: number) => void;
   onSend: (text: string, submit: boolean) => void;
   onClose: () => void;
   onError: (message: string) => void;
@@ -60,6 +63,8 @@ export default function InputBar({
   value,
   onChange,
   focusNonce,
+  focusConsumed,
+  onFocusConsumed,
   onSend,
   onClose,
   onError,
@@ -74,6 +79,27 @@ export default function InputBar({
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
+  const [bindings, setBindings] = useState(loadBindings);
+  useEffect(() => onBindingsChange(setBindings), []);
+
+  const insertMention = () => {
+    const inject = value === "" || value.endsWith(" ") ? "@" : " @";
+    setValue(value + inject);
+  };
+  const insertMentionRef = useRef(insertMention);
+  insertMentionRef.current = insertMention;
+
+  // Keyboard shortcuts for the toolbar buttons arrive as app-level actions.
+  useEffect(() => {
+    const onAction = (e: Event) => {
+      const id = (e as CustomEvent).detail;
+      if (id === "composerMention") insertMentionRef.current();
+      if (id === "composerAttach") attachRef.current?.click();
+    };
+    window.addEventListener("dala:action", onAction);
+    return () => window.removeEventListener("dala:action", onAction);
+  }, []);
+
   const [voice, setVoice] = useState<"idle" | "recording" | "busy">("idle");
   const recorderRef = useRef<Recorder | null>(null);
 
@@ -359,6 +385,9 @@ export default function InputBar({
           for (const f of files) list.items.add(f);
           void attach(list.files);
         }}
+        sendKey={comboToCodeMirror(bindings.composerSend)}
+        focusConsumed={focusConsumed}
+        onFocusConsumed={onFocusConsumed}
       />
 
       <div className="mt-1 flex items-center gap-2">
@@ -368,16 +397,13 @@ export default function InputBar({
           disabled={!value.trim()}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-mint px-2.5 py-1 text-[12px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40"
         >
-          {t("inputBarSend")} <Kbd>⇧⏎</Kbd>
+          {t("inputBarSend")} <Kbd>{formatCombo(bindings.composerSend)}</Kbd>
         </button>
         <button
           id="input-bar-mention"
-          onClick={() => {
-            const inject = value === "" || value.endsWith(" ") ? "@" : " @";
-            setValue(value + inject);
-          }}
+          onClick={insertMention}
           className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
-          title={t("composerMention")}
+          title={`${t("composerMention")} · ${formatCombo(bindings.composerMention)}`}
         >
           @
         </button>
@@ -385,7 +411,7 @@ export default function InputBar({
           id="input-bar-attach"
           onClick={() => attachRef.current?.click()}
           className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
-          title={t("composerAttach")}
+          title={`${t("composerAttach")} · ${formatCombo(bindings.composerAttach)}`}
         >
           <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M8 3v10M3 8h10" strokeLinecap="round" />
@@ -412,7 +438,7 @@ export default function InputBar({
                 ? "border-line text-fg-muted opacity-60"
                 : "border-line text-fg-muted hover:border-mint/60 hover:text-mint",
           ].join(" ")}
-          title={`${voice === "recording" ? t("speechStop") : t("speechStart")} · ${modShiftCombo("m")}`}
+          title={`${voice === "recording" ? t("speechStop") : t("speechStart")} · ${formatCombo(bindings.voice)}`}
         >
           <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="6" y="2" width="4" height="7" rx="2" />
@@ -429,7 +455,7 @@ export default function InputBar({
           {shortPath(root, 40)}
         </span>
         <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-fg-muted/60 sm:inline-flex">
-          {t("composerHide")} <Kbd>{modShiftCombo("k")}</Kbd>
+          {t("composerHide")} <Kbd>{formatCombo(bindings.composer)}</Kbd>
         </span>
       </div>
     </div>

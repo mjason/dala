@@ -27,6 +27,13 @@ import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
+import {
+  BINDINGS,
+  comboToAccelerator,
+  loadBindings,
+  matchCombo,
+  onBindingsChange,
+} from "./keybindings";
 import { historyLines, shortPath } from "./util";
 import { useI18n } from "./i18n";
 
@@ -81,6 +88,7 @@ export default function App() {
   const [composerApps, setComposerApps] = useState<Record<string, string | null>>({});
   const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
+  const composerFocusConsumedRef = useRef(0);
   // Agent activity per session (from OSC 777 plugin events): drives the
   // sidebar dots, notifications and the composer auto-toggle.
   const [agentStatus, setAgentStatus] = useState<
@@ -551,72 +559,97 @@ export default function App() {
     }
   };
 
-  // Global header shortcuts. Ctrl+Shift/⌘ combos never type into the shell,
-  // so they work even while the terminal has focus; plain Ctrl+P inside the
-  // terminal stays with readline (previous-history), while ⌘P on macOS is
-  // always ours.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      const key = e.key.toLowerCase();
+  // Global shortcuts, resolved through the customizable keybinding registry
+  // (Settings → Shortcuts). Plain Ctrl+letter combos inside the terminal
+  // defer to readline (Ctrl+P history, Ctrl+B backward-char) unless ⌘ was
+  // used — the historical behavior, now applied to whatever the user bound.
+  const bindingsRef = useRef(loadBindings());
+  useEffect(() => onBindingsChange((map) => (bindingsRef.current = map)), []);
 
-      if (!e.shiftKey && key === "p") {
+  // Desktop client: mirror the menu-bar shortcuts into real accelerators.
+  useEffect(() => {
+    const report = (map: Record<string, string>) => {
+      const bridge = (
+        window as { dala?: { invoke: (cmd: string, args: unknown) => Promise<unknown> } }
+      ).dala;
+      if (!bridge) return;
+      const accelerators: Record<string, string> = {};
+      for (const spec of BINDINGS) {
+        if (!spec.clientMenu) continue;
+        const accelerator = comboToAccelerator(map[spec.id] ?? spec.default);
+        if (accelerator) accelerators[spec.id] = accelerator;
+      }
+      void bridge.invoke("set_shortcuts", accelerators).catch(() => undefined);
+    };
+    report(bindingsRef.current);
+    return onBindingsChange(report);
+  }, []);
+
+  useEffect(() => {
+    const actions: Record<string, (e: KeyboardEvent) => void> = {
+      quickOpen: (e) => {
         const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
-        if (inTerminal && !e.metaKey) return;
+        if (inTerminal && !e.metaKey && !e.shiftKey) return;
         e.preventDefault();
         setQuickOpen(true);
-        return;
-      }
-
-      // VS Code pair — Ctrl+` jumps focus back into the terminal (the quick
-      // shell's, when its panel is open); Ctrl+Shift+` toggles the quick
-      // shell overlay. macOS eats Cmd+` (window cycling), so it is the
-      // Control key there as well, exactly like VS Code.
-      if (e.code === "Backquote") {
-        e.preventDefault();
-        if (e.shiftKey) quickShellRef.current();
-        else (qsRef.current.open ? qsActions : termActions).current?.focus();
-        return;
-      }
-
-      // Ctrl/Cmd+B toggles the sidebar; plain Ctrl+B inside the terminal
-      // stays with readline (backward-char), mirroring the Ctrl+P rule.
-      if (!e.shiftKey && key === "b") {
+      },
+      sidebar: (e) => {
         const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
-        if (inTerminal && !e.metaKey) return;
+        if (inTerminal && !e.metaKey && !e.shiftKey) return;
         e.preventDefault();
         toggleSidebar();
-        return;
-      }
+      },
+      quickShell: (e) => {
+        e.preventDefault();
+        quickShellRef.current();
+      },
+      focusTerminal: (e) => {
+        e.preventDefault();
+        (qsRef.current.open ? qsActions : termActions).current?.focus();
+      },
+      drawer: (e) => {
+        e.preventDefault();
+        setDrawerOpen((v) => !v);
+        setGitOpen(false);
+      },
+      git: (e) => {
+        e.preventDefault();
+        setGitOpen((v) => !v);
+        setDrawerOpen(false);
+      },
+      refit: (e) => {
+        e.preventDefault();
+        termActions.current?.refit();
+      },
+      resetTerminal: (e) => {
+        e.preventDefault();
+        termActions.current?.reset();
+      },
+      composer: (e) => {
+        e.preventDefault();
+        toggleComposerRef.current();
+      },
+      voice: (e) => {
+        e.preventDefault();
+        voiceShortcutRef.current();
+      },
+      composerMention: (e) => {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerMention" }));
+      },
+      composerAttach: (e) => {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerAttach" }));
+      },
+    };
 
-      if (e.shiftKey) {
-        switch (key) {
-          case "e":
-            e.preventDefault();
-            setDrawerOpen((v) => !v);
-            setGitOpen(false);
-            return;
-          case "g":
-            e.preventDefault();
-            setGitOpen((v) => !v);
-            setDrawerOpen(false);
-            return;
-          case "f":
-            e.preventDefault();
-            termActions.current?.refit();
-            return;
-          case "x":
-            e.preventDefault();
-            termActions.current?.reset();
-            return;
-          case "k":
-            e.preventDefault();
-            toggleComposerRef.current();
-            return;
-          case "m":
-            e.preventDefault();
-            voiceShortcutRef.current();
-            return;
+    const handler = (e: KeyboardEvent) => {
+      const map = bindingsRef.current;
+      for (const id of Object.keys(actions)) {
+        const combo = map[id];
+        if (combo && matchCombo(e, combo)) {
+          actions[id](e);
+          return;
         }
       }
     };
@@ -927,6 +960,8 @@ export default function App() {
                 value={composerDrafts[active.id] ?? ""}
                 onChange={(v) => setComposerDrafts((d) => ({ ...d, [active.id]: v }))}
                 focusNonce={composerFocusNonce}
+                focusConsumed={composerFocusConsumedRef.current}
+                onFocusConsumed={(n) => (composerFocusConsumedRef.current = n)}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
                 onClose={() => {

@@ -7,17 +7,20 @@ import { collectTransferFiles } from "./pasteFiles";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 
-// The last focus request already honored. Module-scoped so it survives the
-// editor remounting: agent events re-open (remount) the composer with the
-// nonce unchanged, and mounting must NOT steal focus from the terminal then.
-let consumedFocusNonce = 0;
 
 type Props = {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
+  /** CodeMirror key ("Shift-Enter") that sends — customizable in settings. */
+  sendKey: string;
   /** Bumped on user-initiated opens: focus and put the cursor at the END. */
   focusNonce: number;
+  /** The last nonce already honored (owned by the App — a render-time
+   * snapshot, so StrictMode's double effects and remounts both behave):
+   * equal values mean "this mount is an auto-open, don't steal focus". */
+  focusConsumed: number;
+  onFocusConsumed: (nonce: number) => void;
   /** Enter (no shift): send. Return true when handled. */
   onEnter: () => void;
   onEscape: () => void;
@@ -35,11 +38,80 @@ type Props = {
  * highlighting for every bundled language (```python and friends), history,
  * and IME-safe key handling. Grows with content up to ~9 lines.
  */
+type Callbacks = {
+  current: {
+    onEnter: () => void;
+    onEscape: () => void;
+    onArrow: (dir: 1 | -1) => boolean;
+    onPick: () => boolean;
+    onChange: (value: string) => void;
+    onCursor: (text: string, pos: number) => void;
+    onFiles: (files: File[]) => void;
+  };
+};
+
+// The send key is customizable, so the keymap lives in a compartment. The
+// send entry comes FIRST: bound to plain Enter it must beat the
+// newline-with-markdown-continuation entry below it.
+function buildKeymap(sendKey: string, cbs: Callbacks) {
+  return Prec.highest(
+    keymap.of([
+      {
+        key: sendKey,
+        run: (v) => {
+          if (v.composing) return false;
+          cbs.current.onEnter();
+          return true;
+        },
+      },
+      {
+        key: "ArrowDown",
+        run: (v) => !v.composing && cbs.current.onArrow(1),
+      },
+      {
+        key: "ArrowUp",
+        run: (v) => !v.composing && cbs.current.onArrow(-1),
+      },
+      {
+        // Menu open: Tab picks. Otherwise: a professional editor's
+        // Tab — indent the selection/line.
+        key: "Tab",
+        run: (v) => {
+          if (v.composing) return false;
+          if (cbs.current.onPick()) return true;
+          return indentMore(v);
+        },
+        shift: indentLess,
+      },
+      {
+        // Enter is a newline (with markdown list/quote continuation),
+        // like an editor — sending defaults to Shift+Enter.
+        key: "Enter",
+        run: (v) => {
+          if (v.composing) return false;
+          if (cbs.current.onPick()) return true;
+          return insertNewlineContinueMarkup(v);
+        },
+      },
+      {
+        key: "Escape",
+        run: () => {
+          cbs.current.onEscape();
+          return true;
+        },
+      },
+    ]),
+  );
+}
+
 export default function ComposerEditor({
   value,
   onChange,
   placeholder,
+  sendKey,
   focusNonce,
+  focusConsumed,
+  onFocusConsumed,
   onEnter,
   onEscape,
   onArrow,
@@ -50,6 +122,7 @@ export default function ComposerEditor({
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const placeholderCompartment = useRef(new Compartment());
+  const keymapCompartment = useRef(new Compartment());
   // The latest callbacks, visible to the once-registered keymap.
   const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles });
   cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles };
@@ -67,54 +140,7 @@ export default function ComposerEditor({
           EditorView.lineWrapping,
           markdown({ codeLanguages: languages }),
           placeholderCompartment.current.of(cmPlaceholder(placeholder)),
-          Prec.highest(
-            keymap.of([
-              {
-                key: "ArrowDown",
-                run: (v) => !v.composing && cbs.current.onArrow(1),
-              },
-              {
-                key: "ArrowUp",
-                run: (v) => !v.composing && cbs.current.onArrow(-1),
-              },
-              {
-                // Menu open: Tab picks. Otherwise: a professional editor's
-                // Tab — indent the selection/line.
-                key: "Tab",
-                run: (v) => {
-                  if (v.composing) return false;
-                  if (cbs.current.onPick()) return true;
-                  return indentMore(v);
-                },
-                shift: indentLess,
-              },
-              {
-                // Enter is a newline (with markdown list/quote continuation),
-                // like an editor — sending is Shift+Enter.
-                key: "Enter",
-                run: (v) => {
-                  if (v.composing) return false;
-                  if (cbs.current.onPick()) return true;
-                  return insertNewlineContinueMarkup(v);
-                },
-              },
-              {
-                key: "Shift-Enter",
-                run: (v) => {
-                  if (v.composing) return false;
-                  cbs.current.onEnter();
-                  return true;
-                },
-              },
-              {
-                key: "Escape",
-                run: () => {
-                  cbs.current.onEscape();
-                  return true;
-                },
-              },
-            ]),
-          ),
+          keymapCompartment.current.of(buildKeymap(sendKey, cbs)),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
@@ -182,13 +208,23 @@ export default function ComposerEditor({
     });
   }, [placeholder]);
 
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: keymapCompartment.current.reconfigure(buildKeymap(sendKey, cbs)),
+    });
+  }, [sendKey]);
+
   // User-initiated opens focus with the cursor at the END of the draft.
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || focusNonce === 0 || focusNonce === consumedFocusNonce) return;
-    consumedFocusNonce = focusNonce;
+    if (!view || focusNonce === 0 || focusNonce === focusConsumed) return;
+    onFocusConsumed(focusNonce);
     view.focus();
     view.dispatch({ selection: { anchor: view.state.doc.length } });
+    // focusConsumed is a render-time snapshot on purpose (see Props).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusNonce]);
 
   return (
