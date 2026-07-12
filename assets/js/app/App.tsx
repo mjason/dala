@@ -34,6 +34,7 @@ import {
   matchCombo,
   onBindingsChange,
 } from "./keybindings";
+import { notificationsEnabled } from "./notifyPrefs";
 import { historyLines, shortPath } from "./util";
 import { useI18n } from "./i18n";
 
@@ -408,6 +409,7 @@ export default function App() {
     }
 
     // Notify when the user is elsewhere (other session, other window).
+    if (!notificationsEnabled()) return;
     const important = ["stop", "permission_request", "question_asked", "idle_prompt", "notify"];
     if (!important.includes(p.event)) return;
     if (!document.hidden && p.id === activeIdRef.current) return;

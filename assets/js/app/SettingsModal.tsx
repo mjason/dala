@@ -23,6 +23,7 @@ import {
 } from "./termPrefs";
 import type { CursorStyle, TermPrefs } from "./termPrefs";
 import { listMicrophones, loadSpeechPrefs, saveSpeechPrefs, type SpeechPrefs } from "./speech";
+import { notificationsEnabled, setNotificationsEnabled } from "./notifyPrefs";
 import {
   BINDINGS,
   comboFromEvent,
@@ -404,6 +405,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           ) : (
             <>
               <AppearanceSection />
+              <NotificationsSection />
               <SpeechSection />
             </>
           )}
@@ -771,6 +773,27 @@ function ShortcutsSection() {
       >
         {t("shortcutResetAll")}
       </button>
+    </div>
+  );
+}
+
+/** Master switch for agent system notifications (native/web/toast alike). */
+function NotificationsSection() {
+  const { t } = useI18n();
+  const [enabled, setEnabled] = useState(notificationsEnabled);
+
+  return (
+    <div className="mt-6 space-y-3 border-t border-line pt-5">
+      <div className="text-[13px] font-medium text-fg">{t("notificationsSection")}</div>
+      <ToggleRow
+        id="notifications-toggle"
+        label={t("notificationsToggle")}
+        checked={enabled}
+        onChange={(v) => {
+          setNotificationsEnabled(v);
+          setEnabled(v);
+        }}
+      />
     </div>
   );
 }
