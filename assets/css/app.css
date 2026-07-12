@@ -369,3 +369,11 @@ body:has(> #app) {
 .kbd-combo {
   font-family: var(--font-kbd);
 }
+
+/* Terminal inset. Must be ON .xterm itself: @xterm/addon-fit subtracts the
+ * terminal element's padding from the parent's border-box height — padding
+ * on the parent is invisible to it and overshoots the row count (clipped
+ * TUI bottom bars). */
+.xterm {
+  padding: 8px 12px;
+}

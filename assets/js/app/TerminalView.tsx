@@ -561,7 +561,11 @@ export default function TerminalView({
 
   return (
     <div className="relative h-full w-full">
-      <div ref={containerRef} className="h-full w-full px-3 py-2" />
+      {/* Padding lives on .xterm (app.css), NOT here: the fit addon takes
+          the parent's computed border-box height and only subtracts the
+          terminal element's own padding — parent padding makes it overshoot
+          by a row and TUI bottom bars get clipped. */}
+      <div ref={containerRef} className="h-full w-full" />
       <div
         className={`pointer-events-none absolute inset-0 bg-bg0 transition-opacity duration-150 ${
           replaying ? "opacity-100" : "opacity-0"
