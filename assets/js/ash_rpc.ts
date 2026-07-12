@@ -421,11 +421,11 @@ export type LspServersInput = {
   path: string;
 };
 
-export type LspServersFields = UnifiedFieldSelection<{root: string, language: string | null, servers: Array<{id: number, name: string, __type: "TypedMap", __primitiveFields: "id" | "name"}>, checked: Array<{path: string, found: boolean, __type: "TypedMap", __primitiveFields: "path" | "found"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}>[];
+export type LspServersFields = UnifiedFieldSelection<{root: string, language: string | null, servers: Array<{id: number, name: string, initializationOptions: Record<string, any> | null, settings: Record<string, any> | null, __type: "TypedMap", __primitiveFields: "id" | "name" | "initializationOptions" | "settings"}>, checked: Array<{path: string, found: boolean, __type: "TypedMap", __primitiveFields: "path" | "found"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}>[];
 
 export type InferLspServersResult<
   Fields extends LspServersFields | undefined,
-> = InferResult<{root: string, language: string | null, servers: Array<{id: number, name: string, __type: "TypedMap", __primitiveFields: "id" | "name"}>, checked: Array<{path: string, found: boolean, __type: "TypedMap", __primitiveFields: "path" | "found"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}, Fields>;
+> = InferResult<{root: string, language: string | null, servers: Array<{id: number, name: string, initializationOptions: Record<string, any> | null, settings: Record<string, any> | null, __type: "TypedMap", __primitiveFields: "id" | "name" | "initializationOptions" | "settings"}>, checked: Array<{path: string, found: boolean, __type: "TypedMap", __primitiveFields: "path" | "found"}>, __type: "TypedMap", __primitiveFields: "root" | "language"}, Fields>;
 
 export type LspServersResult<Fields extends LspServersFields | undefined = undefined> = | { success: true; data: InferLspServersResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

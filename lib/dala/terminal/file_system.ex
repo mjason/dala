@@ -224,7 +224,9 @@ defmodule Dala.Terminal.FileSystem do
                         items: [
                           fields: [
                             id: [type: :integer, allow_nil?: false],
-                            name: [type: :string, allow_nil?: false]
+                            name: [type: :string, allow_nil?: false],
+                            initializationOptions: [type: :map],
+                            settings: [type: :map]
                           ]
                         ]
                       ]
@@ -249,7 +251,15 @@ defmodule Dala.Terminal.FileSystem do
         path = Path.expand(input.arguments.path)
         probe = Dala.Lsp.Discovery.probe_file(path)
 
-        servers = for server <- probe.servers, do: %{id: server.id, name: server.name}
+        servers =
+          for server <- probe.servers do
+            %{
+              id: server.id,
+              name: server.name,
+              initializationOptions: server.initialization_options,
+              settings: server.settings
+            }
+          end
 
         {:ok,
          %{root: probe.root, language: probe.language, servers: servers, checked: probe.checked}}

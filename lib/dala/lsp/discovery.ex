@@ -103,8 +103,18 @@ defmodule Dala.Lsp.Discovery do
     end
   end
 
-  defp describe({command, index}) do
-    %{id: index, name: server_name(command), command: command}
+  defp describe({%{command: command} = spec, index}) do
+    %{
+      id: index,
+      name: server_name(command),
+      command: command,
+      initialization_options: spec[:initialization_options],
+      settings: spec[:settings]
+    }
+  end
+
+  defp describe({command, index}) when is_list(command) do
+    describe({%{command: command}, index})
   end
 
   # ".venv/bin/basedpyright-langserver --stdio" → "basedpyright"; "dm lsp" → "dm lsp"
@@ -212,15 +222,15 @@ defmodule Dala.Lsp.Discovery do
     end
   end
 
-  defp check_configured(commands, root) do
-    commands = Enum.map(commands, &absolutize(&1, root))
+  defp check_configured(specs, root) do
+    specs = Enum.map(specs, fn spec -> %{spec | command: absolutize(spec.command, root)} end)
 
     checked =
-      for [bin | _] <- commands do
+      for %{command: [bin | _]} <- specs do
         %{path: bin <> " (dala.jsonc)", found: File.regular?(bin)}
       end
 
-    {Enum.filter(commands, fn [bin | _] -> File.regular?(bin) end), checked}
+    {Enum.filter(specs, fn %{command: [bin | _]} -> File.regular?(bin) end), checked}
   end
 
   defp resolve(language, root) do
@@ -267,14 +277,30 @@ defmodule Dala.Lsp.Discovery do
 
   defp normalize_lsp(map, root) do
     Map.new(map, fn {language, entries} ->
-      commands =
-        for %{"command" => [_ | _] = command} <- List.wrap(entries),
-            Enum.all?(command, &is_binary/1),
-            do: Enum.map(command, &expand_vars(&1, root))
+      specs =
+        for %{"command" => [_ | _] = command} = entry <- List.wrap(entries),
+            Enum.all?(command, &is_binary/1) do
+          %{
+            command: Enum.map(command, &expand_vars(&1, root)),
+            initialization_options: expand_deep(entry["initializationOptions"], root),
+            settings: expand_deep(entry["settings"], root)
+          }
+        end
 
-      {language, commands}
+      {language, specs}
     end)
   end
+
+  # Variable expansion through nested option maps, so things like
+  # {"python": {"pythonPath": "${root}/.venv/bin/python"}} work.
+  defp expand_deep(nil, _root), do: nil
+  defp expand_deep(value, root) when is_binary(value), do: expand_vars(value, root)
+  defp expand_deep(value, root) when is_list(value), do: Enum.map(value, &expand_deep(&1, root))
+
+  defp expand_deep(value, root) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {k, expand_deep(v, root)} end)
+
+  defp expand_deep(value, _root), do: value
 
   # //-comments and /* */-comments outside strings, plus trailing commas —
   # enough JSONC for a config file without pulling in a parser dependency.
@@ -421,7 +447,7 @@ defmodule Dala.Lsp.Discovery do
 
         %{path: bin} ->
           {_bin, args} = Enum.find(candidates, fn {b, _} -> b == bin end)
-          [[bin | args]]
+          [%{command: [bin | args], initialization_options: nil, settings: nil}]
       end
 
     {commands, checked}

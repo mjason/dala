@@ -6,7 +6,12 @@ import { marked } from "marked";
 import { LanguageServerClient, WebSocketTransport } from "codemirror-languageserver";
 import { buildCSRFHeaders, lspServers } from "../../ash_rpc";
 
-export type LspServerInfo = { id: number; name: string };
+export type LspServerInfo = {
+  id: number;
+  name: string;
+  initializationOptions?: Record<string, unknown> | null;
+  settings?: Record<string, unknown> | null;
+};
 
 /**
  * Resolves the servers for an absolute path (venv-local installs, dm lsp,
@@ -53,6 +58,7 @@ type Client = InstanceType<typeof LanguageServerClient>;
 type ClientHandle = {
   serverId: number;
   client: Client;
+  settings: Record<string, unknown> | null;
   ready: () => boolean;
   capabilities: () => Record<string, unknown> | undefined;
   whenInitialized: () => Promise<void>;
@@ -103,6 +109,9 @@ export function lspExtensions({
       documentUri,
       languageId: language,
       autoClose: false,
+      // dala.jsonc's per-server "initializationOptions" — sent verbatim in
+      // the LSP initialize request.
+      initializationOptions: server.initializationOptions ?? null,
     });
     const loose = client as unknown as {
       ready?: boolean;
@@ -112,6 +121,7 @@ export function lspExtensions({
     return {
       serverId: server.id,
       client,
+      settings: server.settings ?? null,
       ready: () => Boolean(loose.ready),
       capabilities: () => loose.capabilities,
       whenInitialized: () => loose.initializePromise ?? Promise.resolve(),
@@ -162,6 +172,14 @@ export function lspExtensions({
 
       void handle.whenInitialized().then(() => {
         if (disposed) return;
+        if (handle.settings) {
+          // dala.jsonc's per-server "settings" — servers pick these up via
+          // workspace/didChangeConfiguration (pyright, basedpyright, …).
+          (handle.client as unknown as { notify: (m: string, p: unknown) => void }).notify(
+            "workspace/didChangeConfiguration",
+            { settings: handle.settings },
+          );
+        }
         handle.client.textDocumentDidOpen({
           textDocument: {
             uri: documentUri,

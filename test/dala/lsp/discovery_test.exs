@@ -197,6 +197,36 @@ defmodule Dala.Lsp.DiscoveryTest do
     assert [%{command: [^venv, "--stdio"]}] = probe.servers
   end
 
+  test "initializationOptions and settings pass through with expansion", %{root: root} do
+    fake_bin(root, "tools/py-lsp")
+
+    File.write!(Path.join(root, "dala.jsonc"), """
+    {
+      "lsp": {
+        "python": [
+          {
+            "command": ["tools/py-lsp", "--stdio"],
+            "initializationOptions": { "flag": true },
+            "settings": { "python": { "pythonPath": "${root}/.venv/bin/python" } }
+          }
+        ]
+      }
+    }
+    """)
+
+    assert [server] = Discovery.servers(root, "main.py")
+    assert server.initialization_options == %{"flag" => true}
+
+    assert server.settings == %{
+             "python" => %{"pythonPath" => Path.join(root, ".venv/bin/python")}
+           }
+
+    # auto-discovered servers carry nil options
+    File.rm!(Path.join(root, "dala.jsonc"))
+    fake_bin(root, ".venv/bin/pyright-langserver")
+    assert [%{initialization_options: nil, settings: nil}] = Discovery.servers(root, "main.py")
+  end
+
   test "language ids cover the wired languages" do
     assert Discovery.language_of("a.py") == "python"
     assert Discovery.language_of("a.rs") == "rust"

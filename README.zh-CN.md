@@ -210,9 +210,21 @@ basedpyright、rust-analyzer、elixir-ls、typescript-language-server、gopls…
 }
 ```
 
+每个服务器条目还接受 **`initializationOptions`**（原样放进 LSP `initialize`
+请求）和 **`settings`**（经 `workspace/didChangeConfiguration` 下发——
+pyright 系就是这样接收 `python.pythonPath`、`venvPath` 的）：
+
+```jsonc
+{ "lsp": { "python": [ {
+    "command": ["pyright-langserver", "--stdio"],
+    "settings": { "python": { "pythonPath": "${root}/.venv/bin/python" } },
+} ] } }
+```
+
 规则：
 
-- **命令词支持变量展开**：`~`、`$VAR` / `${VAR}`、`${root}`（项目根）。
+- **命令词支持变量展开**：`~`、`$VAR` / `${VAR}`、`${root}`（项目根）——
+  `initializationOptions` / `settings` 里的字符串值同样展开。
   相对路径按项目根解析。
 - **就近配置优先**：子目录里的 `dala.jsonc` 对其下的文件覆盖顶层配置——
   和 `"projects"` 二选一均可。

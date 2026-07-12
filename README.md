@@ -230,10 +230,23 @@ allowed.
 }
 ```
 
+Each server entry also accepts **`initializationOptions`** (sent verbatim in
+the LSP `initialize` request) and **`settings`** (delivered via
+`workspace/didChangeConfiguration` — how pyright-family servers take
+`python.pythonPath`, `venvPath` and friends):
+
+```jsonc
+{ "lsp": { "python": [ {
+    "command": ["pyright-langserver", "--stdio"],
+    "settings": { "python": { "pythonPath": "${root}/.venv/bin/python" } },
+} ] } }
+```
+
 Rules:
 
 - **Command words expand** `~`, `$VAR` / `${VAR}` and `${root}` (the project
-  root). Relative paths resolve against the root.
+  root) — inside `initializationOptions`/`settings` string values too.
+  Relative paths resolve against the root.
 - **Nearest config wins**: a `dala.jsonc` inside a sub-directory beats the
   top-level one for files under it — an alternative to `"projects"`.
 - A `"projects"` entry without `"lsp"` still moves the root: auto-discovery

@@ -22,7 +22,7 @@ import {
   savePrefs,
 } from "./termPrefs";
 import type { CursorStyle, TermPrefs } from "./termPrefs";
-import { loadSpeechPrefs, saveSpeechPrefs, type SpeechPrefs } from "./speech";
+import { listMicrophones, loadSpeechPrefs, saveSpeechPrefs, type SpeechPrefs } from "./speech";
 
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
@@ -171,7 +171,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
   const tabs: { key: "session" | "appearance"; label: string }[] = [
     { key: "session", label: t("sessionTab") },
-    { key: "appearance", label: t("appearance") },
+    { key: "appearance", label: t("preferencesTab") },
   ];
 
   return (
@@ -593,6 +593,11 @@ function AppearanceSection() {
 function SpeechSection() {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<SpeechPrefs>(loadSpeechPrefs);
+  const [mics, setMics] = useState<{ deviceId: string; label: string }[]>([]);
+
+  useEffect(() => {
+    void listMicrophones().then(setMics);
+  }, []);
 
   const apply = (patch: Partial<SpeechPrefs>) => setPrefs(saveSpeechPrefs(patch));
 
@@ -614,6 +619,23 @@ function SpeechSection() {
           placeholder="http://127.0.0.1:8000/v1"
           className={inputClass}
         />
+      </div>
+      <div>
+        <FieldLabel>{t("speechMic")}</FieldLabel>
+        <select
+          id="speech-mic-select"
+          value={prefs.micDeviceId}
+          onChange={(e) => apply({ micDeviceId: e.target.value })}
+          className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60"
+        >
+          <option value="">{t("speechMicAuto")}</option>
+          {mics.map((mic) => (
+            <option key={mic.deviceId} value={mic.deviceId}>
+              {mic.label}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechMicHint")}</p>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>

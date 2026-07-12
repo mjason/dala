@@ -13,12 +13,17 @@ export type SpeechPrefs = {
   /** Served model name (vLLM uses the model id it was launched with). */
   model: string;
   apiKey: string;
+  /** Input device id; "" = auto (prefer the built-in mic — using a
+   * Bluetooth headset mic flips it into call mode: sidetone + loud, tinny
+   * playback for the whole system). */
+  micDeviceId: string;
 };
 
 export const DEFAULT_SPEECH_PREFS: SpeechPrefs = {
   endpoint: "",
   model: "whisper-large-v3",
   apiKey: "",
+  micDeviceId: "",
 };
 
 const KEY = "dala:speech-prefs";
@@ -30,6 +35,7 @@ export function loadSpeechPrefs(): SpeechPrefs {
       endpoint: typeof raw.endpoint === "string" ? raw.endpoint : "",
       model: typeof raw.model === "string" && raw.model ? raw.model : DEFAULT_SPEECH_PREFS.model,
       apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
+      micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : "",
     };
   } catch {
     return { ...DEFAULT_SPEECH_PREFS };
@@ -54,8 +60,45 @@ export type Recorder = {
   cancel: () => void;
 };
 
+/** Audio input devices, for the settings picker (labels appear after the
+ * first permission grant). */
+export async function listMicrophones(): Promise<{ deviceId: string; label: string }[]> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices
+      .filter((d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default")
+      .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Microphone ${i + 1}` }));
+  } catch {
+    return [];
+  }
+}
+
+// "auto" avoids Bluetooth mics when any other input exists: capturing from
+// a BT headset flips it to HFP call mode — sidetone (your own voice, loud)
+// and degraded playback for the whole system while recording. Preference:
+// built-in mic → any non-Bluetooth-looking input → whatever the default is.
+async function micConstraints(): Promise<MediaTrackConstraints | true> {
+  const preferred = loadSpeechPrefs().micDeviceId;
+  if (preferred) return { deviceId: { exact: preferred } };
+  try {
+    const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(
+      (d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default" && d.label,
+    );
+    const builtin = inputs.find((d) => /built-?in|internal|内建|内置|macbook/i.test(d.label));
+    if (builtin) return { deviceId: { exact: builtin.deviceId } };
+    const wired = inputs.find(
+      (d) => !/airpods|bluetooth|蓝牙|藍牙|hands-?free|hfp|headset/i.test(d.label),
+    );
+    if (wired) return { deviceId: { exact: wired.deviceId } };
+  } catch {
+    // fall through to the default device
+  }
+  return true;
+}
+
 export async function startRecording(): Promise<Recorder> {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const audio = await micConstraints();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio });
   const recorder = new MediaRecorder(stream);
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (event) => {
