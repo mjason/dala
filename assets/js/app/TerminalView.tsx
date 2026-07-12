@@ -246,7 +246,8 @@ export default function TerminalView({
         term.options.cursorBlink = next.cursorBlink;
         term.options.smoothScrollDuration = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
         term.options.scrollSensitivity = next.scrollSensitivity;
-        fit.fit();
+        // Font metrics changed — refit and re-center via the shared path.
+        window.setTimeout(() => maybeResize(), 0);
       });
 
       const follower = isFollowerClient();
@@ -314,6 +315,33 @@ export default function TerminalView({
         phxChannel.push("resize", { rows: term.rows, cols: term.cols });
       };
 
+      // Base inset around the grid; the fit addon subtracts the terminal
+      // element's own padding, so it must be set here (not on a parent).
+      // After each fit the row/col remainder is split evenly on top of the
+      // base so the REAL display area sits centered — TUIs that paint their
+      // own background otherwise show all the leftover on the right/bottom.
+      const BASE_PAD = { top: 4, right: 10, bottom: 4, left: 10 };
+      const resetPadding = () => {
+        if (term.element) {
+          term.element.style.padding = `${BASE_PAD.top}px ${BASE_PAD.right}px ${BASE_PAD.bottom}px ${BASE_PAD.left}px`;
+        }
+      };
+      const centerPadding = () => {
+        const el = term.element;
+        const screen = el?.querySelector<HTMLElement>(".xterm-screen");
+        if (!el || !screen) return;
+        const remX =
+          container.clientWidth - BASE_PAD.left - BASE_PAD.right - screen.clientWidth;
+        const remY =
+          container.clientHeight - BASE_PAD.top - BASE_PAD.bottom - screen.clientHeight;
+        const extraX = Math.max(0, remX) / 2;
+        const extraY = Math.max(0, remY) / 2;
+        el.style.padding =
+          `${BASE_PAD.top + extraY}px ${BASE_PAD.right + extraX}px ` +
+          `${BASE_PAD.bottom + extraY}px ${BASE_PAD.left + extraX}px`;
+      };
+      resetPadding();
+
       // Fit and push only when the computed size actually changed — cheap to
       // call from a timer/observer without spamming resizes.
       //
@@ -344,8 +372,10 @@ export default function TerminalView({
       let lastSize = "";
       const maybeResize = () => {
         if (disposed) return;
+        resetPadding();
         fit.fit();
         clampOverflow();
+        centerPadding();
         const key = term.rows + "x" + term.cols;
         if (key !== lastSize) {
           lastSize = key;
@@ -358,8 +388,10 @@ export default function TerminalView({
       const refit = () => {
         if (follower) scaleToFit();
         else {
+          resetPadding();
           fit.fit();
           clampOverflow();
+          centerPadding();
           pushResize();
         }
         // A shrunk/grown canvas can keep stale pixels of the previous frame

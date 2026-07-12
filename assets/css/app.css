@@ -374,12 +374,10 @@ body:has(> #app) {
  * terminal element's padding from the parent's border-box height — padding
  * on the parent is invisible to it and overshoots the row count (clipped
  * TUI bottom bars). */
-.xterm {
-  /* Asymmetric on purpose: the row grid rarely divides the height exactly,
-   * and the leftover lands at the bottom — keep the bottom inset minimal so
-   * leftover + inset never reads as a chunky frame under TUI status bars. */
-  padding: 6px 12px 2px;
-}
+/* Terminal padding is set dynamically in TerminalView (base inset + the
+ * row/col remainder split evenly, so the grid sits centered). It must live
+ * on .xterm itself: the fit addon only subtracts the terminal element's own
+ * padding. */
 
 /* The viewport is absolutely positioned over the WHOLE .xterm (padding
  * included) and defaults to pure black — with padding on .xterm it peeks
