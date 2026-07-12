@@ -9,14 +9,16 @@ async function resolveLatestClient() {
   // recency, so client tags drown among the (more numerous) server tags.
   const res = await fetch(`https://api.github.com/repos/${REPO}/git/matching-refs/tags/client-v`, {
     headers: { accept: "application/vnd.github+json", "user-agent": "dala-desktop" },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`GitHub responded with ${res.status}`);
   const refs = await res.json();
-  const versions = refs
+  // Reduce-max instead of sort: isNewer is a boolean, not a three-way
+  // comparator, so feeding it to Array#sort would violate the sort contract.
+  const version = refs
     .map((r) => String(r.ref || "").replace("refs/tags/client-v", ""))
     .filter((v) => /^\d/.test(v))
-    .sort((x, y) => (isNewer(x, y) ? 1 : -1));
-  const version = versions.pop();
+    .reduce((best, v) => (best === null || isNewer(v, best) ? v : best), null);
   if (!version) return null;
   return {
     tag: `client-v${version}`,
@@ -35,4 +37,4 @@ function isNewer(a, b) {
   return false;
 }
 
-module.exports = { REPO, resolveLatestClient, isNewer };
+module.exports = { resolveLatestClient, isNewer };

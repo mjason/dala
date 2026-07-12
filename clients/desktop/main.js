@@ -15,10 +15,19 @@ const path = require("path");
 const MANAGE_PAGE = path.join(__dirname, "src", "index.html");
 const WINDOW_ICON = path.join(__dirname, "build", "icon.png");
 
-// ---------------------------------------------------------------------------
-// Config: { servers: [{ name, url }], last: url | null }
+// Safety net: a stray rejection or throw in the main process must never
+// take every window down with it. Log and keep running.
+process.on("unhandledRejection", (reason) => {
+  console.error("[dala] unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[dala] uncaught exception:", err);
+});
 
-let config = { servers: [], last: null };
+// ---------------------------------------------------------------------------
+// Config: { servers: [{ name, url }], last: url | null, locale: string | null }
+
+let config = { servers: [], last: null, locale: null };
 
 // Menu language: whatever the dala page reports (its own language picker),
 // falling back to the system locale until the first report arrives.
@@ -26,6 +35,13 @@ let menuLocale = null;
 
 // Menu accelerators reported by the page (Settings → Shortcuts); defaults
 // match the web app's until the first report arrives.
+//
+// !!! KEEP IN SYNC with assets/js/app/keybindings.ts (BINDINGS entries with
+// `clientMenu: true`, converted via comboToAccelerator):
+//   composer:   "mod+shift+k"  -> "CmdOrCtrl+Shift+K"
+//   quickShell: "ctrl+shift+`" -> "Ctrl+Shift+`"
+//   voice:      "mod+shift+m"  -> "CmdOrCtrl+Shift+M"
+// test/menu-shortcuts.test.js parses both files and fails on drift.
 let menuShortcuts = {
   composer: "CmdOrCtrl+Shift+K",
   quickShell: "Ctrl+Shift+`",
@@ -77,6 +93,14 @@ function saveConfig(cfg) {
 // ---------------------------------------------------------------------------
 // Windows
 
+// Shared window-open policy: http(s) links open in the built-in browser
+// window, everything else (file:, javascript:, …) is dropped; no window is
+// ever allowed to spawn a child window directly.
+function externalLinkHandler({ url }) {
+  if (/^https?:/i.test(url)) openBrowserWindow(url);
+  return { action: "deny" };
+}
+
 function createShellWindow(server) {
   const win = new BrowserWindow({
     width: 1280,
@@ -96,10 +120,7 @@ function createShellWindow(server) {
   // The window is named after its server, not after whatever <title> the
   // page sets.
   win.on("page-title-updated", (event) => event.preventDefault());
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) openBrowserWindow(url);
-    return { action: "deny" };
-  });
+  win.webContents.setWindowOpenHandler(externalLinkHandler);
   win.on("closed", rebuildMenu);
   if (server) win.loadURL(server.url);
   else win.loadFile(MANAGE_PAGE);
@@ -134,10 +155,7 @@ function openBrowserWindow(url) {
     backgroundColor: "#ffffff",
     icon: WINDOW_ICON,
   });
-  win.webContents.setWindowOpenHandler(({ url: next }) => {
-    if (/^https?:/i.test(next)) openBrowserWindow(next);
-    return { action: "deny" };
-  });
+  win.webContents.setWindowOpenHandler(externalLinkHandler);
   // macOS renders its native overlay scrollbars — leave them alone;
   // other platforms get the slim pill instead of Chromium's chunky default.
   if (process.platform !== "darwin") {
@@ -154,13 +172,15 @@ function openBrowserWindow(url) {
 // page listens for "dala:menu" CustomEvents (see preload.js).
 function sendMenuAction(action) {
   const win = targetShellWindow();
-  if (win) win.webContents.send("dala:menu", action);
+  if (win && !win.isDestroyed()) win.webContents.send("dala:menu", action);
 }
 
 function targetShellWindow() {
   const focused = BrowserWindow.getFocusedWindow();
-  if (focused && focused.isDalaShell) return focused;
-  return BrowserWindow.getAllWindows().find((w) => w.isDalaShell) || null;
+  if (focused && !focused.isDestroyed() && focused.isDalaShell) return focused;
+  return (
+    BrowserWindow.getAllWindows().find((w) => w.isDalaShell && !w.isDestroyed()) || null
+  );
 }
 
 function connectWindow(win, server) {
@@ -229,22 +249,29 @@ autoUpdater.on("error", () => {
   // Background checks stay silent (offline, deb install, rate limit, …);
   // interactive failures surface in checkForUpdates above.
 });
-autoUpdater.on("update-downloaded", (info) => {
+autoUpdater.on("update-downloaded", async (info) => {
   updateReady = info.version;
   rebuildMenu();
-  void dialog
-    .showMessageBox({
-      type: "info",
-      buttons: [t("restartNow"), t("later")],
-      defaultId: 0,
-      cancelId: 1,
-      message: t("updateDownloaded", { version: info.version }),
-      detail: t("updateDetail"),
-    })
-    .then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall();
-    });
+  const { response } = await dialog.showMessageBox({
+    type: "info",
+    buttons: [t("restartNow"), t("later")],
+    defaultId: 0,
+    cancelId: 1,
+    message: t("updateDownloaded", { version: info.version }),
+    detail: t("updateDetail"),
+  });
+  if (response === 0) quitAndInstall();
 });
+
+// quitAndInstall throws when the staged installer went missing (cleaned
+// temp dir, AV quarantine); a broken update must not crash the app.
+function quitAndInstall() {
+  try {
+    autoUpdater.quitAndInstall();
+  } catch (err) {
+    console.error("[dala] quitAndInstall failed:", err);
+  }
+}
 
 function rebuildMenu() {
   const isMac = process.platform === "darwin";
@@ -295,7 +322,7 @@ function rebuildMenu() {
         updateReady
           ? {
               label: t("restartUpdate", { version: updateReady }),
-              click: () => autoUpdater.quitAndInstall(),
+              click: quitAndInstall,
             }
           : {
               label: t("checkUpdates"),
@@ -509,13 +536,14 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     // Grant page permission requests (mic for voice input, notifications);
     // on macOS the SYSTEM permission needs its own ask.
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    session.defaultSession.setPermissionRequestHandler(async (_wc, permission, callback) => {
       if (permission === "media" && process.platform === "darwin") {
-        systemPreferences
-          .askForMediaAccess("microphone")
-          .then(() => callback(true))
-          .catch(() => callback(true));
-        return;
+        try {
+          await systemPreferences.askForMediaAccess("microphone");
+        } catch {
+          // System prompt failed — still grant the page permission; the OS
+          // level denial surfaces on its own.
+        }
       }
       callback(true);
     });

@@ -1,7 +1,10 @@
 const { test, describe, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { REPO, isNewer, resolveLatestClient } = require("../updater");
+const { isNewer, resolveLatestClient } = require("../updater");
+
+// Pinned on purpose: the updater must talk to this repo's releases.
+const REPO = "mjason/dala";
 
 describe("isNewer", () => {
   test("equal versions are not newer", () => {
@@ -86,6 +89,18 @@ describe("resolveLatestClient", () => {
       calls[0].url,
       `https://api.github.com/repos/${REPO}/git/matching-refs/tags/client-v`
     );
+  });
+
+  test("survives duplicate and equal versions (no sort-contract abuse)", async () => {
+    stubFetch([ref("client-v0.5.0"), ref("client-v0.5.0"), ref("client-v0.4.9")]);
+    const latest = await resolveLatestClient();
+    assert.equal(latest.version, "0.5.0");
+  });
+
+  test("aborts the GitHub request after a timeout via AbortSignal", async () => {
+    const calls = stubFetch([ref("client-v1.0.0")]);
+    await resolveLatestClient();
+    assert.ok(calls[0].opts.signal instanceof AbortSignal, "fetch must carry an AbortSignal");
   });
 
   test("ignores tags that do not start with a digit after the prefix", async () => {
