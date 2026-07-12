@@ -30,9 +30,23 @@ const heexDescription = LanguageDescription.of({
   },
 });
 
+const jsoncDescription = LanguageDescription.of({
+  name: "JSONC",
+  alias: ["jsonc"],
+  extensions: ["jsonc"],
+  filename: /^(tsconfig|jsconfig)\.json$/,
+  load: async () => {
+    // The JSON grammar renders JSONC fine — comments show as errors-free
+    // plain tokens rather than breaking the whole highlight.
+    const { json } = await import("@codemirror/lang-json");
+    return json();
+  },
+});
+
 export const languageRegistry: LanguageDescription[] = [
   elixirDescription,
   heexDescription,
+  jsoncDescription,
   ...builtin,
 ];
 

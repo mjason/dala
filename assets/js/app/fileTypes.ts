@@ -17,6 +17,8 @@ export function previewKind(fileName: string): PreviewKind {
 
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
   if (ext === "json") return "json";
+  // JSONC is code, not JSON — the JSON pretty-printer would reject comments.
+  if (ext === "jsonc") return "text";
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "html" || ext === "htm") return "html";
   return "text";

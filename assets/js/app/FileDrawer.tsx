@@ -475,7 +475,7 @@ export default function FileDrawer({
         <button
           id="drawer-refresh-button"
           onClick={refreshAll}
-          className="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
+          className="grid h-6 w-6 place-items-center rounded border border-line text-fg-muted transition-colors hover:border-mint/50 hover:text-mint"
           title={t("refresh")}
         >
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
