@@ -455,6 +455,9 @@ export default function InputBar({
           {shortPath(root, 40)}
         </span>
         <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-fg-muted/60 sm:inline-flex">
+          {t("kbFocusTerminal")} <Kbd>{formatCombo(bindings.focusTerminal)}</Kbd>
+        </span>
+        <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-fg-muted/60 sm:inline-flex">
           {t("composerHide")} <Kbd>{formatCombo(bindings.composer)}</Kbd>
         </span>
       </div>

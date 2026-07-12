@@ -132,7 +132,7 @@ export default function QuickShellPanel({
           </svg>
         </button>
       </header>
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <TerminalView
           key={active.id}
           sessionId={active.id}

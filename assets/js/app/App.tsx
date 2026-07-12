@@ -394,6 +394,12 @@ export default function App() {
     // the composer is useful, so it never closes it.
     if (["permission_request", "question_asked"].includes(p.event)) {
       setComposerOpen((m) => ({ ...m, [p.id]: false }));
+      // The approval/choice wants raw terminal keys — hand focus back right
+      // away (only for the session on screen; background sessions get the
+      // notification instead).
+      if (p.id === activeIdRef.current) {
+        window.setTimeout(() => termActions.current?.focus(), 100);
+      }
     } else if (state !== "attention") {
       if (p.agent in AGENT_LABELS) {
         setComposerApps((apps) => ({ ...apps, [p.id]: p.agent }));
@@ -522,14 +528,35 @@ export default function App() {
           ? ("bracketed-delayed" as const)
           : app === "claude" || app === "opencode" || app === "gemini"
             ? // Warp sends bare text to these, but a bare multiline paste
-              // would submit at the first newline — bracket those. Attachment
-              // paths must also arrive as a paste: the agents' pasted-path
-              // detection (opencode's File chip, Claude Code's [Image #N])
-              // only triggers on bracketed paste, not on typed text.
-              text.includes("\n") || text.includes("dala-paste/")
+              // would submit at the first newline — bracket those.
+              text.includes("\n")
               ? ("bracketed-delayed" as const)
               : ("delayed" as const)
             : undefined;
+
+    // Agents only attachment-ify a pasted path when the paste IS the path:
+    // opencode turns it into a File chip, Claude Code into [Image #N] — mixed
+    // into a sentence it degrades to plain text (and non-vision models can't
+    // follow it). So attachment paths each go out as their own bracketed
+    // paste first, then the remaining message, then the submit.
+    const isAgent = ["claude", "opencode", "gemini", "codex", "copilot"].includes(app);
+    const pathPattern = /\S*dala-paste\/paste-[^\s]+/g;
+    const paths = isAgent ? (text.match(pathPattern) ?? []) : [];
+    if (paths.length > 0) {
+      const rest = text.replace(pathPattern, "").replace(/[ \t]{2,}/g, " ").trim();
+      const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (const path of paths) {
+        termActions.current?.sendText(path + " ", false, "bracketed");
+        await wait(200);
+      }
+      if (rest) {
+        termActions.current?.sendText(rest, false, rest.includes("\n") ? "bracketed" : undefined);
+        await wait(120);
+      }
+      if (submit) termActions.current?.sendText("", true, strategy ?? "delayed");
+      return;
+    }
+
     termActions.current?.sendText(text, submit, strategy);
   };
 
@@ -903,7 +930,7 @@ export default function App() {
               </Tooltip>
             </header>
 
-            <div className="relative min-h-0 flex-1 bg-[#0b0c0e]">
+            <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0e]">
               <TerminalView
                 key={active.id}
                 sessionId={active.id}

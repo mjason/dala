@@ -335,6 +335,10 @@ export default function TerminalView({
           fit.fit();
           pushResize();
         }
+        // A shrunk/grown canvas can keep stale pixels of the previous frame
+        // at its edges (the brownish sliver behind the composer strip) —
+        // repaint everything after the geometry settles.
+        term.refresh(0, term.rows - 1);
       };
       const reset = () => {
         term.reset();
@@ -343,7 +347,9 @@ export default function TerminalView({
         phxChannel.push("input", { data: "\f" });
       };
       const sendText = (text: string, submit: boolean, strategy?: SendStrategy) => {
-        if (!gate.acceptInput() || !text) return;
+        // Empty text with submit=true is a bare "press Enter" (the composer
+        // submits separately after pasting attachments).
+        if (!gate.acceptInput() || (!text && !submit)) return;
         const mode: SendStrategy =
           strategy ?? (term.modes.bracketedPasteMode ? "bracketed" : "inline");
         const bracket = mode === "bracketed" || mode === "bracketed-delayed";
@@ -360,7 +366,7 @@ export default function TerminalView({
         }
 
         const sendBody = () => {
-          push(bracket ? `\x1b[200~${body}\x1b[201~` : body);
+          if (body) push(bracket ? `\x1b[200~${body}\x1b[201~` : body);
           if (!submit) return;
           if (mode === "delayed" || mode === "bracketed-delayed") {
             window.setTimeout(() => push("\r"), mode === "bracketed-delayed" ? 300 : 50);
