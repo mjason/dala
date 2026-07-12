@@ -316,10 +316,36 @@ export default function TerminalView({
 
       // Fit and push only when the computed size actually changed — cheap to
       // call from a timer/observer without spamming resizes.
+      //
+      // Clamp: at some browser-zoom levels fractional cell metrics make the
+      // fit addon propose one row too many — the canvas then overhangs the
+      // container and the TUI's bottom row is clipped (or bleeds behind the
+      // composer strip). Measure the real overhang after fitting and shave
+      // rows off; sticky per container height so it doesn't fight fit().
+      let clampFor = "";
+      let clampRows = 0;
+      const clampOverflow = () => {
+        const screen = container.querySelector<HTMLElement>(".xterm-screen");
+        if (!screen) return;
+        const key = container.clientHeight + "@" + term.rows;
+        if (clampFor === key && clampRows > 0) return;
+        const overflow = screen.clientHeight - container.clientHeight;
+        if (overflow > 2 && term.rows > 4) {
+          const cell = screen.clientHeight / term.rows;
+          const shave = Math.min(2, Math.max(1, Math.ceil(overflow / cell)));
+          term.resize(term.cols, term.rows - shave);
+          clampFor = container.clientHeight + "@" + term.rows;
+          clampRows = shave;
+        } else if (clampFor !== key) {
+          clampFor = "";
+          clampRows = 0;
+        }
+      };
       let lastSize = "";
       const maybeResize = () => {
         if (disposed) return;
         fit.fit();
+        clampOverflow();
         const key = term.rows + "x" + term.cols;
         if (key !== lastSize) {
           lastSize = key;
@@ -333,6 +359,7 @@ export default function TerminalView({
         if (follower) scaleToFit();
         else {
           fit.fit();
+          clampOverflow();
           pushResize();
         }
         // A shrunk/grown canvas can keep stale pixels of the previous frame
