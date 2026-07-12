@@ -234,7 +234,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
         </header>
 
         <div className="px-5">
-          <div className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
+          <div className="grid grid-cols-4 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
             {tabs.map(({ key, label }) => (
               <button
                 key={key}
@@ -745,7 +745,7 @@ function SpeechSection({ root }: { root: string }) {
           <span id="speech-prompt-status">
             {promptState === "saved" ? "✓" : promptState === "error" ? "✗" : ""}
           </span>
-          <span>{prompt.length}</span>
+          {prompt.length > 0 && <span>{prompt.length}</span>}
           <span className="truncate" title={promptPath}>
             {promptPath}
           </span>

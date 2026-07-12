@@ -244,7 +244,7 @@ export const zhCN: Messages = {
   exited: "已退出",
   exitedWithCode: "已退出 ({code})",
   speechPrompt: "转写提示（prompt）",
-  speechPromptHint: "æé¡¹ç®å­å¨ï¼åå¥ç¦»ä¼è¯ç®å½æè¿ç dala.jsoncï¼æ²¡æåå¨è¯¥ç®å½åå»ºï¼ãWhisper ä¼æå®å½ä½“åä¸æ®µè½¬åææ¬”ï¼ç¨ä½ è¯´è¯çè¯­è¨åä¸ä¸¤å¥èªç¶å¥å­ï¼ææ¯è¯­åµè¿å»ââæ¨¡åä¼æ¨¡ä»¿å¶ä¸­çæ¼ååæ ç¹ãåªææ«å°¾çº¦ 224 ä¸ª token çæãå¤±ç¦å³ä¿å­ã",
+  speechPromptHint: "按项目存储：写入离会话目录最近的 dala.jsonc（没有则在该目录创建）。Whisper 会把它当作「前一段转写文本」：用你说话的语言写一两句自然句子，把术语嵌进去——模型会模仿其中的拼写和标点。只有末尾约 224 个 token 生效。失焦即保存。",
   speechPromptPlaceholder: "这段话讨论 dala、zellij、Phoenix LiveView 和 basedpyright，使用简体中文和标准标点。",
   speechPromptTail: "内容偏长：只有末尾约 224 个 token 会被使用。",
   notificationsSection: "通知",
@@ -464,7 +464,7 @@ export const zhTW: Messages = {
   exited: "已結束",
   exitedWithCode: "已結束 ({code})",
   speechPrompt: "轉寫提示（prompt）",
-  speechPromptHint: "æå°æ¡å­å²ï¼å¯«å¥é¢æè©±ç®éæè¿ç dala.jsoncï¼æ²æåå¨è©²ç®éåµå»ºï¼ãWhisper ææå®ç¶ä½“åä¸æ®µè½å¯«ææ¬”ï¼ç¨ä½ èªªè©±çèªè¨å¯«ä¸å©å¥èªç¶å¥å­ï¼æè¡èªåµé²å»ââæ¨¡åææ¨¡ä»¿å¶ä¸­çæ¼å¯«åæ¨é»ãåªææ«å°¾ç´ 224 å token çæãå¤±ç¦å³ä¿å­ã",
+  speechPromptHint: "按專案存儲：寫入離會話目錄最近的 dala.jsonc（沒有則在該目錄創建）。Whisper 會把它當作「前一段轉寫文本」：用你說話的語言寫一兩句自然句子，把術語嵌進去——模型會模仿其中的拼寫和標點。只有末尾約 224 個 token 生效。失焦即保存。",
   speechPromptPlaceholder: "這段話討論 dala、zellij、Phoenix LiveView 和 basedpyright，使用繁體中文和標準標點。",
   speechPromptTail: "內容偏長：只有末尾約 224 個 token 會被使用。",
   notificationsSection: "通知",
@@ -904,7 +904,7 @@ export const ko: Messages = {
   exited: "종료됨",
   exitedWithCode: "종료됨 ({code})",
   speechPrompt: "전사 프롬프트",
-  speechPromptHint: "íë¡ì í¸ ë¨ì: ì¸ì ëë í°ë¦¬ìì ê°ì¥ ê°ê¹ì´ dala.jsoncì ì ì¥(ìì¼ë©´ í´ë¹ ëë í°ë¦¬ì ìì±). Whisperë ì´ë¥¼ “ì§ì  ì ì¬ íì¤í¸”ë¡ ê°ì£¼í©ëë¤. ë§íë ì¸ì´ë¡ ì ë¬¸ ì©ì´ë¥¼ ë´ì ìì°ì¤ë¬ì´ íë ë¬¸ì¥ì ì°ì¸ì â ì² ìì ë¬¸ì¥ ë¶í¸ ì¤íì¼ì´ ê·¸ëë¡ ì´ì´ì§ëë¤. ë§ì§ë§ ì½ 224 í í°ë§ ì í¨. í¬ì»¤ì¤ í´ì  ì ì ì¥.",
+  speechPromptHint: "프로젝트 단위: 세션 디렉터리에서 가장 가까운 dala.jsonc에 저장(없으면 해당 디렉터리에 생성). Whisper는 이를 「직전 전사 텍스트」로 간주합니다. 말하는 언어로 전문 용어를 담은 자연스러운 한두 문장을 쓰세요 — 철자와 문장 부호 스타일이 그대로 이어집니다. 마지막 약 224 토큰만 유효. 포커스 해제 시 저장.",
   speechPromptPlaceholder: "이 세션은 dala, zellij, Phoenix LiveView, basedpyright를 표준 문장 부호로 다룹니다.",
   speechPromptTail: "너무 깁니다: 마지막 약 224 토큰만 사용됩니다.",
   notificationsSection: "알림",
