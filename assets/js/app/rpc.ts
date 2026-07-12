@@ -23,7 +23,12 @@ type RpcResult = {
   errors?: { message?: string }[];
 };
 
-export async function call<T, A extends object = Record<string, unknown>>(
+// A's default must be `any`: supplying T explicitly (the normal way to name
+// the row shape) disables inference for A — TypeScript has no partial type
+// argument inference — and any stricter default fails contravariance against
+// the generated config types (their required `input`/`fields` keys).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function call<T, A extends object = any>(
   fn: (args: A & { headers: Record<string, string> }) => Promise<RpcResult>,
   args: A,
 ): Promise<RpcOutcome<T>> {

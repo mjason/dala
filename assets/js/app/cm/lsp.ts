@@ -4,7 +4,8 @@ import { autocompletion, type Completion, type CompletionContext } from "@codemi
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { marked } from "marked";
 import { LanguageServerClient, WebSocketTransport } from "codemirror-languageserver";
-import { buildCSRFHeaders, lspServers } from "../../ash_rpc";
+import { lspServers } from "../../ash_rpc";
+import { call } from "../rpc";
 
 export type LspServerInfo = {
   id: number;
@@ -23,17 +24,13 @@ export async function lspExtensionsFor(
   readOnly = false,
 ): Promise<Extension[] | null> {
   if (!path.startsWith("/")) return null;
-  const result = await lspServers({
-    input: { path },
-    fields: ["root", "language", "servers"] as never,
-    headers: buildCSRFHeaders(),
-  });
-  if (!result.success) return null;
-  const data = result.data as unknown as {
+  const result = await call<{
     root: string;
     language: string | null;
     servers: LspServerInfo[];
-  };
+  }>(lspServers, { input: { path }, fields: ["root", "language", "servers"] as never });
+  if (!result.ok) return null;
+  const data = result.data;
   if (!data.language || data.servers.length === 0) return null;
   return lspExtensions({
     root: data.root,

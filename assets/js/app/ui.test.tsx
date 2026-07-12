@@ -31,6 +31,16 @@ describe("shared form-control primitives", () => {
     expect(el.className).toContain("focus:border-mint/60");
   });
 
+  it("TextArea drops the default resize-y when the caller picks a resize", () => {
+    // Stylesheet order (not class order) resolves Tailwind conflicts, and
+    // .resize-y is emitted after .resize-none — so the default must not be
+    // rendered at all when the caller specifies its own resize utility.
+    const host = render(<TextArea id="t2b" className="resize-none" />);
+    const el = host.querySelector<HTMLTextAreaElement>("#t2b")!;
+    expect(el.className).toContain("resize-none");
+    expect(el.className).not.toContain("resize-y");
+  });
+
   it("Select shares the same spec so all controls stay visually in sync", () => {
     const host = render(
       <Select id="t3">

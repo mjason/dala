@@ -16,7 +16,8 @@ import {
 import { base64ToBytes, writeClipboard } from "./util";
 import { createStreamGate } from "./streamGate";
 import { createAckCounter } from "./flowControl";
-import { buildCSRFHeaders, savePastedFile } from "../ash_rpc";
+import { savePastedFile } from "../ash_rpc";
+import { call } from "./rpc";
 import { collectTransferFiles, fileToBase64, pasteName } from "./pasteFiles";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
@@ -526,15 +527,14 @@ export default function TerminalView({
         for (const file of files) {
           try {
             const contentBase64 = await fileToBase64(file);
-            const result = await savePastedFile({
+            const result = await call<{ path: string }>(savePastedFile, {
               input: { name: pasteName(file), contentBase64 },
               fields: ["path"],
-              headers: buildCSRFHeaders(),
             });
-            if (result.success) {
+            if (result.ok) {
               paths.push(result.data.path);
             } else {
-              errorRef.current?.(result.errors[0]?.message ?? "could not upload pasted file");
+              errorRef.current?.(result.error || "could not upload pasted file");
             }
           } catch (error) {
             errorRef.current?.(error instanceof Error ? error.message : "could not read file");

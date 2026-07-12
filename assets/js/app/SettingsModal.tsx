@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  buildCSRFHeaders,
   closeSession,
   deleteSession,
   kickViewers,
@@ -10,6 +9,8 @@ import {
   setSpeechPrompt,
   speechPromptConfig,
 } from "../ash_rpc";
+import { call, type RpcOutcome } from "./rpc";
+import { FieldLabel, Select, TextArea, TextInput, Toggle, ValueChip } from "./ui";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
 import { historyLines as normalizeHistoryLines } from "./util";
@@ -46,49 +47,6 @@ type Props = {
   onError: (message: string) => void;
 };
 
-/** Small right-aligned monospace value chip next to a control label. */
-function ValueChip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded border border-line bg-bg0 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-fg">
-      {children}
-    </span>
-  );
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <span className="text-xs text-fg-muted">{children}</span>;
-}
-
-/** iOS-style switch; keeps a hidden checkbox for the stable input id. */
-function Toggle({
-  id,
-  checked,
-  onChange,
-}: {
-  id: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150 ${
-        checked ? "bg-mint" : "bg-bg2 ring-1 ring-inset ring-line"
-      }`}
-    >
-      <input id={id} type="checkbox" checked={checked} readOnly className="sr-only" />
-      <span
-        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full transition-transform duration-150 ${
-          checked ? "translate-x-4 bg-black/80" : "bg-fg-muted"
-        }`}
-      />
-    </button>
-  );
-}
-
 function ToggleRow({
   id,
   label,
@@ -124,30 +82,26 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const fail = (errors: { message: string }[]) =>
-    onError(errors[0]?.message ?? t("somethingWentWrong"));
+  const fail = (error: string) => onError(error || t("somethingWentWrong"));
 
   const save = async () => {
     setBusy(true);
-    const headers = buildCSRFHeaders();
 
     if (name.trim() && name.trim() !== session.name) {
-      const result = await renameSession({
+      const result = await call<unknown>(renameSession, {
         identity: session.id,
         input: { name: name.trim() },
-        headers,
       });
-      if (!result.success) fail(result.errors);
+      if (!result.ok) fail(result.error);
     }
 
     const limit = Math.min(Math.max(historyLines, LINES_MIN), LINES_MAX);
     if (limit !== session.scrollbackLimit) {
-      const result = await setScrollbackLimit({
+      const result = await call<unknown>(setScrollbackLimit, {
         identity: session.id,
         input: { scrollbackLimit: limit },
-        headers,
       });
-      if (!result.success) fail(result.errors);
+      if (!result.ok) fail(result.error);
     }
 
     setBusy(false);
@@ -172,11 +126,11 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const act = async (fn: () => Promise<{ success: boolean; errors?: any }>) => {
+  const act = async (fn: () => Promise<RpcOutcome<unknown>>) => {
     setBusy(true);
     const result = await fn();
     setBusy(false);
-    if (!result.success) fail(result.errors);
+    if (!result.ok) fail(result.error);
   };
 
   const running = session.status === "running";
@@ -257,11 +211,13 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             <>
               <label className="block space-y-1.5">
                 <FieldLabel>{t("name")}</FieldLabel>
-                <input
+                {/* Headline input: the one sanctioned deviation from the
+                    13px spec — the session name reads as a title. */}
+                <TextInput
                   id="session-name-input"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[15px] text-fg outline-none transition-colors focus:border-mint/60 focus:ring-2 focus:ring-mint/20"
+                  className="text-[15px]"
                 />
               </label>
 
@@ -278,15 +234,19 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                     onChange={(e) => setHistoryLines(Number(e.target.value))}
                     className="flex-1"
                   />
-                  <input
-                    type="number"
-                    min={LINES_MIN}
-                    max={LINES_MAX}
-                    step={1000}
-                    value={historyLines}
-                    onChange={(e) => setHistoryLines(Number(e.target.value) || 10_000)}
-                    className="w-20 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-[13px] text-fg outline-none focus:border-mint/60"
-                  />
+                  {/* Fixed width via wrapper: .w-full is emitted after .w-20
+                      in the stylesheet, so it cannot be overridden inline. */}
+                  <div className="w-20 shrink-0">
+                    <TextInput
+                      type="number"
+                      min={LINES_MIN}
+                      max={LINES_MAX}
+                      step={1000}
+                      value={historyLines}
+                      onChange={(e) => setHistoryLines(Number(e.target.value) || 10_000)}
+                      className="text-right"
+                    />
+                  </div>
                 </div>
                 <span className="block text-xs leading-5 text-fg-muted/80">
                   {t("scrollbackHint")}
@@ -301,9 +261,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                   {running ? (
                     <button
                       onClick={() =>
-                        void act(() =>
-                          closeSession({ input: { id: session.id }, headers: buildCSRFHeaders() }),
-                        )
+                        void act(() => call<unknown>(closeSession, { input: { id: session.id } }))
                       }
                       disabled={busy}
                       className="rounded-md border border-line px-2.5 py-1 text-[13px] text-fg-muted transition-colors hover:border-danger/60 hover:text-danger disabled:opacity-50"
@@ -315,10 +273,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                       id="restart-session-button"
                       onClick={() =>
                         void act(() =>
-                          restartSession({
-                            input: { id: session.id },
-                            headers: buildCSRFHeaders(),
-                          }),
+                          call<unknown>(restartSession, { input: { id: session.id } }),
                         )
                       }
                       disabled={busy}
@@ -340,17 +295,16 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                       id="kick-viewers-button"
                       onClick={() =>
                         void act(async () => {
-                          const result = await kickViewers({
+                          const result = await call<{
+                            multiplexer: string;
+                            kicked: number;
+                            error: string | null;
+                          }>(kickViewers, {
                             input: { id: session.id },
                             fields: ["multiplexer", "session", "kicked", "error"],
-                            headers: buildCSRFHeaders(),
                           });
-                          if (result.success) {
-                            const data = result.data as unknown as {
-                              multiplexer: string;
-                              kicked: number;
-                              error: string | null;
-                            };
+                          if (result.ok) {
+                            const data = result.data;
                             onError(
                               data.error ??
                                 t("kickedViewers", {
@@ -375,11 +329,10 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                     <button
                       onClick={() =>
                         void act(async () => {
-                          const result = await deleteSession({
+                          const result = await call<unknown>(deleteSession, {
                             identity: session.id,
-                            headers: buildCSRFHeaders(),
                           });
-                          if (result.success) {
+                          if (result.ok) {
                             onDeleted();
                             onClose();
                           }
@@ -517,14 +470,16 @@ function AppearanceSection() {
             onChange={(e) => apply({ fontSize: Number(e.target.value) })}
             className="flex-1"
           />
-          <input
-            type="number"
-            min={FONT_SIZE_RANGE.min}
-            max={FONT_SIZE_RANGE.max}
-            value={prefs.fontSize}
-            onChange={(e) => apply({ fontSize: Number(e.target.value) || DEFAULT_PREFS.fontSize })}
-            className="w-16 rounded-md border border-line bg-bg0 px-2 py-1 text-right font-mono text-[13px] text-fg outline-none focus:border-mint/60"
-          />
+          <div className="w-16 shrink-0">
+            <TextInput
+              type="number"
+              min={FONT_SIZE_RANGE.min}
+              max={FONT_SIZE_RANGE.max}
+              value={prefs.fontSize}
+              onChange={(e) => apply({ fontSize: Number(e.target.value) || DEFAULT_PREFS.fontSize })}
+              className="text-right"
+            />
+          </div>
         </div>
       </div>
 
@@ -565,13 +520,12 @@ function AppearanceSection() {
 
       <label className="block space-y-1.5">
         <FieldLabel>{t("fontFamily")}</FieldLabel>
-        <input
+        <TextInput
           id="font-family-input"
           value={prefs.fontFamily}
           onChange={(e) => apply({ fontFamily: e.target.value })}
           placeholder="JetBrainsMono NFM"
           spellCheck={false}
-          className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors placeholder:text-fg-muted/50 focus:border-mint/60 focus:ring-2 focus:ring-mint/20"
         />
         <span className="block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>
       </label>
@@ -650,15 +604,13 @@ function SpeechSection({ root }: { root: string }) {
 
   useEffect(() => {
     let stale = false;
-    void speechPromptConfig({
+    void call<{ path: string; prompt: string | null }>(speechPromptConfig, {
       input: { dir: root },
       fields: ["path", "exists", "prompt"],
-      headers: buildCSRFHeaders(),
     }).then((result) => {
-      if (stale || !result.success) return;
-      const data = result.data as { path: string; prompt: string | null };
-      setPrompt(data.prompt ?? "");
-      setPromptPath(data.path);
+      if (stale || !result.ok) return;
+      setPrompt(result.data.prompt ?? "");
+      setPromptPath(result.data.path);
     });
     return () => {
       stale = true;
@@ -667,14 +619,11 @@ function SpeechSection({ root }: { root: string }) {
 
   const savePrompt = async () => {
     if (promptState !== "dirty") return;
-    const result = await setSpeechPrompt({
+    const result = await call<{ path: string | null; error: string | null }>(setSpeechPrompt, {
       input: { dir: root, prompt },
       fields: ["path", "error"],
-      headers: buildCSRFHeaders(),
     });
-    const data = result.success
-      ? (result.data as { path: string | null; error: string | null })
-      : null;
+    const data = result.ok ? result.data : null;
     if (data && !data.error) {
       if (data.path) setPromptPath(data.path);
       setPromptState("saved");
@@ -685,9 +634,6 @@ function SpeechSection({ root }: { root: string }) {
 
   const apply = (patch: Partial<SpeechPrefs>) => setPrefs(saveSpeechPrefs(patch));
 
-  const inputClass =
-    "w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60";
-
   return (
     <div className="space-y-4">
       <div>
@@ -696,21 +642,19 @@ function SpeechSection({ root }: { root: string }) {
       </div>
       <div>
         <FieldLabel>{t("speechEndpoint")}</FieldLabel>
-        <input
+        <TextInput
           id="speech-endpoint-input"
           value={prefs.endpoint}
           onChange={(e) => apply({ endpoint: e.target.value.trim() })}
           placeholder="http://127.0.0.1:8000/v1"
-          className={inputClass}
         />
       </div>
       <div>
         <FieldLabel>{t("speechMic")}</FieldLabel>
-        <select
+        <Select
           id="speech-mic-select"
           value={prefs.micDeviceId}
           onChange={(e) => apply({ micDeviceId: e.target.value })}
-          className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60"
         >
           <option value="">{t("speechMicAuto")}</option>
           {mics.map((mic) => (
@@ -718,12 +662,12 @@ function SpeechSection({ root }: { root: string }) {
               {mic.label}
             </option>
           ))}
-        </select>
+        </Select>
         <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechMicHint")}</p>
       </div>
       <div>
         <FieldLabel>{t("speechPrompt")}</FieldLabel>
-        <textarea
+        <TextArea
           id="speech-prompt-input"
           value={prompt}
           onChange={(e) => {
@@ -733,7 +677,6 @@ function SpeechSection({ root }: { root: string }) {
           onBlur={() => void savePrompt()}
           placeholder={t("speechPromptPlaceholder")}
           rows={3}
-          className="w-full resize-y rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60"
         />
         <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechPromptHint")}</p>
         {prompt.length > 300 && (
@@ -754,23 +697,21 @@ function SpeechSection({ root }: { root: string }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <FieldLabel>{t("speechModel")}</FieldLabel>
-          <input
+          <TextInput
             id="speech-model-input"
             value={prefs.model}
             onChange={(e) => apply({ model: e.target.value.trim() })}
             placeholder="whisper-large-v3"
-            className={inputClass}
           />
         </div>
         <div>
           <FieldLabel>{t("speechApiKey")}</FieldLabel>
-          <input
+          <TextInput
             id="speech-api-key-input"
             type="password"
             value={prefs.apiKey}
             onChange={(e) => apply({ apiKey: e.target.value.trim() })}
             placeholder={t("optional")}
-            className={inputClass}
           />
         </div>
       </div>

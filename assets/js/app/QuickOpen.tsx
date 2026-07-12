@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { buildCSRFHeaders, listFiles } from "../ash_rpc";
+import { listFiles } from "../ash_rpc";
+import { call } from "./rpc";
 import { rankFiles } from "./fuzzy";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
@@ -28,22 +29,16 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   useEffect(() => {
     let stale = false;
 
-    void listFiles({
+    void call<{ root: string; files: string[]; truncated: boolean }>(listFiles, {
       input: { path: root },
       fields: ["root", "files", "truncated"],
-      headers: buildCSRFHeaders(),
     }).then((result) => {
       if (stale) return;
-      if (result.success) {
-        const data = result.data as unknown as {
-          root: string;
-          files: string[];
-          truncated: boolean;
-        };
-        setFiles(data.files);
-        setTruncated(data.truncated);
+      if (result.ok) {
+        setFiles(result.data.files);
+        setTruncated(result.data.truncated);
       } else {
-        onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+        onError(result.error || t("somethingWentWrong"));
         onClose();
       }
     });

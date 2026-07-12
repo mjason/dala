@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { buildCSRFHeaders, writeFile } from "../ash_rpc";
+import { writeFile } from "../ash_rpc";
+import { call } from "./rpc";
 import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
 import { detectDelimiter, parseCsv } from "./csv";
@@ -70,20 +71,18 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
 
   const save = async () => {
     setSaving(true);
-    const result = await writeFile({
+    const result = await call<{ path: string; size: number }>(writeFile, {
       input: { path: preview.path, content: draft },
       fields: ["path", "size"],
-      headers: buildCSRFHeaders(),
     });
     setSaving(false);
-    if (result.success) {
-      const { size } = result.data as unknown as { path: string; size: number };
-      onSaved?.(preview.path, draft, size);
+    if (result.ok) {
+      onSaved?.(preview.path, draft, result.data.size);
       setEditing(false);
       setSavedNotice(true);
       window.setTimeout(() => setSavedNotice(false), 2000);
     } else {
-      onError(result.errors[0]?.message ?? t("couldNotSave"));
+      onError(result.error || t("couldNotSave"));
     }
   };
 

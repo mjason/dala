@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Channel } from "phoenix";
 import {
-  buildCSRFHeaders,
   createSession,
   deleteSession,
   foregroundApp,
@@ -9,6 +8,7 @@ import {
   listSessions,
   restartSession,
 } from "../ash_rpc";
+import { call } from "./rpc";
 import {
   createSessionsChannel,
   onSessionsChannelMessages,
@@ -146,7 +146,7 @@ export default function App() {
     if (qsCleanedRef.current || sessions.length === 0) return;
     qsCleanedRef.current = true;
     for (const orphan of sessions.filter((s) => s.ephemeral)) {
-      void deleteSession({ identity: orphan.id, headers: buildCSRFHeaders() });
+      void call<unknown>(deleteSession, { identity: orphan.id });
     }
   }, [sessions]);
 
@@ -227,15 +227,14 @@ export default function App() {
     phxChannel.join();
 
     void (async () => {
-      const result = await listSessions({
+      const result = await call<Session[]>(listSessions, {
         fields: [...SESSION_FIELDS],
         sort: "insertedAt",
-        headers: buildCSRFHeaders(),
       });
-      if (result.success) {
-        setSessions(result.data as unknown as Session[]);
+      if (result.ok) {
+        setSessions(result.data);
       } else {
-        toast(result.errors[0]?.message ?? t("couldNotLoadSessions"));
+        toast(result.error || t("couldNotLoadSessions"));
       }
     })();
 
@@ -299,19 +298,18 @@ export default function App() {
 
   const handleCreate = async (input: { cwd?: string; ephemeral?: boolean } = {}) => {
     setCreating(true);
-    const result = await createSession({
+    const result = await call<Session>(createSession, {
       input,
       fields: [...SESSION_FIELDS],
-      headers: buildCSRFHeaders(),
     });
     setCreating(false);
-    if (result.success) {
-      const session = result.data as unknown as Session;
+    if (result.ok) {
+      const session = result.data;
       upsertSession(session);
       setActiveId(session.id);
       setNavOpen(false);
     } else {
-      toast(result.errors[0]?.message ?? t("couldNotCreateTerminal"));
+      toast(result.error || t("couldNotCreateTerminal"));
     }
   };
 
@@ -321,16 +319,15 @@ export default function App() {
   // keeps the shells; `exit`/Ctrl+D inside one destroys that session, which
   // drops its tab via the session_deleted broadcast.
   const createQuickShell = async (cwd?: string) => {
-    const result = await createSession({
+    const result = await call<Session>(createSession, {
       input: { cwd: cwd || undefined, ephemeral: true },
       fields: [...SESSION_FIELDS],
-      headers: buildCSRFHeaders(),
     });
-    if (!result.success) {
-      toast(result.errors[0]?.message ?? t("couldNotCreateTerminal"));
+    if (!result.ok) {
+      toast(result.error || t("couldNotCreateTerminal"));
       return;
     }
-    const session = result.data as unknown as Session;
+    const session = result.data;
     upsertSession(session);
     setQsIds((ids) => (ids.includes(session.id) ? ids : [...ids, session.id]));
     setQsActiveId(session.id);
@@ -349,7 +346,7 @@ export default function App() {
     setSessions((list) => list.filter((s) => !ids.includes(s.id)));
     termActions.current?.focus();
     for (const id of ids) {
-      void deleteSession({ identity: id, headers: buildCSRFHeaders() });
+      void call<unknown>(deleteSession, { identity: id });
     }
   };
 
@@ -362,12 +359,9 @@ export default function App() {
   quickShellRef.current = () => void toggleQuickShell();
 
   const handleRestart = async (id: string) => {
-    const result = await restartSession({
-      input: { id },
-      headers: buildCSRFHeaders(),
-    });
-    if (!result.success) {
-      toast(result.errors[0]?.message ?? t("couldNotRestart"));
+    const result = await call<unknown>(restartSession, { input: { id } });
+    if (!result.ok) {
+      toast(result.error || t("couldNotRestart"));
       return;
     }
     // The revived shell is a fresh PTY at the default size — push our real size
@@ -470,13 +464,12 @@ export default function App() {
       }
       if (!open) {
         setComposerFocusNonce((n) => n + 1);
-        void foregroundApp({
+        void call<{ app: string }>(foregroundApp, {
           input: { id },
           fields: ["app", "cmdline"],
-          headers: buildCSRFHeaders(),
         }).then((result) => {
-          if (result.success) {
-            const app = (result.data as unknown as { app: string }).app;
+          if (result.ok) {
+            const app = result.data.app;
             setComposerApps((apps) => ({
               ...apps,
               [id]: app === "shell" || app === "unknown" ? null : app,
@@ -513,16 +506,11 @@ export default function App() {
   const sendToForegroundApp = async (text: string, submit: boolean) => {
     if (!active) return;
     let app = "unknown";
-    try {
-      const result = await foregroundApp({
-        input: { id: active.id },
-        fields: ["app", "cmdline"],
-        headers: buildCSRFHeaders(),
-      });
-      if (result.success) app = (result.data as unknown as { app: string }).app;
-    } catch {
-      // fall through with "unknown"
-    }
+    const appResult = await call<{ app: string }>(foregroundApp, {
+      input: { id: active.id },
+      fields: ["app", "cmdline"],
+    });
+    if (appResult.ok) app = appResult.data.app;
     const strategy =
       app === "codex"
         ? ("bracketed" as const)
@@ -573,17 +561,16 @@ export default function App() {
   // reassert our own size.
   const kickOtherViewers = async () => {
     if (!active) return;
-    const result = await kickViewers({
+    const result = await call<{
+      multiplexer: string;
+      kicked: number;
+      error: string | null;
+    }>(kickViewers, {
       input: { id: active.id },
       fields: ["multiplexer", "session", "kicked", "error"],
-      headers: buildCSRFHeaders(),
     });
-    if (result.success) {
-      const data = result.data as unknown as {
-        multiplexer: string;
-        kicked: number;
-        error: string | null;
-      };
+    if (result.ok) {
+      const data = result.data;
       if (data.error) {
         toast(data.error);
       } else {
@@ -591,7 +578,7 @@ export default function App() {
         termActions.current?.refit();
       }
     } else {
-      toast(result.errors[0]?.message ?? t("somethingWentWrong"));
+      toast(result.error || t("somethingWentWrong"));
     }
   };
 
@@ -723,12 +710,12 @@ export default function App() {
     if (deleting.current.has(id)) return;
     deleting.current.add(id);
     try {
-      const result = await deleteSession({ identity: id, headers: buildCSRFHeaders() });
-      if (result.success) {
+      const result = await call<unknown>(deleteSession, { identity: id });
+      if (result.ok) {
         setSessions((list) => list.filter((s) => s.id !== id));
         if (activeId === id) setActiveId(null);
       } else {
-        toast(result.errors[0]?.message ?? t("somethingWentWrong"));
+        toast(result.error || t("somethingWentWrong"));
       }
     } finally {
       deleting.current.delete(id);

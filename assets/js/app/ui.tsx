@@ -27,7 +27,11 @@ export const TextArea = React.forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
 >(function TextArea({ className, ...props }, ref) {
-  return <textarea ref={ref} {...props} className={cx(inputClass, "resize-y", className)} />;
+  // Tailwind resolves conflicts by stylesheet order (resize-y is emitted
+  // after resize-none), so a caller's resize choice must replace the
+  // default instead of being appended next to it.
+  const resize = /(?:^|\s)resize-/.test(className ?? "") ? null : "resize-y";
+  return <textarea ref={ref} {...props} className={cx(inputClass, resize, className)} />;
 });
 
 export const Select = React.forwardRef<
@@ -36,3 +40,49 @@ export const Select = React.forwardRef<
 >(function Select({ className, ...props }, ref) {
   return <select ref={ref} {...props} className={cx(inputClass, className)} />;
 });
+
+// ------------------------------------------------- modal/form companions
+
+/** Muted label above a form control. */
+export function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <span className="text-xs text-fg-muted">{children}</span>;
+}
+
+/** Small right-aligned monospace value chip next to a control label. */
+export function ValueChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded border border-line bg-bg0 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-fg">
+      {children}
+    </span>
+  );
+}
+
+/** iOS-style switch; keeps a hidden checkbox for the stable input id. */
+export function Toggle({
+  id,
+  checked,
+  onChange,
+}: {
+  id: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150 ${
+        checked ? "bg-mint" : "bg-bg2 ring-1 ring-inset ring-line"
+      }`}
+    >
+      <input id={id} type="checkbox" checked={checked} readOnly className="sr-only" />
+      <span
+        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full transition-transform duration-150 ${
+          checked ? "translate-x-4 bg-black/80" : "bg-fg-muted"
+        }`}
+      />
+    </button>
+  );
+}

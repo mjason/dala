@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildCSRFHeaders, deleteEntry, listDirectory } from "../ash_rpc";
+import { call } from "./rpc";
 import type { ListDirectoryFields } from "../ash_rpc";
 import { humanBytes, writeClipboard } from "./util";
 import { useI18n } from "./i18n";
@@ -101,13 +102,12 @@ export default function FileDrawer({
 
   const fetchDir = useCallback(
     async (target: string): Promise<Listing | null> => {
-      const result = await listDirectory({
+      const result = await call<Listing>(listDirectory, {
         input: { path: target },
         fields: DIR_FIELDS,
-        headers: buildCSRFHeaders(),
       });
-      if (result.success) return result.data as unknown as Listing;
-      onError(result.errors[0]?.message ?? t("couldNotListDirectory"));
+      if (result.ok) return result.data;
+      onError(result.error || t("couldNotListDirectory"));
       return null;
     },
     [onError, t],
@@ -141,14 +141,12 @@ export default function FileDrawer({
   // {"changed": dir}. Silent refresh; reconnects with backoff.
   const refreshSilent = useCallback(
     async (dir: string) => {
-      const result = await listDirectory({
+      const result = await call<Listing>(listDirectory, {
         input: { path: dir },
         fields: DIR_FIELDS,
-        headers: buildCSRFHeaders(),
-      }).catch(() => null);
-      if (result?.success) {
-        const listing = result.data as unknown as Listing;
-        setChildren((prev) => ({ ...prev, [dir]: listing.entries }));
+      });
+      if (result.ok) {
+        setChildren((prev) => ({ ...prev, [dir]: result.data.entries }));
       }
     },
     [],
@@ -293,13 +291,12 @@ export default function FileDrawer({
     if (!target) return;
     setDeleteTarget(null);
 
-    const result = await deleteEntry({
+    const result = await call<unknown>(deleteEntry, {
       input: { path: target.path },
       fields: ["path"],
-      headers: buildCSRFHeaders(),
     });
-    if (!result.success) {
-      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
       return;
     }
 

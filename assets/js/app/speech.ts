@@ -6,6 +6,7 @@
  * 16 kHz mono WAV before upload — WAV is the one format every Whisper
  * serving stack accepts without an ffmpeg dependency on the server side.
  */
+import { createStore } from "./store";
 
 export type SpeechPrefs = {
   /** Base URL, e.g. "http://127.0.0.1:8000/v1" — empty = not configured. */
@@ -28,28 +29,19 @@ export const DEFAULT_SPEECH_PREFS: SpeechPrefs = {
 
 const KEY = "dala:speech-prefs";
 
+const store = createStore<SpeechPrefs>(KEY, DEFAULT_SPEECH_PREFS, (raw) => ({
+  endpoint: typeof raw.endpoint === "string" ? raw.endpoint : "",
+  model: typeof raw.model === "string" && raw.model ? raw.model : DEFAULT_SPEECH_PREFS.model,
+  apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
+  micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : "",
+}));
+
 export function loadSpeechPrefs(): SpeechPrefs {
-  try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<SpeechPrefs>;
-    return {
-      endpoint: typeof raw.endpoint === "string" ? raw.endpoint : "",
-      model: typeof raw.model === "string" && raw.model ? raw.model : DEFAULT_SPEECH_PREFS.model,
-      apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
-      micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : "",
-    };
-  } catch {
-    return { ...DEFAULT_SPEECH_PREFS };
-  }
+  return store.load();
 }
 
 export function saveSpeechPrefs(patch: Partial<SpeechPrefs>): SpeechPrefs {
-  const merged = { ...loadSpeechPrefs(), ...patch };
-  try {
-    localStorage.setItem(KEY, JSON.stringify(merged));
-  } catch {
-    // storage unavailable
-  }
-  return merged;
+  return store.save(patch);
 }
 
 // ---------------------------------------------------------------- recorder

@@ -3,6 +3,7 @@
  * per browser (localStorage) and applied to every open terminal live via a
  * window event — they are viewer preferences, not session state.
  */
+import { createStore } from "./store";
 
 export type CursorStyle = "bar" | "block" | "underline";
 
@@ -81,24 +82,14 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
   };
 }
 
+const store = createStore<TermPrefs>(KEY, DEFAULT_PREFS, normalize, { event: EVENT });
+
 export function loadPrefs(): TermPrefs {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return normalize(raw ? JSON.parse(raw) : {});
-  } catch {
-    return { ...DEFAULT_PREFS };
-  }
+  return store.load();
 }
 
 export function savePrefs(patch: Partial<TermPrefs>): TermPrefs {
-  const merged = normalize({ ...loadPrefs(), ...patch });
-  try {
-    localStorage.setItem(KEY, JSON.stringify(merged));
-  } catch {
-    // storage unavailable — still apply live
-  }
-  window.dispatchEvent(new CustomEvent(EVENT, { detail: merged }));
-  return merged;
+  return store.save(patch);
 }
 
 export function resetPrefs(): TermPrefs {

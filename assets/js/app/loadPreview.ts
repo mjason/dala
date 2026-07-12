@@ -1,6 +1,7 @@
-import { buildCSRFHeaders, readFile } from "../ash_rpc";
+import { readFile } from "../ash_rpc";
 import type { ReadFileFields } from "../ash_rpc";
 import { previewKind } from "./fileTypes";
+import { call } from "./rpc";
 import type { Preview } from "./FilePreview";
 
 const FILE_FIELDS: ReadFileFields = ["path", "size", "truncated", "binary", "content"];
@@ -19,23 +20,19 @@ export async function loadPreview(
     return { ok: true, preview: { kind: "image", path, size } };
   }
 
-  const result = await readFile({
-    input: { path },
-    fields: FILE_FIELDS,
-    headers: buildCSRFHeaders(),
-  });
-
-  if (!result.success) {
-    return { ok: false, message: result.errors[0]?.message ?? null };
-  }
-
-  const data = result.data as unknown as {
+  const result = await call<{
     path: string;
     size: number;
     truncated: boolean;
     binary: boolean;
     content: string | null;
-  };
+  }>(readFile, { input: { path }, fields: FILE_FIELDS });
+
+  if (!result.ok) {
+    return { ok: false, message: result.error || null };
+  }
+
+  const data = result.data;
 
   if (data.binary) {
     return { ok: true, preview: { kind: "binary", path: data.path, size: data.size } };

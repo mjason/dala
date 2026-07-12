@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { applyUpdate, buildCSRFHeaders, checkUpdate } from "../ash_rpc";
+import { applyUpdate, checkUpdate } from "../ash_rpc";
+import { call } from "./rpc";
 import { useI18n } from "./i18n";
 import { serverVersion } from "./meta";
 
@@ -27,11 +28,10 @@ export default function UpdateCheck() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await checkUpdate({
+      const result = await call<Info>(checkUpdate, {
         fields: ["enabled", "current", "latest", "tag", "updateAvailable", "notesUrl"],
-        headers: buildCSRFHeaders(),
-      }).catch(() => null);
-      if (!cancelled && result?.success) setInfo(result.data as unknown as Info);
+      });
+      if (!cancelled && result.ok) setInfo(result.data);
     })();
     return () => {
       cancelled = true;
@@ -48,10 +48,10 @@ export default function UpdateCheck() {
   const update = async () => {
     setState("updating");
     setError(null);
-    const result = await applyUpdate({ fields: ["updatedTo"], headers: buildCSRFHeaders() });
-    if (!result.success) {
+    const result = await call<unknown>(applyUpdate, { fields: ["updatedTo"] });
+    if (!result.ok) {
       setState("idle");
-      setError(result.errors[0]?.message ?? t("somethingWentWrong"));
+      setError(result.error || t("somethingWentWrong"));
       return;
     }
 

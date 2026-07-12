@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  buildCSRFHeaders,
   gitBranches,
   gitCheckout,
   gitCommit,
@@ -22,6 +21,8 @@ import type {
   GitShowFields,
   GitStatusFields,
 } from "../ash_rpc";
+import { call, type RpcOutcome } from "./rpc";
+import { TextArea } from "./ui";
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { parseDiff } from "./diffParse";
@@ -107,16 +108,16 @@ export default function GitPanel({
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
-    const result = await gitStatus({ input: { path }, fields: STATUS_FIELDS, headers: buildCSRFHeaders() });
+    const result = await call<Status>(gitStatus, { input: { path }, fields: STATUS_FIELDS });
     setLoading(false);
-    if (result.success) setStatus(result.data as unknown as Status);
-    else onError(result.errors[0]?.message ?? t("couldNotLoadGit"));
+    if (result.ok) setStatus(result.data);
+    else onError(result.error || t("couldNotLoadGit"));
   }, [path, onError, t]);
 
   const loadLog = useCallback(async () => {
-    const result = await gitLog({ input: { path }, fields: LOG_FIELDS, headers: buildCSRFHeaders() });
-    if (result.success) setCommits((result.data as unknown as { commits: Commit[] }).commits);
-    else onError(result.errors[0]?.message ?? t("couldNotLoadGit"));
+    const result = await call<{ commits: Commit[] }>(gitLog, { input: { path }, fields: LOG_FIELDS });
+    if (result.ok) setCommits(result.data.commits);
+    else onError(result.error || t("couldNotLoadGit"));
   }, [path, onError, t]);
 
   useEffect(() => {
@@ -132,12 +133,12 @@ export default function GitPanel({
     if (tab === "history") void loadLog();
   };
 
-  const run = async (key: string, fn: () => Promise<{ success: boolean; errors?: any }>) => {
+  const run = async (key: string, fn: () => Promise<RpcOutcome<unknown>>) => {
     setBusy(key);
     const result = await fn();
     setBusy(null);
-    if (!result.success) {
-      onError(result.errors?.[0]?.message ?? t("somethingWentWrong"));
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
       return false;
     }
     await loadStatus();
@@ -147,14 +148,13 @@ export default function GitPanel({
   const openFileDiff = async (file: GitFile, context: DiffContext) => {
     if (!root) return;
     setBusy(`diff:${file.path}`);
-    const result = await gitDiff({
+    const result = await call<{ diff: string; binary: boolean; truncated: boolean }>(gitDiff, {
       input: { path: root, file: file.path },
       fields: DIFF_FIELDS,
-      headers: buildCSRFHeaders(),
     });
     setBusy(null);
-    if (result.success) {
-      const data = result.data as unknown as { diff: string; binary: boolean; truncated: boolean };
+    if (result.ok) {
+      const data = result.data;
       // Fork's two perspectives: unstaged = index↔worktree, staged = HEAD↔index.
       const revs =
         context === "unstaged"
@@ -170,7 +170,7 @@ export default function GitPanel({
         file,
       });
     } else {
-      onError(result.errors[0]?.message ?? t("couldNotLoadDiff"));
+      onError(result.error || t("couldNotLoadDiff"));
     }
   };
 
@@ -178,13 +178,12 @@ export default function GitPanel({
   // lists and the open diff so the remaining hunks stay accurate.
   const applyHunk = async (patch: string, applyTo: "index" | "workdir") => {
     if (!root || !target || target.kind !== "file") return;
-    const result = await gitApplyPatch({
+    const result = await call<unknown>(gitApplyPatch, {
       input: { path: root, patch, target: applyTo },
       fields: ["applied"],
-      headers: buildCSRFHeaders(),
     });
-    if (!result.success) {
-      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
       return;
     }
     const { file, context } = target;
@@ -194,14 +193,13 @@ export default function GitPanel({
 
   const openCommit = async (commit: Commit) => {
     setBusy(`show:${commit.hash}`);
-    const result = await gitShow({
+    const result = await call<{ text: string; truncated: boolean }>(gitShow, {
       input: { path, hash: commit.hash },
       fields: SHOW_FIELDS,
-      headers: buildCSRFHeaders(),
     });
     setBusy(null);
-    if (result.success) {
-      const data = result.data as unknown as { text: string; truncated: boolean };
+    if (result.ok) {
+      const data = result.data;
       setTarget({
         kind: "commit",
         title: `${commit.hash} · ${commit.subject}`,
@@ -210,26 +208,25 @@ export default function GitPanel({
         revs: { repo: path, oldRev: `${commit.hash}^`, newRev: commit.hash },
       });
     } else {
-      onError(result.errors[0]?.message ?? t("couldNotLoadDiff"));
+      onError(result.error || t("couldNotLoadDiff"));
     }
   };
 
   const commit = async () => {
     if (!root || (!message.trim() && !amend)) return;
     setBusy("commit");
-    const result = await gitCommit({
+    const result = await call<unknown>(gitCommit, {
       input: { path: root, message: message.trim(), amend },
       fields: ["hash"] as unknown as GitCommitFields,
-      headers: buildCSRFHeaders(),
     });
     setBusy(null);
-    if (result.success) {
+    if (result.ok) {
       setMessage("");
       setAmend(false);
       setCommits(null);
       await loadStatus();
     } else {
-      onError(result.errors[0]?.message ?? t("couldNotCommit"));
+      onError(result.error || t("couldNotCommit"));
     }
   };
 
@@ -242,16 +239,15 @@ export default function GitPanel({
   const openBranchMenu = async () => {
     setBranchMenu(true);
     setBranches(null);
-    const result = await gitBranches({
+    const result = await call<Branches>(gitBranches, {
       input: { path: root ?? path },
       fields: BRANCH_FIELDS,
-      headers: buildCSRFHeaders(),
     });
-    if (result.success) {
-      setBranches(result.data as unknown as Branches);
+    if (result.ok) {
+      setBranches(result.data);
     } else {
       setBranchMenu(false);
-      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+      onError(result.error || t("somethingWentWrong"));
     }
   };
 
@@ -259,17 +255,16 @@ export default function GitPanel({
     setBranchMenu(false);
     if (branch.current) return;
     setBusy(`checkout:${branch.name}`);
-    const result = await gitCheckout({
+    const result = await call<unknown>(gitCheckout, {
       input: { path: root ?? path, name: branch.name },
-      headers: buildCSRFHeaders(),
     });
     setBusy(null);
-    if (result.success) {
+    if (result.ok) {
       // The history list belongs to the previous branch — refetch lazily.
       setCommits(null);
       await loadStatus();
     } else {
-      onError(result.errors[0]?.message ?? t("somethingWentWrong"));
+      onError(result.error || t("somethingWentWrong"));
     }
   };
 
@@ -400,12 +395,11 @@ export default function GitPanel({
                       onClick: () =>
                         void run("unstage-all", async () => {
                           for (const file of staged) {
-                            await gitUnstage({
+                            await call<unknown>(gitUnstage, {
                               input: { path: root!, file: file.path },
-                              headers: buildCSRFHeaders(),
                             });
                           }
-                          return { success: true };
+                          return { ok: true, data: null };
                         }),
                     }}
                   >
@@ -425,7 +419,7 @@ export default function GitPanel({
                         title: t("unstage"),
                         onClick: () =>
                           void run(`unstage:${file.path}`, () =>
-                            gitUnstage({ input: { path: root!, file: file.path }, headers: buildCSRFHeaders() }),
+                            call<unknown>(gitUnstage, { input: { path: root!, file: file.path } }),
                           ),
                       },
                     ]}
@@ -440,12 +434,11 @@ export default function GitPanel({
                       onClick: () =>
                         void run("stage-all", async () => {
                           for (const file of unstaged) {
-                            await gitStage({
+                            await call<unknown>(gitStage, {
                               input: { path: root!, file: file.path },
-                              headers: buildCSRFHeaders(),
                             });
                           }
-                          return { success: true };
+                          return { ok: true, data: null };
                         }),
                     }}
                   >
@@ -467,7 +460,7 @@ export default function GitPanel({
                         onClick: () => {
                           if (!confirm(t("discardConfirm", { file: file.path }))) return;
                           void run(`discard:${file.path}`, () =>
-                            gitDiscard({ input: { path: root!, file: file.path }, headers: buildCSRFHeaders() }),
+                            call<unknown>(gitDiscard, { input: { path: root!, file: file.path } }),
                           );
                         },
                       },
@@ -477,7 +470,7 @@ export default function GitPanel({
                         title: t("stage"),
                         onClick: () =>
                           void run(`stage:${file.path}`, () =>
-                            gitStage({ input: { path: root!, file: file.path }, headers: buildCSRFHeaders() }),
+                            call<unknown>(gitStage, { input: { path: root!, file: file.path } }),
                           ),
                       },
                     ]}
@@ -486,13 +479,13 @@ export default function GitPanel({
               </div>
 
               <div className="border-t border-line p-2">
-                <textarea
+                <TextArea
                   id="commit-message-input"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder={t("commitMessage")}
                   rows={2}
-                  className="w-full resize-none rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors placeholder:text-fg-muted/60 focus:border-mint/60"
+                  className="resize-none"
                 />
                 <label className="mt-1 flex cursor-pointer select-none items-center gap-1.5 px-0.5 font-mono text-[11px] text-fg-muted">
                   <input
@@ -746,18 +739,17 @@ function DiffModal({
 
     const fetchSide = async (rev: string, file: string): Promise<string> => {
       if (!file) return "";
-      const result = await gitFileAt({
-        input: { path: revs.repo, rev, file },
-        fields: ["content", "binary", "truncated", "missing"],
-        headers: buildCSRFHeaders(),
-      });
-      if (!result.success) throw new Error("unavailable");
-      const data = result.data as unknown as {
+      const result = await call<{
         content: string;
         binary: boolean;
         truncated: boolean;
         missing: boolean;
-      };
+      }>(gitFileAt, {
+        input: { path: revs.repo, rev, file },
+        fields: ["content", "binary", "truncated", "missing"],
+      });
+      if (!result.ok) throw new Error("unavailable");
+      const data = result.data;
       if (data.binary || data.truncated) throw new Error("not renderable");
       return data.missing ? "" : data.content;
     };

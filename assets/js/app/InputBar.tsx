@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { agentCommands, buildCSRFHeaders, listFiles, savePastedFile, transcribe } from "../ash_rpc";
+import { agentCommands, listFiles, savePastedFile, transcribe } from "../ash_rpc";
+import { call } from "./rpc";
 import { blobToBase64, loadSpeechPrefs, startRecording, type Recorder } from "./speech";
 import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
@@ -121,7 +122,7 @@ export default function InputBar({
         const wav = await recorderRef.current!.stop();
         recorderRef.current = null;
         const prefs = loadSpeechPrefs();
-        const result = await transcribe({
+        const result = await call<{ text: string | null; error: string | null }>(transcribe, {
           input: {
             endpoint: prefs.endpoint,
             model: prefs.model,
@@ -130,11 +131,8 @@ export default function InputBar({
             audioBase64: await blobToBase64(wav),
           },
           fields: ["text", "error"] as never,
-          headers: buildCSRFHeaders(),
         });
-        const data = result.success
-          ? (result.data as unknown as { text: string | null; error: string | null })
-          : null;
+        const data = result.ok ? result.data : null;
         if (!data || data.error || !data.text) {
           onError(data?.error ?? t("speechFailed"));
         } else {
@@ -173,14 +171,13 @@ export default function InputBar({
   useEffect(() => {
     if (!mention || files !== null) return;
     let stale = false;
-    void listFiles({
+    void call<{ files: string[] }>(listFiles, {
       input: { path: root },
       fields: ["root", "files", "truncated"],
-      headers: buildCSRFHeaders(),
     }).then((result) => {
       if (stale) return;
-      if (result.success) {
-        setFiles((result.data as unknown as { files: string[] }).files);
+      if (result.ok) {
+        setFiles(result.data.files);
       } else {
         setFiles([]);
       }
@@ -199,19 +196,19 @@ export default function InputBar({
   useEffect(() => {
     if (slash === null || commands !== null) return;
     let stale = false;
-    void agentCommands({
+    void call<{
+      app: string;
+      commands: { name: string; description: string }[];
+    }>(agentCommands, {
       input: { id: sessionId },
       fields: ["app", "commands"] as never,
-      headers: buildCSRFHeaders(),
     }).then((result) => {
       if (stale) return;
-      if (result.success) {
-        const data = result.data as unknown as {
-          app: string;
-          commands: { name: string; description: string }[];
-        };
-        setCommands(data.commands);
-        setDetectedApp(data.app === "shell" || data.app === "unknown" ? null : data.app);
+      if (result.ok) {
+        setCommands(result.data.commands);
+        setDetectedApp(
+          result.data.app === "shell" || result.data.app === "unknown" ? null : result.data.app,
+        );
       } else {
         setCommands([]);
       }
@@ -261,16 +258,15 @@ export default function InputBar({
     for (const file of Array.from(list)) {
       try {
         const contentBase64 = await fileToBase64(file);
-        const result = await savePastedFile({
+        const result = await call<{ path: string }>(savePastedFile, {
           input: { name: pasteName(file), contentBase64 },
           fields: ["path"],
-          headers: buildCSRFHeaders(),
         });
-        if (result.success) {
-          const path = (result.data as unknown as { path: string }).path;
+        if (result.ok) {
+          const path = result.data.path;
           setValue(value && !value.endsWith(" ") ? `${value} ${path} ` : `${value}${path} `);
         } else {
-          onError(result.errors[0]?.message ?? t("uploadFailed"));
+          onError(result.error || t("uploadFailed"));
         }
       } catch {
         onError(t("uploadFailed"));

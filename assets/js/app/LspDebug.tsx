@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import Windowed from "./Windowed";
 import { useI18n } from "./i18n";
-import { buildCSRFHeaders, lspServers } from "../ash_rpc";
+import { lspServers } from "../ash_rpc";
+import { call } from "./rpc";
 
 type RecentMessage = { dir: "in" | "out"; at: number; preview: string };
 
@@ -55,26 +56,18 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
   useEffect(() => {
     let disposed = false;
     void (async () => {
-      try {
-        const result = await lspServers({
-          input: { path },
-          fields: ["root", "language", "servers", "checked"] as never,
-          headers: buildCSRFHeaders(),
-        });
-        if (disposed || !result.success) return;
-        const data = result.data as unknown as {
-          language: string | null;
-          servers: { name: string }[];
-          checked: { path: string; found: boolean }[];
-        };
-        setResolved({
-          language: data.language,
-          names: data.servers.map((s) => s.name),
-          checked: data.checked ?? [],
-        });
-      } catch {
-        // fine without
-      }
+      const result = await call<{
+        language: string | null;
+        servers: { name: string }[];
+        checked: { path: string; found: boolean }[];
+      }>(lspServers, { input: { path }, fields: ["root", "language", "servers", "checked"] as never });
+      if (disposed || !result.ok) return;
+      const data = result.data;
+      setResolved({
+        language: data.language,
+        names: data.servers.map((s) => s.name),
+        checked: data.checked ?? [],
+      });
     })();
     return () => {
       disposed = true;

@@ -6,6 +6,7 @@ import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
 import UpdateCheck from "./UpdateCheck";
 import ResizeHandle from "./ResizeHandle";
+import { Select } from "./ui";
 
 export type Session = SessionUpdatedPayload;
 
@@ -161,19 +162,18 @@ export default function Sidebar({
           )}
         </div>
         <UpdateCheck />
-        <select
+        <Select
           id="language-select"
           aria-label={t("language")}
           value={locale}
           onChange={(e) => setLocale(e.target.value as Locale)}
-          className="w-full rounded-md border border-line bg-bg0 px-1.5 py-1 text-xs text-fg-muted outline-none transition-colors hover:text-fg focus:border-mint/60"
         >
           {(Object.keys(LOCALE_NAMES) as Locale[]).map((code) => (
             <option key={code} value={code}>
               {LOCALE_NAMES[code]}
             </option>
           ))}
-        </select>
+        </Select>
       </footer>
     </aside>
   );
