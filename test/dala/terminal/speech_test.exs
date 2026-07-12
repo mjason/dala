@@ -68,7 +68,7 @@ defmodule Dala.Terminal.SpeechTest do
     refute request =~ "authorization"
   end
 
-  test "hotwords prompt rides along in the multipart form" do
+  test "an explicit prompt rides along in the multipart form" do
     {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
 
     run_transcribe(%{
@@ -97,11 +97,15 @@ defmodule Dala.Terminal.SpeechTest do
     refute request =~ ~s(name="prompt")
   end
 
-  test "without an explicit prompt, hotwords come from the project's dala.jsonc via cwd" do
+  test "without an explicit prompt, the project's dala.jsonc prompt is used via cwd" do
     dir = Path.join(System.tmp_dir!(), "dala-speech-cwd-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
-    File.write!(Path.join(dir, "dala.jsonc"), ~s({ "speech": { "hotwords": "basedpyright" } }))
+
+    File.write!(
+      Path.join(dir, "dala.jsonc"),
+      ~s({ "speech": { "prompt": "This talk covers basedpyright." } })
+    )
 
     {port, task} = fake_server(fn _request -> ~s({"text": "ok"}) end)
 
@@ -114,7 +118,7 @@ defmodule Dala.Terminal.SpeechTest do
 
     request = Task.await(task)
     assert request =~ ~s(name="prompt")
-    assert request =~ "basedpyright"
+    assert request =~ "This talk covers basedpyright."
   end
 
   test "cwd without any dala.jsonc sends no prompt at all" do

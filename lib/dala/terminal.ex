@@ -17,8 +17,8 @@ defmodule Dala.Terminal do
 
     resource Dala.Terminal.Speech do
       rpc_action :transcribe, :transcribe
-      rpc_action :speech_hotwords_config, :hotwords_config
-      rpc_action :set_speech_hotwords, :set_hotwords
+      rpc_action :speech_prompt_config, :prompt_config
+      rpc_action :set_speech_prompt, :set_prompt
     end
 
     resource Dala.Terminal.FileSystem do

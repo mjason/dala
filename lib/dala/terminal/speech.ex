@@ -37,10 +37,10 @@ defmodule Dala.Terminal.Speech do
       argument :model, :string, allow_nil?: false
       argument :api_key, :string
 
-      # Whisper "prompt": a vocabulary hint — jargon listed here (library
-      # names, project terms) biases the transcription toward the right
-      # spellings. When absent, the hotwords from the project's dala.jsonc
-      # (nearest to `cwd`) are used.
+      # Whisper "prompt": decoder context — the model treats it as the
+      # preceding transcript and mimics its spelling/punctuation. When
+      # absent, the prompt from the project's dala.jsonc (nearest to `cwd`)
+      # is used.
       argument :prompt, :string
       argument :cwd, :string
 
@@ -56,7 +56,7 @@ defmodule Dala.Terminal.Speech do
           prompt =
             case Map.get(input.arguments, :prompt) do
               p when is_binary(p) and p != "" -> p
-              _ -> project_hotwords(Map.get(input.arguments, :cwd))
+              _ -> project_prompt(Map.get(input.arguments, :cwd))
             end
 
           request(
@@ -73,29 +73,29 @@ defmodule Dala.Terminal.Speech do
       end
     end
 
-    action :hotwords_config, :map do
+    action :prompt_config, :map do
       description """
-      The speech hotwords stored in the project's dala.jsonc (nearest to
-      `dir`, walking up to the git toplevel), and the file that holds them.
+      The transcription prompt stored in the project's dala.jsonc (nearest
+      to `dir`, walking up to the git toplevel), and the file that holds it.
       """
 
       constraints fields: [
                     path: [type: :string],
                     exists: [type: :boolean],
-                    hotwords: [type: :string, allow_nil?: true]
+                    prompt: [type: :string, allow_nil?: true]
                   ]
 
       argument :dir, :string, allow_nil?: false
 
       run fn input, _context ->
-        {:ok, Dala.ProjectConfig.speech_hotwords(Path.expand(input.arguments.dir))}
+        {:ok, Dala.ProjectConfig.speech_prompt(Path.expand(input.arguments.dir))}
       end
     end
 
-    action :set_hotwords, :map do
+    action :set_prompt, :map do
       description """
-      Write speech hotwords into the project's dala.jsonc — the nearest
-      existing config wins; otherwise one is created inside `dir`.
+      Write the transcription prompt into the project's dala.jsonc — the
+      nearest existing config wins; otherwise one is created inside `dir`.
       Comments in an existing file are preserved.
       """
 
@@ -105,13 +105,13 @@ defmodule Dala.Terminal.Speech do
                   ]
 
       argument :dir, :string, allow_nil?: false
-      argument :hotwords, :string, constraints: [trim?: false, allow_empty?: true]
+      argument :prompt, :string, constraints: [trim?: false, allow_empty?: true]
 
       run fn input, _context ->
         dir = Path.expand(input.arguments.dir)
-        words = Map.get(input.arguments, :hotwords) || ""
+        text = Map.get(input.arguments, :prompt) || ""
 
-        case Dala.ProjectConfig.put_speech_hotwords(dir, words) do
+        case Dala.ProjectConfig.put_speech_prompt(dir, text) do
           {:ok, path} -> {:ok, %{path: path, error: nil}}
           {:error, message} -> {:ok, %{path: nil, error: message}}
         end
@@ -119,11 +119,11 @@ defmodule Dala.Terminal.Speech do
     end
   end
 
-  defp project_hotwords(cwd) when is_binary(cwd) and cwd != "" do
-    Dala.ProjectConfig.speech_hotwords(Path.expand(cwd)).hotwords
+  defp project_prompt(cwd) when is_binary(cwd) and cwd != "" do
+    Dala.ProjectConfig.speech_prompt(Path.expand(cwd)).prompt
   end
 
-  defp project_hotwords(_cwd), do: nil
+  defp project_prompt(_cwd), do: nil
 
   defp check_size(audio) when byte_size(audio) > @audio_max_bytes,
     do: {:error, "audio too large (max #{div(@audio_max_bytes, 1024 * 1024)} MB)"}

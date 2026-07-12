@@ -228,11 +228,14 @@ allowed.
     "clients/desktop": {},                              // {} = auto-discovery at that root
   },
 
-  // Voice input: hotwords sent as the Whisper prompt, so transcription
-  // spells your jargon right. Per project — editable from Settings, which
-  // reads/writes the nearest dala.jsonc (created here when missing).
+  // Voice input: the Whisper transcription prompt. The model treats it as
+  // the PRECEDING transcript and mimics its spelling and punctuation, so
+  // write a natural sentence (in the language you speak) with your jargon
+  // embedded — not a bare keyword list. Only the last ~224 tokens count.
+  // Per project — editable from Settings' Voice tab, which reads/writes
+  // the nearest dala.jsonc (created here when missing).
   "speech": {
-    "hotwords": "dala, zellij, Phoenix LiveView, basedpyright",
+    "prompt": "This session covers dala, zellij, Phoenix LiveView and basedpyright.",
   },
 }
 ```

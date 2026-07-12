@@ -7,8 +7,8 @@ import {
   renameSession,
   restartSession,
   setScrollbackLimit,
-  setSpeechHotwords,
-  speechHotwordsConfig,
+  setSpeechPrompt,
+  speechPromptConfig,
 } from "../ash_rpc";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
@@ -116,7 +116,7 @@ function ToggleRow({
 
 export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<"session" | "appearance" | "shortcuts">("session");
+  const [tab, setTab] = useState<"session" | "appearance" | "shortcuts" | "voice">("session");
   const [name, setName] = useState(session.name);
   const [historyLines, setHistoryLines] = useState(() =>
     normalizeHistoryLines(session.scrollbackLimit),
@@ -181,10 +181,11 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
   const running = session.status === "running";
 
-  const tabs: { key: "session" | "appearance" | "shortcuts"; label: string }[] = [
+  const tabs: { key: "session" | "appearance" | "shortcuts" | "voice"; label: string }[] = [
     { key: "session", label: t("sessionTab") },
     { key: "appearance", label: t("preferencesTab") },
     { key: "shortcuts", label: t("shortcutsTab") },
+    { key: "voice", label: t("speechSection") },
   ];
 
   return (
@@ -404,11 +405,12 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             </>
           ) : tab === "shortcuts" ? (
             <ShortcutsSection />
+          ) : tab === "voice" ? (
+            <SpeechSection root={session.cwd} />
           ) : (
             <>
               <AppearanceSection />
               <NotificationsSection />
-              <SpeechSection root={session.cwd} />
             </>
           )}
         </div>
@@ -633,11 +635,12 @@ function SpeechSection({ root }: { root: string }) {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<SpeechPrefs>(loadSpeechPrefs);
   const [mics, setMics] = useState<{ deviceId: string; label: string }[]>([]);
-  // Hotwords are per-project: they live in the dala.jsonc nearest to the
-  // session's cwd (created there when missing), not in browser storage.
-  const [hotwords, setHotwords] = useState("");
-  const [hotwordsPath, setHotwordsPath] = useState("");
-  const [hotwordsState, setHotwordsState] = useState<"idle" | "dirty" | "saved" | "error">(
+  // The transcription prompt is per-project: it lives in the dala.jsonc
+  // nearest to the session's cwd (created there when missing), not in
+  // browser storage.
+  const [prompt, setPrompt] = useState("");
+  const [promptPath, setPromptPath] = useState("");
+  const [promptState, setPromptState] = useState<"idle" | "dirty" | "saved" | "error">(
     "idle",
   );
 
@@ -647,25 +650,25 @@ function SpeechSection({ root }: { root: string }) {
 
   useEffect(() => {
     let stale = false;
-    void speechHotwordsConfig({
+    void speechPromptConfig({
       input: { dir: root },
-      fields: ["path", "exists", "hotwords"],
+      fields: ["path", "exists", "prompt"],
       headers: buildCSRFHeaders(),
     }).then((result) => {
       if (stale || !result.success) return;
-      const data = result.data as { path: string; hotwords: string | null };
-      setHotwords(data.hotwords ?? "");
-      setHotwordsPath(data.path);
+      const data = result.data as { path: string; prompt: string | null };
+      setPrompt(data.prompt ?? "");
+      setPromptPath(data.path);
     });
     return () => {
       stale = true;
     };
   }, [root]);
 
-  const saveHotwords = async () => {
-    if (hotwordsState !== "dirty") return;
-    const result = await setSpeechHotwords({
-      input: { dir: root, hotwords },
+  const savePrompt = async () => {
+    if (promptState !== "dirty") return;
+    const result = await setSpeechPrompt({
+      input: { dir: root, prompt },
       fields: ["path", "error"],
       headers: buildCSRFHeaders(),
     });
@@ -673,10 +676,10 @@ function SpeechSection({ root }: { root: string }) {
       ? (result.data as { path: string | null; error: string | null })
       : null;
     if (data && !data.error) {
-      if (data.path) setHotwordsPath(data.path);
-      setHotwordsState("saved");
+      if (data.path) setPromptPath(data.path);
+      setPromptState("saved");
     } else {
-      setHotwordsState("error");
+      setPromptState("error");
     }
   };
 
@@ -686,7 +689,7 @@ function SpeechSection({ root }: { root: string }) {
     "w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60";
 
   return (
-    <div className="mt-6 space-y-4 border-t border-line pt-5">
+    <div className="space-y-4">
       <div>
         <div className="text-[13px] font-medium text-fg">{t("speechSection")}</div>
         <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechSectionDesc")}</p>
@@ -719,26 +722,32 @@ function SpeechSection({ root }: { root: string }) {
         <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechMicHint")}</p>
       </div>
       <div>
-        <FieldLabel>{t("speechHotwords")}</FieldLabel>
+        <FieldLabel>{t("speechPrompt")}</FieldLabel>
         <textarea
-          id="speech-hotwords-input"
-          value={hotwords}
+          id="speech-prompt-input"
+          value={prompt}
           onChange={(e) => {
-            setHotwords(e.target.value);
-            setHotwordsState("dirty");
+            setPrompt(e.target.value);
+            setPromptState("dirty");
           }}
-          onBlur={() => void saveHotwords()}
-          placeholder="dala, zellij, Elixir, Phoenix LiveView, opencode, basedpyright…"
-          rows={2}
+          onBlur={() => void savePrompt()}
+          placeholder={t("speechPromptPlaceholder")}
+          rows={3}
           className="w-full resize-y rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60"
         />
-        <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechHotwordsHint")}</p>
+        <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{t("speechPromptHint")}</p>
+        {prompt.length > 300 && (
+          <p id="speech-prompt-overflow" className="mt-1 text-[12px] text-amber-500">
+            {t("speechPromptTail")}
+          </p>
+        )}
         <p className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-fg-muted/70">
-          <span id="speech-hotwords-status">
-            {hotwordsState === "saved" ? "✓" : hotwordsState === "error" ? "✗" : ""}
+          <span id="speech-prompt-status">
+            {promptState === "saved" ? "✓" : promptState === "error" ? "✗" : ""}
           </span>
-          <span className="truncate" title={hotwordsPath}>
-            {hotwordsPath}
+          <span>{prompt.length}</span>
+          <span className="truncate" title={promptPath}>
+            {promptPath}
           </span>
         </p>
       </div>

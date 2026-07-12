@@ -208,11 +208,13 @@ basedpyright、rust-analyzer、elixir-ls、typescript-language-server、gopls…
     "clients/desktop": {},                              // {} = 在该子根自动探测
   },
 
-  // 语音输入：热词会作为 Whisper 的 prompt 发送，让转写按你的
-  // 术语拼写输出。按项目生效——设置面板直接读写离会话目录最近的
+  // 语音输入：Whisper 的转写提示（prompt）。模型会把它当作"前一段
+  // 转写文本"，模仿其中的拼写和标点——所以要用你说话的语言写一两句
+  // 自然句子、把术语嵌进去，而不是裸词表。只有末尾约 224 个 token 生效。
+  // 按项目生效——设置面板「语音」tab 直接读写离会话目录最近的
   // dala.jsonc（没有则在该目录创建）。
   "speech": {
-    "hotwords": "dala, zellij, Phoenix LiveView, basedpyright",
+    "prompt": "这段话讨论 dala、zellij、Phoenix LiveView 和 basedpyright，使用简体中文和标准标点。",
   },
 }
 ```

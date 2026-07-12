@@ -1,7 +1,9 @@
 defmodule Dala.ProjectConfig do
   @moduledoc """
   Read and patch the per-project `dala.jsonc` for non-LSP settings —
-  currently the speech `"hotwords"` (the Whisper vocabulary prompt).
+  currently the speech `"prompt"` — the Whisper transcription prompt, fed
+  to the decoder as if it were the preceding transcript, so the model
+  mimics its spelling, punctuation and script style.
 
   Writes are TEXT-level patches, not decode/re-encode, so hand-written
   comments and formatting in an existing config survive. The patched body
@@ -11,40 +13,41 @@ defmodule Dala.ProjectConfig do
 
   alias Dala.Lsp.Discovery
 
-  @hotwords_re ~r/("hotwords"\s*:\s*)"(?:[^"\\]|\\.)*"/
+  @prompt_re ~r/("prompt"\s*:\s*)"(?:[^"\\]|\\.)*"/
   @speech_open_re ~r/("speech"\s*:\s*\{)/
 
   @doc """
-  The effective hotwords for a directory: the nearest `dala.jsonc` walking
-  up (stopping at the git toplevel or `$HOME`) wins. Returns the file that
-  holds — or would hold — them, so the UI can show where edits land.
+  The effective transcription prompt for a directory: the nearest
+  `dala.jsonc` walking up (stopping at the git toplevel or `$HOME`) wins.
+  Returns the file that holds — or would hold — it, so the UI can show
+  where edits land.
   """
-  def speech_hotwords(dir) do
+  def speech_prompt(dir) do
     case config_file(dir) do
       nil ->
-        %{path: Path.join(dir, "dala.jsonc"), exists: false, hotwords: ""}
+        %{path: Path.join(dir, "dala.jsonc"), exists: false, prompt: ""}
 
       path ->
-        hotwords =
+        prompt =
           with {:ok, body} <- File.read(path),
-               {:ok, %{"speech" => %{"hotwords" => words}}} when is_binary(words) <-
+               {:ok, %{"speech" => %{"prompt" => text}}} when is_binary(text) <-
                  Jason.decode(Discovery.strip_jsonc(body)) do
-            words
+            text
           else
             _ -> ""
           end
 
-        %{path: path, exists: true, hotwords: hotwords}
+        %{path: path, exists: true, prompt: prompt}
     end
   end
 
   @doc """
-  Write hotwords into the nearest `dala.jsonc`, or create one in `dir`
-  when none exists on the way up.
+  Write the transcription prompt into the nearest `dala.jsonc`, or create
+  one in `dir` when none exists on the way up.
   """
-  def put_speech_hotwords(dir, hotwords) when is_binary(hotwords) do
+  def put_speech_prompt(dir, prompt) when is_binary(prompt) do
     path = config_file(dir) || Path.join(dir, "dala.jsonc")
-    encoded = Jason.encode!(hotwords)
+    encoded = Jason.encode!(prompt)
 
     body =
       case File.read(path) do
@@ -66,24 +69,24 @@ defmodule Dala.ProjectConfig do
 
   defp patch(body, encoded) do
     cond do
-      # A speech block with a hotwords key: swap the value in place. Scope
-      # the match to AFTER the "speech" key so an unrelated hotwords string
+      # A speech block with a prompt key: swap the value in place. Scope
+      # the match to AFTER the "speech" key so an unrelated prompt string
       # earlier in the file can't be clobbered.
-      speech_hotwords_present?(body) ->
+      speech_prompt_present?(body) ->
         [before, rest] = String.split(body, "\"speech\"", parts: 2)
 
         patched =
-          Regex.replace(@hotwords_re, rest, fn _, pre -> pre <> encoded end, global: false)
+          Regex.replace(@prompt_re, rest, fn _, pre -> pre <> encoded end, global: false)
 
         before <> "\"speech\"" <> patched
 
-      # A speech block without hotwords: prepend the key right after its
+      # A speech block without a prompt: prepend the key right after its
       # opening brace (a trailing comma before `}` is fine — we parse JSONC).
       Regex.match?(@speech_open_re, body) ->
         Regex.replace(
           @speech_open_re,
           body,
-          fn _, pre -> pre <> "\n    \"hotwords\": " <> encoded <> "," end,
+          fn _, pre -> pre <> "\n    \"prompt\": " <> encoded <> "," end,
           global: false
         )
 
@@ -92,7 +95,7 @@ defmodule Dala.ProjectConfig do
         Regex.replace(
           ~r/\{/,
           body,
-          fn _ -> "{\n  \"speech\": {\n    \"hotwords\": " <> encoded <> "\n  }," end,
+          fn _ -> "{\n  \"speech\": {\n    \"prompt\": " <> encoded <> "\n  }," end,
           global: false
         )
 
@@ -102,9 +105,9 @@ defmodule Dala.ProjectConfig do
     end
   end
 
-  defp speech_hotwords_present?(body) do
+  defp speech_prompt_present?(body) do
     case String.split(body, "\"speech\"", parts: 2) do
-      [_before, rest] -> Regex.match?(@hotwords_re, rest)
+      [_before, rest] -> Regex.match?(@prompt_re, rest)
       _ -> false
     end
   end
@@ -114,9 +117,11 @@ defmodule Dala.ProjectConfig do
     {
       // dala project config — see the README's dala.jsonc section
       "speech": {
-        // Whisper hotwords: comma-separated jargon (library names, project
-        // terms) that biases voice transcription toward these spellings
-        "hotwords": #{encoded}
+        // Whisper transcription prompt: written as if it were the PRECEDING
+        // transcript — a natural sentence (same language you speak) with your
+        // jargon embedded. The model mimics its spelling and punctuation.
+        // Only the last ~224 tokens are used.
+        "prompt": #{encoded}
       }
     }
     """
