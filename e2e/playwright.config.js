@@ -1,7 +1,9 @@
 // Playwright config for dala's BDD e2e suite.
 //
-// - Uses the SYSTEM chromium (/usr/bin/chromium) — never `npx playwright
-//   install`; downloaded browsers are not wired up in this environment.
+// - Uses the SYSTEM chromium (/usr/bin/chromium) by default — never `npx
+//   playwright install` locally; downloaded browsers are not wired up in
+//   this environment. CI overrides via CHROMIUM_BIN (playwright's own
+//   chromium there). An empty CHROMIUM_BIN means "playwright default".
 // - Single worker: all specs talk to ONE dev server on :4499 and sessions
 //   are global server state, so parallel workers would race each other.
 // - The fake-media flags make getUserMedia yield a synthetic mic without a
@@ -20,7 +22,9 @@ module.exports = defineConfig({
     headless: true,
     permissions: ["microphone"],
     launchOptions: {
-      executablePath: "/usr/bin/chromium",
+      ...(process.env.CHROMIUM_BIN === ""
+        ? {}
+        : { executablePath: process.env.CHROMIUM_BIN || "/usr/bin/chromium" }),
       args: [
         "--no-sandbox",
         "--disable-gpu",

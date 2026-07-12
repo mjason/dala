@@ -1,0 +1,119 @@
+# 测试 CI：四个技术栈的单元套件 + BDD e2e，全部带分层覆盖率门槛。
+#
+# 门槛定义（不在这里，在各自配置里，改门槛不用碰 CI）：
+# - Elixir：mix.exs test_coverage — 业务逻辑 ≥75%（副作用/框架模块已排除）
+# - 前端：assets/vitest.config.ts thresholds — 纯逻辑模块 ≥90% 行覆盖，
+#   集成组件由 e2e 场景兜底，全局仅设防删测试的地板
+# - 客户端/Rust：无覆盖率工具，以测试全绿为门槛
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  elixir:
+    name: Elixir（覆盖率门槛 75%）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            native/dala_holder/target
+            native/dala_git/target
+          key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test --cover
+
+  frontend:
+    name: 前端（vitest 分层门槛 + typecheck）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+      - run: npm ci
+        working-directory: assets
+      - run: npm run typecheck
+        working-directory: assets
+      - run: npx vitest run --coverage
+        working-directory: assets
+
+  client:
+    name: Electron 客户端（node:test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # 客户端测试零 npm 依赖（node:test + 只读 keybindings.ts），无需 install
+      - run: npm test
+        working-directory: clients/desktop
+
+  rust:
+    name: Rust holder（cargo test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: native/dala_holder/target
+          key: rust-holder-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock') }}
+      - run: cargo test
+        working-directory: native/dala_holder
+
+  e2e:
+    name: BDD e2e（Playwright 8 场景）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            native/dala_holder/target
+            native/dala_git/target
+          key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: mix setup
+      - run: npm ci
+        working-directory: e2e
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      # CHROMIUM_BIN="" → 用 playwright 自带 chromium（本地默认 /usr/bin/chromium）
+      - run: CHROMIUM_BIN="" npx playwright test
+        working-directory: e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-traces
+          path: e2e/test-results/
+          retention-days: 7

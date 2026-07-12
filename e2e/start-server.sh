@@ -31,6 +31,9 @@ export XDG_RUNTIME_DIR="$WORK/runtime"
 export DALA_DATA_DIR="$WORK/data"
 mkdir -p "$XDG_RUNTIME_DIR" "$DALA_DATA_DIR"
 
+# CI has no developer database — create one (schema + seeds) on first run.
+[ -f dala_dev.db ] || mix ecto.setup
+
 export DALA_E2E_DB="$WORK/dala_e2e.db"
 sqlite3 dala_dev.db ".backup '$DALA_E2E_DB'"
 sqlite3 "$DALA_E2E_DB" "DELETE FROM terminal_sessions;"

@@ -13,6 +13,7 @@ defmodule Dala.MixProject do
       compilers: [:phoenix_live_view] ++ Mix.compilers() ++ [:dala_holder],
       listeners: [Phoenix.CodeReloader],
       consolidate_protocols: Mix.env() != :dev,
+      test_coverage: test_coverage(),
       usage_rules: usage_rules()
     ]
   end
@@ -97,6 +98,36 @@ defmodule Dala.MixProject do
   #     $ mix setup
   #
   # See the documentation for `Mix` for more info on aliases.
+  # Layered coverage gate: pure side-effect/framework modules are excluded
+  # (network, boot glue, generated components, OAuth callbacks) so the
+  # threshold measures BUSINESS LOGIC. Testable cores extracted from the
+  # ignored modules (e.g. Dala.Updater.Release) stay counted.
+  defp test_coverage do
+    [
+      summary: [threshold: 75],
+      ignore_modules: [
+        Dala.Application,
+        Dala.Release,
+        Dala.Accounts.Seeder,
+        Dala.Mailer,
+        Dala.Secrets,
+        Dala.Updater,
+        Dala.Terminal.Boot,
+        DalaWeb.Telemetry,
+        DalaWeb.CoreComponents,
+        DalaWeb.Layouts,
+        DalaWeb.PageHTML,
+        DalaWeb.ErrorJSON,
+        DalaWeb.Gettext,
+        DalaWeb.AuthController,
+        DalaWeb.AuthOverrides,
+        DalaWeb.LiveUserAuth,
+        Mix.Tasks.Compile.DalaHolder,
+        ~r/^Inspect\./
+      ]
+    ]
+  end
+
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
