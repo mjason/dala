@@ -86,6 +86,5 @@ defmodule DalaWeb.FileController do
     end
   end
 
-  defp expand("~" <> rest), do: Path.expand((System.user_home() || "/") <> rest)
-  defp expand(path), do: Path.expand(path)
+  defp expand(path), do: Dala.Paths.expand_user(path)
 end

@@ -1,4 +1,10 @@
 defmodule Dala.Terminal do
+  @moduledoc """
+  The terminal domain: sessions and the session-adjacent resources the web
+  client talks to over typed RPC — file system access, speech transcription,
+  the git panel and the self-updater.
+  """
+
   use Ash.Domain, otp_app: :dala, extensions: [AshTypescript.Rpc]
 
   typescript_rpc do

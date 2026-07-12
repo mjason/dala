@@ -34,14 +34,9 @@ defmodule DalaWeb.LspSocket do
             command: Enum.join(command, " ")
           })
 
-        port =
-          Port.open({:spawn_executable, "/bin/sh"}, [
-            :binary,
-            :exit_status,
-            :hide,
-            args: ["-c", shell_command(command, Debug.stderr_path(debug_id))],
-            cd: root
-          ])
+        # exec keeps the server as the port's os_pid; stderr goes to the
+        # capture file without touching the protocol stream on stdout.
+        port = Dala.ShellPort.open(command, Debug.stderr_path(debug_id), [:hide, cd: root])
 
         Logger.info("lsp: #{name} started for #{root} (#{Path.basename(path)})")
         {:ok, %{port: port, buffer: "", name: name, debug_id: debug_id}}
@@ -84,32 +79,12 @@ defmodule DalaWeb.LspSocket do
   def handle_info(_message, state), do: {:ok, state}
 
   @impl true
-  def terminate(_reason, %{port: port, debug_id: debug_id} = state) when is_port(port) do
+  def terminate(_reason, %{port: port, debug_id: debug_id}) when is_port(port) do
     Debug.exited(debug_id, nil)
-
-    # Port.close only closes stdio; the wrapper shell exec'd the server, so
-    # its os_pid IS the server — ask it to die too.
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", ["-TERM", Integer.to_string(os_pid)])
-      _ -> :ok
-    end
-
-    Port.close(port)
-    _ = state
-    :ok
+    Dala.ShellPort.close(port)
   catch
     _, _ -> :ok
   end
 
   def terminate(_reason, _state), do: :ok
-
-  # `exec cmd args… 2> stderr_file` — exec keeps the server as the port's
-  # os_pid; stderr goes to the capture file without touching the protocol
-  # stream on stdout.
-  defp shell_command(command, stderr_path) do
-    Enum.map_join(["exec" | command], " ", &shell_escape/1) <>
-      " 2> " <> shell_escape(stderr_path)
-  end
-
-  defp shell_escape(word), do: "'" <> String.replace(word, "'", "'\\''") <> "'"
 end

@@ -110,6 +110,6 @@ defmodule Dala.ProjectConfigTest do
     assert {:ok, path} = ProjectConfig.put_speech_prompt(dir, "words")
     assert {:ok, ^path} = ProjectConfig.put_speech_prompt(dir, "")
     assert %{prompt: ""} = ProjectConfig.speech_prompt(dir)
-    assert {:ok, %{}} = Jason.decode(Dala.Lsp.Discovery.strip_jsonc(File.read!(path)))
+    assert {:ok, %{}} = Jason.decode(Dala.Jsonc.strip(File.read!(path)))
   end
 end

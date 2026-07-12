@@ -127,17 +127,10 @@ defmodule Dala.Terminal.AgentCommands do
     |> Enum.sort_by(& &1.name)
   end
 
-  defp home(rel), do: Path.join(System.user_home() || "/", rel)
+  defp home(rel), do: Dala.Paths.home(rel)
 
   # Custom commands live where the project starts, not necessarily the cwd.
-  defp project_root(cwd) do
-    case System.cmd("git", ["-C", cwd, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
-      {out, 0} -> String.trim(out)
-      _ -> cwd
-    end
-  rescue
-    _ -> cwd
-  end
+  defp project_root(cwd), do: Dala.Paths.git_toplevel(cwd) || cwd
 
   # commands/a.md → /a; commands/git/pr.md → /git:pr (Claude's namespacing).
   defp command_files(dir) do

@@ -31,6 +31,8 @@ defmodule DalaWeb.TerminalChannel do
   @low_water 32 * 1024
   # Acks lost / client wedged: force the repaint rather than staying dark.
   @flow_deadline_ms 4_000
+  # Client joined but never attached with its viewport: replay anyway.
+  @repaint_timeout_ms 4_000
 
   # Keep pushed frames comfortably small; base64 inflates by 4/3.
   @replay_batch_bytes 192 * 1024
@@ -113,7 +115,7 @@ defmodule DalaWeb.TerminalChannel do
       # The repaint is deferred until the client's `attach` reports its true
       # viewport — sizing first lets the emulator reflow, so soft wraps match
       # the client's width. The timer covers clients that never attach.
-      Process.send_after(self(), :repaint_timeout, 4_000)
+      Process.send_after(self(), :repaint_timeout, @repaint_timeout_ms)
       {:noreply, assign(socket, :replayed, false)}
     else
       # Not running: serve the final screen the holder left behind.

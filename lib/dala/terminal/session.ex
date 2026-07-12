@@ -1,4 +1,12 @@
 defmodule Dala.Terminal.Session do
+  @moduledoc """
+  A terminal session: one shell (running in an out-of-process PTY holder,
+  driven by `Dala.Terminal.Server`) plus its metadata — name, cwd, status,
+  scrollback limit. Lifecycle actions publish typed PubSub events consumed
+  by the sessions lobby and the per-session terminal channel; the declared
+  `notify_*` actions exist only so those broadcast payloads are typed.
+  """
+
   use Ash.Resource,
     otp_app: :dala,
     domain: Dala.Terminal,
@@ -170,6 +178,19 @@ defmodule Dala.Terminal.Session do
       require_atomic? false
     end
   end
+
+  @doc """
+  Emulator history lines for a stored `scrollback_limit`. Values above 100k
+  are legacy byte limits from the retired DETS cache (~120 bytes/line
+  converts them); results clamp to 1_000..50_000, defaulting to 10_000.
+  """
+  def history_lines(limit) when is_integer(limit) and limit > 100_000,
+    do: (limit / 120) |> round() |> max(1_000) |> min(50_000)
+
+  def history_lines(limit) when is_integer(limit) and limit > 0,
+    do: limit |> max(1_000) |> min(50_000)
+
+  def history_lines(_other), do: 10_000
 
   pub_sub do
     module DalaWeb.Endpoint

@@ -93,14 +93,14 @@ defmodule DalaWeb.FileWatchSocket do
 
   @impl true
   def terminate(_reason, state) do
-    close_port(state.port)
+    Dala.ShellPort.close(state.port)
     :ok
   end
 
   defp set_dirs(state, dirs) do
     case state.backend do
       :inotify ->
-        close_port(state.port)
+        Dala.ShellPort.close(state.port)
         port = if dirs == [], do: nil, else: open_inotify(dirs)
         %{state | dirs: Map.new(dirs, &{&1, nil}), port: port}
 
@@ -125,28 +125,9 @@ defmodule DalaWeb.FileWatchSocket do
 
     args = ["--monitor", "--quiet", "--format", "%w"] ++ events ++ dirs
 
-    # Through a shell so stderr goes to /dev/null: a port child inherits the
-    # beam's stderr, and a lingering inotifywait holding that fd keeps pipes
-    # (e.g. `mix test | tail`) open forever.
-    command =
-      Enum.map_join(["exec", System.find_executable("inotifywait") | args], " ", fn word ->
-        "'" <> String.replace(word, "'", "'\\''") <> "'"
-      end) <> " 2> /dev/null"
-
-    Port.open({:spawn_executable, "/bin/sh"}, [:binary, :exit_status, args: ["-c", command]])
-  end
-
-  defp close_port(nil), do: :ok
-
-  defp close_port(port) do
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", ["-TERM", Integer.to_string(os_pid)])
-      _ -> :ok
-    end
-
-    Port.close(port)
-  catch
-    _, _ -> :ok
+    # Through the shell wrapper so a lingering inotifywait can't hold the
+    # beam's stderr fd open (see Dala.ShellPort).
+    Dala.ShellPort.open([System.find_executable("inotifywait") | args], "/dev/null")
   end
 
   defp schedule_flush(%{flush: nil} = state),

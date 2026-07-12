@@ -48,7 +48,7 @@ defmodule Dala.Terminal.GitOps do
           byte_size(content) > @file_at_max_bytes ->
             {:ok,
              %{
-               content: truncate_utf8(content, @file_at_max_bytes),
+               content: Dala.Utf8.truncate(content, @file_at_max_bytes),
                binary: false,
                truncated: true,
                missing: false
@@ -64,16 +64,6 @@ defmodule Dala.Terminal.GitOps do
   end
 
   def file_at(path, rev, file), do: Dala.Git.file_at(expand(path), rev, file)
-
-  # Cut at a UTF-8 boundary so the truncated text still encodes as JSON.
-  defp truncate_utf8(content, max) do
-    slice = binary_part(content, 0, max)
-
-    Enum.reduce_while(0..3, slice, fn offset, acc ->
-      candidate = binary_part(slice, 0, byte_size(slice) - offset)
-      if String.valid?(candidate), do: {:halt, candidate}, else: {:cont, acc}
-    end)
-  end
 
   # The worktree read needs the repo root: file paths in diffs are
   # root-relative, while `path` may point anywhere inside the repo.
@@ -164,6 +154,5 @@ defmodule Dala.Terminal.GitOps do
     if hash =~ ~r/^[0-9a-fA-F]{4,64}$/, do: :ok, else: {:error, "invalid commit hash"}
   end
 
-  defp expand("~" <> rest), do: Path.expand((System.user_home() || "/") <> rest)
-  defp expand(path), do: Path.expand(path)
+  defp expand(path), do: Dala.Paths.expand_user(path)
 end

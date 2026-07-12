@@ -11,8 +11,6 @@ defmodule Dala.ProjectConfig do
   is refused.
   """
 
-  alias Dala.Lsp.Discovery
-
   @prompt_re ~r/("prompt"\s*:\s*)"(?:[^"\\]|\\.)*"/
   @speech_open_re ~r/("speech"\s*:\s*\{)/
 
@@ -31,7 +29,7 @@ defmodule Dala.ProjectConfig do
         prompt =
           with {:ok, body} <- File.read(path),
                {:ok, %{"speech" => %{"prompt" => text}}} when is_binary(text) <-
-                 Jason.decode(Discovery.strip_jsonc(body)) do
+                 Jason.decode(Dala.Jsonc.strip(body)) do
             text
           else
             _ -> ""
@@ -55,7 +53,7 @@ defmodule Dala.ProjectConfig do
         {:error, _} -> new_config(encoded)
       end
 
-    case Jason.decode(Discovery.strip_jsonc(body)) do
+    case Jason.decode(Dala.Jsonc.strip(body)) do
       {:ok, %{}} ->
         case File.write(path, body) do
           :ok -> {:ok, path}
@@ -128,18 +126,9 @@ defmodule Dala.ProjectConfig do
   end
 
   defp config_file(dir) do
-    top = Discovery.git_toplevel(dir)
-    home = System.user_home()
-
-    Stream.iterate(dir, &Path.dirname/1)
-    |> Enum.reduce_while(nil, fn current, _acc ->
+    Dala.Paths.walk_up(dir, fn current ->
       path = Path.join(current, "dala.jsonc")
-
-      cond do
-        File.regular?(path) -> {:halt, path}
-        current == top or current == home or Path.dirname(current) == current -> {:halt, nil}
-        true -> {:cont, nil}
-      end
+      if File.regular?(path), do: path
     end)
   end
 end

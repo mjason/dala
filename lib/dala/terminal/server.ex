@@ -20,6 +20,9 @@ defmodule Dala.Terminal.Server do
 
   @cwd_poll_ms 2_000
   @force_stop_ms 5_000
+  # Output micro-batching window: chunks landing within it after the first
+  # are coalesced into one broadcast (see buffer_output/2).
+  @out_batch_ms 5
 
   # Host-terminal identity leaked from the parent process would make shell
   # integrations and TUIs (opencode, …) negotiate protocols the web terminal
@@ -189,7 +192,7 @@ defmodule Dala.Terminal.Server do
       env_remove: @env_remove,
       rows: 24,
       cols: 80,
-      history_lines: history_lines(session.scrollback_limit)
+      history_lines: Dala.Terminal.Session.history_lines(session.scrollback_limit)
     ]
 
     case Holder.attach_or_spawn(id, opts) do
@@ -258,7 +261,8 @@ defmodule Dala.Terminal.Server do
           end
       end
 
-    {:reply, {:ok, %{app: classify_app(cmdline), cmdline: cmdline || ""}}, state}
+    {:reply,
+     {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}}, state}
   end
 
   @impl true
@@ -529,7 +533,7 @@ defmodule Dala.Terminal.Server do
   # notifications become plain "notify"/"stop" events. Broadcast on the
   # sessions lobby so the client can notify for background sessions too.
   defp broadcast_agent_event(state, payload) do
-    case parse_agent_event(payload) do
+    case Dala.Terminal.AgentEvent.parse_agent_event(payload) do
       nil ->
         Logger.debug(
           "agent event unparsed (#{state.id}): #{inspect(payload, printable_limit: 200)}"
@@ -541,82 +545,11 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  defp parse_agent_event(payload) do
-    case :binary.split(payload, <<0x1F>>) do
-      ["warp://cli-agent", body] ->
-        case Jason.decode(body) do
-          {:ok, %{"event" => event} = raw} ->
-            %{
-              agent: raw["agent"] || "unknown",
-              event: event,
-              project: raw["project"],
-              summary: raw["summary"],
-              query: raw["query"],
-              response: raw["response"],
-              toolName: raw["tool_name"],
-              toolInput: tool_preview(raw["tool_input"])
-            }
-
-          _ ->
-            nil
-        end
-
-      ["osc9", body] ->
-        %{
-          agent: "unknown",
-          event: "notify",
-          summary: body,
-          project: nil,
-          query: nil,
-          response: nil,
-          toolName: nil,
-          toolInput: nil
-        }
-
-      [title, body] ->
-        %{
-          agent: "unknown",
-          event: "notify",
-          summary: "#{title}: #{body}",
-          project: nil,
-          query: nil,
-          response: nil,
-          toolName: nil,
-          toolInput: nil
-        }
-
-      _ ->
-        nil
-    end
-  end
-
-  defp tool_preview(%{"command" => command}) when is_binary(command), do: command
-  defp tool_preview(%{"file_path" => path}) when is_binary(path), do: path
-  defp tool_preview(%{"filePath" => path}) when is_binary(path), do: path
-  defp tool_preview(_), do: nil
-
-  # Warp's rich-input strategies are per agent; the client picks one based
-  # on this classification.
-  defp classify_app(nil), do: "shell"
-
-  defp classify_app(cmdline) do
-    down = String.downcase(cmdline)
-
-    cond do
-      down =~ "claude" -> "claude"
-      down =~ "opencode" -> "opencode"
-      down =~ "codex" -> "codex"
-      down =~ "gemini" -> "gemini"
-      down =~ "copilot" -> "copilot"
-      true -> "unknown"
-    end
-  end
-
   defp buffer_output(state, data) do
     if state.out_timer do
       %{state | out_buf: [data | state.out_buf]}
     else
-      timer = Process.send_after(self(), :flush_output, 5)
+      timer = Process.send_after(self(), :flush_output, @out_batch_ms)
       %{emit(state, data) | out_timer: timer}
     end
   end
@@ -643,14 +576,4 @@ defmodule Dala.Terminal.Server do
 
     %{state | seq: seq}
   end
-
-  # The limit is emulator history lines; values above 100k are legacy byte
-  # limits from the retired DETS cache (~120 bytes/line converts them).
-  defp history_lines(limit) when is_integer(limit) and limit > 100_000,
-    do: (limit / 120) |> round() |> max(1_000) |> min(50_000)
-
-  defp history_lines(limit) when is_integer(limit) and limit > 0,
-    do: limit |> max(1_000) |> min(50_000)
-
-  defp history_lines(_other), do: 10_000
 end

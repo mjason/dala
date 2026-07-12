@@ -11,7 +11,7 @@ defmodule Dala.Updater do
   """
   require Logger
 
-  @asset_suffix "linux-x86_64.tar.gz"
+  alias Dala.Updater.Release
 
   def repo, do: System.get_env("DALA_UPDATE_REPO", "mjason/dala")
 
@@ -38,7 +38,7 @@ defmodule Dala.Updater do
          current: current_version(),
          latest: latest,
          tag: tag,
-         update_available: enabled?() and newer?(latest, current_version()),
+         update_available: enabled?() and Release.newer?(latest, current_version()),
          notes_url: release["html_url"]
        }}
     end
@@ -50,7 +50,7 @@ defmodule Dala.Updater do
          {:ok, release} <- fetch_latest(),
          tag = release["tag_name"],
          :ok <- ensure_newer(tag),
-         {:ok, url} <- asset_url(release),
+         {:ok, url} <- Release.asset_url(release),
          :ok <- install_version(tag, url),
          :ok <- switch_current(tag) do
       Logger.info("updater: switched to #{tag}, requesting restart")
@@ -64,20 +64,14 @@ defmodule Dala.Updater do
   end
 
   defp ensure_newer(tag) do
-    if newer?(String.trim_leading(tag || "", "v"), current_version()),
+    if Release.newer?(String.trim_leading(tag || "", "v"), current_version()),
       do: :ok,
       else: {:error, "already up to date (#{current_version()})"}
   end
 
-  defp newer?(latest, current) do
-    match?({:ok, _}, Version.parse(latest)) and
-      match?({:ok, _}, Version.parse(current)) and
-      Version.compare(latest, current) == :gt
-  end
-
-  # Server and desktop-client releases share the repo but use distinct tag
-  # prefixes (v* vs client-v*), so /releases/latest may point at a client
-  # build. List recent releases and pick the newest server one instead.
+  # /releases/latest may point at a desktop-client build (see
+  # `Dala.Updater.Release.server_release?/1`): list recent releases and pick
+  # the newest server one instead.
   defp fetch_latest do
     url = "https://api.github.com/repos/#{repo()}/releases?per_page=15"
 
@@ -87,10 +81,7 @@ defmodule Dala.Updater do
          ) do
       {:ok, %{status: 200, body: body}} when is_list(body) ->
         body
-        |> Enum.find(fn release ->
-          is_binary(release["tag_name"]) and release["tag_name"] =~ ~r/^v\d/ and
-            release["draft"] != true and release["prerelease"] != true
-        end)
+        |> Enum.find(&Release.server_release?/1)
         |> case do
           nil -> {:error, "no server releases published yet"}
           release -> {:ok, release}
@@ -106,15 +97,6 @@ defmodule Dala.Updater do
         {:error, "could not reach GitHub: #{Exception.message(reason)}"}
     end
   end
-
-  defp asset_url(%{"assets" => assets, "tag_name" => tag}) when is_list(assets) do
-    case Enum.find(assets, &String.ends_with?(&1["name"] || "", @asset_suffix)) do
-      %{"browser_download_url" => url} -> {:ok, url}
-      _ -> {:error, "release #{tag} has no #{@asset_suffix} asset"}
-    end
-  end
-
-  defp asset_url(_), do: {:error, "malformed release payload"}
 
   defp install_version(tag, url) do
     dest = Path.join([release_root(), "versions", tag])

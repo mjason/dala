@@ -47,7 +47,7 @@ defmodule Dala.Lsp.Debug do
       preview =
         message
         |> binary_part(0, min(byte_size(message), @preview_bytes))
-        |> scrub_utf8()
+        |> Dala.Utf8.scrub()
 
       recent =
         [%{dir: direction, at: System.system_time(:millisecond), preview: preview} | entry.recent]
@@ -159,16 +159,6 @@ defmodule Dala.Lsp.Debug do
     end
   end
 
-  # Byte-boundary truncation (and mid-file tail reads) can split UTF-8
-  # characters; JSON encoding requires valid strings.
-  defp scrub_utf8(binary) do
-    if String.valid?(binary) do
-      binary
-    else
-      binary |> String.chunk(:valid) |> Enum.filter(&String.valid?/1) |> Enum.join()
-    end
-  end
-
   defp stderr_tail(entry) do
     path = stderr_path(entry.id)
 
@@ -179,7 +169,7 @@ defmodule Dala.Lsp.Debug do
         case File.open(path, [:read], fn file ->
                :file.pread(file, offset, size - offset)
              end) do
-          {:ok, {:ok, data}} -> scrub_utf8(data)
+          {:ok, {:ok, data}} -> Dala.Utf8.scrub(data)
           _ -> nil
         end
 

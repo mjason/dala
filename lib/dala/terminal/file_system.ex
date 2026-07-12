@@ -386,8 +386,7 @@ defmodule Dala.Terminal.FileSystem do
     end)
   end
 
-  defp expand("~" <> rest), do: Path.expand((System.user_home() || "/") <> rest)
-  defp expand(path), do: Path.expand(path)
+  defp expand(path), do: Dala.Paths.expand_user(path)
 
   defp entry(dir, name) do
     full = Path.join(dir, name)
@@ -426,22 +425,15 @@ defmodule Dala.Terminal.FileSystem do
 
   # A multi-byte UTF-8 character can be cut at the truncation boundary, so
   # trimming up to 3 trailing bytes may recover a valid text prefix. Anything
-  # still invalid after that is not UTF-8 text.
+  # still invalid after that (or containing NUL) is not UTF-8 text.
   defp to_text(data) do
     if String.contains?(data, <<0>>) do
       :binary
     else
-      Enum.find_value(0..3, :binary, fn trim ->
-        len = byte_size(data) - trim
-
-        with true <- len >= 0,
-             prefix = binary_part(data, 0, len),
-             true <- String.valid?(prefix) do
-          {:ok, prefix}
-        else
-          _ -> nil
-        end
-      end)
+      case Dala.Utf8.trim_partial_suffix(data) do
+        {:ok, prefix} -> {:ok, prefix}
+        :error -> :binary
+      end
     end
   end
 end

@@ -242,4 +242,32 @@ defmodule Dala.Terminal.SessionTest do
     refute File.exists?(Holder.exit_path(to_string(session.id)))
     assert {:error, _not_found} = Dala.Terminal.get_session(session.id)
   end
+
+  describe "history_lines/1" do
+    test "table: line limits, legacy byte limits and fallbacks" do
+      cases = [
+        # {stored scrollback_limit, emulator history lines}
+        # plain line limits clamp to 1_000..50_000
+        {5_000, 5_000},
+        {100_000, 50_000},
+        {1_000, 1_000},
+        {500, 1_000},
+        # legacy byte limits (> 100k) convert at ~120 bytes/line, then clamp
+        {120_000, 1_000},
+        {300_000, 2_500},
+        {12_000_000, 50_000},
+        {268_435_456, 50_000},
+        # everything else falls back to the default
+        {0, 10_000},
+        {-1, 10_000},
+        {nil, 10_000},
+        {"junk", 10_000}
+      ]
+
+      for {limit, expected} <- cases do
+        assert Dala.Terminal.Session.history_lines(limit) == expected,
+               "history_lines(#{inspect(limit)}) expected #{expected}"
+      end
+    end
+  end
 end

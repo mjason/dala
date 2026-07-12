@@ -28,6 +28,9 @@ defmodule Dala.Lsp.Discovery do
   Mason) besides PATH — under systemd the service PATH is minimal, and these
   must be RUNTIME lookups: a release is compiled on CI where $HOME is not the
   user's.
+
+  `.dala/lsp.json` (whole file = the language map) is the legacy config
+  location and is still honored, though `dala.jsonc` wins when both exist.
   """
 
   @doc "Servers for `path` under `root`: `[%{id, name, command}]` in spawn order."
@@ -51,7 +54,7 @@ defmodule Dala.Lsp.Discovery do
 
     case nearest_config_dir(dir) do
       nil ->
-        root = git_toplevel(dir) || dir
+        root = Dala.Paths.git_toplevel(dir) || dir
         Map.put(probe(root, path), :root, root)
 
       config_dir ->
@@ -113,10 +116,6 @@ defmodule Dala.Lsp.Discovery do
     }
   end
 
-  defp describe({command, index}) when is_list(command) do
-    describe({%{command: command}, index})
-  end
-
   # ".venv/bin/basedpyright-langserver --stdio" → "basedpyright"; "dm lsp" → "dm lsp"
   defp server_name([bin | args]) do
     base = Path.basename(bin)
@@ -131,32 +130,11 @@ defmodule Dala.Lsp.Discovery do
   # Walk up from the file's directory to the nearest dala.jsonc /
   # .dala/lsp.json, stopping at the git toplevel (inclusive) or $HOME.
   defp nearest_config_dir(dir) do
-    top = git_toplevel(dir)
-    home = System.user_home()
-
-    Stream.iterate(dir, &Path.dirname/1)
-    |> Enum.reduce_while(nil, fn current, _acc ->
-      cond do
-        File.regular?(Path.join(current, "dala.jsonc")) or
-            File.regular?(Path.join(current, ".dala/lsp.json")) ->
-          {:halt, current}
-
-        current == top or current == home or Path.dirname(current) == current ->
-          {:halt, nil}
-
-        true ->
-          {:cont, nil}
-      end
+    Dala.Paths.walk_up(dir, fn current ->
+      if File.regular?(Path.join(current, "dala.jsonc")) or
+           File.regular?(Path.join(current, ".dala/lsp.json")),
+         do: current
     end)
-  end
-
-  def git_toplevel(dir) do
-    case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
-      {out, 0} -> String.trim(out)
-      _ -> nil
-    end
-  rescue
-    _ -> nil
   end
 
   # The `"projects"` map scopes files to sub-projects: the LONGEST relative
@@ -258,7 +236,7 @@ defmodule Dala.Lsp.Discovery do
   defp read_config(dir) do
     jsonc =
       with {:ok, body} <- File.read(Path.join(dir, "dala.jsonc")),
-           {:ok, %{} = map} <- Jason.decode(strip_jsonc(body)) do
+           {:ok, %{} = map} <- Jason.decode(Dala.Jsonc.strip(body)) do
         map
       else
         _ -> nil
@@ -302,43 +280,6 @@ defmodule Dala.Lsp.Discovery do
 
   defp expand_deep(value, _root), do: value
 
-  # //-comments and /* */-comments outside strings, plus trailing commas —
-  # enough JSONC for a config file without pulling in a parser dependency.
-  def strip_jsonc(body) do
-    body
-    |> scan_jsonc([], :code)
-    |> IO.iodata_to_binary()
-    |> String.replace(~r/,(\s*[}\]])/, "\\1")
-  end
-
-  defp scan_jsonc(<<>>, acc, _state), do: Enum.reverse(acc)
-
-  defp scan_jsonc(<<?\\, ?", rest::binary>>, acc, :string),
-    do: scan_jsonc(rest, ["\\\"" | acc], :string)
-
-  defp scan_jsonc(<<?", rest::binary>>, acc, :string), do: scan_jsonc(rest, [?" | acc], :code)
-
-  defp scan_jsonc(<<c::utf8, rest::binary>>, acc, :string),
-    do: scan_jsonc(rest, [<<c::utf8>> | acc], :string)
-
-  defp scan_jsonc(<<?", rest::binary>>, acc, :code), do: scan_jsonc(rest, [?" | acc], :string)
-  defp scan_jsonc(<<"//", rest::binary>>, acc, :code), do: scan_jsonc(rest, acc, :line_comment)
-  defp scan_jsonc(<<"/*", rest::binary>>, acc, :code), do: scan_jsonc(rest, acc, :block_comment)
-
-  defp scan_jsonc(<<c::utf8, rest::binary>>, acc, :code),
-    do: scan_jsonc(rest, [<<c::utf8>> | acc], :code)
-
-  defp scan_jsonc(<<?\n, rest::binary>>, acc, :line_comment),
-    do: scan_jsonc(rest, [?\n | acc], :code)
-
-  defp scan_jsonc(<<_c::utf8, rest::binary>>, acc, :line_comment),
-    do: scan_jsonc(rest, acc, :line_comment)
-
-  defp scan_jsonc(<<"*/", rest::binary>>, acc, :block_comment), do: scan_jsonc(rest, acc, :code)
-
-  defp scan_jsonc(<<_c::utf8, rest::binary>>, acc, :block_comment),
-    do: scan_jsonc(rest, acc, :block_comment)
-
   # `~` and env vars in configured commands: "$HOME/x", "${HOME}/x",
   # "${root}/tools/lsp", "~/bin/lsp".
   defp expand_vars(word, root) do
@@ -370,7 +311,7 @@ defmodule Dala.Lsp.Discovery do
   end
 
   # Runtime, not compile time: releases are built on CI under a foreign $HOME.
-  defp home(rel), do: Path.join(System.user_home() || "/", rel)
+  defp home(rel), do: Dala.Paths.home(rel)
   defp mason_bin(name), do: home(".local/share/nvim/mason/bin/#{name}")
   defp local_bin(name), do: home(".local/bin/#{name}")
 
