@@ -1,0 +1,11 @@
+{
+  "name": "dala-e2e",
+  "private": true,
+  "description": "BDD-style end-to-end tests for dala (Playwright + system chromium)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.0"
+  }
+}
