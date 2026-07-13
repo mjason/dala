@@ -147,4 +147,106 @@ test.describe("Given 手机上的 dala 用户", () => {
       await desktop.close();
     }
   });
+
+  test("390px 视口下工具栏没有够不着的按钮,溢出操作收进 ⋯ 菜单", async ({ browser }) => {
+    const context = await browser.newContext({ ...phone });
+    const page = await context.newPage();
+    let id;
+    try {
+      await h.gotoApp(page);
+      id = await h.createSession(page);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+
+      // 页面绝不允许横向滚动。
+      const overflowX = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflowX).toBeLessThanOrEqual(0);
+
+      // 每个可见工具栏按钮的右缘都必须落在视口内(隐藏的按钮已收进溢出菜单)。
+      const boxes = await page
+        .locator("header button:visible")
+        .evaluateAll((els) =>
+          els.map((el) => ({ id: el.id, right: el.getBoundingClientRect().right })),
+        );
+      expect(boxes.length).toBeGreaterThan(0);
+      for (const box of boxes) {
+        expect(box.right, `按钮 #${box.id} 超出 390px 视口`).toBeLessThanOrEqual(
+          phone.viewport.width + 1,
+        );
+      }
+
+      // 键盘向操作(Refit / Reset / Detach / 设置)在 ⋯ 菜单里仍可达。
+      await page.locator("#toolbar-overflow-button").tap();
+      await expect(page.locator("#toolbar-overflow")).toBeVisible();
+      await expect(page.locator("#overflow-refit")).toBeVisible();
+      await expect(page.locator("#overflow-settings")).toBeVisible();
+      await page.locator("#overflow-refit").tap();
+      await expect(page.locator("#toolbar-overflow")).toHaveCount(0);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      await context.close();
+    }
+  });
+
+  test("触摸键条在手机上可见;点 Esc 不弄崩终端、不抢焦点", async ({ browser }) => {
+    const context = await browser.newContext({ ...phone });
+    const page = await context.newPage();
+    let id;
+    try {
+      await h.gotoApp(page);
+      id = await h.createSession(page);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await expect(page.locator("#touch-key-bar")).toBeVisible();
+      // 触摸端的 composer 提示条给的是可点按钮,而不是快捷键徽章。
+      await expect(page.locator("#composer-open-touch")).toBeVisible();
+
+      // 等 shell 就绪、终端已拿到焦点(xterm 的隐藏 textarea)。
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaFlow?.acked ?? 0), { timeout: 15_000 })
+        .toBeGreaterThan(0);
+      const terminalFocused = () =>
+        page.evaluate(
+          () =>
+            document.activeElement?.classList?.contains("xterm-helper-textarea") ?? false,
+        );
+      await expect.poll(terminalFocused, { timeout: 10_000 }).toBe(true);
+
+      // 点 Esc:终端不崩、键条还在、焦点仍留在终端(软键盘不会收起)。
+      await page.locator('#touch-key-bar [data-key="esc"]').tap();
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await expect(page.locator("#touch-key-bar")).toBeVisible();
+      expect(await terminalFocused()).toBe(true);
+
+      // Ctrl 粘滞:点一下进入 latched 状态,再点方向键后自动松开。
+      const ctrl = page.locator('#touch-key-bar [data-key="ctrl"]');
+      await ctrl.tap();
+      await expect(ctrl).toHaveAttribute("aria-pressed", "true");
+      await page.locator('#touch-key-bar [data-key="right"]').tap();
+      await expect(ctrl).toHaveAttribute("aria-pressed", "false");
+      expect(await terminalFocused()).toBe(true);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      await context.close();
+    }
+  });
+
+  test("桌面(精确指针)上下文不渲染触摸键条", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page = await context.newPage();
+    let id;
+    try {
+      await h.gotoApp(page);
+      id = await h.createSession(page);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await expect(page.locator("#touch-key-bar")).toHaveCount(0);
+      // 桌面工具栏保持原样:Refit 直接可见,没有 ⋯ 溢出按钮。
+      await expect(page.locator("#terminal-refit-button")).toBeVisible();
+      await expect(page.locator("#toolbar-overflow-button")).toBeHidden();
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      await context.close();
+    }
+  });
 });

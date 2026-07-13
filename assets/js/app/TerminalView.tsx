@@ -92,6 +92,9 @@ export type TerminalActions = {
   /** Deliver text composed in the native input bar using the given
    * per-agent strategy (see SendStrategy). */
   sendText: (text: string, submit: boolean, strategy?: SendStrategy) => void;
+  /** Push raw bytes (escape sequences from the touch key bar) straight down
+   * the regular input path — no framing, no strategies. */
+  sendKey: (data: string) => void;
 };
 
 type Props = {
@@ -107,6 +110,10 @@ type Props = {
    * buffer and keep receiving their Escape key. The quick-shell panel
    * uses this to close on Esc. */
   onEscape?: () => void;
+  /** Optional rewrite of user keystrokes before they reach the PTY. App
+   * uses it for the touch key bar's sticky Ctrl: the next single character
+   * typed on the soft keyboard becomes its control byte. */
+  inputHookRef?: React.MutableRefObject<((data: string) => string) | null>;
 };
 
 export default function TerminalView({
@@ -116,6 +123,7 @@ export default function TerminalView({
   onError,
   actionsRef,
   onEscape,
+  inputHookRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Covered while the scrollback replay streams in, so attaching to a
@@ -550,8 +558,12 @@ export default function TerminalView({
           phxChannel.push("input", { data }),
         );
       };
+      const sendKey = (data: string) => {
+        if (!gate.acceptInput() || !data) return;
+        phxChannel.push("input", { data });
+      };
       if (actionsRef) {
-        actionsRef.current = { reset, refit, focus: () => term.focus(), sendText };
+        actionsRef.current = { reset, refit, focus: () => term.focus(), sendText, sendKey };
       }
 
       // Fallback: a session with no replay (or a lost done frame) must not
@@ -629,8 +641,9 @@ export default function TerminalView({
 
       const inputDisposable = term.onData((data) => {
         if (!gate.acceptInput()) return;
-        typeahead.predict(data);
-        phxChannel.push("input", { data });
+        const hooked = inputHookRef?.current?.(data) ?? data;
+        typeahead.predict(hooked);
+        phxChannel.push("input", { data: hooked });
       });
 
       // Pasting or dropping files (screenshots for Claude Code & co): upload

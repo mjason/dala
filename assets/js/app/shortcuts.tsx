@@ -72,14 +72,17 @@ export function Tooltip({
   description,
   keys,
   children,
+  className,
 }: {
   label: string;
   description?: string;
   keys?: string;
   children: React.ReactNode;
+  /** Extra classes on the wrapper span (e.g. responsive visibility). */
+  className?: string;
 }) {
   return (
-    <span className="group/tip relative inline-flex">
+    <span className={`group/tip relative inline-flex ${className ?? ""}`}>
       {children}
       <span
         role="tooltip"

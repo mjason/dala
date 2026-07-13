@@ -174,13 +174,16 @@ body:has(> #app) {
   overflow: hidden;
 }
 
+/* index.tsx keeps --vvh at window.visualViewport.height: when the soft
+   keyboard opens, the shell shrinks with the visible area instead of
+   sitting half-covered. Before the JS runs, dvh/vh are the fallback. */
 #app {
-  height: 100vh;
+  height: var(--vvh, 100vh);
 }
 
 @supports (height: 100dvh) {
   #app {
-    height: 100dvh;
+    height: var(--vvh, 100dvh);
   }
 }
 

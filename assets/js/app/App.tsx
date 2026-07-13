@@ -4,6 +4,8 @@ import { call } from "./rpc";
 import type { AgentEventPayload } from "../ash_types";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView, { type TerminalActions } from "./TerminalView";
+import TouchKeyBar, { useCoarsePointer } from "./TouchKeyBar";
+import { applyCtrl, sequenceFor, type BarKey } from "./touchKeys";
 import QuickShellPanel from "./QuickShellPanel";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
@@ -57,6 +59,28 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
   const termActions = useRef<TerminalActions | null>(null);
+
+  // Touch UI: phones get an overflow toolbar menu, a terminal key bar and a
+  // tappable composer hint instead of shortcut chips.
+  const coarsePointer = useCoarsePointer();
+  const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  // Sticky Ctrl from the touch key bar: latched until the next key — a bar
+  // key or a single soft-keyboard character — goes out with Ctrl applied.
+  const [ctrlLatch, setCtrlLatch] = useState(false);
+  const ctrlLatchRef = useRef(false);
+  ctrlLatchRef.current = ctrlLatch;
+  const termInputHookRef = useRef<((data: string) => string) | null>(null);
+  termInputHookRef.current = (data) => {
+    if (!ctrlLatchRef.current) return data;
+    const wrapped = applyCtrl(data);
+    if (wrapped == null) return data;
+    setCtrlLatch(false);
+    return wrapped;
+  };
+  const sendBarKey = (key: BarKey) => {
+    termActions.current?.sendKey(sequenceFor(key, ctrlLatchRef.current));
+    if (ctrlLatchRef.current) setCtrlLatch(false);
+  };
 
   const toast = useCallback((message: string) => {
     const id = ++toastSeq.current;
@@ -137,6 +161,9 @@ export default function App() {
     if (active && composerOpen[active.id]) {
       setComposerFocusNonce((n) => n + 1);
     }
+    // A latched Ctrl aims at THIS session's terminal — never carry it over.
+    setCtrlLatch(false);
+    setToolbarMenuOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
@@ -412,6 +439,20 @@ export default function App() {
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
   const sessionToDelete = ordered.find((s) => s.id === deleteFor) ?? null;
 
+  // One row of the narrow-screen toolbar overflow menu.
+  const overflowItem = (id: string, label: string, run: () => void) => (
+    <button
+      id={id}
+      onClick={() => {
+        setToolbarMenuOpen(false);
+        run();
+      }}
+      className="px-3 py-2 text-left font-mono text-[12px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+    >
+      {label}
+    </button>
+  );
+
   const hamburger = (
     <Tooltip label={t("toggleSidebar")} keys={isMac ? "⌘B" : "Ctrl+B"}>
       <button
@@ -466,7 +507,7 @@ export default function App() {
         />
       </div>
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-w-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]">
         {active ? (
           <>
             <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3 sm:gap-3 sm:px-4">
@@ -482,6 +523,7 @@ export default function App() {
                 label={t("quickShellTitle")}
                 description={t("quickShellDesc")}
                 keys="Ctrl+Shift+`"
+                className="max-sm:hidden"
               >
                 <button
                   id="quick-shell-button"
@@ -531,6 +573,7 @@ export default function App() {
                 label={t("quickOpenTitle")}
                 description={t("quickOpenDesc")}
                 keys={isMac ? "⌘P" : "Ctrl+P"}
+                className="max-sm:hidden"
               >
                 <button
                   id="quick-open-button"
@@ -569,7 +612,11 @@ export default function App() {
                   {t("git")}
                 </button>
               </Tooltip>
-              <Tooltip label={t("kickViewers")} description={t("kickViewersHint")}>
+              <Tooltip
+                label={t("kickViewers")}
+                description={t("kickViewersHint")}
+                className="max-sm:hidden"
+              >
                 <button
                   id="kick-viewers-header-button"
                   onClick={() => void kickOtherViewers()}
@@ -578,7 +625,12 @@ export default function App() {
                   {t("kickViewersAction")}
                 </button>
               </Tooltip>
-              <Tooltip label={t("refitWidth")} description={t("refitDesc")} keys={modShiftCombo("f")}>
+              <Tooltip
+                label={t("refitWidth")}
+                description={t("refitDesc")}
+                keys={modShiftCombo("f")}
+                className="max-sm:hidden"
+              >
                 <button
                   id="terminal-refit-button"
                   onClick={() => termActions.current?.refit()}
@@ -587,7 +639,12 @@ export default function App() {
                   {t("refitWidth")}
                 </button>
               </Tooltip>
-              <Tooltip label={t("resetTerminal")} description={t("resetDesc")} keys={modShiftCombo("x")}>
+              <Tooltip
+                label={t("resetTerminal")}
+                description={t("resetDesc")}
+                keys={modShiftCombo("x")}
+                className="max-sm:hidden"
+              >
                 <button
                   id="terminal-reset-button"
                   onClick={() => termActions.current?.reset()}
@@ -596,7 +653,11 @@ export default function App() {
                   {t("resetTerminal")}
                 </button>
               </Tooltip>
-              <Tooltip label={t("sessionSettings")} description={t("settingsDesc")}>
+              <Tooltip
+                label={t("sessionSettings")}
+                description={t("settingsDesc")}
+                className="max-sm:hidden"
+              >
                 <button
                   id="session-settings-button"
                   onClick={() => setSettingsFor(active.id)}
@@ -605,6 +666,53 @@ export default function App() {
                   {t("settings")}
                 </button>
               </Tooltip>
+              {/* Narrow screens: everything above that is hidden lives in
+                  this overflow menu — the toolbar itself never scrolls. */}
+              <div className="relative sm:hidden">
+                <button
+                  id="toolbar-overflow-button"
+                  aria-label={t("moreActions")}
+                  onClick={() => setToolbarMenuOpen((v) => !v)}
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                    toolbarMenuOpen
+                      ? "border-mint/50 text-mint"
+                      : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+                  }`}
+                >
+                  ⋯
+                </button>
+                {toolbarMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-30"
+                      onClick={() => setToolbarMenuOpen(false)}
+                    />
+                    <div
+                      id="toolbar-overflow"
+                      className="absolute right-0 top-full z-40 mt-1.5 flex w-52 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+                    >
+                      {overflowItem("overflow-quick-shell", t("quickShellTitle"), () =>
+                        quickShellRef.current(),
+                      )}
+                      {overflowItem("overflow-quick-open", t("quickOpenTitle"), () =>
+                        setQuickOpen(true),
+                      )}
+                      {overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
+                        void kickOtherViewers(),
+                      )}
+                      {overflowItem("overflow-refit", t("refitWidth"), () =>
+                        termActions.current?.refit(),
+                      )}
+                      {overflowItem("overflow-reset", t("resetTerminal"), () =>
+                        termActions.current?.reset(),
+                      )}
+                      {overflowItem("overflow-settings", t("sessionSettings"), () =>
+                        setSettingsFor(active.id),
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
             </header>
 
             <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0e]">
@@ -613,6 +721,7 @@ export default function App() {
                 sessionId={active.id}
                 scrollbackLines={historyLines(active.scrollbackLimit)}
                 actionsRef={termActions}
+                inputHookRef={termInputHookRef}
                 onError={toast}
                 onCwdChange={(cwd) => {
                   if (followCwd) setDrawerPath(cwd);
@@ -638,6 +747,13 @@ export default function App() {
               )}
             </div>
 
+            {coarsePointer && !composerOpen[active.id] && (
+              <TouchKeyBar
+                ctrl={ctrlLatch}
+                onCtrl={() => setCtrlLatch((v) => !v)}
+                onKey={sendBarKey}
+              />
+            )}
             {!composerOpen[active.id] && (
               <button
                 id="composer-strip"
@@ -652,7 +768,18 @@ export default function App() {
                   {t("composerStripHint")}
                 </span>
                 <div className="flex-1" />
-                <Kbd>{modShiftCombo("k")}</Kbd>
+                {coarsePointer ? (
+                  /* A shortcut chip means nothing on touch — show what a tap
+                     on this strip does instead. */
+                  <span
+                    id="composer-open-touch"
+                    className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted"
+                  >
+                    {t("composerOpenTouch")}
+                  </span>
+                ) : (
+                  <Kbd>{modShiftCombo("k")}</Kbd>
+                )}
               </button>
             )}
             {composerOpen[active.id] && (
