@@ -126,6 +126,54 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
     assert_broadcast "size_owner", %{owner: ^other_id, rows: 21, cols: 46}
   end
 
+  test "claim_size pushes a reset replay snapshot to every attached client" do
+    session = create_session!()
+
+    assert {:ok, _reply, first} = join!(session.id)
+    push(first, "resize", %{"rows" => 40, "cols" => 100})
+    sync!(first, session.id)
+
+    assert {:ok, _reply, second} = join!(session.id)
+    push(second, "claim_size", %{"rows" => 21, "cols" => 46})
+    sync!(second, session.id)
+
+    # The PTY was rewrapped to the new owner's grid: BOTH clients (demoted
+    # owner and new owner) must get a fresh snapshot that resets their
+    # screens — otherwise the old owner keeps stale wraps on screen.
+    assert_push "replay", %{reset: true}, 2_000
+    assert_push "replay", %{reset: true}, 2_000
+  end
+
+  test "channel clamps degenerate resize dims before they reach the PTY" do
+    session = create_session!()
+
+    assert {:ok, _reply, socket} = join!(session.id)
+    push(socket, "resize", %{"rows" => 99_999, "cols" => 99_999})
+    sync!(socket, session.id)
+    assert Server.viewport(session.id) == {500, 1000}
+
+    push(socket, "claim_size", %{"rows" => 0, "cols" => 1})
+    sync!(socket, session.id)
+    assert Server.viewport(session.id) == {2, 2}
+  end
+
+  test "the server clamps dims from any caller, not only the channel" do
+    session = create_session!()
+
+    # Start the session server the way a join would.
+    assert {:ok, _reply, _socket} = join!(session.id)
+
+    # A 65535×65535 grid is a multi-GB allocation in the holder's emulator —
+    # unclamped it aborts the holder and hangs up the PTY under the shell.
+    Server.claim_size(session.id, self(), "raw-caller", 65_535, 65_535)
+    _ = :sys.get_state(Server.whereis(session.id))
+    assert Server.viewport(session.id) == {500, 1000}
+
+    Server.claim_size(session.id, self(), "raw-caller", 1, 1)
+    _ = :sys.get_state(Server.whereis(session.id))
+    assert Server.viewport(session.id) == {2, 2}
+  end
+
   test "join reply reports the current owner and PTY size to late joiners" do
     session = create_session!()
 

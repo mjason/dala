@@ -36,7 +36,11 @@ defmodule DalaWeb.TerminalChannel do
 
   # Keep pushed frames comfortably small; base64 inflates by 4/3.
   @replay_batch_bytes 192 * 1024
+  # Viewport clamp, mirrored by Dala.Terminal.Server (its apply_size is the
+  # authoritative choke point) and by the holder itself.
+  @min_rows 2
   @max_rows 500
+  @min_cols 2
   @max_cols 1000
 
   typed_channel do
@@ -158,6 +162,17 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
+  def handle_info({:repaint_reset, data, seq}, socket) do
+    # Size-ownership takeover rewrapped the PTY: replace this client's screen
+    # with the fresh snapshot unconditionally (reset replay). The flow ledger
+    # counts the snapshot like a flow-control repaint, and any in-flight skip
+    # state is settled by it.
+    fc = socket.assigns.fc
+    socket = push_replay(socket, data, seq, true)
+    fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
+    {:noreply, assign(socket, :fc, fc)}
+  end
+
   def handle_info(:flow_repaint_deadline, socket) do
     {:noreply, maybe_flow_repaint(socket, force: true)}
   end
@@ -197,8 +212,8 @@ defmodule DalaWeb.TerminalChannel do
   def handle_in("attach", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
     id = socket.assigns.session_id
-    rows = min(max(rows, 1), @max_rows)
-    cols = min(max(cols, 1), @max_cols)
+    rows = min(max(rows, @min_rows), @max_rows)
+    cols = min(max(cols, @min_cols), @max_cols)
 
     # Order matters: the resize reaches the holder (reflow) before the
     # repaint request on the same FIFO socket. (If another client owns the
@@ -220,8 +235,8 @@ defmodule DalaWeb.TerminalChannel do
 
   def handle_in("resize", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
-    rows = min(max(rows, 1), @max_rows)
-    cols = min(max(cols, 1), @max_cols)
+    rows = min(max(rows, @min_rows), @max_rows)
+    cols = min(max(cols, @min_cols), @max_cols)
     # `self()` is this channel process — one per connected client. The first
     # resize on an unowned session claims size ownership; a non-owner's
     # resize is dropped by the server.
@@ -241,8 +256,8 @@ defmodule DalaWeb.TerminalChannel do
   # `size_owner` so the previous owner demotes itself.
   def handle_in("claim_size", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
-    rows = min(max(rows, 1), @max_rows)
-    cols = min(max(cols, 1), @max_cols)
+    rows = min(max(rows, @min_rows), @max_rows)
+    cols = min(max(cols, @min_cols), @max_cols)
 
     Dala.Terminal.Server.claim_size(
       socket.assigns.session_id,

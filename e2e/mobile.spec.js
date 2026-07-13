@@ -228,6 +228,106 @@ test.describe("Given 手机上的 dala 用户", () => {
     }
   });
 
+  test("尺寸所有权乒乓(手机接管→冻结→桌面夺回)不杀前台进程,且夺回后到达全新重绘", async ({ browser }) => {
+    const { execSync } = require("child_process");
+    const fs = require("fs");
+    const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const desktopPage = await desktop.newPage();
+    const tag = `${Date.now()}`;
+    const markerFile = `/tmp/dala-e2e-fg-dead-${tag}`;
+    const sleepArg = `76543${tag.slice(-3)}`;
+    let phoneCtx;
+    let id;
+    try {
+      // 桌面端创建会话并成为尺寸所有者。
+      await h.gotoApp(desktopPage);
+      id = await h.createSession(desktopPage);
+      await expect(desktopPage.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(desktopPage);
+
+      // 前台进程:被 HUP/TERM 打死会留下标记文件;正常存活则一直 sleep。
+      // 先 echo 一个标记文本进回滚区,夺回后靠重绘快照把它带回屏幕。
+      await desktopPage.keyboard.type(
+        `echo REPAINT-${tag}; trap 'echo dead > ${markerFile}' HUP TERM; sleep ${sleepArg}`,
+      );
+      await desktopPage.keyboard.press("Enter");
+      await expect
+        .poll(
+          () => execSync(`pgrep -fc "slee[p] ${sleepArg}" || true`).toString().trim(),
+          { timeout: 10_000 },
+        )
+        .not.toBe("0");
+
+      // 手机加入并点横幅接管:PTY 重排为手机宽度,前台进程收到 SIGWINCH。
+      phoneCtx = await browser.newContext({ ...phone });
+      const phonePage = await phoneCtx.newPage();
+      await h.gotoApp(phonePage);
+      await expect(phonePage.locator(".xterm").first()).toBeVisible();
+      await expect(phonePage.locator("#size-follower-banner")).toBeVisible();
+      await phonePage.locator("#claim-size-button").click();
+      await expect(phonePage.locator("#size-follower-banner")).toHaveCount(0);
+      await expect(desktopPage.locator("#size-follower-banner")).toBeVisible({
+        timeout: 10_000,
+      });
+
+      // 冻结手机页面(近似 Safari 退到后台:JS 停摆,socket 不动)。
+      const cdp = await phonePage.context().newCDPSession(phonePage);
+      await cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+
+      // 桌面点"适配宽度"夺回:follower 状态下 Refit = claim_size 接管。
+      const resetsBefore = await desktopPage.evaluate(
+        () => window.__dalaFlow?.resets ?? 0,
+      );
+      await desktopPage.locator("#terminal-refit-button").click();
+      await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
+
+      // 接管后必须收到一份全新重绘快照(reset replay)……
+      await expect
+        .poll(() => desktopPage.evaluate(() => window.__dalaFlow?.resets ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(resetsBefore);
+      // ……并且快照把回滚区的标记文本带回了桌面的缓冲区。
+      await expect
+        .poll(
+          () =>
+            desktopPage.evaluate(() => {
+              const buf = window.__dalaTerm?.buffer.active;
+              if (!buf) return "";
+              let text = "";
+              for (let i = 0; i < buf.length; i++) {
+                text += (buf.getLine(i)?.translateToString(true) ?? "") + "\n";
+              }
+              return text;
+            }),
+          { timeout: 10_000 },
+        )
+        .toContain(`REPAINT-${tag}`);
+
+      // 整场乒乓后前台进程必须还活着:没有死亡标记,sleep 仍在。
+      expect(fs.existsSync(markerFile)).toBe(false);
+      expect(
+        execSync(`pgrep -fc "slee[p] ${sleepArg}" || true`).toString().trim(),
+      ).not.toBe("0");
+
+      // 手机解冻后处理积压的广播,自动降级回 follower(横幅重现)。
+      await cdp.send("Page.setWebLifecycleState", { state: "active" });
+      await expect(phonePage.locator("#size-follower-banner")).toBeVisible({
+        timeout: 10_000,
+      });
+    } finally {
+      try {
+        execSync(`pkill -f 'sleep ${sleepArg}' || true`);
+      } catch {}
+      try {
+        fs.rmSync(markerFile, { force: true });
+      } catch {}
+      if (id) await h.deleteSession(desktopPage, id).catch(() => {});
+      await phoneCtx?.close();
+      await desktop.close();
+    }
+  });
+
   test("390px 视口下工具栏没有够不着的按钮,溢出操作收进 ⋯ 菜单", async ({ browser }) => {
     const context = await browser.newContext({ ...phone });
     const page = await context.newPage();

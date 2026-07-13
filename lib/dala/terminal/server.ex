@@ -20,6 +20,16 @@ defmodule Dala.Terminal.Server do
 
   @cwd_poll_ms 2_000
   @force_stop_ms 5_000
+  # Hard bounds on the PTY size, applied at the single choke point every
+  # resize funnels through (apply_size/4). The channel clamps its inputs too,
+  # but the holder allocates a rows×cols cell grid on resize — an unclamped
+  # huge value (65535×65535) is a multi-GB allocation that aborts the holder
+  # and hangs up the PTY under the running shell, so no caller may bypass
+  # this. The holder clamps to the same bounds as a last line of defense.
+  @min_rows 2
+  @max_rows 500
+  @min_cols 2
+  @max_cols 1000
   # Output micro-batching window: chunks landing within it after the first
   # are coalesced into one broadcast (see buffer_output/2).
   @out_batch_ms 5
@@ -351,7 +361,13 @@ defmodule Dala.Terminal.Server do
     # Explicit takeover: last write wins, the previous owner demotes to
     # follower when the size_owner broadcast reaches it.
     state = track_client(state, client, client_ref)
-    {:noreply, become_owner(state, client, client_ref, rows, cols)}
+    state = become_owner(state, client, client_ref, rows, cols)
+    # The PTY was just rewrapped to the new owner's grid: every attached
+    # client's buffer — the demoted owner's especially — still shows content
+    # wrapped at the old width (the TUI redraws itself on SIGWINCH, but the
+    # normal-buffer scrollback does not). Push one fresh snapshot to every
+    # client; takeovers are rare, a repaint is cheap.
+    {:noreply, request_repaint_all(state)}
   end
 
   def handle_cast({:request_repaint, client}, state) do
@@ -495,6 +511,15 @@ defmodule Dala.Terminal.Server do
         # The socket is FIFO: every output the repaint covers has already
         # been processed, so state.seq is exactly the repaint's watermark.
         case :queue.out(state.pending_repaints) do
+          {{:value, :all_clients}, rest} ->
+            # Ownership takeover: every attached client replaces its screen
+            # with this snapshot (reset replay), not just one requester.
+            Enum.each(Map.keys(state.clients), fn client ->
+              send(client, {:repaint_reset, payload, state.seq})
+            end)
+
+            {:noreply, %{state | pending_repaints: rest}}
+
           {{:value, client}, rest} ->
             send(client, {:repaint, payload, state.seq})
             {:noreply, %{state | pending_repaints: rest}}
@@ -582,9 +607,25 @@ defmodule Dala.Terminal.Server do
     state
   end
 
+  # Asks the holder for one snapshot to be delivered to EVERY tracked client
+  # as a reset replay (see the :all_clients marker in the repaint handler).
+  # FIFO ordering guarantees the holder has already applied any resize sent
+  # before this request, so the snapshot's wraps match the new grid.
+  defp request_repaint_all(state) do
+    cols = elem(state.size, 1)
+
+    case Holder.send_repaint_req(state.socket, cols) do
+      :ok -> %{state | pending_repaints: :queue.in(:all_clients, state.pending_repaints)}
+      {:error, _reason} -> state
+    end
+  end
+
   # Sizes the PTY to the owner's viewport. No-op when unchanged (unless
   # forced, e.g. to realign a reattached holder).
   defp apply_size(state, rows, cols, opts \\ []) do
+    rows = rows |> max(@min_rows) |> min(@max_rows)
+    cols = cols |> max(@min_cols) |> min(@max_cols)
+
     if {rows, cols} == state.size and not Keyword.get(opts, :force, false) do
       state
     else

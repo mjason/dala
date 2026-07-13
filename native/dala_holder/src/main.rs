@@ -43,6 +43,21 @@ use serde::Deserialize;
 
 use crate::screen::Screen;
 
+/// Hard bounds on PTY/emulator dimensions, mirroring the server's clamp.
+/// The emulator allocates rows×cols cells on resize — a stray 65535×65535
+/// frame is a multi-GB grid that aborts the process on allocation failure
+/// (verified: OOM-killed holder), and the dying holder closes the PTY under
+/// the running shell. The holder must survive any frame a buggy client
+/// sends, so clamp defensively at the frame boundary.
+const MIN_ROWS: u16 = 2;
+const MAX_ROWS: u16 = 500;
+const MIN_COLS: u16 = 2;
+const MAX_COLS: u16 = 1000;
+
+fn clamp_dims(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.clamp(MIN_ROWS, MAX_ROWS), cols.clamp(MIN_COLS, MAX_COLS))
+}
+
 const T_HELLO: u8 = 0x01;
 const T_OUTPUT: u8 = 0x02;
 const T_EXIT: u8 = 0x03;
@@ -114,10 +129,11 @@ struct State {
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| usage());
-    let config: Config = serde_json::from_str(&arg).unwrap_or_else(|e| {
+    let mut config: Config = serde_json::from_str(&arg).unwrap_or_else(|e| {
         eprintln!("dala_holder: bad config json: {e}");
         exit(2);
     });
+    (config.rows, config.cols) = clamp_dims(config.rows, config.cols);
 
     reset_signals();
 
@@ -360,6 +376,7 @@ fn main() {
                     Ok((T_RESIZE, data)) if data.len() == 4 => {
                         let rows = u16::from_be_bytes([data[0], data[1]]);
                         let cols = u16::from_be_bytes([data[2], data[3]]);
+                        let (rows, cols) = clamp_dims(rows, cols);
                         state.shared.lock().unwrap().screen.resize(rows, cols);
                         let _ = master.lock().unwrap().0.resize(PtySize {
                             rows,
@@ -709,6 +726,54 @@ mod frame_tests {
         assert_eq!((t1, p1.as_slice()), (T_CWD, b"/tmp".as_slice()));
         assert_eq!(t2, T_EXIT);
         assert_eq!(u32::from_be_bytes(p2.try_into().unwrap()), 7);
+    }
+}
+
+#[cfg(test)]
+mod clamp_dims_tests {
+    use super::*;
+
+    #[test]
+    fn passes_normal_dims_through() {
+        assert_eq!(clamp_dims(24, 80), (24, 80));
+        assert_eq!(clamp_dims(50, 220), (50, 220));
+        assert_eq!(clamp_dims(MAX_ROWS, MAX_COLS), (MAX_ROWS, MAX_COLS));
+    }
+
+    #[test]
+    fn zero_and_one_are_raised_to_the_floor() {
+        assert_eq!(clamp_dims(0, 0), (MIN_ROWS, MIN_COLS));
+        assert_eq!(clamp_dims(1, 1), (MIN_ROWS, MIN_COLS));
+        assert_eq!(clamp_dims(0, 80), (MIN_ROWS, 80));
+        assert_eq!(clamp_dims(24, 0), (24, MIN_COLS));
+    }
+
+    #[test]
+    fn huge_dims_are_capped_before_they_reach_the_grid_allocator() {
+        // 65535×65535 would be a multi-GB cell grid — the exact frame that
+        // OOM-killed the holder (and hung up the PTY) before the clamp.
+        assert_eq!(clamp_dims(u16::MAX, u16::MAX), (MAX_ROWS, MAX_COLS));
+        assert_eq!(clamp_dims(501, 1001), (MAX_ROWS, MAX_COLS));
+    }
+
+    #[test]
+    fn clamped_resize_is_survivable_end_to_end() {
+        // The emulator itself must take the full clamped range in stride,
+        // including rapid alternation (ownership ping-pong).
+        let mut screen = crate::screen::Screen::new(24, 80, 100);
+        for _ in 0..5 {
+            let (r, c) = clamp_dims(u16::MAX, u16::MAX);
+            screen.resize(r, c);
+            screen.advance(b"after huge\r\n");
+            let (r, c) = clamp_dims(0, 0);
+            screen.resize(r, c);
+            screen.advance(b"after tiny\r\n");
+        }
+        let (r, c) = clamp_dims(40, 160);
+        screen.resize(r, c);
+        screen.advance(b"settled");
+        let out = String::from_utf8_lossy(&screen.repaint(true)).into_owned();
+        assert!(out.contains("settled"));
     }
 }
 
