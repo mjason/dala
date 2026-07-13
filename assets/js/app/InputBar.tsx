@@ -394,7 +394,12 @@ export default function InputBar({
           disabled={!value.trim()}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-mint px-2.5 py-1 text-[12px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40 pointer-coarse:min-h-10 pointer-coarse:px-4 pointer-coarse:text-sm"
         >
-          {t("inputBarSend")} <Kbd>{formatCombo(bindings.composerSend)}</Kbd>
+          {t("inputBarSend")}{" "}
+          {/* A shortcut badge means nothing on touch (same policy as the
+              composer strip's hint) — hide it on coarse pointers. */}
+          <span className="contents pointer-coarse:hidden">
+            <Kbd>{formatCombo(bindings.composerSend)}</Kbd>
+          </span>
         </button>
         <button
           id="input-bar-mention"

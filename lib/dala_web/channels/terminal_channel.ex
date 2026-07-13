@@ -130,6 +130,19 @@ defmodule DalaWeb.TerminalChannel do
   def handle_info(:after_join, socket) do
     id = socket.assigns.session_id
 
+    # Join-reply → topic-subscribe gap: the reply's ownership snapshot was
+    # read BEFORE this channel subscribed to the topic, so a `size_owner`
+    # broadcast landing in between is lost to this client. Re-read now that
+    # the subscription exists and push it, so the client's role is correct
+    # even when ownership changed in the gap.
+    case Dala.Terminal.Server.size_info(id) do
+      %{owner: owner, rows: rows, cols: cols} ->
+        push(socket, "size_owner", %{owner: owner, rows: rows, cols: cols})
+
+      nil ->
+        :ok
+    end
+
     if Dala.Terminal.Server.alive?(id) do
       # The repaint is deferred until the client's `attach` reports its true
       # viewport — sizing first lets the emulator reflow, so soft wraps match
@@ -212,13 +225,12 @@ defmodule DalaWeb.TerminalChannel do
   def handle_in("attach", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
     id = socket.assigns.session_id
-    rows = min(max(rows, @min_rows), @max_rows)
-    cols = min(max(cols, @min_cols), @max_cols)
+    {rows, cols} = clamp_dims(rows, cols)
 
     # Order matters: the resize reaches the holder (reflow) before the
     # repaint request on the same FIFO socket. (If another client owns the
-    # size this is a no-op — followers attach at the PTY's size anyway.)
-    Dala.Terminal.Server.resize(id, self(), socket.assigns.client_id, rows, cols)
+    # size it is ignored — followers attach at the PTY's size anyway.)
+    resize_with_correction(socket, rows, cols)
 
     if Dala.Terminal.Server.alive?(id) and not socket.assigns[:replayed] and
          not Map.get(socket.assigns, :repaint_requested, false) do
@@ -235,18 +247,12 @@ defmodule DalaWeb.TerminalChannel do
 
   def handle_in("resize", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
-    rows = min(max(rows, @min_rows), @max_rows)
-    cols = min(max(cols, @min_cols), @max_cols)
+    {rows, cols} = clamp_dims(rows, cols)
     # `self()` is this channel process — one per connected client. The first
     # resize on an unowned session claims size ownership; a non-owner's
-    # resize is dropped by the server.
-    Dala.Terminal.Server.resize(
-      socket.assigns.session_id,
-      self(),
-      socket.assigns.client_id,
-      rows,
-      cols
-    )
+    # resize is dropped by the server (and answered with a corrective
+    # `size_owner` push, see resize_with_correction/3).
+    resize_with_correction(socket, rows, cols)
 
     {:noreply, socket}
   end
@@ -256,8 +262,7 @@ defmodule DalaWeb.TerminalChannel do
   # `size_owner` so the previous owner demotes itself.
   def handle_in("claim_size", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
-    rows = min(max(rows, @min_rows), @max_rows)
-    cols = min(max(cols, @min_cols), @max_cols)
+    {rows, cols} = clamp_dims(rows, cols)
 
     Dala.Terminal.Server.claim_size(
       socket.assigns.session_id,
@@ -284,6 +289,33 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
+
+  # Cheap defense at the channel layer; Server.apply_size is the
+  # authoritative choke point with the same bounds.
+  defp clamp_dims(rows, cols) do
+    {rows |> max(@min_rows) |> min(@max_rows), cols |> max(@min_cols) |> min(@max_cols)}
+  end
+
+  # Reports this client's viewport to the session server. When the server
+  # IGNORES it (another client owns the size), push a corrective
+  # `size_owner` to this client only: a client that wrongly believed it was
+  # the driver (stale role after a lost/gapped broadcast) re-enters
+  # follower mode instead of rendering a grid the PTY does not have.
+  defp resize_with_correction(socket, rows, cols) do
+    case Dala.Terminal.Server.resize(
+           socket.assigns.session_id,
+           self(),
+           socket.assigns.client_id,
+           rows,
+           cols
+         ) do
+      {:ignored, %{owner: owner, rows: cur_rows, cols: cur_cols}} ->
+        push(socket, "size_owner", %{owner: owner, rows: cur_rows, cols: cur_cols})
+
+      _applied_claimed_or_dead ->
+        :ok
+    end
+  end
 
   defp high_water(%{alt: true}), do: @high_water_alt
   defp high_water(_fc), do: @high_water_normal

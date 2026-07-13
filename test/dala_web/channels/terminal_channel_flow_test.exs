@@ -103,6 +103,32 @@ defmodule DalaWeb.TerminalChannelFlowTest do
     assert_push "output", %{seq: 3000}, 2_000
   end
 
+  test "a takeover's reset replay lands while skipping, then output resumes" do
+    session = create_session!()
+    socket = join_and_attach!(session.id)
+
+    # Enable flow control on the alt watermark and flood past it: the
+    # channel enters skipping.
+    push(socket, "ack", %{"bytes" => 1, "alt" => true})
+    Process.sleep(50)
+    for seq <- 1..8, do: broadcast_chunk(session.id, 2000 + seq)
+    pushed = count_output_pushes()
+    assert pushed >= 3 and pushed <= 5
+
+    # Another client takes over the size while we sit in skipping. The
+    # takeover snapshot must reach us as a reset replay — repaint_reset
+    # settles the in-flight skip state instead of being swallowed by it.
+    Server.claim_size(session.id, self(), "other-client", 21, 46)
+    assert_push "replay", %{reset: true, done: done}, 8_000
+    unless done, do: drain_replay()
+
+    # Once the acks catch up, live output streams again (the reset replay
+    # cleared `skipping`).
+    push(socket, "ack", %{"bytes" => 100 * @chunk, "alt" => true})
+    broadcast_chunk(session.id, 5000)
+    assert_push "output", %{seq: 5000}, 2_000
+  end
+
   test "normal-buffer watermark is much higher" do
     session = create_session!()
     socket = join_and_attach!(session.id)

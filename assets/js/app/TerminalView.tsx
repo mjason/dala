@@ -125,6 +125,10 @@ type Props = {
    * uses it for the touch key bar's sticky Ctrl: the next single character
    * typed on the soft keyboard becomes its control byte. */
   inputHookRef?: React.MutableRefObject<((data: string) => string) | null>;
+  /** Expose this terminal as `window.__dalaTerm` (debug/e2e handle). Only
+   * the MAIN session view sets it — overlay terminals (quick shells) must
+   * not steal the handle from the session the tests read. */
+  debugHandle?: boolean;
 };
 
 export default function TerminalView({
@@ -135,6 +139,7 @@ export default function TerminalView({
   actionsRef,
   onEscape,
   inputHookRef,
+  debugHandle,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Covered while the scrollback replay streams in, so attaching to a
@@ -327,20 +332,28 @@ export default function TerminalView({
       }
 
       // Follower only: render at the owner's PTY size, then scale the whole
-      // terminal down so the full width fits this screen (never resize the
-      // shared PTY). The block element `.xterm` always fills the container —
-      // its offsetWidth says nothing about the grid — so measure the grid
-      // itself (.xterm-screen; offsetWidth is a layout size, unaffected by
-      // the transform we set).
+      // terminal down so the FULL grid — both dimensions — fits this screen
+      // (never resize the shared PTY). Scaling height too (instead of
+      // overflow scrolling the container) keeps touch pans owned by the
+      // terminal's own scrollback handling. The block element `.xterm`
+      // always fills the container — its offsetWidth says nothing about the
+      // grid — so measure the grid itself (.xterm-screen; offset sizes are
+      // layout sizes, unaffected by the transform we set).
       const scaleToFit = () => {
         const el = term.element;
         const screen = el?.querySelector<HTMLElement>(".xterm-screen");
         if (!el || !screen) return;
         el.style.transformOrigin = "top left";
-        const natural = screen.offsetWidth;
-        const avail = container.clientWidth;
-        el.style.transform =
-          natural > 0 && avail > 0 && natural > avail ? `scale(${avail / natural})` : "";
+        const naturalW = screen.offsetWidth;
+        const naturalH = screen.offsetHeight;
+        const availW = container.clientWidth;
+        const availH = container.clientHeight;
+        if (naturalW <= 0 || naturalH <= 0 || availW <= 0 || availH <= 0) {
+          el.style.transform = "";
+          return;
+        }
+        const scale = Math.min(availW / naturalW, availH / naturalH, 1);
+        el.style.transform = scale < 1 ? `scale(${scale})` : "";
       };
       const applyServerSize = (rows: number, cols: number) => {
         term.resize(Math.max(cols, 1), Math.max(rows, 1));
@@ -365,8 +378,11 @@ export default function TerminalView({
         resets: 0,
       });
       // Debug/e2e handle: WebGL leaves no text in the DOM, so tests read the
-      // emulator buffer through this instead of scraping HTML.
-      (window as unknown as Record<string, unknown>).__dalaTerm = term;
+      // emulator buffer through this instead of scraping HTML. Only the main
+      // session view (debugHandle) binds it — see the Props doc.
+      if (debugHandle) {
+        (window as unknown as Record<string, unknown>).__dalaTerm = term;
+      }
       const ackCounter = createAckCounter((bytes, alt) => {
         flowStats.acked += bytes;
         phxChannel.push("ack", { bytes, alt });
@@ -503,22 +519,20 @@ export default function TerminalView({
       const enterFollower = (rows: number, cols: number) => {
         const wasDriver = !follower;
         follower = true;
-        // The scaled-down grid handles width; height may still overflow the
-        // container — let it scroll instead of clipping the TUI's bottom.
-        container.style.overflow = "auto";
         // The driver-path insets would be scaled along with the grid and
-        // fight the width math — the follower renders edge to edge.
+        // fight the fit math — the follower renders edge to edge. Both
+        // dimensions scale to fit (scaleToFit), so the container never
+        // scrolls and touch pans stay with the terminal scrollback.
         if (term.element) term.element.style.padding = "0";
         applyServerSize(rows, cols);
         if (wasDriver) setSizeFollower(true);
       };
       // `claim`: how to assert ownership server-side — a plain resize when
-      // ownership is free ("resize"), the explicit takeover event ("claim"),
-      // or nothing when the server already confirmed us as owner.
-      const enterDriver = (claim: "resize" | "claim" | null) => {
+      // ownership is free or already confirmed ours ("resize"), or the
+      // explicit takeover event ("claim").
+      const enterDriver = (claim: "resize" | "claim") => {
         const wasFollower = follower;
         follower = false;
-        container.style.overflow = "";
         if (term.element) term.element.style.transform = "";
         resetPadding();
         fit.fit();
@@ -649,8 +663,12 @@ export default function TerminalView({
             // the resize claims it. Last write wins if several clients race.
             enterDriver("resize");
           } else if (follower) {
-            // Our own takeover confirmed while we still rendered as follower.
-            enterDriver(null);
+            // We are the owner while still rendering as follower. Usually
+            // our own takeover confirming; but it can also be an ACCIDENTAL
+            // claim (our follower attach raced the old owner leaving and
+            // claimed at ITS dims) — push our real fitted size so the PTY
+            // reflows to the grid we are about to render.
+            enterDriver("resize");
           }
         },
       );
@@ -837,6 +855,10 @@ export default function TerminalView({
 
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
+        // Only drop the debug handle when it is still OURS — a newer view
+        // (session switch) may have rebound it already.
+        const w = window as unknown as Record<string, unknown>;
+        if (w.__dalaTerm === term) delete w.__dalaTerm;
         claimSizeRef.current = null;
         setSizeFollower(false);
         container.removeEventListener("paste", onPaste, true);

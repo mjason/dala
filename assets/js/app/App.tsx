@@ -5,7 +5,7 @@ import type { AgentEventPayload } from "../ash_types";
 import Sidebar, { Session } from "./Sidebar";
 import TerminalView, { type TerminalActions } from "./TerminalView";
 import TouchKeyBar, { useCoarsePointer } from "./TouchKeyBar";
-import { applyCtrl, sequenceFor, type BarKey } from "./touchKeys";
+import { applyCtrl, nextLatch, sequenceFor, type BarKey } from "./touchKeys";
 import QuickShellPanel from "./QuickShellPanel";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
@@ -84,7 +84,7 @@ export default function App() {
   };
   const sendBarKey = (key: BarKey) => {
     termActions.current?.sendKey(sequenceFor(key, ctrlLatchRef.current));
-    if (ctrlLatchRef.current) setCtrlLatch(false);
+    setCtrlLatch(nextLatch(key, ctrlLatchRef.current));
   };
 
   const toast = useCallback((message: string) => {
@@ -290,6 +290,10 @@ export default function App() {
         return m;
       }
       if (!open) {
+        // The touch key bar disappears behind the composer — a Ctrl latched
+        // there must not silently rewrite the next composer keystroke's
+        // terminal delivery once the composer closes again.
+        setCtrlLatch(false);
         setComposerFocusNonce((n) => n + 1);
         void call<{ app: string }>(foregroundApp, {
           input: { id },
@@ -727,6 +731,7 @@ export default function App() {
                 scrollbackLines={historyLines(active.scrollbackLimit)}
                 actionsRef={termActions}
                 inputHookRef={termInputHookRef}
+                debugHandle
                 onError={toast}
                 onCwdChange={(cwd) => {
                   if (followCwd) setDrawerPath(cwd);
@@ -755,7 +760,7 @@ export default function App() {
             {coarsePointer && !composerOpen[active.id] && (
               <TouchKeyBar
                 ctrl={ctrlLatch}
-                onCtrl={() => setCtrlLatch((v) => !v)}
+                onCtrl={() => setCtrlLatch((v) => nextLatch("ctrl", v))}
                 onKey={sendBarKey}
               />
             )}

@@ -79,13 +79,24 @@ defmodule Dala.Terminal.Server do
   attached at once, but the single underlying PTY can only have one size —
   and exactly one client owns it. When nobody owns the size yet (fresh
   session, or the owner disconnected), the first resize claims ownership; a
-  non-owner's resize is ignored silently (it renders at the owner's size and
-  scales to fit — see `claim_size/5` for explicit takeover). `client` is the
+  non-owner's resize is ignored (it renders at the owner's size and scales
+  to fit — see `claim_size/5` for explicit takeover). `client` is the
   channel process, `client_ref` its public identity used in `size_owner`
   broadcasts and join replies.
+
+  Synchronous, so the caller learns what happened: `:claimed` (free
+  ownership was claimed), `:applied` (the caller already owned the size),
+  or `{:ignored, %{owner: ref, rows: rows, cols: cols}}` when another
+  client owns it — the channel uses that to push a corrective `size_owner`
+  to a client that wrongly believes it drives the size. `:ok` when the
+  session is not running.
   """
-  def resize(id, client, client_ref, rows, cols) when is_pid(client),
-    do: cast_if_alive(id, {:resize, client, client_ref, rows, cols})
+  def resize(id, client, client_ref, rows, cols) when is_pid(client) do
+    case whereis(id) do
+      nil -> :ok
+      pid -> GenServer.call(pid, {:resize, client, client_ref, rows, cols})
+    end
+  end
 
   @doc """
   Force-claims size ownership (the follower banner's takeover button): sets
@@ -322,6 +333,35 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
+  def handle_call({:resize, client, client_ref, rows, cols}, _from, state) do
+    state = track_client(state, client, client_ref)
+
+    case state.owner do
+      nil ->
+        # Unowned: the first resize claims ownership (a phone opening a
+        # session alone gets a native narrow PTY this way). When the claim
+        # actually CHANGED the PTY dims the grid was rewrapped — push a
+        # fresh snapshot to every client, exactly like an explicit
+        # claim_size; a claim at the current dims (join storm re-reporting
+        # the same size) skips the repaint.
+        old_size = state.size
+        state = become_owner(state, client, client_ref, rows, cols)
+        state = if state.size == old_size, do: state, else: request_repaint_all(state)
+        {:reply, :claimed, state}
+
+      {^client, _ref} ->
+        {:reply, :applied, apply_size(state, rows, cols)}
+
+      {_other_pid, owner_ref} ->
+        # Followers render at the owner's size; their viewport never
+        # shrinks the shared PTY. Report who owns it so the channel can
+        # correct a client whose role went stale.
+        {cur_rows, cur_cols} = state.size
+        {:reply, {:ignored, %{owner: owner_ref, rows: cur_rows, cols: cur_cols}}, state}
+    end
+  end
+
+  @impl true
   def terminate(_reason, state) do
     # Deliberately leaves the holder (and thus the shell) running: surviving
     # BEAM shutdowns and code reloads is the point of the holder split.
@@ -338,36 +378,26 @@ defmodule Dala.Terminal.Server do
     {:noreply, state}
   end
 
-  def handle_cast({:resize, client, client_ref, rows, cols}, state) do
-    state = track_client(state, client, client_ref)
-
-    case state.owner do
-      nil ->
-        # Unowned: the first resize claims ownership (a phone opening a
-        # session alone gets a native narrow PTY this way).
-        {:noreply, become_owner(state, client, client_ref, rows, cols)}
-
-      {^client, _ref} ->
-        {:noreply, apply_size(state, rows, cols)}
-
-      _other_owner ->
-        # Followers render at the owner's size; their viewport never
-        # shrinks the shared PTY.
-        {:noreply, state}
-    end
-  end
-
   def handle_cast({:claim_size, client, client_ref, rows, cols}, state) do
     # Explicit takeover: last write wins, the previous owner demotes to
     # follower when the size_owner broadcast reaches it.
     state = track_client(state, client, client_ref)
+    already_owner? = match?({^client, _ref}, state.owner)
+    old_size = state.size
     state = become_owner(state, client, client_ref, rows, cols)
+
     # The PTY was just rewrapped to the new owner's grid: every attached
     # client's buffer — the demoted owner's especially — still shows content
     # wrapped at the old width (the TUI redraws itself on SIGWINCH, but the
     # normal-buffer scrollback does not). Push one fresh snapshot to every
-    # client; takeovers are rare, a repaint is cheap.
-    {:noreply, request_repaint_all(state)}
+    # client; takeovers are rare, a repaint is cheap. Exception: the owner
+    # re-claiming its current dims (repeated refit) rewrapped nothing —
+    # skip the repaint storm.
+    if already_owner? and state.size == old_size do
+      {:noreply, state}
+    else
+      {:noreply, request_repaint_all(state)}
+    end
   end
 
   def handle_cast({:request_repaint, client}, state) do

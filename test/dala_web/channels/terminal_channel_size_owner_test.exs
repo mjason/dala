@@ -174,6 +174,121 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
     assert Server.viewport(session.id) == {2, 2}
   end
 
+  # A repaint round trip through the holder can chunk into several batches;
+  # consume the whole reset replay so later refutes see a clean mailbox.
+  defp drain_reset_replay! do
+    assert_push "replay", %{reset: true, done: done}, 8_000
+    unless done, do: drain_reset_replay!()
+  end
+
+  test "after join the channel re-pushes the current ownership (join-gap re-sync)" do
+    session = create_session!()
+
+    assert {:ok, %{client_id: owner_id}, owner_socket} = join!(session.id)
+    push(owner_socket, "resize", %{"rows" => 40, "cols" => 100})
+    sync!(owner_socket, session.id)
+
+    # A size_owner broadcast between the join reply's snapshot and the topic
+    # subscription would be lost — the :after_join re-read closes the gap by
+    # pushing the authoritative state to the fresh client.
+    assert {:ok, _reply, _follower_socket} = join!(session.id)
+    assert_push "size_owner", %{owner: ^owner_id, rows: 40, cols: 100}
+  end
+
+  test "a non-owner's ignored resize is answered with a corrective size_owner push" do
+    session = create_session!()
+
+    assert {:ok, %{client_id: owner_id}, owner_socket} = join!(session.id)
+    push(owner_socket, "resize", %{"rows" => 40, "cols" => 100})
+    sync!(owner_socket, session.id)
+
+    assert {:ok, _reply, follower_socket} = join!(session.id)
+    # Consume the join-time re-sync push so the next match pins the
+    # correction itself.
+    assert_push "size_owner", %{owner: ^owner_id, rows: 40, cols: 100}
+
+    push(follower_socket, "resize", %{"rows" => 20, "cols" => 60})
+    sync!(follower_socket, session.id)
+
+    assert Server.viewport(session.id) == {40, 100}
+    assert_push "size_owner", %{owner: ^owner_id, rows: 40, cols: 100}
+  end
+
+  test "attach-gap accidental claim: a follower attach after the owner left claims at its dims" do
+    session = create_session!()
+
+    assert {:ok, %{client_id: owner_id}, owner_socket} = join!(session.id)
+    push(owner_socket, "resize", %{"rows" => 40, "cols" => 100})
+    sync!(owner_socket, session.id)
+    # The owner's first resize is itself an implicit dim-changing claim
+    # (24x80 → 40x100): consume its reset replay so the refute below pins
+    # the follower's attach, not this one.
+    drain_reset_replay!()
+
+    assert {:ok, %{client_id: follower_id, owner: ^owner_id}, follower_socket} =
+             join!(session.id)
+
+    Process.unlink(owner_socket.channel_pid)
+    _ = leave(owner_socket)
+    assert_broadcast "size_owner", %{owner: nil, rows: 40, cols: 100}, 2_000
+
+    # The follower's attach was prepared while the owner still existed: it
+    # reports the OLD owner's dims and — ownership now being free — claims
+    # at them (the server cannot tell it from a deliberate first resize).
+    push(follower_socket, "attach", %{"rows" => 40, "cols" => 100})
+    sync!(follower_socket, session.id)
+
+    assert Server.viewport(session.id) == {40, 100}
+    assert_broadcast "size_owner", %{owner: ^follower_id, rows: 40, cols: 100}
+
+    # Dims did not change, so the implicit claim must NOT fan out a reset
+    # repaint (join storms would repaint everyone for nothing).
+    refute_push "replay", %{reset: true}, 1_500
+  end
+
+  test "an implicit re-claim that changes the PTY dims pushes a reset replay" do
+    session = create_session!()
+
+    assert {:ok, _reply, owner_socket} = join!(session.id)
+    push(owner_socket, "resize", %{"rows" => 40, "cols" => 100})
+    sync!(owner_socket, session.id)
+    # Consume the first claim's own reset replay (24x80 → 40x100 changed
+    # dims) so the assertion below pins the RE-claim's snapshot.
+    drain_reset_replay!()
+
+    assert {:ok, _reply, follower_socket} = join!(session.id)
+    push(follower_socket, "attach", %{"rows" => 40, "cols" => 100})
+    sync!(follower_socket, session.id)
+
+    Process.unlink(owner_socket.channel_pid)
+    _ = leave(owner_socket)
+    assert_broadcast "size_owner", %{owner: nil}, 2_000
+
+    # The survivor re-fits to its own screen: an implicit claim that CHANGES
+    # the dims rewraps the grid, so clients need a fresh snapshot exactly
+    # like an explicit claim_size.
+    push(follower_socket, "resize", %{"rows" => 30, "cols" => 90})
+    sync!(follower_socket, session.id)
+
+    assert Server.viewport(session.id) == {30, 90}
+    assert_push "replay", %{reset: true}, 8_000
+  end
+
+  test "the owner re-claiming its current dims skips the repaint fan-out" do
+    session = create_session!()
+
+    assert {:ok, _reply, socket} = join!(session.id)
+    push(socket, "claim_size", %{"rows" => 40, "cols" => 100})
+    sync!(socket, session.id)
+    # First claim rewraps 24x80 → 40x100: the reset replay is expected.
+    drain_reset_replay!()
+
+    push(socket, "claim_size", %{"rows" => 40, "cols" => 100})
+    sync!(socket, session.id)
+    assert Server.viewport(session.id) == {40, 100}
+    refute_push "replay", %{reset: true}, 1_500
+  end
+
   test "join reply reports the current owner and PTY size to late joiners" do
     session = create_session!()
 
