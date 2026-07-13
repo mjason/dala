@@ -22,6 +22,8 @@ import { resolveSendMode, sendComposedText, type SendStrategy } from "./terminal
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
 import { isMac } from "./shortcuts";
+import { isSizeFollower } from "./sizeRole";
+import { useI18n } from "./i18n";
 
 const theme = {
   background: "#0b0c0e",
@@ -64,18 +66,6 @@ function loadTerminalFonts(fontSize: number): Promise<unknown> {
       document.fonts.load(`${variant}${fontSize}px "JetBrainsMono NFM"`),
     ),
   ).catch(() => undefined);
-}
-
-// A "follower" client (typically a phone) watches a shared session without
-// driving its size: it never sends resize, so it can't shrink the PTY for the
-// desktop that owns it. Instead it renders at the server's PTY size and scales
-// that down to fit its own screen. It can still type.
-function isFollowerClient(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return false;
-  return (
-    window.matchMedia("(pointer: coarse)").matches &&
-    window.matchMedia("(max-width: 820px)").matches
-  );
 }
 
 /**
@@ -131,6 +121,11 @@ export default function TerminalView({
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
+  // Another client owns the PTY size: we render at its size scaled to fit,
+  // and offer a takeover button in a slim banner.
+  const [sizeFollower, setSizeFollower] = useState(false);
+  const claimSizeRef = useRef<(() => void) | null>(null);
+  const { t } = useI18n();
   const cwdChangeRef = useRef(onCwdChange);
   cwdChangeRef.current = onCwdChange;
   const errorRef = useRef(onError);
@@ -243,31 +238,94 @@ export default function TerminalView({
         term.options.cursorBlink = next.cursorBlink;
         term.options.smoothScrollDuration = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
         term.options.scrollSensitivity = next.scrollSensitivity;
-        // Font metrics changed — refit and re-center via the shared path.
-        window.setTimeout(() => maybeResize(), 0);
+        // Font metrics changed — refit/re-scale via the shared path.
+        window.setTimeout(() => relayout(), 0);
       });
 
-      const follower = isFollowerClient();
-      if (follower) {
-        container.style.padding = "0";
-        container.style.overflow = "auto";
+      // PTY size ownership (server: Dala.Terminal.Server): the join reply and
+      // `size_owner` broadcasts tell this client whether ANOTHER client owns
+      // the size. While it does, we are a follower: render at the owner's PTY
+      // size scaled down to fit, never push resize. Roles can flip both ways
+      // at runtime (owner leaves, takeover button, another client claims).
+      let clientId: string | null = null;
+      let follower = false;
+
+      // Chromium's DPR emulation (DevTools device mode, playwright mobile
+      // contexts) breaks the webgl addon's canvas sizing: the addon sets its
+      // backing store from a `device-pixel-content-box` ResizeObserver, which
+      // Chromium reports in HOST device pixels — ignoring the emulated
+      // devicePixelRatio — while the renderer's gl.viewport uses emulated
+      // device pixels. The drawable buffer then holds only an empty corner of
+      // the frame and the terminal paints NOTHING. Re-sync the backing store
+      // to the renderer's own device dimensions; on real displays both
+      // already match and this is a no-op.
+      const syncWebglCanvas = () => {
+        if (!webgl) return;
+        try {
+          const renderer = (
+            term as unknown as {
+              _core?: {
+                _renderService?: {
+                  _renderer?: {
+                    value?: {
+                      _canvas?: HTMLCanvasElement;
+                      dimensions?: {
+                        device?: { canvas?: { width: number; height: number } };
+                      };
+                    };
+                  };
+                };
+              };
+            }
+          )._core?._renderService?._renderer?.value;
+          const canvas = renderer?._canvas;
+          const device = renderer?.dimensions?.device?.canvas;
+          if (!canvas || !device || device.width <= 0 || device.height <= 0) return;
+          if (canvas.width !== device.width || canvas.height !== device.height) {
+            canvas.width = device.width;
+            canvas.height = device.height;
+            term.refresh(0, term.rows - 1);
+          }
+        } catch {
+          // Private xterm internals moved — the addon then keeps sizing
+          // itself, which is correct everywhere except emulated-DPR contexts.
+        }
+      };
+      // The addon's own observer can overwrite the fix on any layout change;
+      // watch its canvas and re-correct right after (created later than the
+      // addon's observer, so it runs after it).
+      let canvasObserver: ResizeObserver | undefined;
+      {
+        const canvas = (
+          term as unknown as {
+            _core?: { _renderService?: { _renderer?: { value?: { _canvas?: HTMLCanvasElement } } } };
+          }
+        )._core?._renderService?._renderer?.value?._canvas;
+        if (canvas) {
+          canvasObserver = new ResizeObserver(() => syncWebglCanvas());
+          canvasObserver.observe(canvas);
+        }
       }
 
-      // Follower only: render at the server's PTY size, then scale that down to
-      // fit this screen's width (never resize the shared PTY).
+      // Follower only: render at the owner's PTY size, then scale the whole
+      // terminal down so the full width fits this screen (never resize the
+      // shared PTY). The block element `.xterm` always fills the container —
+      // its offsetWidth says nothing about the grid — so measure the grid
+      // itself (.xterm-screen; offsetWidth is a layout size, unaffected by
+      // the transform we set).
       const scaleToFit = () => {
         const el = term.element;
-        if (!el) return;
+        const screen = el?.querySelector<HTMLElement>(".xterm-screen");
+        if (!el || !screen) return;
         el.style.transformOrigin = "top left";
-        el.style.transform = "";
-        const natural = el.offsetWidth;
+        const natural = screen.offsetWidth;
         const avail = container.clientWidth;
-        if (natural > 0 && avail > 0) {
-          el.style.transform = `scale(${Math.min(1, avail / natural)})`;
-        }
+        el.style.transform =
+          natural > 0 && avail > 0 && natural > avail ? `scale(${avail / natural})` : "";
       };
       const applyServerSize = (rows: number, cols: number) => {
         term.resize(Math.max(cols, 1), Math.max(rows, 1));
+        syncWebglCanvas();
         scaleToFit();
       };
 
@@ -287,6 +345,9 @@ export default function TerminalView({
         acked: 0,
         resets: 0,
       });
+      // Debug/e2e handle: WebGL leaves no text in the DOM, so tests read the
+      // emulator buffer through this instead of scraping HTML.
+      (window as unknown as Record<string, unknown>).__dalaTerm = term;
       const ackCounter = createAckCounter((bytes, alt) => {
         flowStats.acked += bytes;
         phxChannel.push("ack", { bytes, alt });
@@ -399,22 +460,74 @@ export default function TerminalView({
         fit.fit();
         clampOverflow();
         centerPadding();
+        syncWebglCanvas();
         const key = term.rows + "x" + term.cols;
         if (key !== lastSize) {
           lastSize = key;
           pushResize();
         }
       };
+      // Timer/observer entry point that respects the current size role.
+      const relayout = () => {
+        if (disposed) return;
+        if (follower) {
+          syncWebglCanvas();
+          scaleToFit();
+        } else {
+          maybeResize();
+        }
+      };
+
+      // Role transitions. Both directions can happen at runtime: another
+      // client claims the size while we drive it (owner → follower), or
+      // ownership frees up / we take it over (follower → owner).
+      const enterFollower = (rows: number, cols: number) => {
+        const wasDriver = !follower;
+        follower = true;
+        // The scaled-down grid handles width; height may still overflow the
+        // container — let it scroll instead of clipping the TUI's bottom.
+        container.style.overflow = "auto";
+        // The driver-path insets would be scaled along with the grid and
+        // fight the width math — the follower renders edge to edge.
+        if (term.element) term.element.style.padding = "0";
+        applyServerSize(rows, cols);
+        if (wasDriver) setSizeFollower(true);
+      };
+      // `claim`: how to assert ownership server-side — a plain resize when
+      // ownership is free ("resize"), the explicit takeover event ("claim"),
+      // or nothing when the server already confirmed us as owner.
+      const enterDriver = (claim: "resize" | "claim" | null) => {
+        const wasFollower = follower;
+        follower = false;
+        container.style.overflow = "";
+        if (term.element) term.element.style.transform = "";
+        resetPadding();
+        fit.fit();
+        clampOverflow();
+        centerPadding();
+        syncWebglCanvas();
+        lastSize = term.rows + "x" + term.cols;
+        if (claim === "resize") pushResize();
+        if (claim === "claim")
+          phxChannel.push("claim_size", { rows: term.rows, cols: term.cols });
+        // Repaint after the geometry settles (stale edge pixels otherwise).
+        term.refresh(0, term.rows - 1);
+        if (wasFollower) setSizeFollower(false);
+      };
+      claimSizeRef.current = () => enterDriver("claim");
 
       // Header-button actions so the user can recover a wedged terminal or
       // recompute width without remembering a shortcut.
       const refit = () => {
-        if (follower) scaleToFit();
-        else {
+        if (follower) {
+          syncWebglCanvas();
+          scaleToFit();
+        } else {
           resetPadding();
           fit.fit();
           clampOverflow();
           centerPadding();
+          syncWebglCanvas();
           pushResize();
         }
         // A shrunk/grown canvas can keep stale pixels of the previous frame
@@ -447,43 +560,72 @@ export default function TerminalView({
 
       phxChannel
         .join()
-        .receive("ok", (resp?: { rows?: number; cols?: number }) => {
-          gate.joined();
-          if (follower) {
-            if (resp?.rows && resp?.cols) applyServerSize(resp.rows, resp.cols);
-            // Attach at the server's size: the repaint is generated for the
-            // width this follower renders at.
-            phxChannel.push("attach", {
-              rows: resp?.rows ?? term.rows,
-              cols: resp?.cols ?? term.cols,
-            });
-          } else {
-            // Re-fit now that layout has settled so the PTY is the real size
-            // before the user runs anything (else the first `ls` renders at the
-            // default 80-col size until a later resize/repaint corrects it).
-            fit.fit();
-            pushResize();
-            // Report the settled viewport; the server resizes the PTY first
-            // and only then renders the attach repaint, so its soft wraps
-            // match this exact width.
-            phxChannel.push("attach", { rows: term.rows, cols: term.cols });
-            lastSize = term.rows + "x" + term.cols;
-            // Layout/fonts may still be settling right after join/refresh;
-            // re-fit on the next ticks so early output is not at a stale size.
-            window.setTimeout(maybeResize, 120);
-            window.setTimeout(maybeResize, 600);
-          }
-        })
+        .receive(
+          "ok",
+          (resp?: {
+            rows?: number;
+            cols?: number;
+            owner?: string | null;
+            client_id?: string;
+          }) => {
+            gate.joined();
+            clientId = resp?.client_id ?? null;
+            if (isSizeFollower(clientId, resp?.owner)) {
+              // Another client owns the size: render at the PTY's size,
+              // scaled to fit, and attach at that same size so the repaint's
+              // soft wraps match what we display.
+              enterFollower(resp?.rows ?? term.rows, resp?.cols ?? term.cols);
+              phxChannel.push("attach", {
+                rows: resp?.rows ?? term.rows,
+                cols: resp?.cols ?? term.cols,
+              });
+            } else {
+              // Ownership is free (or ours): drive our own size — this
+              // resize claims it. Re-fit now that layout has settled so the
+              // PTY is the real size before the user runs anything (else the
+              // first `ls` renders at the default 80-col size until a later
+              // resize/repaint corrects it).
+              fit.fit();
+              pushResize();
+              // Report the settled viewport; the server resizes the PTY
+              // first and only then renders the attach repaint, so its soft
+              // wraps match this exact width.
+              phxChannel.push("attach", { rows: term.rows, cols: term.cols });
+              lastSize = term.rows + "x" + term.cols;
+              // Layout/fonts may still be settling right after join/refresh;
+              // re-fit on the next ticks so early output is not at a stale
+              // size.
+              window.setTimeout(relayout, 120);
+              window.setTimeout(relayout, 600);
+            }
+          },
+        )
         .receive("error", () => {
           term.writeln("\x1b[31mcould not attach to session\x1b[0m");
         });
 
+      // Ownership changes at runtime: somebody claimed the size (maybe us),
+      // or the owner left and the size is up for grabs.
+      phxChannel.on(
+        "size_owner",
+        (p: { owner?: string | null; rows?: number; cols?: number }) => {
+          if (isSizeFollower(clientId, p.owner)) {
+            enterFollower(p.rows ?? term.rows, p.cols ?? term.cols);
+          } else if (p.owner == null) {
+            // Ownership freed (the owner disconnected): drive our own size —
+            // the resize claims it. Last write wins if several clients race.
+            enterDriver("resize");
+          } else if (follower) {
+            // Our own takeover confirmed while we still rendered as follower.
+            enterDriver(null);
+          }
+        },
+      );
+
       // Follower: track the owner's PTY size instead of driving our own.
-      if (follower) {
-        phxChannel.on("resize", (p: { rows: number; cols: number }) => {
-          applyServerSize(p.rows, p.cols);
-        });
-      }
+      phxChannel.on("resize", (p: { rows: number; cols: number }) => {
+        if (follower) applyServerSize(p.rows, p.cols);
+      });
 
       const inputDisposable = term.onData((data) => {
         if (!gate.acceptInput()) return;
@@ -527,35 +669,29 @@ export default function TerminalView({
       let resizeTimer: number | undefined;
       const observer = new ResizeObserver(() => {
         window.clearTimeout(resizeTimer);
-        resizeTimer = window.setTimeout(() => {
-          if (follower) scaleToFit();
-          else maybeResize();
-        }, 60);
+        resizeTimer = window.setTimeout(relayout, 60);
       });
       observer.observe(container);
 
       // Idle self-heal: if the size ever drifts (zoom change, layout race, a
       // missed resize event) re-fit periodically and push only on change.
-      const idleTimer = window.setInterval(() => {
-        if (follower) scaleToFit();
-        else maybeResize();
-      }, 2500);
+      const idleTimer = window.setInterval(relayout, 2500);
 
       // Extra triggers a ResizeObserver can miss: window resize, browser zoom
       // (via window resize on most browsers), and the tab becoming visible.
-      const onWindowChange = () => {
-        if (follower) scaleToFit();
-        else maybeResize();
-      };
+      const onWindowChange = () => relayout();
       window.addEventListener("resize", onWindowChange);
       document.addEventListener("visibilitychange", onWindowChange);
 
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
+        claimSizeRef.current = null;
+        setSizeFollower(false);
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("dragover", onDragOver);
         container.removeEventListener("drop", onDrop);
         observer.disconnect();
+        canvasObserver?.disconnect();
         window.clearTimeout(coverTimer);
         window.clearTimeout(resizeTimer);
         window.clearInterval(idleTimer);
@@ -585,6 +721,23 @@ export default function TerminalView({
           terminal element's own padding — parent padding makes it overshoot
           by a row and TUI bottom bars get clipped. */}
       <div ref={containerRef} className="h-full w-full" />
+      {sizeFollower && (
+        <div
+          id="size-follower-banner"
+          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 border-b border-line bg-bg1/90 px-3 py-1 backdrop-blur-sm"
+        >
+          <span className="font-mono text-[11px] text-fg-muted">
+            {t("sizeFollowerBanner")}
+          </span>
+          <button
+            id="claim-size-button"
+            onClick={() => claimSizeRef.current?.()}
+            className="rounded border border-line px-2 py-0.5 font-mono text-[11px] text-mint transition-colors hover:border-mint"
+          >
+            {t("sizeFollowerTakeover")}
+          </button>
+        </div>
+      )}
       <div
         className={`pointer-events-none absolute inset-0 bg-bg0 transition-opacity duration-150 ${
           replaying ? "opacity-100" : "opacity-0"

@@ -66,13 +66,37 @@ defmodule Dala.Terminal.Server do
   Reports a connected client's viewport size.
 
   A session is shared: several clients (desktop, phone, another tab) may be
-  attached at once, but the single underlying PTY can only have one size. As
-  in tmux/screen, the PTY is sized to the *smallest* connected viewport so
-  its output never overflows the most constrained client. `client` is the
-  channel process; the server tracks it and drops its size when it exits.
+  attached at once, but the single underlying PTY can only have one size —
+  and exactly one client owns it. When nobody owns the size yet (fresh
+  session, or the owner disconnected), the first resize claims ownership; a
+  non-owner's resize is ignored silently (it renders at the owner's size and
+  scales to fit — see `claim_size/5` for explicit takeover). `client` is the
+  channel process, `client_ref` its public identity used in `size_owner`
+  broadcasts and join replies.
   """
-  def resize(id, client, rows, cols) when is_pid(client),
-    do: cast_if_alive(id, {:resize, client, rows, cols})
+  def resize(id, client, client_ref, rows, cols) when is_pid(client),
+    do: cast_if_alive(id, {:resize, client, client_ref, rows, cols})
+
+  @doc """
+  Force-claims size ownership (the follower banner's takeover button): sets
+  `client` as the owner, resizes the PTY, and broadcasts `size_owner` +
+  `resize` so every attached client learns its new role. Last write wins on
+  concurrent claims.
+  """
+  def claim_size(id, client, client_ref, rows, cols) when is_pid(client),
+    do: cast_if_alive(id, {:claim_size, client, client_ref, rows, cols})
+
+  @doc """
+  Ownership + size snapshot for join replies:
+  `%{owner: client_ref | nil, rows: rows, cols: cols}`, or nil if the
+  session is not running.
+  """
+  def size_info(id) do
+    case whereis(id) do
+      nil -> nil
+      pid -> GenServer.call(pid, :size_info)
+    end
+  end
 
   @doc "Current PTY size as `{rows, cols}`, or nil if the session is not running."
   def viewport(id) do
@@ -210,8 +234,12 @@ defmodule Dala.Terminal.Server do
           # Channels waiting for a holder repaint, in request order (the
           # holder answers over the same FIFO socket).
           pending_repaints: :queue.new(),
-          # Per-client viewport sizes; the PTY tracks their minimum.
+          # Monitored client channel pids -> their public client_ref.
           clients: %{},
+          # The single size owner as {pid, client_ref}, or nil. Only the
+          # owner's resize reaches the PTY; the first resize on an unowned
+          # session claims it.
+          owner: nil,
           # Once the stream reports cwd via OSC 7, /proc polling stops: the
           # top-level shell's cwd is stale inside zellij/tmux.
           osc7_cwd?: false,
@@ -245,6 +273,19 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_call(:viewport, _from, state) do
     {:reply, state.size, state}
+  end
+
+  @impl true
+  def handle_call(:size_info, _from, state) do
+    {rows, cols} = state.size
+
+    owner_ref =
+      case state.owner do
+        {_pid, client_ref} -> client_ref
+        nil -> nil
+      end
+
+    {:reply, %{owner: owner_ref, rows: rows, cols: cols}, state}
   end
 
   @impl true
@@ -287,23 +328,37 @@ defmodule Dala.Terminal.Server do
     {:noreply, state}
   end
 
-  def handle_cast({:resize, client, rows, cols}, state) do
-    # Monitor each client the first time we hear from it, so its size is
-    # dropped when the channel process exits.
-    unless Map.has_key?(state.clients, client), do: Process.monitor(client)
+  def handle_cast({:resize, client, client_ref, rows, cols}, state) do
+    state = track_client(state, client, client_ref)
 
-    clients = Map.put(state.clients, client, {rows, cols})
-    {:noreply, apply_min_size(%{state | clients: clients})}
+    case state.owner do
+      nil ->
+        # Unowned: the first resize claims ownership (a phone opening a
+        # session alone gets a native narrow PTY this way).
+        {:noreply, become_owner(state, client, client_ref, rows, cols)}
+
+      {^client, _ref} ->
+        {:noreply, apply_size(state, rows, cols)}
+
+      _other_owner ->
+        # Followers render at the owner's size; their viewport never
+        # shrinks the shared PTY.
+        {:noreply, state}
+    end
+  end
+
+  def handle_cast({:claim_size, client, client_ref, rows, cols}, state) do
+    # Explicit takeover: last write wins, the previous owner demotes to
+    # follower when the size_owner broadcast reaches it.
+    state = track_client(state, client, client_ref)
+    {:noreply, become_owner(state, client, client_ref, rows, cols)}
   end
 
   def handle_cast({:request_repaint, client}, state) do
-    # The requester's own viewport width decides soft vs hard wrapping in
-    # the repaint; an unknown client inherits the PTY width.
-    cols =
-      case Map.get(state.clients, client) do
-        {_rows, cols} -> cols
-        nil -> elem(state.size, 1)
-      end
+    # Every client renders the grid at the PTY's actual size (the owner
+    # drives it, followers mirror it), so the repaint's soft wraps must be
+    # generated at exactly that width.
+    cols = elem(state.size, 1)
 
     case Holder.send_repaint_req(state.socket, cols) do
       :ok ->
@@ -339,9 +394,19 @@ defmodule Dala.Terminal.Server do
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
       when is_map_key(state.clients, pid) do
-    # A client disconnected — drop its size so a larger remaining client can
-    # reclaim the PTY dimensions.
-    {:noreply, apply_min_size(%{state | clients: Map.delete(state.clients, pid)})}
+    # A client disconnected. If it owned the size, release ownership WITHOUT
+    # resizing (the PTY keeps its dimensions until someone claims); announce
+    # so followers may promote themselves via their next resize.
+    state = %{state | clients: Map.delete(state.clients, pid)}
+
+    case state.owner do
+      {^pid, _client_ref} ->
+        broadcast_size_owner(%{state | owner: nil})
+        {:noreply, %{state | owner: nil}}
+
+      _other ->
+        {:noreply, state}
+    end
   end
 
   def handle_info(:force_stop, state) do
@@ -446,8 +511,9 @@ defmodule Dala.Terminal.Server do
           end
 
         # The holder sized the PTY at spawn time; make sure a reattached one
-        # matches the currently connected clients.
-        {:noreply, apply_min_size(%{state | shell_pid: shell_pid}, force: true)}
+        # matches the size this server last applied.
+        {rows, cols} = state.size
+        {:noreply, apply_size(%{state | shell_pid: shell_pid}, rows, cols, force: true)}
 
       frame_type == Holder.type_exit() ->
         <<status::32>> = payload
@@ -501,29 +567,51 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  # Sizes the PTY to the smallest connected client's viewport. No-op while no
-  # clients are attached (keep the last size) or when the minimum is unchanged.
-  defp apply_min_size(state, opts \\ []) do
-    case Map.values(state.clients) do
-      [] ->
-        state
+  # Monitor each client the first time we hear from it, so ownership is
+  # released when its channel process exits.
+  defp track_client(state, client, client_ref) do
+    unless Map.has_key?(state.clients, client), do: Process.monitor(client)
+    %{state | clients: Map.put(state.clients, client, client_ref)}
+  end
 
-      sizes ->
-        rows = sizes |> Enum.map(&elem(&1, 0)) |> Enum.min()
-        cols = sizes |> Enum.map(&elem(&1, 1)) |> Enum.min()
-        size = {rows, cols}
+  # Makes `client` the size owner, applies its size, and announces the new
+  # ownership to every attached client.
+  defp become_owner(state, client, client_ref, rows, cols) do
+    state = apply_size(%{state | owner: {client, client_ref}}, rows, cols)
+    broadcast_size_owner(state)
+    state
+  end
 
-        if size == state.size and not Keyword.get(opts, :force, false) do
-          state
-        else
-          _ = Holder.send_resize(state.socket, rows, cols)
-          # Tell every attached client the new PTY size. Desktop clients that
-          # drive their own size ignore it; "follower" clients (e.g. a phone
-          # watching a desktop session) render at this size and scale to fit.
-          DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "resize", %{rows: rows, cols: cols})
-          %{state | size: size}
-        end
+  # Sizes the PTY to the owner's viewport. No-op when unchanged (unless
+  # forced, e.g. to realign a reattached holder).
+  defp apply_size(state, rows, cols, opts \\ []) do
+    if {rows, cols} == state.size and not Keyword.get(opts, :force, false) do
+      state
+    else
+      _ = Holder.send_resize(state.socket, rows, cols)
+      # Tell every attached client the new PTY size. The owner ignores it
+      # (it drives the size); followers render at it and scale to fit.
+      DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "resize", %{rows: rows, cols: cols})
+      %{state | size: {rows, cols}}
     end
+  end
+
+  # Announces who owns the size (nil = up for grabs) plus the current PTY
+  # size, so every client can derive its own role from one message.
+  defp broadcast_size_owner(state) do
+    {rows, cols} = state.size
+
+    owner_ref =
+      case state.owner do
+        {_pid, client_ref} -> client_ref
+        nil -> nil
+      end
+
+    DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "size_owner", %{
+      owner: owner_ref,
+      rows: rows,
+      cols: cols
+    })
   end
 
   # Broadcasts an output chunk to connected clients with the next seq.

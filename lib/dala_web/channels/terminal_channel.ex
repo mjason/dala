@@ -57,11 +57,18 @@ defmodule DalaWeb.TerminalChannel do
         session = reconcile_status(session)
         send(self(), :after_join)
 
-        {rows, cols} = Dala.Terminal.Server.viewport(session_id) || {24, 80}
+        # PTY size ownership (see Dala.Terminal.Server.resize/5): the reply
+        # tells this client who currently owns the size — and its own
+        # client_id so it can recognize itself in `size_owner` broadcasts.
+        %{owner: owner, rows: rows, cols: cols} =
+          Dala.Terminal.Server.size_info(session_id) || %{owner: nil, rows: 24, cols: 80}
+
+        client_id = Ash.UUID.generate()
 
         socket =
           socket
           |> assign(:session_id, session.id)
+          |> assign(:client_id, client_id)
           |> assign(:fc, %{
             enabled: false,
             alt: false,
@@ -71,7 +78,15 @@ defmodule DalaWeb.TerminalChannel do
             repaint_requested: false
           })
 
-        {:ok, %{status: session.status, cwd: session.cwd, rows: rows, cols: cols}, socket}
+        {:ok,
+         %{
+           status: session.status,
+           cwd: session.cwd,
+           rows: rows,
+           cols: cols,
+           owner: owner,
+           client_id: client_id
+         }, socket}
 
       {:error, _error} ->
         {:error, %{reason: "not_found"}}
@@ -186,8 +201,9 @@ defmodule DalaWeb.TerminalChannel do
     cols = min(max(cols, 1), @max_cols)
 
     # Order matters: the resize reaches the holder (reflow) before the
-    # repaint request on the same FIFO socket.
-    Dala.Terminal.Server.resize(id, self(), rows, cols)
+    # repaint request on the same FIFO socket. (If another client owns the
+    # size this is a no-op — followers attach at the PTY's size anyway.)
+    Dala.Terminal.Server.resize(id, self(), socket.assigns.client_id, rows, cols)
 
     if Dala.Terminal.Server.alive?(id) and not socket.assigns[:replayed] and
          not Map.get(socket.assigns, :repaint_requested, false) do
@@ -206,9 +222,36 @@ defmodule DalaWeb.TerminalChannel do
       when is_integer(rows) and is_integer(cols) do
     rows = min(max(rows, 1), @max_rows)
     cols = min(max(cols, 1), @max_cols)
-    # `self()` is this channel process — one per connected client. The server
-    # tracks each client's size and sizes the shared PTY to their minimum.
-    Dala.Terminal.Server.resize(socket.assigns.session_id, self(), rows, cols)
+    # `self()` is this channel process — one per connected client. The first
+    # resize on an unowned session claims size ownership; a non-owner's
+    # resize is dropped by the server.
+    Dala.Terminal.Server.resize(
+      socket.assigns.session_id,
+      self(),
+      socket.assigns.client_id,
+      rows,
+      cols
+    )
+
+    {:noreply, socket}
+  end
+
+  # Explicit size takeover (the follower banner's button): become the owner
+  # and resize the PTY to this client's viewport. The server broadcasts
+  # `size_owner` so the previous owner demotes itself.
+  def handle_in("claim_size", %{"rows" => rows, "cols" => cols}, socket)
+      when is_integer(rows) and is_integer(cols) do
+    rows = min(max(rows, 1), @max_rows)
+    cols = min(max(cols, 1), @max_cols)
+
+    Dala.Terminal.Server.claim_size(
+      socket.assigns.session_id,
+      self(),
+      socket.assigns.client_id,
+      rows,
+      cols
+    )
+
     {:noreply, socket}
   end
 
