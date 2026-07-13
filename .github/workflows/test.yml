@@ -35,6 +35,8 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
           key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+      # file_watch_socket_test 断言 inotify 后端，runner 默认没有
+      - run: sudo apt-get update && sudo apt-get install -y inotify-tools
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: mix test --cover

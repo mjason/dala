@@ -104,7 +104,7 @@ defmodule Dala.Lsp.DiscoveryTest do
 
   test "root dala.jsonc with comments, $HOME and ${root} expansion", %{root: root} do
     fake_bin(root, "tools/custom-lsp")
-    home_rel = Path.relative_to(root, System.user_home!())
+    home_rel = Path.relative_to(root, System.user_home!(), force: true)
 
     File.write!(Path.join(root, "dala.jsonc"), """
     {
@@ -124,14 +124,18 @@ defmodule Dala.Lsp.DiscoveryTest do
 
     assert [
              %{name: "custom-lsp", command: [^expected, "--stdio"]},
-             %{name: "custom-lsp", command: [^expected, "--alt"]}
+             %{name: "custom-lsp", command: [alt_path, "--alt"]}
            ] = probe.servers
+
+    # $HOME expansion keeps the ../-traversal verbatim (the FILE is what
+    # must exist); compare the normalized form.
+    assert Path.expand(alt_path) == expected
 
     assert Enum.all?(probe.checked, & &1.found)
   end
 
   test "tilde expansion in .dala/lsp.json", %{root: root} do
-    home_rel = Path.relative_to(root, System.user_home!())
+    home_rel = Path.relative_to(root, System.user_home!(), force: true)
     fake_bin(root, "tools/tilde-lsp")
     File.mkdir_p!(Path.join(root, ".dala"))
 
