@@ -19,6 +19,13 @@ import { createAckCounter } from "./flowControl";
 import { collectTransferFiles } from "./pasteFiles";
 import { pastedPathsText, uploadPastedFiles } from "./pastedFileUpload";
 import { resolveSendMode, sendComposedText, type SendStrategy } from "./terminalSend";
+import {
+  createLineAccumulator,
+  createTouchPan,
+  decayVelocity,
+  MIN_COAST_VELOCITY,
+  touchScrollRoute,
+} from "./touchScroll";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
 import { isMac } from "./shortcuts";
@@ -87,7 +94,11 @@ export type { SendStrategy } from "./terminalSend";
 
 export type TerminalActions = {
   reset: () => void;
-  refit: () => void;
+  /** Recompute the terminal size for THIS screen. `takeover` marks an
+   * explicit user action (the 适配宽度 button/shortcut): as a size follower
+   * it claims ownership so the PTY reflows to our grid. Programmatic refits
+   * (composer open/close, restart, kick) must leave ownership alone. */
+  refit: (takeover?: boolean) => void;
   focus: () => void;
   /** Deliver text composed in the native input bar using the given
    * per-agent strategy (see SendStrategy). */
@@ -526,10 +537,20 @@ export default function TerminalView({
 
       // Header-button actions so the user can recover a wedged terminal or
       // recompute width without remembering a shortcut.
-      const refit = () => {
+      const refit = (takeover = false) => {
         if (follower) {
-          syncWebglCanvas();
-          scaleToFit();
+          if (takeover) {
+            // The explicit Refit action means "fit to MY screen" — for a
+            // follower that is a takeover: claim the size so the PTY
+            // reflows to our grid instead of re-scaling someone else's
+            // width into the corner.
+            enterDriver("claim");
+          } else {
+            // Programmatic refits (composer toggle, restart, …) keep the
+            // follower role: just re-sync the scaled rendering.
+            syncWebglCanvas();
+            scaleToFit();
+          }
         } else {
           resetPadding();
           fit.fit();
@@ -679,6 +700,124 @@ export default function TerminalView({
       container.addEventListener("dragover", onDragOver);
       container.addEventListener("drop", onDrop);
 
+      // ---- Touch scrolling (phones/tablets) -------------------------------
+      // xterm 6 has NO touch handling at all: v5's `.xterm-viewport` was a
+      // native `overflow-y: scroll` element (panning worked for free), v6
+      // replaced it with VS Code's ScrollableElement which only listens to
+      // wheel events — so on mobile a one-finger pan does nothing. Convert
+      // vertical pans here (math in touchScroll.ts):
+      //  - normal buffer → term.scrollLines(), 1 touch px ≈ 1 scroll px
+      //    (line-quantized, like every wheel scroll), plus flick inertia;
+      //  - alt-screen TUIs / mouse-tracking apps → synthetic per-line
+      //    WheelEvents on `.xterm`, which run xterm's own wheel→arrow-key
+      //    conversion (less, vim) or mouse reports (mouse-mode TUIs).
+      // Gated on a coarse PRIMARY pointer, same policy as TouchKeyBar:
+      // desktops (even with touchscreens) see zero behavior change.
+      const coarseQuery =
+        typeof window.matchMedia === "function"
+          ? window.matchMedia("(pointer: coarse)")
+          : null;
+      const touchPan = createTouchPan();
+      const panLines = createLineAccumulator();
+      let inertiaFrame: number | undefined;
+      const stopInertia = () => {
+        if (inertiaFrame !== undefined) {
+          window.cancelAnimationFrame(inertiaFrame);
+          inertiaFrame = undefined;
+        }
+      };
+      const cellHeight = () => {
+        const screen = container.querySelector<HTMLElement>(".xterm-screen");
+        const h = screen && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+        return h > 0 ? h : 17;
+      };
+      const scrollRoute = () =>
+        touchScrollRoute(term.buffer.active.type, term.modes.mouseTrackingMode);
+      const applyPanLines = (lines: number, clientX: number, clientY: number) => {
+        if (lines === 0) return;
+        if (scrollRoute() === "lines") {
+          term.scrollLines(lines);
+          return;
+        }
+        // One wheel event per line: xterm sends exactly one arrow key (or
+        // one mouse report) per wheel event, whatever its magnitude.
+        // DOM_DELTA_LINE keeps consumeWheelEvent's math at 1 event = 1 line
+        // (pixel mode applies trackpad damping). Dispatched on `.xterm`
+        // itself — below the ScrollableElement's own listener, so the
+        // scrollback stays untouched.
+        const target = term.element;
+        if (!target) return;
+        const step = lines > 0 ? 1 : -1;
+        for (let i = Math.abs(lines); i > 0; i--) {
+          target.dispatchEvent(
+            new WheelEvent("wheel", {
+              bubbles: true,
+              cancelable: true,
+              deltaMode: WheelEvent.DOM_DELTA_LINE,
+              deltaY: step,
+              clientX,
+              clientY,
+            }),
+          );
+        }
+      };
+      // Flick inertia — scrollback only: a decaying arrow-key storm would
+      // overshoot in alt-screen TUIs, so those stop dead on release.
+      const startInertia = (releaseVelocity: number) => {
+        if (releaseVelocity === 0 || scrollRoute() !== "lines") return;
+        let v = releaseVelocity;
+        let last: number | undefined;
+        const frame = (now: number) => {
+          inertiaFrame = undefined;
+          if (last !== undefined) {
+            const dt = now - last;
+            v = decayVelocity(v, dt);
+            if (Math.abs(v) < MIN_COAST_VELOCITY || scrollRoute() !== "lines") return;
+            const lines = panLines.add(v * dt, cellHeight());
+            if (lines !== 0) term.scrollLines(lines);
+          }
+          last = now;
+          inertiaFrame = window.requestAnimationFrame(frame);
+        };
+        inertiaFrame = window.requestAnimationFrame(frame);
+      };
+      const onTouchStart = (event: TouchEvent) => {
+        if (!coarseQuery?.matches) return;
+        stopInertia();
+        panLines.reset();
+        if (event.touches.length !== 1) {
+          touchPan.cancel();
+          return;
+        }
+        const t = event.touches[0];
+        touchPan.start(t.clientX, t.clientY, event.timeStamp);
+      };
+      const onTouchMove = (event: TouchEvent) => {
+        if (event.touches.length !== 1) {
+          touchPan.cancel();
+          return;
+        }
+        const t = event.touches[0];
+        const update = touchPan.move(t.clientX, t.clientY, event.timeStamp);
+        if (update.phase !== "pan") return;
+        // We own this vertical gesture: keep the browser from panning/
+        // rubber-banding the page. Taps and horizontal gestures never get
+        // here, so focus/selection behavior stays untouched.
+        event.preventDefault();
+        applyPanLines(panLines.add(update.scrollPx, cellHeight()), t.clientX, t.clientY);
+      };
+      const onTouchEnd = (event: TouchEvent) => {
+        if (event.touches.length > 0) return;
+        startInertia(touchPan.end(event.timeStamp));
+      };
+      const onTouchCancel = () => {
+        touchPan.cancel();
+      };
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: false });
+      container.addEventListener("touchend", onTouchEnd, { passive: true });
+      container.addEventListener("touchcancel", onTouchCancel, { passive: true });
+
       let resizeTimer: number | undefined;
       const observer = new ResizeObserver(() => {
         window.clearTimeout(resizeTimer);
@@ -703,6 +842,11 @@ export default function TerminalView({
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("dragover", onDragOver);
         container.removeEventListener("drop", onDrop);
+        stopInertia();
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
+        container.removeEventListener("touchcancel", onTouchCancel);
         observer.disconnect();
         canvasObserver?.disconnect();
         window.clearTimeout(coverTimer);
@@ -737,15 +881,15 @@ export default function TerminalView({
       {sizeFollower && (
         <div
           id="size-follower-banner"
-          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 border-b border-line bg-bg1/90 px-3 py-1 backdrop-blur-sm"
+          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 border-b border-line bg-bg1/90 px-3 py-1 backdrop-blur-sm pointer-coarse:py-2"
         >
-          <span className="font-mono text-[11px] text-fg-muted">
+          <span className="font-mono text-[11px] text-fg-muted pointer-coarse:text-[13px]">
             {t("sizeFollowerBanner")}
           </span>
           <button
             id="claim-size-button"
             onClick={() => claimSizeRef.current?.()}
-            className="rounded border border-line px-2 py-0.5 font-mono text-[11px] text-mint transition-colors hover:border-mint"
+            className="rounded border border-line px-2 py-0.5 font-mono text-[11px] text-mint transition-colors hover:border-mint pointer-coarse:px-3 pointer-coarse:py-1.5 pointer-coarse:text-[13px]"
           >
             {t("sizeFollowerTakeover")}
           </button>

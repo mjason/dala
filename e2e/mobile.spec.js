@@ -42,6 +42,71 @@ async function nonBackgroundPixels(page, clip) {
   }, shot.toString("base64"));
 }
 
+/** 通过 CDP 派发真实触摸事件序列,做 (fromX,fromY)→(toX,toY) 的单指滑动。
+ * playwright 的 page.touchscreen 只有 tap,没有 swipe;CDP 的
+ * Input.dispatchTouchEvent 会生成浏览器级 TouchEvent(带真实时间戳),
+ * 走的就是真机上的同一条事件通路。 */
+async function swipe(page, fromX, fromY, toX, toY, steps = 8) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: fromX, y: fromY }],
+    });
+    for (let i = 1; i <= steps; i++) {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [
+          {
+            x: Math.round(fromX + ((toX - fromX) * i) / steps),
+            y: Math.round(fromY + ((toY - fromY) * i) / steps),
+          },
+        ],
+      });
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+}
+
+/** 竖直滑动的便捷封装。 */
+async function swipeVertical(page, x, fromY, toY) {
+  await swipe(page, x, fromY, x, toY);
+}
+
+/** __dalaTerm 调试句柄读 emulator buffer 状态(WebGL 下 DOM 没有文字)。 */
+async function bufferState(page) {
+  return page.evaluate(() => {
+    const buf = window.__dalaTerm?.buffer.active;
+    return buf
+      ? {
+          type: buf.type,
+          baseY: buf.baseY,
+          viewportY: buf.viewportY,
+          topLine: buf.getLine(buf.viewportY)?.translateToString(true).trim() ?? "",
+        }
+      : null;
+  });
+}
+
+/** 等 shell 就绪且 xterm 的隐藏 textarea 拿到焦点,之后才能用 keyboard 输入。 */
+async function waitTerminalReady(page) {
+  await expect
+    .poll(() => page.evaluate(() => window.__dalaFlow?.acked ?? 0), { timeout: 15_000 })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            document.activeElement?.classList?.contains("xterm-helper-textarea") ?? false,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+}
+
 /** .xterm-screen 的布局宽度(offsetWidth,不受 transform 影响)与视觉宽度。 */
 async function screenWidths(page) {
   return page.evaluate(() => {
@@ -141,6 +206,21 @@ test.describe("Given 手机上的 dala 用户", () => {
       await expect(desktopPage.locator("#size-follower-banner")).toBeVisible({
         timeout: 10_000,
       });
+
+      // 桌面端点工具栏"适配宽度"(宽视口下直接可见,不在 ⋯ 菜单里):
+      // follower 状态下 Refit = "适配到我的屏幕" = 接管尺寸。
+      await desktopPage.locator("#terminal-refit-button").click();
+      // 桌面重新成为所有者:横幅消失,布局宽度涨回桌面容器宽度,无缩放。
+      await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
+      await expect
+        .poll(async () => (await screenWidths(desktopPage)).layout, { timeout: 10_000 })
+        .toBeGreaterThan(phone.viewport.width);
+      const reclaimed = await screenWidths(desktopPage);
+      expect(Math.abs(reclaimed.visual - reclaimed.layout)).toBeLessThanOrEqual(2);
+      // 手机被降级回 follower:横幅重新出现。
+      await expect(phonePage.locator("#size-follower-banner")).toBeVisible({
+        timeout: 10_000,
+      });
     } finally {
       if (id) await h.deleteSession(desktopPage, id).catch(() => {});
       await phoneCtx?.close();
@@ -176,6 +256,16 @@ test.describe("Given 手机上的 dala 用户", () => {
         );
       }
 
+      // 触屏密度:每个可见工具栏按钮的点按高度 ≥ 40px(Apple HIG 量级)。
+      const heights = await page
+        .locator("header button:visible")
+        .evaluateAll((els) =>
+          els.map((el) => ({ id: el.id, height: el.getBoundingClientRect().height })),
+        );
+      for (const box of heights) {
+        expect(box.height, `按钮 #${box.id} 点按高度不足`).toBeGreaterThanOrEqual(40);
+      }
+
       // 键盘向操作(Refit / Reset / Detach / 设置)在 ⋯ 菜单里仍可达。
       await page.locator("#toolbar-overflow-button").tap();
       await expect(page.locator("#toolbar-overflow")).toBeVisible();
@@ -201,6 +291,10 @@ test.describe("Given 手机上的 dala 用户", () => {
       await expect(page.locator("#touch-key-bar")).toBeVisible();
       // 触摸端的 composer 提示条给的是可点按钮,而不是快捷键徽章。
       await expect(page.locator("#composer-open-touch")).toBeVisible();
+
+      // 触屏密度:键条按钮点按高度 ≥ 40px。
+      const escBox = await page.locator('#touch-key-bar [data-key="esc"]').boundingBox();
+      expect(escBox.height).toBeGreaterThanOrEqual(40);
 
       // 等 shell 就绪、终端已拿到焦点(xterm 的隐藏 textarea)。
       await expect
@@ -232,6 +326,109 @@ test.describe("Given 手机上的 dala 用户", () => {
     }
   });
 
+  test("触屏可以滑动回滚终端输出", async ({ browser }) => {
+    const context = await browser.newContext({ ...phone });
+    const page = await context.newPage();
+    let id;
+    try {
+      await h.gotoApp(page);
+      id = await h.createSession(page);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+
+      // 造 200 行回滚(直接敲进终端,和真机路径一致)。
+      await page.keyboard.type("seq 1 200");
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(async () => (await bufferState(page))?.baseY ?? 0, { timeout: 15_000 })
+        .toBeGreaterThan(100);
+
+      // 输出完时视口贴底(viewportY == baseY)。
+      const before = await bufferState(page);
+      expect(before.viewportY).toBe(before.baseY);
+
+      // 手指向下滑 = 往回看历史:viewportY 必须变小。
+      await swipeVertical(page, 195, 200, 420);
+      await expect
+        .poll(async () => (await bufferState(page)).viewportY, { timeout: 5_000 })
+        .toBeLessThan(before.baseY);
+
+      // 手指向上滑 = 回到新输出方向:viewportY 回升。
+      const mid = await bufferState(page);
+      await swipeVertical(page, 195, 420, 200);
+      await expect
+        .poll(async () => (await bufferState(page)).viewportY, { timeout: 5_000 })
+        .toBeGreaterThan(mid.viewportY);
+
+      // 等惯性滚动停稳(连续两次采样相同)再测横滑。
+      let prevY = -1;
+      await expect
+        .poll(
+          async () => {
+            const cur = (await bufferState(page)).viewportY;
+            const stable = cur === prevY;
+            prevY = cur;
+            return stable;
+          },
+          { timeout: 5_000, intervals: [250] },
+        )
+        .toBe(true);
+
+      // 横滑绝不能被劫持成滚动:viewportY 原地不动。
+      const beforeH = await bufferState(page);
+      await swipe(page, 60, 300, 240, 302);
+      const afterH = await bufferState(page);
+      expect(afterH.viewportY).toBe(beforeH.viewportY);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      await context.close();
+    }
+  });
+
+  test("Alt-screen TUI(less)里竖直滑动转换成方向键,内容跟着走", async ({ browser }) => {
+    const context = await browser.newContext({ ...phone });
+    const page = await context.newPage();
+    let id;
+    try {
+      await h.gotoApp(page);
+      id = await h.createSession(page);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+
+      // 在 alt buffer 里打开一个肯定超过一屏的文件。
+      await page.keyboard.type("seq 1 500 > /tmp/dala-touch-e2e.txt && less /tmp/dala-touch-e2e.txt");
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(async () => (await bufferState(page))?.type, { timeout: 15_000 })
+        .toBe("alternate");
+      await expect
+        .poll(async () => (await bufferState(page)).topLine, { timeout: 10_000 })
+        .toBe("1");
+
+      // 手指向上滑 = 内容前进(等价滚轮向下,xterm 转成 ↓ 方向键喂给 less):
+      // 首行必须不再是 "1"。
+      await swipeVertical(page, 195, 420, 250);
+      await expect
+        .poll(async () => (await bufferState(page)).topLine, { timeout: 5_000 })
+        .not.toBe("1");
+
+      // 手指向下滑 = 内容回退,能滚回文件开头。
+      await swipeVertical(page, 195, 200, 480);
+      await swipeVertical(page, 195, 200, 480);
+      await expect
+        .poll(async () => (await bufferState(page)).topLine, { timeout: 5_000 })
+        .toBe("1");
+
+      // 退出 less、清理临时文件。
+      await page.keyboard.press("q");
+      await page.keyboard.type("rm -f /tmp/dala-touch-e2e.txt");
+      await page.keyboard.press("Enter");
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      await context.close();
+    }
+  });
+
   test("桌面(精确指针)上下文不渲染触摸键条", async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
@@ -244,6 +441,9 @@ test.describe("Given 手机上的 dala 用户", () => {
       // 桌面工具栏保持原样:Refit 直接可见,没有 ⋯ 溢出按钮。
       await expect(page.locator("#terminal-refit-button")).toBeVisible();
       await expect(page.locator("#toolbar-overflow-button")).toBeHidden();
+      // 密度适配只作用于 coarse pointer:桌面按钮保持紧凑(高度 < 40px)。
+      const refitBox = await page.locator("#terminal-refit-button").boundingBox();
+      expect(refitBox.height).toBeLessThan(40);
     } finally {
       if (id) await h.deleteSession(page, id).catch(() => {});
       await context.close();

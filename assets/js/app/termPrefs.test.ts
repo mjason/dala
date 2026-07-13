@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  COARSE_POINTER_FONT_SIZE,
   DEFAULT_PREFS,
+  defaultFontSize,
   fontStack,
   loadPrefs,
   onPrefsChange,
@@ -49,6 +51,43 @@ describe("termPrefs", () => {
     savePrefs({ fontSize: 20, fontFamily: "Fira Code" });
     expect(resetPrefs()).toEqual(DEFAULT_PREFS);
     expect(loadPrefs()).toEqual(DEFAULT_PREFS);
+  });
+
+  describe("device-aware default font size (pointer: coarse)", () => {
+    // jsdom has no media query engine — stub matchMedia per test.
+    const stubPointer = (coarse: boolean) =>
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn().mockReturnValue({ matches: coarse } as MediaQueryList),
+      );
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("defaults to the larger touch font when nothing is stored", () => {
+      stubPointer(true);
+      expect(defaultFontSize()).toBe(COARSE_POINTER_FONT_SIZE);
+      expect(loadPrefs().fontSize).toBe(COARSE_POINTER_FONT_SIZE);
+    });
+
+    it("keeps the desktop default on fine pointers", () => {
+      stubPointer(false);
+      expect(defaultFontSize()).toBe(DEFAULT_PREFS.fontSize);
+      expect(loadPrefs().fontSize).toBe(DEFAULT_PREFS.fontSize);
+    });
+
+    it("an explicitly stored fontSize wins over the device default", () => {
+      stubPointer(true);
+      savePrefs({ fontSize: 12 });
+      expect(loadPrefs().fontSize).toBe(12);
+    });
+
+    it("resetPrefs restores the device default, not the desktop constant", () => {
+      stubPointer(true);
+      savePrefs({ fontSize: 20 });
+      expect(resetPrefs().fontSize).toBe(COARSE_POINTER_FONT_SIZE);
+    });
   });
 
   it("builds the font stack with the bundled font as fallback", () => {

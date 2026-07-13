@@ -392,14 +392,14 @@ export default function InputBar({
           id="input-bar-send"
           onClick={send}
           disabled={!value.trim()}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-mint px-2.5 py-1 text-[12px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-mint px-2.5 py-1 text-[12px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40 pointer-coarse:min-h-10 pointer-coarse:px-4 pointer-coarse:text-sm"
         >
           {t("inputBarSend")} <Kbd>{formatCombo(bindings.composerSend)}</Kbd>
         </button>
         <button
           id="input-bar-mention"
           onClick={insertMention}
-          className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
+          className="shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint pointer-coarse:min-h-10 pointer-coarse:min-w-10 pointer-coarse:text-sm"
           title={`${t("composerMention")} · ${formatCombo(bindings.composerMention)}`}
         >
           @
@@ -407,10 +407,10 @@ export default function InputBar({
         <button
           id="input-bar-attach"
           onClick={() => attachRef.current?.click()}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint"
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint pointer-coarse:h-10 pointer-coarse:w-10"
           title={`${t("composerAttach")} · ${formatCombo(bindings.composerAttach)}`}
         >
-          <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg viewBox="0 0 16 16" className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M8 3v10M3 8h10" strokeLinecap="round" />
           </svg>
         </button>
@@ -428,7 +428,7 @@ export default function InputBar({
           id="input-bar-voice"
           onClick={() => void toggleVoice()}
           className={[
-            "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors",
+            "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors pointer-coarse:h-10 pointer-coarse:w-10",
             voice === "recording"
               ? "animate-pulse border-red-400/70 text-red-400"
               : voice === "busy"
@@ -437,7 +437,7 @@ export default function InputBar({
           ].join(" ")}
           title={`${voice === "recording" ? t("speechStop") : t("speechStart")} · ${formatCombo(bindings.voice)}`}
         >
-          <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg viewBox="0 0 16 16" className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="6" y="2" width="4" height="7" rx="2" />
             <path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14" strokeLinecap="round" />
           </svg>

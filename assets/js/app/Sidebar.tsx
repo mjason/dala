@@ -64,10 +64,10 @@ export default function Sidebar({
           id="new-session-button"
           onClick={onCreate}
           disabled={creating}
-          className="grid h-7 w-7 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-fg-muted hover:text-fg disabled:opacity-50"
+          className="grid h-7 w-7 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-fg-muted hover:text-fg disabled:opacity-50 pointer-coarse:h-10 pointer-coarse:w-10"
           title={t("newTerminal")}
         >
-          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4.5 pointer-coarse:w-4.5" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M8 3v10M3 8h10" strokeLinecap="round" />
           </svg>
         </button>
@@ -89,7 +89,7 @@ export default function Sidebar({
             <div
               key={s.id}
               onClick={() => onSelect(s.id)}
-              className={`group mb-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${
+              className={`group mb-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors pointer-coarse:min-h-11 ${
                 active ? "bg-bg2 text-fg" : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
               }`}
             >
@@ -113,10 +113,10 @@ export default function Sidebar({
                   e.stopPropagation();
                   onOpenSettings(s.id);
                 }}
-                className="hidden h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-fg group-hover:grid"
+                className="hidden h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-fg group-hover:grid pointer-coarse:grid pointer-coarse:h-9 pointer-coarse:w-9"
                 title={t("sessionSettings")}
               >
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="currentColor">
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4.5 pointer-coarse:w-4.5" fill="currentColor">
                   <circle cx="3" cy="8" r="1.3" />
                   <circle cx="8" cy="8" r="1.3" />
                   <circle cx="13" cy="8" r="1.3" />
@@ -128,12 +128,12 @@ export default function Sidebar({
                   e.stopPropagation();
                   onDelete(s.id);
                 }}
-                className="hidden h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-danger group-hover:grid"
+                className="hidden h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-danger group-hover:grid pointer-coarse:grid pointer-coarse:h-9 pointer-coarse:w-9"
                 title={t("deleteSession")}
               >
                 <svg
                   viewBox="0 0 16 16"
-                  className="h-3.5 w-3.5"
+                  className="h-3.5 w-3.5 pointer-coarse:h-4.5 pointer-coarse:w-4.5"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="1.5"

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { FieldLabel, TextInput, ValueChip } from "../ui";
 import { useI18n } from "../i18n";
 import {
-  DEFAULT_PREFS,
+  defaultFontSize,
   FONT_SIZE_RANGE,
   LINE_HEIGHT_RANGE,
   SCROLL_SENSITIVITY_RANGE,
@@ -100,7 +100,7 @@ export default function AppearanceSection() {
               min={FONT_SIZE_RANGE.min}
               max={FONT_SIZE_RANGE.max}
               value={prefs.fontSize}
-              onChange={(e) => apply({ fontSize: Number(e.target.value) || DEFAULT_PREFS.fontSize })}
+              onChange={(e) => apply({ fontSize: Number(e.target.value) || defaultFontSize() })}
               className="text-right"
             />
           </div>

@@ -50,13 +50,16 @@ export default function TouchKeyBar({ ctrl, onCtrl, onKey }: Props) {
     run();
   };
 
+  // Apple HIG-ish tap targets: every key is at least 40px tall (min-h on
+  // the buttons themselves — the bar's top border must not eat into it)
+  // with 14px text that reads at arm's length.
   const base =
-    "min-w-9 flex-1 rounded-md border px-2 font-mono text-[12px] transition-colors select-none";
+    "min-h-10 min-w-11 flex-1 rounded-md border px-2 font-mono text-sm transition-colors select-none";
 
   return (
     <div
       id="touch-key-bar"
-      className="flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-t border-line bg-bg1 px-2 py-1.5"
+      className="flex shrink-0 items-stretch gap-1.5 overflow-x-auto border-t border-line bg-bg1 px-2 py-1"
     >
       {KEYS.slice(0, 2).map(({ key, label }) => (
         <button

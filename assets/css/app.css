@@ -174,6 +174,28 @@ body:has(> #app) {
   overflow: hidden;
 }
 
+/* Touch-first devices: an unconsumed horizontal pan over the app (nothing
+   here scrolls horizontally) must not become the browser's overscroll
+   history navigation — a stray sideways swipe over the terminal would
+   navigate away and drop the session view. Also suppresses pull-to-refresh
+   on Android. Scoped to coarse pointers: desktop trackpad swipe-back keeps
+   working. */
+@media (pointer: coarse) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+
+  /* iOS Safari auto-zooms the page when a focused text control is sized
+     below 16px — keep every settings-modal control at 16px on touch so
+     tapping an input never jolts the layout. Desktop is untouched. */
+  #session-settings input:not([type="range"]):not([type="checkbox"]),
+  #session-settings select,
+  #session-settings textarea {
+    font-size: 16px;
+  }
+}
+
 /* index.tsx keeps --vvh at window.visualViewport.height: when the soft
    keyboard opens, the shell shrinks with the visible area instead of
    sitting half-covered. Before the JS runs, dvh/vh are the fallback. */

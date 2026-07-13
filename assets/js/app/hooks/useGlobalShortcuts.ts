@@ -104,7 +104,8 @@ export function useGlobalShortcuts(opts: {
       },
       refit: (e) => {
         e.preventDefault();
-        termActions.current?.refit();
+        // Explicit user action — same takeover semantics as the button.
+        termActions.current?.refit(true);
       },
       resetTerminal: (e) => {
         e.preventDefault();

@@ -24,6 +24,11 @@ import { useI18n } from "./i18n";
 
 type Toast = { id: number; message: string };
 
+// Touch density (Apple HIG ≈44px targets): coarse-pointer devices get
+// taller, roomier toolbar buttons with ≥14px text. Gated entirely on
+// `pointer-coarse:` so desktop stays pixel-identical.
+const touchToolbarBtn = "pointer-coarse:min-h-10 pointer-coarse:px-3 pointer-coarse:text-sm";
+
 export default function App() {
   const { t } = useI18n();
   const [navOpen, setNavOpen] = useState(false);
@@ -447,7 +452,7 @@ export default function App() {
         setToolbarMenuOpen(false);
         run();
       }}
-      className="px-3 py-2 text-left font-mono text-[12px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+      className="px-3 py-2 text-left font-mono text-[12px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg pointer-coarse:min-h-11 pointer-coarse:py-3 pointer-coarse:text-sm"
     >
       {label}
     </button>
@@ -461,9 +466,9 @@ export default function App() {
           if (window.matchMedia("(min-width: 768px)").matches) toggleSidebar();
           else setNavOpen((v) => !v);
         }}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:text-fg"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:text-fg pointer-coarse:h-10 pointer-coarse:w-10"
       >
-        <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <svg viewBox="0 0 16 16" className="h-4 w-4 pointer-coarse:h-5 pointer-coarse:w-5" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" strokeLinecap="round" />
         </svg>
       </button>
@@ -528,7 +533,7 @@ export default function App() {
                 <button
                   id="quick-shell-button"
                   onClick={() => quickShellRef.current()}
-                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
                     qsOpen
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-mint/60 hover:text-mint"
@@ -545,13 +550,13 @@ export default function App() {
                 <button
                   id="input-bar-button"
                   onClick={() => toggleComposer()}
-                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
                     composerOpen[active.id]
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
                   }`}
                 >
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4.5 pointer-coarse:w-4.5" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <rect x="1.5" y="4" width="13" height="8" rx="1.5" />
                     <path d="M4 9.5h8" strokeLinecap="round" />
                   </svg>
@@ -578,9 +583,9 @@ export default function App() {
                 <button
                   id="quick-open-button"
                   onClick={() => setQuickOpen(true)}
-                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
                 >
-                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4.5 pointer-coarse:w-4.5" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <circle cx="7" cy="7" r="4" />
                     <path d="m13 13-3.2-3.2" strokeLinecap="round" />
                   </svg>
@@ -590,7 +595,7 @@ export default function App() {
                 <button
                   id="toggle-drawer-button"
                   onClick={toggleDrawer}
-                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
                     drawerOpen
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
@@ -603,7 +608,7 @@ export default function App() {
                 <button
                   id="toggle-git-button"
                   onClick={toggleGit}
-                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
                     gitOpen
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
@@ -620,7 +625,7 @@ export default function App() {
                 <button
                   id="kick-viewers-header-button"
                   onClick={() => void kickOtherViewers()}
-                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
                 >
                   {t("kickViewersAction")}
                 </button>
@@ -633,8 +638,8 @@ export default function App() {
               >
                 <button
                   id="terminal-refit-button"
-                  onClick={() => termActions.current?.refit()}
-                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                  onClick={() => termActions.current?.refit(true)}
+                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
                 >
                   {t("refitWidth")}
                 </button>
@@ -648,7 +653,7 @@ export default function App() {
                 <button
                   id="terminal-reset-button"
                   onClick={() => termActions.current?.reset()}
-                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
                 >
                   {t("resetTerminal")}
                 </button>
@@ -661,7 +666,7 @@ export default function App() {
                 <button
                   id="session-settings-button"
                   onClick={() => setSettingsFor(active.id)}
-                  className="rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg"
+                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
                 >
                   {t("settings")}
                 </button>
@@ -673,7 +678,7 @@ export default function App() {
                   id="toolbar-overflow-button"
                   aria-label={t("moreActions")}
                   onClick={() => setToolbarMenuOpen((v) => !v)}
-                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                  className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
                     toolbarMenuOpen
                       ? "border-mint/50 text-mint"
                       : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
@@ -701,7 +706,7 @@ export default function App() {
                         void kickOtherViewers(),
                       )}
                       {overflowItem("overflow-refit", t("refitWidth"), () =>
-                        termActions.current?.refit(),
+                        termActions.current?.refit(true),
                       )}
                       {overflowItem("overflow-reset", t("resetTerminal"), () =>
                         termActions.current?.reset(),
@@ -758,13 +763,13 @@ export default function App() {
               <button
                 id="composer-strip"
                 onClick={() => toggleComposer()}
-                className="group flex h-8 shrink-0 items-center gap-2 border-t border-line bg-bg1 px-3 text-left transition-colors hover:bg-bg2/60"
+                className="group flex h-8 shrink-0 items-center gap-2 border-t border-line bg-bg1 px-3 text-left transition-colors hover:bg-bg2/60 pointer-coarse:h-11"
               >
-                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-colors group-hover:text-mint" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-colors group-hover:text-mint pointer-coarse:h-4.5 pointer-coarse:w-4.5" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <rect x="1.5" y="4" width="13" height="8" rx="1.5" />
                   <path d="M4 9.5h8" strokeLinecap="round" />
                 </svg>
-                <span className="truncate font-mono text-[12px] text-fg-muted/70 transition-colors group-hover:text-fg-muted">
+                <span className="truncate font-mono text-[12px] text-fg-muted/70 transition-colors group-hover:text-fg-muted pointer-coarse:text-sm">
                   {t("composerStripHint")}
                 </span>
                 <div className="flex-1" />
@@ -773,7 +778,7 @@ export default function App() {
                      on this strip does instead. */
                   <span
                     id="composer-open-touch"
-                    className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted"
+                    className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted pointer-coarse:px-3 pointer-coarse:py-1.5 pointer-coarse:text-sm"
                   >
                     {t("composerOpenTouch")}
                   </span>

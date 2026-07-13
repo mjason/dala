@@ -37,6 +37,27 @@ export const DEFAULT_PREFS: TermPrefs = {
   localEcho: false,
 };
 
+/** Default terminal font size on coarse-pointer (touch-first) devices:
+ * phones are held farther from the eye and have no hover to lean on, so the
+ * device-aware DEFAULT is one step larger. This is not a migration — an
+ * explicitly stored fontSize always wins. */
+export const COARSE_POINTER_FONT_SIZE = 15;
+
+/** Device-aware default font size: `DEFAULT_PREFS.fontSize` on fine-pointer
+ * (desktop) devices, `COARSE_POINTER_FONT_SIZE` when the primary pointer is
+ * coarse (phones, tablets). */
+export function defaultFontSize(): number {
+  try {
+    return typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches
+      ? COARSE_POINTER_FONT_SIZE
+      : DEFAULT_PREFS.fontSize;
+  } catch {
+    return DEFAULT_PREFS.fontSize;
+  }
+}
+
 /** xterm smoothScrollDuration (ms) when smooth scrolling is on. */
 export const SMOOTH_SCROLL_MS = 120;
 
@@ -55,7 +76,7 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
   return {
     fontFamily: typeof raw.fontFamily === "string" ? raw.fontFamily : DEFAULT_PREFS.fontFamily,
     fontSize: clamp(
-      Math.round(Number(raw.fontSize) || DEFAULT_PREFS.fontSize),
+      Math.round(Number(raw.fontSize) || defaultFontSize()),
       FONT_SIZE_RANGE.min,
       FONT_SIZE_RANGE.max,
     ),
@@ -93,7 +114,9 @@ export function savePrefs(patch: Partial<TermPrefs>): TermPrefs {
 }
 
 export function resetPrefs(): TermPrefs {
-  return savePrefs({ ...DEFAULT_PREFS });
+  // Reset restores the DEVICE default, not the desktop constant — on a
+  // phone that is the larger coarse-pointer font size.
+  return savePrefs({ ...DEFAULT_PREFS, fontSize: defaultFontSize() });
 }
 
 export function onPrefsChange(callback: (prefs: TermPrefs) => void): () => void {
