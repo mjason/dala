@@ -1,12 +1,19 @@
 defmodule Dala.Accounts.Seeder do
   @moduledoc """
-  Seeds pre-configured accounts at boot from the `DALA_USERS` environment
-  variable (`email:password` pairs separated by commas or newlines).
-  Existing accounts get their password updated, so `DALA_USERS` is the
-  source of truth for credentials.
+  Bootstraps accounts at boot from the `DALA_USERS` environment variable
+  (`email:password` pairs separated by commas or newlines).
 
-  When authentication is enabled the system refuses to boot without at least
-  one account — otherwise nobody could ever sign in.
+  BOOTSTRAP-ONLY semantics: an entry only creates the account when that
+  email does not exist yet. Existing accounts are never touched, so the
+  plaintext line can (and should) be REMOVED from the env file after the
+  first successful boot — leaving credentials in `dala.env` forever hands
+  the password to anyone who can read the file.
+
+  Forgot a password? Set `DALA_USERS_RESET=true` for ONE boot to restore
+  the old reset-from-env behavior, then remove both variables again.
+
+  When authentication is enabled the system refuses to boot without at
+  least one account — otherwise nobody could ever sign in.
   """
 
   require Logger
@@ -22,29 +29,55 @@ defmodule Dala.Accounts.Seeder do
   end
 
   def run do
+    reset? = System.get_env("DALA_USERS_RESET") in ["true", "1"]
+
     System.get_env("DALA_USERS", "")
     |> String.split([",", ";", "\n"], trim: true)
-    |> Enum.each(&seed_user/1)
+    |> Enum.each(&seed_user(&1, reset?))
 
     verify_accounts_exist!()
   end
 
-  defp seed_user(pair) do
+  defp seed_user(pair, reset?) do
     case String.split(String.trim(pair), ":", parts: 2) do
       [email, password] when email != "" and byte_size(password) >= 8 ->
-        Dala.Accounts.User
-        |> Ash.Changeset.for_create(:seed_user, %{email: email, password: password},
-          authorize?: false
-        )
-        |> Ash.create!()
+        cond do
+          user_exists?(email) and not reset? ->
+            Logger.info(
+              "account #{email} already exists — DALA_USERS entry ignored. " <>
+                "You can remove the plaintext line from your env file now " <>
+                "(set DALA_USERS_RESET=true for one boot to force a password reset)."
+            )
 
-        Logger.info("seeded account #{email}")
+          true ->
+            Dala.Accounts.User
+            |> Ash.Changeset.for_create(:seed_user, %{email: email, password: password},
+              authorize?: false
+            )
+            |> Ash.create!()
+
+            action = if reset?, do: "reset password for", else: "created"
+
+            Logger.info(
+              "#{action} account #{email}. Remove the DALA_USERS line from your " <>
+                "env file — the account is persisted and the plaintext is no " <>
+                "longer needed."
+            )
+        end
 
       _ ->
         Logger.warning(
           "ignored invalid DALA_USERS entry (expected email:password with password of at least 8 characters)"
         )
     end
+  end
+
+  defp user_exists?(email) do
+    require Ash.Query
+
+    Dala.Accounts.User
+    |> Ash.Query.filter(email == ^email)
+    |> Ash.count!(authorize?: false) > 0
   end
 
   defp verify_accounts_exist! do

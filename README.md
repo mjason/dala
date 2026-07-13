@@ -302,7 +302,7 @@ shells) alive across service restarts.
 | `PORT` | `4400` | HTTP port |
 | `DALA_LISTEN_IP` | `127.0.0.1` | Listen address. **Loopback only by default** — set `0.0.0.0` to serve the LAN (and enable login!) |
 | `DALA_AUTH_ENABLED` | `false` | Require sign-in |
-| `DALA_USERS` | — | Seeded accounts, `email:password[,email2:password2]` (min 8-char passwords; applied at boot, so it is the source of truth) |
+| `DALA_USERS` | — | Bootstrap accounts, `email:password[,email2:password2]` (min 8-char passwords). **First-boot only**: existing accounts are never touched — remove the line once the account exists so the plaintext doesn't linger. Password reset: add `DALA_USERS_RESET=true` for one boot |
 | `PHX_HOST` / `PHX_SCHEME` / `PHX_URL_PORT` | `localhost` / `http` / `PORT` | Public URL parts (set when behind a reverse proxy) |
 | `PHX_CHECK_ORIGIN` | `false` | WebSocket origin check — enable behind a reverse proxy with a fixed host |
 | `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite location |
@@ -327,7 +327,7 @@ are logged out.
 ### LAN access
 
 1. In `dala.env`: `DALA_LISTEN_IP=0.0.0.0`, `DALA_AUTH_ENABLED=true`,
-   `DALA_USERS=you@example.com:yourpassword`, then restart.
+   `DALA_USERS=you@example.com:yourpassword`, then restart. Once you can sign in, **remove the `DALA_USERS` line** — the account is persisted; don't leave the plaintext password in the file.
 2. Open `http://<machine-ip>:<port>` from another device.
 3. **WSL2**: use mirrored networking (`.wslconfig` → `networkingMode=mirrored`)
    and allow the port through the Hyper-V firewall (admin PowerShell):

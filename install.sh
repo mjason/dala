@@ -83,6 +83,11 @@ TOKEN_SIGNING_SECRET=$(gen_secret)
 # Optional login (default: open, local use). Enable with:
 #   DALA_AUTH_ENABLED=true
 #   DALA_USERS=you@example.com:yourpassword
+# DALA_USERS is BOOTSTRAP-ONLY: the account is created on first boot and
+# never reset afterwards — REMOVE the line after the service comes up so
+# the plaintext password does not linger in this file.
+# Forgot the password? Put the line back plus DALA_USERS_RESET=true for
+# one boot, then remove both.
 EOF
   chmod 600 "$ENV_FILE"
 else
