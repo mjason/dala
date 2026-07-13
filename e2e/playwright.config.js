@@ -13,6 +13,8 @@ const { defineConfig } = require("@playwright/test");
 module.exports = defineConfig({
   testDir: ".",
   workers: 1,
+  // CI runner 慢（2 核），会话创建→holder→xterm 就绪偶发超 10s；本地不重试
+  retries: process.env.CI ? 2 : 0,
   fullyParallel: false,
   timeout: 60_000,
   expect: { timeout: 10_000 },
