@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Channel } from "phoenix";
-import { createSession, deleteSession, listSessions, restartSession } from "../../ash_rpc";
+import {
+  createSession,
+  deleteSession,
+  listSessions,
+  reorderSession,
+  restartSession,
+} from "../../ash_rpc";
+import { applyReorder, byPosition } from "../reorder";
 import { call } from "../rpc";
 import {
   createSessionsChannel,
@@ -21,6 +28,7 @@ export const SESSION_FIELDS = [
   "exitCode",
   "scrollbackLimit",
   "ephemeral",
+  "position",
   "insertedAt",
 ] as const;
 
@@ -123,7 +131,7 @@ export function useSessions(opts: {
     void (async () => {
       const result = await call<Session[]>(listSessions, {
         fields: [...SESSION_FIELDS],
-        sort: "insertedAt",
+        sort: ["position", "insertedAt"],
       });
       if (result.ok) {
         setSessions(result.data);
@@ -140,12 +148,10 @@ export function useSessions(opts: {
   }, [toast, upsertSession, t]);
 
   // Quick shells (ephemeral) live in their overlay panel, not the sidebar
-  // or the active-session rotation.
+  // or the active-session rotation. Sort by the server-persisted position
+  // (insertedAt on ties) so all devices agree on the sidebar order.
   const ordered = useMemo(
-    () =>
-      [...sessions]
-        .filter((s) => !s.ephemeral)
-        .sort((a, b) => a.insertedAt.localeCompare(b.insertedAt)),
+    () => [...sessions].filter((s) => !s.ephemeral).sort(byPosition),
     [sessions],
   );
   const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
@@ -189,6 +195,27 @@ export function useSessions(opts: {
     return true;
   };
 
+  /**
+   * Move a session before another (null = to the end): optimistic local
+   * position (mirroring the server's midpoint math), rolled back on error.
+   * The session_updated broadcast then carries the authoritative position.
+   */
+  const handleReorder = async (id: string, beforeId: string | null) => {
+    const previous = sessionsRef.current.find((s) => s.id === id)?.position;
+    if (previous === undefined) return;
+    setSessions((list) => applyReorder(list, id, beforeId));
+    const result = await call<unknown>(reorderSession, {
+      identity: id,
+      input: beforeId === null ? {} : { beforeId },
+    });
+    if (!result.ok) {
+      setSessions((list) =>
+        list.map((s) => (s.id === id ? { ...s, position: previous } : s)),
+      );
+      toast(result.error || t("somethingWentWrong"));
+    }
+  };
+
   const deleting = useRef(new Set<string>());
   const handleDelete = async (id: string) => {
     if (deleting.current.has(id)) return;
@@ -221,5 +248,6 @@ export function useSessions(opts: {
     handleCreate,
     handleRestart,
     handleDelete,
+    handleReorder,
   };
 }

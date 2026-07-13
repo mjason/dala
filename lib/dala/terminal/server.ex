@@ -77,40 +77,52 @@ defmodule Dala.Terminal.Server do
 
   A session is shared: several clients (desktop, phone, another tab) may be
   attached at once, but the single underlying PTY can only have one size —
-  and exactly one client owns it. When nobody owns the size yet (fresh
-  session, or the owner disconnected), the first resize claims ownership; a
-  non-owner's resize is ignored (it renders at the owner's size and scales
-  to fit — see `claim_size/5` for explicit takeover). `client` is the
-  channel process, `client_ref` its public identity used in `size_owner`
-  broadcasts and join replies.
+  and it is DEVICE-sticky: the session remembers which device
+  (`size_owner_device`, persisted on the session record) owns its size. The
+  first device to ever resize an unowned session adopts it; any connection
+  from the remembered device silently (re)becomes the live owner, so
+  reloads and reconnects stay zero-friction. A DIFFERENT device's resize is
+  NEVER applied — not even when no live owner exists — until it explicitly
+  takes over via `claim_size/6`, which also rewrites the device memory.
+  `client` is the channel process, `client_ref` its public identity used in
+  `size_owner` broadcasts and join replies, `device_id` the stable device
+  identity the ownership sticks to.
 
-  Synchronous, so the caller learns what happened: `:claimed` (free
-  ownership was claimed), `:applied` (the caller already owned the size),
-  or `{:ignored, %{owner: ref, rows: rows, cols: cols}}` when another
-  client owns it — the channel uses that to push a corrective `size_owner`
-  to a client that wrongly believes it drives the size. `:ok` when the
-  session is not running.
+  `device_id` may be NIL (legacy clients that never send one): those get
+  the old per-connection model — the first resize with no live owner and
+  no remembered device makes them the LIVE owner, but nil is never adopted
+  into the device memory (a nil memory must also never read as "same
+  device"), so nothing outlives their connection and the next client is
+  never locked out by a ghost device.
+
+  Synchronous, so the caller learns what happened: `:claimed` (this device
+  adopted or re-took the size), `:applied` (the caller already was the live
+  owner), or `{:ignored, %{owner: ref | nil, owner_device: device, rows:
+  rows, cols: cols}}` when another device holds the size — the channel uses
+  that to push a corrective `size_owner` to a client that wrongly believes
+  it drives the size. `:ok` when the session is not running.
   """
-  def resize(id, client, client_ref, rows, cols) when is_pid(client) do
+  def resize(id, client, client_ref, device_id, rows, cols) when is_pid(client) do
     case whereis(id) do
       nil -> :ok
-      pid -> GenServer.call(pid, {:resize, client, client_ref, rows, cols})
+      pid -> GenServer.call(pid, {:resize, client, client_ref, device_id, rows, cols})
     end
   end
 
   @doc """
   Force-claims size ownership (the follower banner's takeover button): sets
-  `client` as the owner, resizes the PTY, and broadcasts `size_owner` +
-  `resize` so every attached client learns its new role. Last write wins on
-  concurrent claims.
+  `client` as the live owner, makes `device_id` the remembered owner
+  device, resizes the PTY, and broadcasts `size_owner` + `resize` so every
+  attached client learns its new role. Last write wins on concurrent
+  claims.
   """
-  def claim_size(id, client, client_ref, rows, cols) when is_pid(client),
-    do: cast_if_alive(id, {:claim_size, client, client_ref, rows, cols})
+  def claim_size(id, client, client_ref, device_id, rows, cols) when is_pid(client),
+    do: cast_if_alive(id, {:claim_size, client, client_ref, device_id, rows, cols})
 
   @doc """
   Ownership + size snapshot for join replies:
-  `%{owner: client_ref | nil, rows: rows, cols: cols}`, or nil if the
-  session is not running.
+  `%{owner: client_ref | nil, owner_device: device | nil, rows: rows,
+  cols: cols}`, or nil if the session is not running.
   """
   def size_info(id) do
     case whereis(id) do
@@ -257,10 +269,13 @@ defmodule Dala.Terminal.Server do
           pending_repaints: :queue.new(),
           # Monitored client channel pids -> their public client_ref.
           clients: %{},
-          # The single size owner as {pid, client_ref}, or nil. Only the
-          # owner's resize reaches the PTY; the first resize on an unowned
-          # session claims it.
+          # The LIVE size owner as {pid, client_ref}, or nil. Only the
+          # owner's resize reaches the PTY.
           owner: nil,
+          # The remembered owner DEVICE (persisted on the session record):
+          # ownership is device-sticky. nil until the first device ever
+          # attaches/resizes (which adopts the session).
+          size_owner_device: session.size_owner_device,
           # Once the stream reports cwd via OSC 7, /proc polling stops: the
           # top-level shell's cwd is stale inside zellij/tmux.
           osc7_cwd?: false,
@@ -298,15 +313,7 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_call(:size_info, _from, state) do
-    {rows, cols} = state.size
-
-    owner_ref =
-      case state.owner do
-        {_pid, client_ref} -> client_ref
-        nil -> nil
-      end
-
-    {:reply, %{owner: owner_ref, rows: rows, cols: cols}, state}
+    {:reply, ownership_snapshot(state), state}
   end
 
   @impl true
@@ -333,31 +340,48 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
-  def handle_call({:resize, client, client_ref, rows, cols}, _from, state) do
+  def handle_call({:resize, client, client_ref, device_id, rows, cols}, _from, state) do
     state = track_client(state, client, client_ref)
 
-    case state.owner do
-      nil ->
-        # Unowned: the first resize claims ownership (a phone opening a
-        # session alone gets a native narrow PTY this way). When the claim
+    cond do
+      match?({^client, _ref}, state.owner) ->
+        {:reply, :applied, apply_size(state, rows, cols)}
+
+      # Guard order matters for nil devices: only a NON-nil device may
+      # adopt or silently re-own — a nil device must neither be remembered
+      # nor read a nil memory as "same device" (it would ghost-lock or
+      # steal sessions for every legacy client at once).
+      (device_id != nil and
+         (state.size_owner_device == nil or device_id == state.size_owner_device)) or
+          (device_id == nil and state.size_owner_device == nil and state.owner == nil) ->
+        # Devices: the first attach EVER adopts the session (a phone
+        # creating a session gets a native narrow PTY this way); the
+        # remembered device silently re-owns on reconnect — even past a
+        # lingering connection of its own (reload race). Nil devices
+        # (legacy clients): old per-connection model — free ownership
+        # (no live owner, no memory) goes to the first resize, and
+        # remember_device/2 skips nil so nothing persists. When the claim
         # actually CHANGED the PTY dims the grid was rewrapped — push a
         # fresh snapshot to every client, exactly like an explicit
         # claim_size; a claim at the current dims (join storm re-reporting
         # the same size) skips the repaint.
         old_size = state.size
-        state = become_owner(state, client, client_ref, rows, cols)
+
+        state =
+          state
+          |> remember_device(device_id)
+          |> become_owner(client, client_ref, rows, cols)
+
         state = if state.size == old_size, do: state, else: request_repaint_all(state)
         {:reply, :claimed, state}
 
-      {^client, _ref} ->
-        {:reply, :applied, apply_size(state, rows, cols)}
-
-      {_other_pid, owner_ref} ->
-        # Followers render at the owner's size; their viewport never
-        # shrinks the shared PTY. Report who owns it so the channel can
-        # correct a client whose role went stale.
-        {cur_rows, cur_cols} = state.size
-        {:reply, {:ignored, %{owner: owner_ref, rows: cur_rows, cols: cur_cols}}, state}
+      true ->
+        # Another DEVICE holds the size (live or remembered) — or a legacy
+        # client bumped into a live owner: followers render at the owner's
+        # size; their viewport never shrinks the shared PTY. Report who
+        # owns it so the channel can correct a client whose role went
+        # stale.
+        {:reply, {:ignored, ownership_snapshot(state)}, state}
     end
   end
 
@@ -378,13 +402,19 @@ defmodule Dala.Terminal.Server do
     {:noreply, state}
   end
 
-  def handle_cast({:claim_size, client, client_ref, rows, cols}, state) do
+  def handle_cast({:claim_size, client, client_ref, device_id, rows, cols}, state) do
     # Explicit takeover: last write wins, the previous owner demotes to
-    # follower when the size_owner broadcast reaches it.
+    # follower when the size_owner broadcast reaches it. The takeover also
+    # rewrites the device memory — the session sticks to this device from
+    # now on.
     state = track_client(state, client, client_ref)
     already_owner? = match?({^client, _ref}, state.owner)
     old_size = state.size
-    state = become_owner(state, client, client_ref, rows, cols)
+
+    state =
+      state
+      |> remember_device(device_id)
+      |> become_owner(client, client_ref, rows, cols)
 
     # The PTY was just rewrapped to the new owner's grid: every attached
     # client's buffer — the demoted owner's especially — still shows content
@@ -440,9 +470,10 @@ defmodule Dala.Terminal.Server do
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
       when is_map_key(state.clients, pid) do
-    # A client disconnected. If it owned the size, release ownership WITHOUT
-    # resizing (the PTY keeps its dimensions until someone claims); announce
-    # so followers may promote themselves via their next resize.
+    # A client disconnected. If it was the LIVE owner, release live
+    # ownership WITHOUT resizing — but keep the device memory: the PTY
+    # keeps its dimensions and stays reserved for the remembered device
+    # until it reconnects or another device explicitly claims.
     state = %{state | clients: Map.delete(state.clients, pid)}
 
     case state.owner do
@@ -637,6 +668,43 @@ defmodule Dala.Terminal.Server do
     state
   end
 
+  # Persists `device_id` as the session's remembered size-owner device (the
+  # sticky half of ownership). nil devices (legacy clients, raw callers)
+  # leave the memory untouched — nil must NEVER be adopted, so their
+  # ownership stays live-only; an unchanged device skips the write.
+  defp remember_device(state, nil), do: state
+  defp remember_device(%{size_owner_device: device} = state, device), do: state
+
+  defp remember_device(state, device_id) do
+    case Dala.Terminal.set_size_owner_device(state.session, %{size_owner_device: device_id}) do
+      {:ok, session} ->
+        %{state | session: session, size_owner_device: device_id}
+
+      {:error, error} ->
+        Logger.warning("could not persist size owner device for #{state.id}: #{inspect(error)}")
+        # Keep the in-memory ownership consistent even if the write failed.
+        # Consequence: the memory is then process-local — it works for every
+        # client while THIS server runs, but a server restart falls back to
+        # the last persisted device (or none), so another device may adopt
+        # then. Acceptable: the write failing at all is already exceptional.
+        %{state | size_owner_device: device_id}
+    end
+  end
+
+  # Ownership + size snapshot: join replies, corrective pushes and
+  # `size_owner` broadcasts all carry this one shape.
+  defp ownership_snapshot(state) do
+    {rows, cols} = state.size
+
+    owner_ref =
+      case state.owner do
+        {_pid, client_ref} -> client_ref
+        nil -> nil
+      end
+
+    %{owner: owner_ref, owner_device: state.size_owner_device, rows: rows, cols: cols}
+  end
+
   # Asks the holder for one snapshot to be delivered to EVERY tracked client
   # as a reset replay (see the :all_clients marker in the repaint handler).
   # FIFO ordering guarantees the holder has already applied any resize sent
@@ -667,22 +735,11 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  # Announces who owns the size (nil = up for grabs) plus the current PTY
-  # size, so every client can derive its own role from one message.
+  # Announces who owns the size — the live owner (nil = offline) AND the
+  # remembered owner device — plus the current PTY size, so every client
+  # can derive its own role from one message.
   defp broadcast_size_owner(state) do
-    {rows, cols} = state.size
-
-    owner_ref =
-      case state.owner do
-        {_pid, client_ref} -> client_ref
-        nil -> nil
-      end
-
-    DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "size_owner", %{
-      owner: owner_ref,
-      rows: rows,
-      cols: cols
-    })
+    DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "size_owner", ownership_snapshot(state))
   end
 
   # Broadcasts an output chunk to connected clients with the next seq.

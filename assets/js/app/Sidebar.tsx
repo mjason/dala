@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import type { SessionUpdatedPayload } from "../ash_types";
 import { authEnabled, userEmail } from "./meta";
+import { beforeIdFor, insertionIndex } from "./reorder";
 import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
@@ -19,6 +20,8 @@ type Props = {
   onCreate: () => void;
   onOpenSettings: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Persist a drag: move `id` before `beforeId` (null = to the end). */
+  onReorder: (id: string, beforeId: string | null) => void;
   /** Agent activity per session (OSC 777 events): overrides the status dot. */
   agentStatus?: Record<string, { state: "working" | "attention" | "done" }>;
   /** Desktop width in px (draggable via the right-edge handle). */
@@ -36,12 +39,99 @@ export default function Sidebar({
   onCreate,
   onOpenSettings,
   onDelete,
+  onReorder,
   agentStatus,
   width,
   onResize,
   onResetWidth,
 }: Props) {
   const { locale, t, setLocale } = useI18n();
+
+  // Drag-to-reorder (pointer events, dedicated handle — HTML5 dnd is poor
+  // on touch and would hijack list panning). While a drag is live, `drag`
+  // holds the insertion slot (see reorder.ts) for the indicator line.
+  // Known limitation: no edge auto-scroll — dragging in an overflowing
+  // list cannot reach rows outside the current viewport (the wheel still
+  // scrolls mid-drag, so it stays workable).
+  const listRef = useRef<HTMLElement | null>(null);
+  const [drag, setDrag] = useState<{ id: string; slot: number } | null>(null);
+  // The list can change UNDER a live drag (another device reorders, a
+  // session exits/appears): everything resolved at drop time must read the
+  // CURRENT list, never the one frozen into the pointerdown closure.
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  const startDrag = (e: React.PointerEvent, id: string) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault(); // no text selection while dragging across rows
+    const pointerId = e.pointerId;
+    const handle = e.currentTarget as HTMLElement;
+    // Keep receiving moves even when the pointer leaves the handle (jsdom
+    // has no setPointerCapture; window listeners below still see events).
+    try {
+      handle.setPointerCapture?.(pointerId);
+    } catch {
+      /* not supported */
+    }
+    const startY = e.clientY;
+    let slot: number | null = null; // null until the movement threshold
+
+    const midpoints = () =>
+      Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-session-row]") ?? []).map(
+        (row) => {
+          const box = row.getBoundingClientRect();
+          return box.top + box.height / 2;
+        },
+      );
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown);
+      setDrag(null);
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (slot === null && Math.abs(ev.clientY - startY) < 5) return;
+      // Fresh index on every move: the midpoints come from the live DOM,
+      // so the dragged row's index must come from the live list too.
+      const index = sessionsRef.current.findIndex((s) => s.id === id);
+      if (index === -1) return cleanup(); // dragged session vanished
+      slot = insertionIndex(midpoints(), index, ev.clientY);
+      setDrag({ id, slot });
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
+      if (slot === null) return; // never crossed the threshold: a plain tap
+      // Resolve the committed neighbour against the CURRENT list — the drop
+      // must land where the indicator points now, not where the rows were
+      // at pointerdown.
+      const list = sessionsRef.current;
+      const index = list.findIndex((s) => s.id === id);
+      if (index === -1) return; // dragged session vanished mid-drag
+      const beforeId = beforeIdFor(list, id, slot);
+      // Dropped back onto its own slot: nothing to persist.
+      if (beforeId !== (list[index + 1]?.id ?? null)) onReorder(id, beforeId);
+    };
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId === pointerId) cleanup();
+    };
+    // Escape abandons the drag without committing (pointerup after the
+    // cleanup is a no-op — its listener is already gone).
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") cleanup();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown);
+  };
+
+  // Row carrying the insertion indicator (undefined = none, null = after
+  // the last row).
+  const dropBeforeId = drag ? beforeIdFor(sessions, drag.id, drag.slot) : undefined;
 
   return (
     <aside
@@ -73,7 +163,7 @@ export default function Sidebar({
         </button>
       </div>
 
-      <nav id="session-list" className="flex-1 overflow-y-auto px-2 pb-2">
+      <nav id="session-list" ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
         {sessions.length === 0 && (
           <div className="mt-10 px-3 text-center text-[13px] leading-6 text-fg-muted">
             {t("noTerminalsYet")}
@@ -83,16 +173,43 @@ export default function Sidebar({
             </button>
           </div>
         )}
-        {sessions.map((s) => {
+        {sessions.map((s, index) => {
           const active = s.id === activeId;
           return (
             <div
               key={s.id}
+              data-session-row={s.id}
               onClick={() => onSelect(s.id)}
-              className={`group mb-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors pointer-coarse:min-h-11 ${
+              className={`group relative mb-0.5 flex cursor-pointer items-center gap-2 rounded-lg py-2 pr-2.5 pl-1 transition-colors pointer-coarse:min-h-11 ${
                 active ? "bg-bg2 text-fg" : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
-              }`}
+              } ${drag?.id === s.id ? "opacity-50" : ""}`}
             >
+              {dropBeforeId === s.id && (
+                <span className="pointer-events-none absolute inset-x-1 -top-[2px] h-0.5 rounded-full bg-mint" />
+              )}
+              {dropBeforeId === null && drag?.id !== s.id && index === sessions.length - 1 && (
+                <span className="pointer-events-none absolute inset-x-1 -bottom-[2px] h-0.5 rounded-full bg-mint" />
+              )}
+              <button
+                data-drag-session={s.id}
+                aria-label={t("dragToReorder")}
+                title={t("dragToReorder")}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  startDrag(e, s.id);
+                }}
+                className="flex h-6 w-4 shrink-0 cursor-grab touch-none items-center justify-center rounded text-transparent transition-colors group-hover:text-fg-muted active:cursor-grabbing pointer-coarse:h-9 pointer-coarse:w-6 pointer-coarse:text-fg-muted/60"
+              >
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4 pointer-coarse:w-4" fill="currentColor">
+                  <circle cx="5.5" cy="3.5" r="1.15" />
+                  <circle cx="10.5" cy="3.5" r="1.15" />
+                  <circle cx="5.5" cy="8" r="1.15" />
+                  <circle cx="10.5" cy="8" r="1.15" />
+                  <circle cx="5.5" cy="12.5" r="1.15" />
+                  <circle cx="10.5" cy="12.5" r="1.15" />
+                </svg>
+              </button>
               <span
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${(() => {
                   const agent = agentStatus?.[s.id]?.state;

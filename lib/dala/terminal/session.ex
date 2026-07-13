@@ -26,6 +26,11 @@ defmodule Dala.Terminal.Session do
   actions do
     defaults [:read]
 
+    read :list do
+      description "All sessions in sidebar order: position, then inserted_at."
+      prepare build(sort: [position: :asc, inserted_at: :asc])
+    end
+
     create :create do
       accept [:scrollback_limit, :ephemeral]
 
@@ -35,11 +40,24 @@ defmodule Dala.Terminal.Session do
       argument :cwd, :string
 
       change Dala.Terminal.Session.Changes.SetDefaults
+      change Dala.Terminal.Session.Changes.AppendPosition
       change Dala.Terminal.Session.Changes.StartServer
     end
 
     update :rename do
       accept [:name]
+    end
+
+    update :reorder do
+      description """
+      Move the session in the sidebar: before the session `before_id`, or to
+      the end when `before_id` is omitted. Persisted server-side so every
+      device sees the same order (last write wins on races).
+      """
+
+      argument :before_id, :uuid
+      require_atomic? false
+      change Dala.Terminal.Session.Changes.Reorder
     end
 
     update :set_scrollback_limit do
@@ -141,6 +159,22 @@ defmodule Dala.Terminal.Session do
       run fn input, _context ->
         session = Dala.Terminal.get_session!(input.arguments.id)
 
+        # A fresh shell starts with fresh size ownership: whatever device
+        # restarts it adopts on first resize, instead of the pre-exit owner
+        # locking everyone else into follower mode for a PTY it may never
+        # attach to again. Only when the shell is really gone — a restart
+        # racing an already-running server must not desync the server's
+        # in-memory ownership from the record.
+        session =
+          if Dala.Terminal.Server.alive?(input.arguments.id) do
+            session
+          else
+            case Dala.Terminal.set_size_owner_device(session, %{size_owner_device: nil}) do
+              {:ok, cleared} -> cleared
+              {:error, _error} -> session
+            end
+          end
+
         case Dala.Terminal.Server.ensure_started(session) do
           {:ok, _pid} -> {:ok, true}
           {:error, reason} -> {:error, "could not start terminal: #{inspect(reason)}"}
@@ -162,6 +196,18 @@ defmodule Dala.Terminal.Session do
 
     update :update_cwd do
       accept [:cwd]
+    end
+
+    # Internal: PTY size ownership memory (see Dala.Terminal.Server). The
+    # session remembers which DEVICE drives its size across reconnects and
+    # restarts; only an explicit claim_size transfers it.
+    update :set_size_owner_device do
+      accept [:size_owner_device]
+    end
+
+    # Internal: used by Changes.Reorder when float positions run out of gap.
+    update :set_position do
+      accept [:position]
     end
 
     # These two exist only so the typed-channel publications below have an
@@ -202,12 +248,16 @@ defmodule Dala.Terminal.Session do
       constraints: [fields: Dala.Terminal.Session.Payloads.summary_fields()],
       transform: &Dala.Terminal.Session.Payloads.summary/1
 
+    # set_size_owner_device changes nothing the summary payload carries —
+    # broadcasting it would only churn every client's session list on each
+    # ownership adoption/claim, so it is excluded.
     publish_all :update, ["sessions"],
       event: "session_updated",
       public?: true,
       returns: :map,
       constraints: [fields: Dala.Terminal.Session.Payloads.summary_fields()],
-      transform: &Dala.Terminal.Session.Payloads.summary/1
+      transform: &Dala.Terminal.Session.Payloads.summary/1,
+      except: [:set_size_owner_device]
 
     publish :destroy, ["sessions"],
       event: "session_deleted",
@@ -324,6 +374,27 @@ defmodule Dala.Terminal.Session do
       default 10_000
       allow_nil? false
       public? true
+    end
+
+    attribute :position, :float do
+      description """
+      Sidebar sort key. Floats make reordering a single-row write (midpoint
+      between the new neighbours); `Changes.Reorder` renormalizes to 1.0..n
+      when a gap underflows. Ties sort by inserted_at.
+      """
+
+      default 0.0
+      allow_nil? false
+      public? true
+    end
+
+    attribute :size_owner_device, :string do
+      description """
+      Stable device id (frontend-generated, localStorage) of the client that
+      owns this session's PTY size. Adopted by the first device to ever
+      attach; transferred only by an explicit claim_size. Other devices
+      render as followers even when the owner is offline.
+      """
     end
 
     attribute :ephemeral, :boolean do

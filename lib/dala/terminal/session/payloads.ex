@@ -17,6 +17,7 @@ defmodule Dala.Terminal.Session.Payloads do
       exitCode: session.exit_code,
       scrollbackLimit: session.scrollback_limit,
       ephemeral: session.ephemeral,
+      position: session.position,
       insertedAt: session.inserted_at
     }
   end
@@ -43,6 +44,7 @@ defmodule Dala.Terminal.Session.Payloads do
       exitCode: [type: :integer],
       scrollbackLimit: [type: :integer, allow_nil?: false],
       ephemeral: [type: :boolean, allow_nil?: false],
+      position: [type: :float, allow_nil?: false],
       insertedAt: [type: :utc_datetime_usec, allow_nil?: false]
     ]
   end

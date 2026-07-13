@@ -9,9 +9,10 @@ defmodule Dala.Terminal do
 
   typescript_rpc do
     resource Dala.Terminal.Session do
-      rpc_action :list_sessions, :read
+      rpc_action :list_sessions, :list
       rpc_action :create_session, :create
       rpc_action :rename_session, :rename
+      rpc_action :reorder_session, :reorder
       rpc_action :set_scrollback_limit, :set_scrollback_limit
       rpc_action :agent_commands, :agent_commands
       rpc_action :foreground_app, :foreground_app
@@ -60,16 +61,18 @@ defmodule Dala.Terminal do
 
   resources do
     resource Dala.Terminal.Session do
-      define :list_sessions, action: :read
+      define :list_sessions, action: :list
       define :get_session, action: :read, get_by: :id
       define :create_session, action: :create
       define :delete_session, action: :destroy
+      define :reorder_session, action: :reorder, args: [{:optional, :before_id}]
       define :agent_commands, action: :agent_commands, args: [:id]
       define :foreground_app, action: :foreground_app, args: [:id]
       define :kick_viewers, action: :kick_viewers, args: [:id]
       define :mark_running, action: :mark_running
       define :mark_exited, action: :mark_exited
       define :update_cwd, action: :update_cwd
+      define :set_size_owner_device, action: :set_size_owner_device
     end
 
     resource Dala.Terminal.FileSystem

@@ -55,24 +55,43 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   @impl true
-  def join("terminal:" <> session_id, _payload, socket) do
+  def join("terminal:" <> session_id, payload, socket) do
     case Dala.Terminal.get_session(session_id) do
       {:ok, session} ->
         session = reconcile_status(session)
         send(self(), :after_join)
 
-        # PTY size ownership (see Dala.Terminal.Server.resize/5): the reply
-        # tells this client who currently owns the size — and its own
-        # client_id so it can recognize itself in `size_owner` broadcasts.
-        %{owner: owner, rows: rows, cols: cols} =
-          Dala.Terminal.Server.size_info(session_id) || %{owner: nil, rows: 24, cols: 80}
-
         client_id = Ash.UUID.generate()
+
+        # Size ownership is DEVICE-sticky (see Dala.Terminal.Server.resize/6):
+        # the client sends its stable device id in the join params. Clients
+        # that don't (legacy bundles) join with a NIL device: the server
+        # then falls back to the old per-connection model for them — they
+        # can hold LIVE ownership while connected, but nothing is ever
+        # remembered (a per-connection id persisted as the device would
+        # ghost-lock the session for every future client).
+        device_id =
+          case payload do
+            %{"device_id" => device} when is_binary(device) and device != "" -> device
+            _other -> nil
+          end
+
+        # The reply tells this client who holds the size — the live owner
+        # and the remembered owner device — plus its own client_id so it can
+        # recognize itself in `size_owner` broadcasts. A session that is not
+        # running reports NO owner device even when one is remembered: there
+        # is no live PTY to follow (or take over), so the client renders
+        # plainly — and a restart clears the memory anyway (the restarting
+        # device adopts fresh).
+        %{owner: owner, owner_device: owner_device, rows: rows, cols: cols} =
+          Dala.Terminal.Server.size_info(session_id) ||
+            %{owner: nil, owner_device: nil, rows: 24, cols: 80}
 
         socket =
           socket
           |> assign(:session_id, session.id)
           |> assign(:client_id, client_id)
+          |> assign(:device_id, device_id)
           |> assign(:fc, %{
             enabled: false,
             alt: false,
@@ -89,6 +108,7 @@ defmodule DalaWeb.TerminalChannel do
            rows: rows,
            cols: cols,
            owner: owner,
+           owner_device: owner_device,
            client_id: client_id
          }, socket}
 
@@ -136,8 +156,8 @@ defmodule DalaWeb.TerminalChannel do
     # the subscription exists and push it, so the client's role is correct
     # even when ownership changed in the gap.
     case Dala.Terminal.Server.size_info(id) do
-      %{owner: owner, rows: rows, cols: cols} ->
-        push(socket, "size_owner", %{owner: owner, rows: rows, cols: cols})
+      %{owner: _owner} = snapshot ->
+        push(socket, "size_owner", snapshot)
 
       nil ->
         :ok
@@ -248,18 +268,20 @@ defmodule DalaWeb.TerminalChannel do
   def handle_in("resize", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
     {rows, cols} = clamp_dims(rows, cols)
-    # `self()` is this channel process — one per connected client. The first
-    # resize on an unowned session claims size ownership; a non-owner's
-    # resize is dropped by the server (and answered with a corrective
-    # `size_owner` push, see resize_with_correction/3).
+    # `self()` is this channel process — one per connected client. Ownership
+    # is device-sticky: the remembered device's resize always applies (and
+    # the first device ever adopts an unowned session); any other device's
+    # resize is dropped by the server and answered with a corrective
+    # `size_owner` push (see resize_with_correction/3).
     resize_with_correction(socket, rows, cols)
 
     {:noreply, socket}
   end
 
-  # Explicit size takeover (the follower banner's button): become the owner
-  # and resize the PTY to this client's viewport. The server broadcasts
-  # `size_owner` so the previous owner demotes itself.
+  # Explicit size takeover (the follower banner's button): become the live
+  # owner, make this DEVICE the remembered owner, and resize the PTY to this
+  # client's viewport. The server broadcasts `size_owner` so the previous
+  # owner demotes itself.
   def handle_in("claim_size", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
     {rows, cols} = clamp_dims(rows, cols)
@@ -268,6 +290,7 @@ defmodule DalaWeb.TerminalChannel do
       socket.assigns.session_id,
       self(),
       socket.assigns.client_id,
+      socket.assigns.device_id,
       rows,
       cols
     )
@@ -297,20 +320,22 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   # Reports this client's viewport to the session server. When the server
-  # IGNORES it (another client owns the size), push a corrective
-  # `size_owner` to this client only: a client that wrongly believed it was
-  # the driver (stale role after a lost/gapped broadcast) re-enters
-  # follower mode instead of rendering a grid the PTY does not have.
+  # IGNORES it (another device holds the size — live or remembered), push a
+  # corrective `size_owner` to this client only: a client that wrongly
+  # believed it was the driver (stale role after a lost/gapped broadcast)
+  # re-enters follower mode instead of rendering a grid the PTY does not
+  # have.
   defp resize_with_correction(socket, rows, cols) do
     case Dala.Terminal.Server.resize(
            socket.assigns.session_id,
            self(),
            socket.assigns.client_id,
+           socket.assigns.device_id,
            rows,
            cols
          ) do
-      {:ignored, %{owner: owner, rows: cur_rows, cols: cur_cols}} ->
-        push(socket, "size_owner", %{owner: owner, rows: cur_rows, cols: cur_cols})
+      {:ignored, %{owner: _owner} = snapshot} ->
+        push(socket, "size_owner", snapshot)
 
       _applied_claimed_or_dead ->
         :ok

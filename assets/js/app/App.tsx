@@ -122,6 +122,7 @@ export default function App() {
     handleCreate: createMainSession,
     handleRestart: restartMainSession,
     handleDelete,
+    handleReorder,
   } = useSessions({
     toast,
     onAgentEvent: (payload) => agentEventRef.current(payload),
@@ -513,6 +514,7 @@ export default function App() {
           onCreate={() => void handleCreate()}
           onOpenSettings={setSettingsFor}
           onDelete={setDeleteFor}
+          onReorder={(id, beforeId) => void handleReorder(id, beforeId)}
         />
       </div>
 

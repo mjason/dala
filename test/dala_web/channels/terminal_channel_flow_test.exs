@@ -118,7 +118,7 @@ defmodule DalaWeb.TerminalChannelFlowTest do
     # Another client takes over the size while we sit in skipping. The
     # takeover snapshot must reach us as a reset replay — repaint_reset
     # settles the in-flight skip state instead of being swallowed by it.
-    Server.claim_size(session.id, self(), "other-client", 21, 46)
+    Server.claim_size(session.id, self(), "other-client", "other-device", 21, 46)
     assert_push "replay", %{reset: true, done: done}, 8_000
     unless done, do: drain_replay()
 

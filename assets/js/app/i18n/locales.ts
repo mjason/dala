@@ -12,6 +12,7 @@ export const en = {
   connected: "Connected",
   reconnecting: "Reconnecting…",
   sessionSettings: "Session settings",
+  dragToReorder: "Drag to reorder",
   language: "Language",
 
   // header / terminal
@@ -243,6 +244,7 @@ export const zhCN: Messages = {
   connected: "已连接",
   reconnecting: "重连中…",
   sessionSettings: "会话设置",
+  dragToReorder: "拖动排序",
   language: "语言",
 
   running: "运行中",
@@ -468,6 +470,7 @@ export const zhTW: Messages = {
   connected: "已連線",
   reconnecting: "重新連線中…",
   sessionSettings: "工作階段設定",
+  dragToReorder: "拖曳排序",
   language: "語言",
 
   running: "執行中",
@@ -693,6 +696,7 @@ export const ja: Messages = {
   connected: "接続済み",
   reconnecting: "再接続中…",
   sessionSettings: "セッション設定",
+  dragToReorder: "ドラッグで並べ替え",
   language: "言語",
 
   running: "実行中",
@@ -918,6 +922,7 @@ export const ko: Messages = {
   connected: "연결됨",
   reconnecting: "재연결 중…",
   sessionSettings: "세션 설정",
+  dragToReorder: "드래그로 순서 변경",
   language: "언어",
 
   running: "실행 중",
@@ -1143,6 +1148,7 @@ export const es: Messages = {
   connected: "Conectado",
   reconnecting: "Reconectando…",
   sessionSettings: "Ajustes de la sesión",
+  dragToReorder: "Arrastra para reordenar",
   language: "Idioma",
 
   running: "en ejecución",
@@ -1368,6 +1374,7 @@ export const fr: Messages = {
   connected: "Connecté",
   reconnecting: "Reconnexion…",
   sessionSettings: "Paramètres de la session",
+  dragToReorder: "Glisser pour réorganiser",
   language: "Langue",
 
   running: "en cours",
@@ -1593,6 +1600,7 @@ export const de: Messages = {
   connected: "Verbunden",
   reconnecting: "Verbinde neu…",
   sessionSettings: "Sitzungseinstellungen",
+  dragToReorder: "Zum Neuordnen ziehen",
   language: "Sprache",
 
   running: "läuft",
@@ -1818,6 +1826,7 @@ export const ru: Messages = {
   connected: "Подключено",
   reconnecting: "Переподключение…",
   sessionSettings: "Настройки сессии",
+  dragToReorder: "Перетащите, чтобы изменить порядок",
   language: "Язык",
 
   running: "работает",
@@ -2043,6 +2052,7 @@ export const pt: Messages = {
   connected: "Conectado",
   reconnecting: "Reconectando…",
   sessionSettings: "Configurações da sessão",
+  dragToReorder: "Arraste para reordenar",
   language: "Idioma",
 
   running: "em execução",

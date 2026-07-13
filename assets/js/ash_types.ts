@@ -37,7 +37,7 @@ export type GitAttributesOnlySchema = {
 // Session Schema
 export type SessionResourceSchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "ephemeral" | "insertedAt" | "updatedAt";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
   id: UUID;
   name: string;
   shell: string;
@@ -45,6 +45,7 @@ export type SessionResourceSchema = {
   status: "exited" | "running";
   exitCode: number | null;
   scrollbackLimit: number;
+  position: number;
   ephemeral: boolean;
   insertedAt: UtcDateTimeUsec;
   updatedAt: UtcDateTimeUsec;
@@ -54,7 +55,7 @@ export type SessionResourceSchema = {
 
 export type SessionAttributesOnlySchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "ephemeral" | "insertedAt" | "updatedAt";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
   id: UUID;
   name: string;
   shell: string;
@@ -62,6 +63,7 @@ export type SessionAttributesOnlySchema = {
   status: "exited" | "running";
   exitCode: number | null;
   scrollbackLimit: number;
+  position: number;
   ephemeral: boolean;
   insertedAt: UtcDateTimeUsec;
   updatedAt: UtcDateTimeUsec;
@@ -170,6 +172,16 @@ export type SessionFilterInput = {
     in?: Array<number>;
   };
 
+  position?: {
+    eq?: number;
+    notEq?: number;
+    greaterThan?: number;
+    greaterThanOrEqual?: number;
+    lessThan?: number;
+    lessThanOrEqual?: number;
+    in?: Array<number>;
+  };
+
   ephemeral?: {
     eq?: boolean;
     notEq?: boolean;
@@ -220,7 +232,7 @@ export type UpdaterFilterInput = {
 
 
 
-export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "ephemeral", "insertedAt", "updatedAt"] as const;
+export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
 export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
@@ -228,7 +240,7 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
 
-export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "ephemeral", "insertedAt", "updatedAt"] as const;
+export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
 export type SessionSortField = (typeof sessionSortFields)[number];
 
 
@@ -665,9 +677,9 @@ export type CwdPayload = {id: UUID, cwd: string};
 export type ExitPayload = {id: UUID, exitCode: number | null};
 export type OutputPayload = {data: string, seq: number};
 export type ReplayPayload = {data: string, seq: number, done: boolean};
-export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, insertedAt: UtcDateTimeUsec};
+export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
 export type SessionDeletedPayload = {id: UUID};
-export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, insertedAt: UtcDateTimeUsec};
+export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
 
 // Channel types for DalaWeb.SessionsChannel
 

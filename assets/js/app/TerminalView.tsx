@@ -6,12 +6,11 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import type { IClipboardProvider, ClipboardSelectionType } from "@xterm/addon-clipboard";
-import type { Channel } from "phoenix";
 import { getSocket } from "./socket";
 import {
-  createTerminalChannel,
   onTerminalChannelMessages,
   unsubscribeTerminalChannel,
+  type TerminalChannel,
 } from "../ash_typed_channels";
 import { base64ToBytes, writeClipboard } from "./util";
 import { createStreamGate } from "./streamGate";
@@ -29,7 +28,8 @@ import {
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
 import { isMac } from "./shortcuts";
-import { isSizeFollower } from "./sizeRole";
+import { getDeviceId } from "./deviceId";
+import { sizeRole, type SizeRole } from "./sizeRole";
 import { useI18n } from "./i18n";
 
 const theme = {
@@ -96,8 +96,10 @@ export type TerminalActions = {
   reset: () => void;
   /** Recompute the terminal size for THIS screen. `takeover` marks an
    * explicit user action (the 适配宽度 button/shortcut): as a size follower
-   * it claims ownership so the PTY reflows to our grid. Programmatic refits
-   * (composer open/close, restart, kick) must leave ownership alone. */
+   * it takes ownership so the PTY reflows to our grid — an explicit claim
+   * from another device's ownership, a silent resize from a sibling
+   * window's (soft follower). Programmatic refits (composer open/close,
+   * restart, kick) must leave ownership alone. */
   refit: (takeover?: boolean) => void;
   focus: () => void;
   /** Deliver text composed in the native input bar using the given
@@ -145,8 +147,10 @@ export default function TerminalView({
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
-  // Another client owns the PTY size: we render at its size scaled to fit,
-  // and offer a takeover button in a slim banner.
+  // Another DEVICE owns the PTY size: we render at its size scaled to fit,
+  // and offer a takeover button in a slim banner. A sibling window of our
+  // own device also renders scaled (soft follower) but WITHOUT the banner —
+  // the toolbar's explicit refit already retakes silently.
   const [sizeFollower, setSizeFollower] = useState(false);
   const claimSizeRef = useRef<(() => void) | null>(null);
   const { t } = useI18n();
@@ -266,12 +270,21 @@ export default function TerminalView({
         window.setTimeout(() => relayout(), 0);
       });
 
-      // PTY size ownership (server: Dala.Terminal.Server): the join reply and
-      // `size_owner` broadcasts tell this client whether ANOTHER client owns
-      // the size. While it does, we are a follower: render at the owner's PTY
-      // size scaled down to fit, never push resize. Roles can flip both ways
-      // at runtime (owner leaves, takeover button, another client claims).
+      // PTY size ownership (server: Dala.Terminal.Server): device-sticky.
+      // The join reply and `size_owner` broadcasts report which DEVICE owns
+      // the size (live or remembered) and which CLIENT is the live owner.
+      // Another device owning → hard follower (scaled render + takeover
+      // banner), even while that device is offline. Our device owning but
+      // ANOTHER window of it live → soft follower (scaled render, no
+      // banner, no resize pushes — same-device windows would thrash the
+      // shared PTY otherwise; the explicit refit button retakes silently).
+      // Roles can flip any direction at runtime (takeover button, another
+      // device claims, a sibling window closes). See sizeRole.ts.
+      const deviceId = getDeviceId();
       let clientId: string | null = null;
+      let role: SizeRole = "driver";
+      // Rendering mode shared by both follower flavors: mirror the owner's
+      // grid, scale to fit, never push resizes.
       let follower = false;
 
       // Chromium's DPR emulation (DevTools device mode, playwright mobile
@@ -361,8 +374,12 @@ export default function TerminalView({
         scaleToFit();
       };
 
-      const channel = createTerminalChannel(getSocket(), sessionId);
-      const phxChannel = channel as unknown as Channel;
+      // Not createTerminalChannel (codegen — no join params): the join must
+      // carry the stable device id the size ownership sticks to.
+      const phxChannel = getSocket().channel(`terminal:${sessionId}`, {
+        device_id: deviceId,
+      });
+      const channel = phxChannel as unknown as TerminalChannel;
 
       // See streamGate.ts for the replay/dedup/input-guard invariants.
       const gate = createStreamGate();
@@ -513,11 +530,14 @@ export default function TerminalView({
         }
       };
 
-      // Role transitions. Both directions can happen at runtime: another
-      // client claims the size while we drive it (owner → follower), or
-      // ownership frees up / we take it over (follower → owner).
-      const enterFollower = (rows: number, cols: number) => {
-        const wasDriver = !follower;
+      // Role transitions. All directions can happen at runtime: another
+      // client claims the size while we drive it (owner → follower), a
+      // sibling window of this device takes over (driver ↔ soft follower),
+      // or ownership frees up / we take it over (follower → owner).
+      // `banner` distinguishes the flavors: the manual-claim banner only
+      // for ANOTHER device's ownership — a sibling window of our own
+      // device follows silently (its refit button already retakes).
+      const enterFollower = (rows: number, cols: number, banner: boolean) => {
         follower = true;
         // The driver-path insets would be scaled along with the grid and
         // fight the fit math — the follower renders edge to edge. Both
@@ -525,13 +545,13 @@ export default function TerminalView({
         // scrolls and touch pans stay with the terminal scrollback.
         if (term.element) term.element.style.padding = "0";
         applyServerSize(rows, cols);
-        if (wasDriver) setSizeFollower(true);
+        setSizeFollower(banner);
       };
       // `claim`: how to assert ownership server-side — a plain resize when
-      // ownership is free or already confirmed ours ("resize"), or the
-      // explicit takeover event ("claim").
+      // the device memory already lets us drive (free, ours, or a sibling
+      // window's: "resize"), or the explicit takeover event ("claim").
       const enterDriver = (claim: "resize" | "claim") => {
-        const wasFollower = follower;
+        role = "driver";
         follower = false;
         if (term.element) term.element.style.transform = "";
         resetPadding();
@@ -545,9 +565,34 @@ export default function TerminalView({
           phxChannel.push("claim_size", { rows: term.rows, cols: term.cols });
         // Repaint after the geometry settles (stale edge pixels otherwise).
         term.refresh(0, term.rows - 1);
-        if (wasFollower) setSizeFollower(false);
+        setSizeFollower(false);
       };
       claimSizeRef.current = () => enterDriver("claim");
+
+      // One entry point for every server ownership report (join reply and
+      // `size_owner` broadcasts): derive the role, transition the rendering
+      // mode, and keep the banner in sync (hard follower only).
+      const applyOwnership = (p: {
+        owner?: string | null;
+        owner_device?: string | null;
+        rows?: number;
+        cols?: number;
+      }): SizeRole => {
+        const next = sizeRole(deviceId, clientId, p);
+        if (next === "driver") {
+          // Our device holds the size (or the session is unadopted) while
+          // we still render as follower — our own takeover confirming, or
+          // the live sibling window closed. Push our real fitted size so
+          // the PTY reflows to the grid we are about to render; the plain
+          // resize applies silently because the device memory is ours.
+          if (follower) enterDriver("resize");
+          role = "driver";
+        } else {
+          role = next;
+          enterFollower(p.rows ?? term.rows, p.cols ?? term.cols, next === "follower");
+        }
+        return role;
+      };
 
       // Header-button actions so the user can recover a wedged terminal or
       // recompute width without remembering a shortcut.
@@ -555,10 +600,12 @@ export default function TerminalView({
         if (follower) {
           if (takeover) {
             // The explicit Refit action means "fit to MY screen" — for a
-            // follower that is a takeover: claim the size so the PTY
-            // reflows to our grid instead of re-scaling someone else's
-            // width into the corner.
-            enterDriver("claim");
+            // follower that is a takeover: reflow the PTY to our grid
+            // instead of re-scaling someone else's width into the corner.
+            // Another device's ownership needs the explicit claim (it
+            // rewrites the device memory); a sibling window of our own
+            // device is retaken silently by a plain resize.
+            enterDriver(role === "follower" ? "claim" : "resize");
           } else {
             // Programmatic refits (composer toggle, restart, …) keep the
             // follower role: just re-sync the scaled rendering.
@@ -613,22 +660,25 @@ export default function TerminalView({
             rows?: number;
             cols?: number;
             owner?: string | null;
+            owner_device?: string | null;
             client_id?: string;
           }) => {
             gate.joined();
             clientId = resp?.client_id ?? null;
-            if (isSizeFollower(clientId, resp?.owner)) {
-              // Another client owns the size: render at the PTY's size,
-              // scaled to fit, and attach at that same size so the repaint's
-              // soft wraps match what we display.
-              enterFollower(resp?.rows ?? term.rows, resp?.cols ?? term.cols);
+            if (applyOwnership(resp ?? {}) !== "driver") {
+              // Someone else drives the size — another device (hard
+              // follower, banner) or a sibling window of this device (soft
+              // follower, silent): render at the PTY's size, scaled to
+              // fit, and attach at that same size so the repaint's soft
+              // wraps match what we display.
               phxChannel.push("attach", {
                 rows: resp?.rows ?? term.rows,
                 cols: resp?.cols ?? term.cols,
               });
             } else {
-              // Ownership is free (or ours): drive our own size — this
-              // resize claims it. Re-fit now that layout has settled so the
+              // The session is unadopted (we adopt it) or already ours:
+              // drive our own size — this resize claims/re-owns it
+              // silently. Re-fit now that layout has settled so the
               // PTY is the real size before the user runs anything (else the
               // first `ls` renders at the default 80-col size until a later
               // resize/repaint corrects it).
@@ -651,25 +701,20 @@ export default function TerminalView({
           term.writeln("\x1b[31mcould not attach to session\x1b[0m");
         });
 
-      // Ownership changes at runtime: somebody claimed the size (maybe us),
-      // or the owner left and the size is up for grabs.
+      // Ownership changes at runtime: somebody claimed the size (maybe us,
+      // maybe a sibling window of this device). A live owner disconnecting
+      // is only up for grabs within the owner device: the device memory
+      // keeps other devices followers, while a soft follower promotes
+      // itself back to driver when its sibling window goes away.
       phxChannel.on(
         "size_owner",
-        (p: { owner?: string | null; rows?: number; cols?: number }) => {
-          if (isSizeFollower(clientId, p.owner)) {
-            enterFollower(p.rows ?? term.rows, p.cols ?? term.cols);
-          } else if (p.owner == null) {
-            // Ownership freed (the owner disconnected): drive our own size —
-            // the resize claims it. Last write wins if several clients race.
-            enterDriver("resize");
-          } else if (follower) {
-            // We are the owner while still rendering as follower. Usually
-            // our own takeover confirming; but it can also be an ACCIDENTAL
-            // claim (our follower attach raced the old owner leaving and
-            // claimed at ITS dims) — push our real fitted size so the PTY
-            // reflows to the grid we are about to render.
-            enterDriver("resize");
-          }
+        (p: {
+          owner?: string | null;
+          owner_device?: string | null;
+          rows?: number;
+          cols?: number;
+        }) => {
+          applyOwnership(p);
         },
       );
 

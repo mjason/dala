@@ -22,7 +22,7 @@ export default defineConfig({
         functions: 25,
         branches: 25,
         statements: 28,
-        "js/app/{typeahead,streamGate,diffParse,fuzzy,patchBuilder,rpc,fileTypes,flowControl,pasteFiles,store,csv,terminalSend,pastedFileUpload,touchScroll,touchKeys,sizeRole}.ts":
+        "js/app/{typeahead,streamGate,diffParse,fuzzy,patchBuilder,rpc,fileTypes,flowControl,pasteFiles,store,csv,terminalSend,pastedFileUpload,touchScroll,touchKeys,sizeRole,deviceId,reorder}.ts":
           {
             lines: 90,
             functions: 85,

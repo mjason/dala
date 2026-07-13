@@ -1,10 +1,13 @@
-// PTY 尺寸所有权 — 手机端体验。
+// PTY 尺寸所有权 — 手机端体验(设备粘性模型)。
 //
-// 模型:每个会话最多一个"尺寸所有者",只有所有者的 resize 会到达 PTY。
-// 1. 手机单独打开会话 → 第一次 resize 自动认领所有权,PTY 按手机宽度渲染
+// 模型:会话记住"尺寸所有者设备"(localStorage 里的稳定 device id,持久化在
+// 会话记录上),只有该设备的 resize 会到达 PTY。
+// 1. 第一个附着的设备收养会话:手机自己创建的会话按手机宽度渲染
 //    (TUI 原生重排,而不是缩放桌面宽度)。
-// 2. 桌面端已持有尺寸时手机加入 → 手机是 follower(按所有者尺寸渲染并缩放),
-//    显示横幅;点击接管按钮后 PTY 重排为手机宽度,横幅消失。
+// 2. 其他设备永远不会自动认领 —— 即使所有者离线:手机打开桌面的会话是
+//    follower(按所有者尺寸渲染并缩放),显示横幅;点击接管按钮才转移
+//    所有权(连同设备记忆),PTY 重排为手机宽度,横幅消失。
+// 3. 同一设备的重连/刷新静默恢复所有权,零摩擦。
 //
 // 终端内容走 WebGL,DOM 里没有文字 —— 内容断言用截图像素检查(顶部行区域
 // 不允许全黑)+ __dalaTerm(调试句柄)读 emulator buffer。
@@ -107,6 +110,16 @@ async function waitTerminalReady(page) {
     .toBe(true);
 }
 
+/** 手机端显式选中目标会话:侧栏在窄视口下收在抽屉里,先点汉堡展开。
+ * 与 sidebar.spec 的按 id 过滤同理——对其他 spec 的残留会话免疫,
+ * 不依赖"唯一会话自动成为 active"。 */
+async function selectSessionOnPhone(page, id) {
+  await page.locator("#nav-toggle-button").tap();
+  await expect(h.sessionEntry(page, id)).toBeVisible();
+  await h.sessionEntry(page, id).tap();
+  await expect(page.locator(".xterm").first()).toBeVisible();
+}
+
 /** .xterm-screen 的布局宽度(offsetWidth,不受 transform 影响)与视觉宽度。 */
 async function screenWidths(page) {
   return page.evaluate(() => {
@@ -119,7 +132,7 @@ async function screenWidths(page) {
 }
 
 test.describe("Given 手机上的 dala 用户", () => {
-  test("手机单独打开会话时,自动认领尺寸并按手机宽度渲染出内容", async ({ browser }) => {
+  test("手机自己创建的会话:首次附着即收养尺寸,按手机宽度渲染出内容", async ({ browser }) => {
     const context = await browser.newContext({ ...phone });
     const page = await context.newPage();
     let id;
@@ -133,7 +146,8 @@ test.describe("Given 手机上的 dala 用户", () => {
         .poll(() => page.evaluate(() => window.__dalaFlow?.acked ?? 0), { timeout: 15_000 })
         .toBeGreaterThan(0);
 
-      // 独占会话 = 自己就是所有者:没有 follower 横幅。
+      // 全新会话的第一个附着设备就是手机:收养生效,自己是所有者,
+      // 没有 follower 横幅。
       await expect(page.locator("#size-follower-banner")).toHaveCount(0);
 
       // PTY 按手机宽度渲染:.xterm-screen 不超过容器宽度(绝不是桌面的 667px),
@@ -157,13 +171,64 @@ test.describe("Given 手机上的 dala 用户", () => {
     }
   });
 
+  test("桌面创建的会话在桌面离线后,手机打开显示横幅而不是自动认领", async ({ browser }) => {
+    // 设备粘性的核心回归:旧模型里"没有 live owner"意味着第一个 resize
+    // 自动认领 —— 手机深夜打开桌面的会话会悄悄把 PTY 挤成手机宽度。
+    // 新模型里会话记住桌面设备,手机只能当 follower,除非显式接管。
+    const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const desktopPage = await desktop.newPage();
+    let phoneCtx;
+    let phonePage;
+    let id;
+    try {
+      // 桌面创建会话并显式选中(残留会话在场时 active 未必是新会话),
+      // 首次附着收养尺寸,然后整个桌面端离线。
+      await h.gotoApp(desktopPage);
+      id = await h.createSession(desktopPage);
+      await h.selectSession(desktopPage, id);
+      await expect
+        .poll(() => desktopPage.evaluate(() => window.__dalaFlow?.acked ?? 0), {
+          timeout: 15_000,
+        })
+        .toBeGreaterThan(0);
+      const desktopWidths = await screenWidths(desktopPage);
+      expect(desktopWidths.layout).toBeGreaterThan(phone.viewport.width);
+      await desktop.close();
+
+      // 手机打开同一会话(显式选中,同样免疫残留):没有 live owner,但
+      // 设备记忆还在 —— 横幅出现,网格保持桌面宽度(布局宽度超过手机
+      // 视口)、缩放贴合手机屏。
+      phoneCtx = await browser.newContext({ ...phone });
+      phonePage = await phoneCtx.newPage();
+      await h.gotoApp(phonePage);
+      await selectSessionOnPhone(phonePage, id);
+      await expect(phonePage.locator("#size-follower-banner")).toBeVisible();
+      await expect
+        .poll(async () => (await screenWidths(phonePage)).layout, { timeout: 10_000 })
+        .toBeGreaterThan(phone.viewport.width);
+      const scaled = await screenWidths(phonePage);
+      expect(scaled.visual).toBeLessThanOrEqual(phone.viewport.width + 2);
+
+      // 显式接管仍然是出路:点横幅按钮后 PTY 重排为手机宽度,横幅消失。
+      await phonePage.locator("#claim-size-button").click();
+      await expect(phonePage.locator("#size-follower-banner")).toHaveCount(0);
+      await expect
+        .poll(async () => (await screenWidths(phonePage)).layout, { timeout: 10_000 })
+        .toBeLessThanOrEqual(phone.viewport.width);
+    } finally {
+      if (id && phonePage) await h.deleteSession(phonePage, id).catch(() => {});
+      await phoneCtx?.close();
+      await desktop.close().catch(() => {});
+    }
+  });
+
   test("桌面端持有尺寸时手机加入是 follower;点击接管后重排为手机宽度", async ({ browser }) => {
     const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const desktopPage = await desktop.newPage();
     let phoneCtx;
     let id;
     try {
-      // 桌面端创建会话并成为尺寸所有者(join 后的第一次 resize 认领)。
+      // 桌面端创建会话并成为尺寸所有者(首次附着收养该设备)。
       await h.gotoApp(desktopPage);
       id = await h.createSession(desktopPage);
       await expect(desktopPage.locator(".xterm").first()).toBeVisible();
