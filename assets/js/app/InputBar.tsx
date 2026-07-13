@@ -73,6 +73,7 @@ export default function InputBar({
   const { t } = useI18n();
   const setValue = onChange;
   const [files, setFiles] = useState<string[] | null>(null);
+  const [filesTruncated, setFilesTruncated] = useState(false);
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slash, setSlash] = useState<string | null>(null);
@@ -167,17 +168,26 @@ export default function InputBar({
   };
   toggleVoiceRef.current = toggleVoice;
 
-  // File list loads lazily on the first `@`, once per composer open.
+  // A root change (session switch, cd) makes the cached list stale: drop it
+  // so the effect below refetches on the next `@`.
+  useEffect(() => {
+    setFiles(null);
+    setFilesTruncated(false);
+  }, [root]);
+
+  // File list loads lazily on the first `@`, once per composer open (and
+  // again after a root change resets it above).
   useEffect(() => {
     if (!mention || files !== null) return;
     let stale = false;
-    void call<{ files: string[] }>(listFiles, {
+    void call<{ files: string[]; truncated: boolean }>(listFiles, {
       input: { path: root },
       fields: ["root", "files", "truncated"],
     }).then((result) => {
       if (stale) return;
       if (result.ok) {
         setFiles(result.data.files);
+        setFilesTruncated(result.data.truncated);
       } else {
         setFiles([]);
       }
@@ -186,11 +196,11 @@ export default function InputBar({
       stale = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mention !== null]);
+  }, [mention !== null, files === null, root]);
 
   const matches = useMemo(
-    () => (mention ? rankFiles(mention.query, files ?? [], 60) : []),
-    [mention, files],
+    () => (mention ? rankFiles(mention.query, files ?? [], 60, root) : []),
+    [mention, files, root],
   );
 
   useEffect(() => {
@@ -226,9 +236,14 @@ export default function InputBar({
 
   const pickMention = (path: string) => {
     if (!mention) return;
+    // Whitespace must be backslash-escaped — both shells and claude code's
+    // @-file parser stop at a bare space. Only whitespace: escaping anything
+    // else would corrupt the path for claude's parser.
+    const escaped = path.replace(/[ \t]/g, (ch) => `\\${ch}`);
     // Agents understand the `@file` convention; a plain shell command wants
     // the bare path.
-    const inserted = (app ?? detectedApp) && AGENT_LABELS[(app ?? detectedApp)!] ? `@${path}` : path;
+    const inserted =
+      (app ?? detectedApp) && AGENT_LABELS[(app ?? detectedApp)!] ? `@${escaped}` : escaped;
     const cursor = cursorRef.current || value.length;
     const next = `${value.slice(0, mention.start)}${inserted} ${value.slice(cursor)}`;
     setValue(next);
@@ -312,7 +327,7 @@ export default function InputBar({
           ))}
         </div>
       )}
-      {mention && matches.length > 0 && (
+      {mention && (matches.length > 0 || (filesTruncated && files !== null)) && (
         <div
           id="mention-menu"
           className="absolute bottom-full left-3 z-10 mb-1 max-h-64 w-[32rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
@@ -330,9 +345,20 @@ export default function InputBar({
                 i === mentionIndex ? "bg-bg2 text-mint" : "text-fg-muted hover:text-fg"
               }`}
             >
-              {m.path}
+              {/* Show the NFC form; the pick inserts the original bytes. */}
+              {m.display}
             </button>
           ))}
+          {filesTruncated && (
+            <div
+              id="mention-truncated"
+              className={`px-3 py-1 text-[11px] text-fg-muted/60 ${
+                matches.length > 0 ? "border-t border-line/60" : ""
+              }`}
+            >
+              {t("mentionTruncated")}
+            </div>
+          )}
         </div>
       )}
 

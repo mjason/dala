@@ -68,9 +68,12 @@ defmodule Dala.Terminal.FileSystem do
 
     action :list_files, :map do
       description """
-      Recursively list file paths under a root, for the quick-open palette.
-      Hidden directories and common dependency/build trees are skipped; the
-      walk is capped, with `truncated` reporting whether the cap was hit.
+      Recursively list file paths under a root, for the quick-open palette
+      and composer @-mentions. Inside a git work tree the list comes from
+      `git ls-files` (tracked + untracked, `.gitignore` respected); elsewhere
+      a bounded manual walk skips hidden directories and common
+      dependency/build trees. Both are capped, with `truncated` reporting
+      whether the cap was hit.
       """
 
       constraints fields: [
@@ -85,7 +88,7 @@ defmodule Dala.Terminal.FileSystem do
         root = expand(input.arguments.path)
 
         if File.dir?(root) do
-          {files, truncated} = walk_files(root)
+          {files, truncated} = list_files_under(root)
           {:ok, %{root: root, files: files, truncated: truncated}}
         else
           {:error, "not a directory: #{root}"}
@@ -344,13 +347,94 @@ defmodule Dala.Terminal.FileSystem do
                     ~w(node_modules _build deps target .git .hg .svn __pycache__ .venv venv)
                   )
 
+  # Give a slow git (cold network filesystem, gigantic index) a bounded
+  # budget before falling back to the manual walk.
+  @git_files_timeout_ms 3_000
+  defp git_files_timeout_ms,
+    do: Application.get_env(:dala, :list_files_git_timeout_ms, @git_files_timeout_ms)
+
+  # Inside a git work tree the index is the authority — `.gitignore`
+  # respected, no junk eating the cap, deterministic order. Everywhere else
+  # (or when git errors out or exceeds its deadline): the bounded manual walk.
+  defp list_files_under(root) do
+    case git_files(root) do
+      {:ok, listing} -> listing
+      :error -> walk_files(root)
+    end
+  end
+
+  # The whole git interaction runs in a task with a hard deadline: a hung
+  # git must not wedge the RPC. Killing the task closes its port, which
+  # detaches the external process.
+  defp git_files(root) do
+    task = Task.async(fn -> run_git_files(root) end)
+
+    case Task.yield(task, git_files_timeout_ms()) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, listing}} -> {:ok, listing}
+      _timeout_or_git_failure -> :error
+    end
+  end
+
+  # Run from `root` itself (not the toplevel): git scopes the listing to the
+  # current directory and reports paths relative to it, which is exactly what
+  # subdirectory sessions need. `-z` gives raw NUL-separated bytes (no quoting
+  # of non-ASCII names).
+  defp run_git_files(root) do
+    with top when is_binary(top) <- Dala.Paths.git_toplevel(root),
+         {out, 0} <-
+           System.cmd(
+             "git",
+             ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+             stderr_to_stdout: false
+           ) do
+      {:ok, take_git_files(out, @walk_max_files, 0, [])}
+    else
+      _not_a_repo_or_git_failed -> :error
+    end
+  rescue
+    _missing_git -> :error
+  end
+
+  # Counting parse: stops at the cap instead of materializing + sorting the
+  # whole list (git already emits paths lexicographically sorted). Dropped
+  # entries: trailing "/" (untracked nested repositories are printed as
+  # directories, not files) and invalid UTF-8 (cannot round-trip through
+  # JSON). Known limitation, accepted: gitlinks (committed submodules) and
+  # index entries whose file was deleted on disk still appear — filtering
+  # them out would cost one stat per path (up to 20k stats), too slow here.
+  defp take_git_files(<<>>, _max, _count, acc), do: {Enum.reverse(acc), false}
+
+  defp take_git_files(bin, max, count, acc) do
+    {entry, rest} =
+      case :binary.split(bin, <<0>>) do
+        [entry, rest] -> {entry, rest}
+        [entry] -> {entry, <<>>}
+      end
+
+    cond do
+      entry == "" or String.ends_with?(entry, "/") or not String.valid?(entry) ->
+        take_git_files(rest, max, count, acc)
+
+      count >= max ->
+        {Enum.reverse(acc), true}
+
+      true ->
+        take_git_files(rest, max, count + 1, [entry | acc])
+    end
+  end
+
+  # The walk collects up to cap+1 entries so `truncated` means "there was
+  # more" (strict `>`), matching the git path's semantics — hitting the cap
+  # exactly is not truncation.
   defp walk_files(root) do
     {files, count} = walk_files(root, "", 0, [], 0)
-    {files |> Enum.reverse(), count >= @walk_max_files}
+    truncated = count > @walk_max_files
+    kept = if truncated, do: tl(files), else: files
+    {Enum.reverse(kept), truncated}
   end
 
   defp walk_files(_abs, _rel, depth, acc, count)
-       when depth > @walk_max_depth or count >= @walk_max_files,
+       when depth > @walk_max_depth or count > @walk_max_files,
        do: {acc, count}
 
   defp walk_files(abs_dir, rel_dir, depth, acc, count) do
@@ -361,27 +445,33 @@ defmodule Dala.Terminal.FileSystem do
       end
 
     Enum.reduce_while(entries, {acc, count}, fn name, {acc, count} ->
-      if count >= @walk_max_files do
-        {:halt, {acc, count}}
-      else
-        abs = Path.join(abs_dir, name)
-        rel = if rel_dir == "", do: name, else: rel_dir <> "/" <> name
+      cond do
+        count > @walk_max_files ->
+          {:halt, {acc, count}}
 
-        case File.lstat(abs) do
-          {:ok, %File.Stat{type: :directory}} ->
-            if String.starts_with?(name, ".") or MapSet.member?(@walk_skip_dirs, name) do
+        # Names that are not valid UTF-8 cannot round-trip through JSON.
+        not String.valid?(name) ->
+          {:cont, {acc, count}}
+
+        true ->
+          abs = Path.join(abs_dir, name)
+          rel = if rel_dir == "", do: name, else: rel_dir <> "/" <> name
+
+          case File.lstat(abs) do
+            {:ok, %File.Stat{type: :directory}} ->
+              if String.starts_with?(name, ".") or MapSet.member?(@walk_skip_dirs, name) do
+                {:cont, {acc, count}}
+              else
+                {:cont, walk_files(abs, rel, depth + 1, acc, count)}
+              end
+
+            {:ok, %File.Stat{type: :regular}} ->
+              {:cont, {[rel | acc], count + 1}}
+
+            # Symlinks and specials are skipped: no cycles, no surprises.
+            _other ->
               {:cont, {acc, count}}
-            else
-              {:cont, walk_files(abs, rel, depth + 1, acc, count)}
-            end
-
-          {:ok, %File.Stat{type: :regular}} ->
-            {:cont, {[rel | acc], count + 1}}
-
-          # Symlinks and specials are skipped: no cycles, no surprises.
-          _other ->
-            {:cont, {acc, count}}
-        end
+          end
       end
     end)
   end

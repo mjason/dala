@@ -147,6 +147,62 @@ defmodule Dala.Terminal.FileSystemTest do
     refute Enum.any?(files, &String.starts_with?(&1, ".git"))
   end
 
+  test "list_files in a git repo respects .gitignore and keeps untracked + unicode names",
+       %{dir: dir} do
+    {_out, 0} = System.cmd("git", ["init", "-q"], cd: dir, stderr_to_stdout: true)
+    File.write!(Path.join(dir, ".gitignore"), "junk/\n")
+    File.mkdir_p!(Path.join(dir, "junk"))
+    File.write!(Path.join(dir, "junk/build.log"), "x")
+    File.mkdir_p!(Path.join(dir, "strategies"))
+    File.write!(Path.join(dir, "strategies/选币 研究demo.py"), "x")
+    File.write!(Path.join(dir, "tracked.txt"), "x")
+    File.write!(Path.join(dir, "untracked.txt"), "x")
+    {_out, 0} = System.cmd("git", ["add", "tracked.txt"], cd: dir, stderr_to_stdout: true)
+
+    assert {:ok, %{root: ^dir, files: files, truncated: false}} = list_files(dir)
+    assert "tracked.txt" in files
+    assert "untracked.txt" in files
+    assert "strategies/选币 研究demo.py" in files
+    assert ".gitignore" in files
+    refute Enum.any?(files, &String.contains?(&1, "junk"))
+  end
+
+  test "list_files excludes untracked nested repositories", %{dir: dir} do
+    {_out, 0} = System.cmd("git", ["init", "-q"], cd: dir, stderr_to_stdout: true)
+    nested = Path.join(dir, "vendor/nested")
+    File.mkdir_p!(nested)
+    {_out, 0} = System.cmd("git", ["init", "-q"], cd: nested, stderr_to_stdout: true)
+    File.write!(Path.join(nested, "inner.txt"), "x")
+    File.write!(Path.join(dir, "outer.txt"), "x")
+
+    # `git ls-files --others` prints the nested repo as `vendor/nested/` —
+    # a directory, not a file; it must not reach the client.
+    assert {:ok, %{files: files}} = list_files(dir)
+    assert files == ["outer.txt"]
+  end
+
+  test "list_files walk drops names that are not valid UTF-8", %{dir: dir} do
+    File.write!(Path.join(dir, "ok.txt"), "x")
+    # Raw invalid byte in the name (Linux allows it) — such names cannot
+    # round-trip through the JSON payload.
+    File.write!(dir <> "/bad_" <> <<0xFF>> <> ".txt", "x")
+
+    assert {:ok, %{files: files}} = list_files(dir)
+    assert files == ["ok.txt"]
+  end
+
+  test "list_files from a subdirectory of a repo returns paths relative to it", %{dir: dir} do
+    {_out, 0} = System.cmd("git", ["init", "-q"], cd: dir, stderr_to_stdout: true)
+    sub = Path.join(dir, "sub")
+    File.mkdir_p!(Path.join(sub, "deep"))
+    File.write!(Path.join(dir, "top.txt"), "x")
+    File.write!(Path.join(sub, "inner.txt"), "x")
+    File.write!(Path.join(sub, "deep/leaf.txt"), "x")
+
+    assert {:ok, %{root: ^sub, files: files, truncated: false}} = list_files(sub)
+    assert Enum.sort(files) == ["deep/leaf.txt", "inner.txt"]
+  end
+
   test "list_files rejects non-directories", %{dir: dir} do
     file = Path.join(dir, "f.txt")
     File.write!(file, "x")

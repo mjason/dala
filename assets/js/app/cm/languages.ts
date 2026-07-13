@@ -36,10 +36,11 @@ const jsoncDescription = LanguageDescription.of({
   extensions: ["jsonc"],
   filename: /^(tsconfig|jsconfig)\.json$/,
   load: async () => {
-    // The JSON grammar renders JSONC fine — comments show as errors-free
-    // plain tokens rather than breaking the whole highlight.
-    const { json } = await import("@codemirror/lang-json");
-    return json();
+    // A real JSONC Lezer grammar: comments and trailing commas are first-
+    // class tokens (the strict JSON grammar marked them as parse errors,
+    // which broke highlighting after the first comment in dala.jsonc).
+    const { jsonc } = await import("@platformos/lang-jsonc");
+    return jsonc();
   },
 });
 

@@ -50,7 +50,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
-  const ranked = useMemo(() => rankFiles(query, files ?? [], 100), [query, files]);
+  const ranked = useMemo(() => rankFiles(query, files ?? [], 100, root), [query, files, root]);
   const selected = ranked[Math.min(index, ranked.length - 1)];
 
   useEffect(() => setIndex(0), [query]);
@@ -139,8 +139,9 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
                 i === index ? "bg-bg2" : ""
               }`}
             >
-              <FileTypeIcon name={match.path} />
-              <HighlightedPath path={match.path} positions={match.positions} />
+              <FileTypeIcon name={match.display} />
+              {/* Highlights index the NFC display form, never the raw path. */}
+              <HighlightedPath path={match.display} positions={match.positions} />
             </div>
           ))}
         </div>
@@ -159,20 +160,27 @@ function HighlightedPath({ path, positions }: { path: string; positions: number[
   const marks = new Set(positions);
   const slash = path.lastIndexOf("/");
 
+  // `positions` are code-unit indices (they come from indexOf), so iterate
+  // code units — Array.from iterates code points and would shift everything
+  // after an emoji. Consecutive units with the same style are grouped into
+  // one span so surrogate pairs are never split across elements.
+  const runs: { text: string; className: string }[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const className = marks.has(i)
+      ? "font-semibold text-mint"
+      : i <= slash
+        ? "text-fg-muted"
+        : "text-fg";
+    const last = runs[runs.length - 1];
+    if (last && last.className === className) last.text += path[i];
+    else runs.push({ text: path[i], className });
+  }
+
   return (
     <span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={path}>
-      {Array.from(path).map((char, i) => (
-        <span
-          key={i}
-          className={
-            marks.has(i)
-              ? "font-semibold text-mint"
-              : i <= slash
-                ? "text-fg-muted"
-                : "text-fg"
-          }
-        >
-          {char}
+      {runs.map((run, i) => (
+        <span key={i} className={run.className}>
+          {run.text}
         </span>
       ))}
     </span>
