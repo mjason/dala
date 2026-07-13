@@ -429,3 +429,131 @@ mod tests {
         assert!(out.contains("after resize"));
     }
 }
+
+/// Takeover reflow (PTY size ownership): when a claim resizes the grid, the
+/// embedded alacritty terminal reflows screen AND scrollback (`Term::resize`
+/// passes reflow=true for the normal buffer), and the soft-wrap snapshot must
+/// reflect the post-reflow logical lines — soft-wrapped history joined so the
+/// receiving xterm re-wraps at its own width, hard newlines preserved.
+#[cfg(test)]
+mod takeover_reflow_tests {
+    use super::*;
+
+    fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// Narrow→wide (phone→desktop takeover): a line soft-wrapped at phone
+    /// width must come back as ONE contiguous line in the snapshot.
+    #[test]
+    fn narrow_to_wide_takeover_rejoins_soft_wrapped_line() {
+        let mut screen = Screen::new(10, 45, 1000);
+        let long: String = (0..150).map(|_| 'X').collect();
+        screen.advance(format!("START{long}END\r\nprompt$ ").as_bytes());
+        screen.resize(10, 200);
+        let out = text(&screen.repaint(true));
+        assert!(
+            out.contains(&format!("START{long}END")),
+            "soft-wrapped line must rejoin after widening: {out:?}"
+        );
+    }
+
+    /// Same, but with the long line deep in SCROLLBACK — reflow must cover
+    /// history, not just the visible screen.
+    #[test]
+    fn narrow_to_wide_takeover_reflows_scrollback_history() {
+        let mut screen = Screen::new(6, 45, 1000);
+        let long: String = (0..150).map(|_| 'X').collect();
+        screen.advance(format!("START{long}END").as_bytes());
+        for i in 0..30 {
+            screen.advance(format!("\r\nfiller-{i}").as_bytes());
+        }
+        screen.resize(6, 200);
+        let out = text(&screen.repaint(true));
+        assert!(
+            out.contains(&format!("START{long}END")),
+            "history line must rejoin after widening: {out:?}"
+        );
+        // Hard-wrapped filler lines keep their breaks.
+        assert!(out.contains("filler-0"));
+        assert!(!out.contains("filler-0filler-1"), "hard newlines must survive");
+    }
+
+    /// Wide→narrow (desktop→phone takeover): a desktop-width line re-wraps
+    /// into soft segments with no content loss and NO hard breaks between
+    /// the segments (the receiving xterm rebuilds the logical line).
+    #[test]
+    fn wide_to_narrow_takeover_rewraps_without_loss_or_hard_breaks() {
+        let mut screen = Screen::new(10, 200, 1000);
+        let long: String = (0..150).map(|_| 'X').collect();
+        screen.advance(format!("START{long}END\r\nprompt$ ").as_bytes());
+        screen.resize(10, 45);
+        let out = text(&screen.repaint(true));
+        let needle = format!("START{long}END");
+        assert!(
+            out.contains(&needle),
+            "soft-wrapped segments must be contiguous (no \\r\\n baked in): {out:?}"
+        );
+    }
+
+    /// Full ownership ping-pong (wide → narrow → wide again) round-trips the
+    /// logical line: alacritty's shrink marks WRAPLINE rows the grow rejoins.
+    #[test]
+    fn takeover_pingpong_roundtrips_logical_lines() {
+        let mut screen = Screen::new(6, 200, 1000);
+        let long: String = (0..150).map(|_| 'X').collect();
+        screen.advance(format!("START{long}END").as_bytes());
+        for i in 0..30 {
+            screen.advance(format!("\r\nfiller-{i}").as_bytes());
+        }
+        screen.resize(6, 45);
+        screen.resize(6, 200);
+        let out = text(&screen.repaint(true));
+        assert!(
+            out.contains(&format!("START{long}END")),
+            "ping-pong must round-trip the logical line: {out:?}"
+        );
+    }
+
+    /// CJK wide chars sitting exactly on the wrap boundary (odd column count
+    /// forces a leading-wide-char-spacer wrap) must survive narrow→wide
+    /// re-join: every codepoint exactly once, in order, no split chars.
+    #[test]
+    fn cjk_at_wrap_boundary_survives_narrow_to_wide() {
+        // 41 cols: 20 double-width chars fill 40 columns, the 21st cannot
+        // fit in the last column — alacritty wraps it with a spacer cell.
+        let mut screen = Screen::new(8, 41, 1000);
+        let cjk: String = "汉字宽度测试".chars().cycle().take(30).collect();
+        screen.advance(format!("前{cjk}后\r\nprompt$ ").as_bytes());
+        screen.resize(8, 200);
+        let out = text(&screen.repaint(true));
+        assert!(
+            out.contains(&format!("前{cjk}后")),
+            "CJK line must rejoin contiguously after widening: {out:?}"
+        );
+        for ch in ['前', '后'] {
+            assert_eq!(out.matches(ch).count(), 1, "codepoint {ch} must appear exactly once");
+        }
+    }
+
+    /// CJK the other way (wide→narrow onto an odd width): re-wrapped
+    /// segments stay joinable and no codepoint is lost or duplicated.
+    #[test]
+    fn cjk_at_wrap_boundary_survives_wide_to_narrow() {
+        let mut screen = Screen::new(8, 200, 1000);
+        let cjk: String = "汉字宽度测试".chars().cycle().take(30).collect();
+        screen.advance(format!("前{cjk}后\r\nprompt$ ").as_bytes());
+        screen.resize(8, 41);
+        let out = text(&screen.repaint(true));
+        for ch in ['前', '后'] {
+            assert_eq!(out.matches(ch).count(), 1, "codepoint {ch} must appear exactly once");
+        }
+        // Soft segments carry no \r\n between them (spacer cells at the
+        // wrap boundary are skipped, not rendered), so the whole logical
+        // line stays contiguous in the byte stream.
+        assert!(
+            out.contains(&format!("前{cjk}后")),
+            "CJK soft segments must not be separated by hard breaks: {out:?}"
+        );
+    }
+}

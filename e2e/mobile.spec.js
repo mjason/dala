@@ -328,6 +328,123 @@ test.describe("Given 手机上的 dala 用户", () => {
     }
   });
 
+  test("接管重排是双向的:宽历史在手机上重新折行不丢字,窄历史在桌面夺回后占满全宽", async ({ browser }) => {
+    // 回归:v0.14.2 的接管快照曾把旧宽度的软折行"烤"成硬换行——手机(窄)
+    // 时代产生的长行在桌面夺回(宽)后永远停留在手机宽度。holder 内嵌的
+    // alacritty 网格在 resize 时重排(reflow)整个回滚区,快照必须体现
+    // 重排后的逻辑行。两个方向都要验证:
+    //   宽→窄:桌面时代的长行,手机接管后按手机宽度重新折行且首尾标记俱在;
+    //   窄→宽:手机时代的长行,桌面夺回后重新拼成一整行(长度 > 手机列数)。
+    const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const desktopPage = await desktop.newPage();
+    let phoneCtx;
+    let id;
+
+    /** 读整个 normal buffer 的文本行(trim 尾随空白)。 */
+    const bufferLines = (page) =>
+      page.evaluate(() => {
+        const buf = window.__dalaTerm?.buffer.active;
+        if (!buf) return [];
+        const lines = [];
+        for (let i = 0; i < buf.length; i++) {
+          lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+        }
+        return lines;
+      });
+
+    try {
+      await h.gotoApp(desktopPage);
+      id = await h.createSession(desktopPage);
+      await expect(desktopPage.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(desktopPage);
+
+      // 宽时代长行:110 个 X,加首尾标记。桌面(≈140 列)一行放得下,
+      // 手机(≈40 列)必然折行。
+      await desktopPage.keyboard.type(
+        "printf 'WSTART'; printf 'X%.0s' {1..110}; printf 'WEND\\n'",
+      );
+      await desktopPage.keyboard.press("Enter");
+      await expect
+        .poll(async () => (await bufferLines(desktopPage)).join("\n"), { timeout: 10_000 })
+        .toContain("WEND");
+      // 桌面上这是一整行(前置条件,列数必须容得下)。
+      const wideLines = await bufferLines(desktopPage);
+      expect(wideLines.some((l) => l.includes("WSTART") && l.includes("WEND"))).toBe(true);
+
+      // 手机加入并接管:PTY 重排为手机宽度。
+      phoneCtx = await browser.newContext({ ...phone });
+      const phonePage = await phoneCtx.newPage();
+      await h.gotoApp(phonePage);
+      await expect(phonePage.locator(".xterm").first()).toBeVisible();
+      await expect(phonePage.locator("#size-follower-banner")).toBeVisible();
+      await phonePage.locator("#claim-size-button").click();
+      await expect(phonePage.locator("#size-follower-banner")).toHaveCount(0);
+      await expect(desktopPage.locator("#size-follower-banner")).toBeVisible({
+        timeout: 10_000,
+      });
+
+      const phoneCols = await phonePage.evaluate(() => window.__dalaTerm?.cols ?? 0);
+      expect(phoneCols).toBeGreaterThan(0);
+      expect(phoneCols).toBeLessThan(110);
+
+      // 宽→窄:重绘快照到达后,宽时代长行按手机宽度重新折行——首尾标记
+      // 都在(内容不丢),且没有任何一行超过手机列数(真的重排了,而不是
+      // 保留桌面宽度的硬行)。
+      await expect
+        .poll(async () => (await bufferLines(phonePage)).join(""), { timeout: 10_000 })
+        .toContain("WEND");
+      const phoneLines = await bufferLines(phonePage);
+      expect(phoneLines.join("")).toContain("WSTART");
+      for (const line of phoneLines) {
+        expect(line.length).toBeLessThanOrEqual(phoneCols);
+      }
+
+      // 窄时代长行:手机持有尺寸期间产生,holder 网格里被软折行成多段。
+      await desktopPage.keyboard.type(
+        "printf 'NSTART'; printf 'Y%.0s' {1..110}; printf 'NEND\\n'",
+      );
+      await desktopPage.keyboard.press("Enter");
+      await expect
+        .poll(async () => (await bufferLines(phonePage)).join(""), { timeout: 10_000 })
+        .toContain("NEND");
+
+      // 桌面点"适配宽度"夺回,等全新重绘快照到达。
+      const resetsBefore = await desktopPage.evaluate(
+        () => window.__dalaFlow?.resets ?? 0,
+      );
+      await desktopPage.locator("#terminal-refit-button").click();
+      await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
+      await expect
+        .poll(() => desktopPage.evaluate(() => window.__dalaFlow?.resets ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(resetsBefore);
+
+      // 窄→宽(本次修复的主断言):手机时代的长行必须重新拼成一整行——
+      // NSTART 与 NEND 落在同一行,行长超过手机列数,而不是永远停留在
+      // 手机宽度的折行。宽时代长行也要恢复全宽。
+      await expect
+        .poll(
+          async () =>
+            (await bufferLines(desktopPage)).some(
+              (l) => l.includes("NSTART") && l.includes("NEND"),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      const reclaimed = await bufferLines(desktopPage);
+      const narrowLine = reclaimed.find((l) => l.includes("NSTART"));
+      expect(narrowLine.length).toBeGreaterThan(phoneCols);
+      expect(
+        reclaimed.some((l) => l.includes("WSTART") && l.includes("WEND")),
+      ).toBe(true);
+    } finally {
+      if (id) await h.deleteSession(desktopPage, id).catch(() => {});
+      await phoneCtx?.close();
+      await desktop.close();
+    }
+  });
+
   test("390px 视口下工具栏没有够不着的按钮,溢出操作收进 ⋯ 菜单", async ({ browser }) => {
     const context = await browser.newContext({ ...phone });
     const page = await context.newPage();
