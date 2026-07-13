@@ -9,7 +9,7 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     globals: false,
     coverage: {
-      provider: "v8",
+      provider: "istanbul",
       include: ["js/app/**/*.{ts,tsx}"],
       exclude: ["js/app/**/*.test.{ts,tsx}"],
       // Layered gate. Tier 1: pure-logic modules — a regression here is a

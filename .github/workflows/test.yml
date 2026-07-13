@@ -48,9 +48,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # 钉住已验证版本：22.23 的 node 让 coverage 对未覆盖 TS 文件的
-          # AST 重映射以 JS 模式解析（类型注解报"缺分号"），22.19 正常
-          node-version: "22.19.0"
+          node-version: "22"
           cache: npm
           cache-dependency-path: assets/package-lock.json
       - run: npm ci
