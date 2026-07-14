@@ -51,16 +51,36 @@ describe("matchCombo", () => {
     expect(matchCombo(key({ key: "F2", shiftKey: true }), "f2")).toBe(false);
     expect(matchCombo(key({ key: "f" }), "f2")).toBe(false);
   });
+
+  it("Alt combos match by PHYSICAL key — macOS composes ⌥R into “®”", () => {
+    // The trap: with Option held, macOS hands the page e.key = "®" (or "√",
+    // "¬"…), so an e.key-based match would never fire for any Alt binding.
+    expect(
+      matchCombo(key({ key: "®", code: "KeyR", altKey: true, metaKey: true }), "mod+alt+r"),
+    ).toBe(true);
+    // Linux/Windows report the plain letter — same combo, same result.
+    expect(
+      matchCombo(key({ key: "r", code: "KeyR", altKey: true, ctrlKey: true }), "mod+alt+r"),
+    ).toBe(true);
+    // Alt must be REQUIRED: plain ⌘R (reload) must not rename.
+    expect(matchCombo(key({ key: "r", code: "KeyR", metaKey: true }), "mod+alt+r")).toBe(false);
+    // Digits too (Alt+2 composes on macOS as well).
+    expect(
+      matchCombo(key({ key: "€", code: "Digit2", altKey: true, ctrlKey: true }), "ctrl+alt+2"),
+    ).toBe(true);
+  });
 });
 
 describe("BINDINGS registry", () => {
-  it("renames the session with F2 by default", () => {
+  it("renames the session with ⌥⌘R / Ctrl+Alt+R by default (F2 costs an fn chord on a Mac)", () => {
     const spec = BINDINGS.find((b) => b.id === "renameSession");
     expect(spec).toBeDefined();
-    expect(spec?.default).toBe("f2");
+    expect(spec?.default).toBe("mod+alt+r");
     expect(spec?.scope).toBe("global");
+    // Not mod+shift+r: that is the browser's hard-reload.
+    expect(spec?.default).not.toBe("mod+shift+r");
     // Rename is a web-app-only action: it has no menu item, so nothing to
-    // mirror (F2 itself IS a valid accelerator — see comboToAccelerator).
+    // mirror. (F2 stays available as a REBIND — see the function-key tests.)
     expect(spec?.clientMenu).toBeUndefined();
   });
 

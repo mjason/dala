@@ -62,10 +62,12 @@ test.describe("Given 侧栏里有三个会话", () => {
     }
   });
 
-  // F2 = 约定俗成的重命名键，浏览器/系统都不占用；焦点在终端里也照样生效
-  // （处理器 stopPropagation，不会把 F2 透给 shell）。两条路径（F2 提交、
+  // ⌥⌘R / Ctrl+Alt+R —— R 取 rename，Alt 让它避开浏览器（mod+shift+r 是硬
+  // 刷新）；F2 虽是桌面惯例，但 Mac 上要按 fn+F2，故不作默认（仍可改绑）。
+  // 焦点在终端里也照样生效（处理器 stopPropagation，不会透给 shell）。
+  // 两条路径（快捷键提交、
   // 双击取消）共用同一个会话——建会话是 e2e 里最贵的一步。
-  test("F2 与双击都能就地重命名：回车提交并落库，Esc 取消不改名", async ({ page }) => {
+  test("⌥⌘R/Ctrl+Alt+R 与双击都能就地重命名：回车提交并落库，Esc 取消不改名", async ({ page }) => {
     await h.gotoApp(page);
     let id;
     try {
@@ -77,7 +79,7 @@ test.describe("Given 侧栏里有三个会话", () => {
       const input = page.locator(`[data-rename-session="${id}"]`);
       await expect(input).toHaveCount(0);
 
-      await page.keyboard.press("F2");
+      await page.keyboard.press("Control+Alt+R");
       await expect(input).toBeFocused();
 
       await input.fill("renamed-by-f2");

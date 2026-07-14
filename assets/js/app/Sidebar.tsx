@@ -22,7 +22,7 @@ type Props = {
   onDelete: (id: string) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
-  /** Session whose row is currently being renamed in place (F2 / double-click). */
+  /** Session whose row is currently being renamed in place (⌥⌘R / double-click). */
   renamingId: string | null;
   /** Open (id) or close (null) the inline rename editor. */
   onRenameStart: (id: string | null) => void;

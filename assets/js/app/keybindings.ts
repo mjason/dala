@@ -30,10 +30,11 @@ export const BINDINGS: BindingSpec[] = [
   { id: "sidebar", labelKey: "kbSidebar", default: "mod+b", scope: "global" },
   { id: "drawer", labelKey: "kbDrawer", default: "mod+shift+e", scope: "global" },
   { id: "git", labelKey: "kbGit", default: "mod+shift+g", scope: "global" },
-  // F2 is the conventional rename key and collides with nothing in the
-  // browser or the OS; it is claimed even while the terminal has focus (the
-  // handler stops propagation), and stays rebindable for TUIs that want it.
-  { id: "renameSession", labelKey: "kbRenameSession", default: "f2", scope: "global" },
+  // ⌥⌘R / Ctrl+Alt+R — "R" for rename, and Alt keeps it clear of the browser
+  // (mod+shift+r IS hard-reload). F2 would be the desktop convention, but on
+  // a Mac it costs an fn chord, so it is not the default. Claimed even while
+  // the terminal has focus (the handler stops propagation); rebindable.
+  { id: "renameSession", labelKey: "kbRenameSession", default: "mod+alt+r", scope: "global" },
   { id: "refit", labelKey: "refitWidth", default: "mod+shift+f", scope: "global" },
   { id: "resetTerminal", labelKey: "resetTerminal", default: "mod+shift+x", scope: "global" },
   { id: "composerSend", labelKey: "inputBarSend", default: "shift+enter", scope: "composer" },
@@ -119,6 +120,15 @@ export function parseCombo(combo: string): Parsed {
 
 function eventKey(e: KeyboardEvent): string {
   if (e.code === "Backquote") return "`";
+  // macOS composes Option+letter into a symbol (⌥R → "®"), so e.key is
+  // useless for Alt combos. Fall back to the PHYSICAL key ("KeyR" → "r",
+  // "Digit2" → "2") whenever Alt is held — layout-independent for the
+  // letters/digits we bind.
+  if (e.altKey) {
+    const code = e.code;
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+    if (/^Digit\d$/.test(code)) return code.slice(5);
+  }
   const key = e.key.toLowerCase();
   return key === " " ? "space" : key;
 }
