@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -13,6 +13,8 @@
       <meta name="socket-token" content={@socket_token} />
     <% end %>
     <.live_title default="Dala">Dala</.live_title>
+    <script phx-track-static src={~p"/assets/theme.js"}>
+    </script>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
   </head>
   <body>

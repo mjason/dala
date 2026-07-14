@@ -82,12 +82,12 @@ function StatusBadge({ status }: { status: string }) {
       case "?":
         return "text-mint";
       case "M":
-        return "text-[#d9a860]";
+        return "text-dala-warning";
       case "D":
         return "text-danger";
       case "R":
       case "C":
-        return "text-[#6d9fd6]";
+        return "text-dala-info";
       default:
         return "text-fg-muted";
     }

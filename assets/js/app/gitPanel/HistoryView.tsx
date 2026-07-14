@@ -30,7 +30,7 @@ export default function HistoryView({
         >
           <span className="truncate font-mono text-[13px] text-fg">{c.subject}</span>
           <span className="flex items-center gap-2 font-mono text-[11px] text-fg-muted">
-            <span className="text-[#d9a860]">{c.hash}</span>
+            <span className="text-dala-warning">{c.hash}</span>
             <span className="truncate">{c.author}</span>
             <span className="shrink-0">{formatDate(c.date)}</span>
           </span>

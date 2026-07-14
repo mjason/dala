@@ -12,6 +12,7 @@ import {
 } from "../termPrefs";
 import type { CursorStyle, TermPrefs } from "../termPrefs";
 import ToggleRow from "./ToggleRow";
+import { useTheme } from "../theme";
 
 /**
  * Terminal appearance (font, size, line height, cursor). Browser-local and
@@ -20,6 +21,7 @@ import ToggleRow from "./ToggleRow";
  */
 export default function AppearanceSection() {
   const { t } = useI18n();
+  const { preference, setPreference } = useTheme();
   const [prefs, setPrefs] = useState<TermPrefs>(loadPrefs);
   // Live terminal geometry — the ground truth for clipping bug reports:
   // wrapper (clipping box) / container (fit target) / screen (canvas),
@@ -50,6 +52,27 @@ export default function AppearanceSection() {
 
   return (
     <div className="space-y-4">
+      <div id="theme-selector" className="space-y-1.5">
+        <FieldLabel>{t("theme")}</FieldLabel>
+        <div className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
+          {(["system", "light", "dark"] as const).map((theme) => (
+            <button
+              key={theme}
+              id={`theme-${theme}-button`}
+              aria-pressed={preference === theme}
+              onClick={() => setPreference(theme)}
+              className={`rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                preference === theme
+                  ? "bg-bg2 font-medium text-fg shadow-sm"
+                  : "text-fg-muted hover:text-fg"
+              }`}
+            >
+              {t(theme === "system" ? "themeSystem" : theme === "light" ? "themeLight" : "themeDark")}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-start justify-between gap-3">
         <span className="text-xs leading-5 text-fg-muted/80">
           {t("appearanceScope")}

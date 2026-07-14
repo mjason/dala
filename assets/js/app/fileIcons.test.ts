@@ -6,13 +6,13 @@ describe("fileIcon", () => {
     const closed = fileIcon("src", true, false);
     const open = fileIcon("src", true, true);
     expect(closed.glyph).not.toBe(open.glyph);
-    expect(closed.color).toContain("6d9fd6");
+    expect(closed.color).toBe("text-dala-info");
   });
 
   it("maps languages by extension with distinct colors", () => {
-    expect(fileIcon("app.ex").color).toContain("b087c9");
-    expect(fileIcon("main.ts").color).toContain("6d9fd6");
-    expect(fileIcon("script.py").color).toContain("d9a860");
+    expect(fileIcon("app.ex").color).toBe("text-dala-magenta");
+    expect(fileIcon("main.ts").color).toBe("text-dala-info");
+    expect(fileIcon("script.py").color).toBe("text-dala-warning");
     expect(fileIcon("go.mod")).toBeTruthy();
   });
 
@@ -22,7 +22,7 @@ describe("fileIcon", () => {
 
   it("maps well-known file names", () => {
     expect(fileIcon("Dockerfile").glyph).toBe(fileIcon("dockerfile").glyph);
-    expect(fileIcon("package.json").color).toContain("e5716e");
+    expect(fileIcon("package.json").color).toBe("text-danger");
     expect(fileIcon(".gitignore")).toBeTruthy();
   });
 

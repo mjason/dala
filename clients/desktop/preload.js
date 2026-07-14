@@ -14,7 +14,22 @@ const invoke = async (cmd, args) => {
   }
 };
 
-contextBridge.exposeInMainWorld("dala", { invoke });
+let currentTheme = ipcRenderer.sendSync("get_theme");
+const themeListeners = new Set();
+
+contextBridge.exposeInMainWorld("dala", {
+  invoke,
+  getTheme: () => currentTheme,
+  subscribeTheme: (callback) => {
+    themeListeners.add(callback);
+    return () => themeListeners.delete(callback);
+  },
+});
+
+ipcRenderer.on("dala:theme", (_event, theme) => {
+  currentTheme = theme;
+  for (const listener of themeListeners) listener();
+});
 
 // Menu accelerators (⌘K composer, ⌘J quick shell) forwarded to the page.
 ipcRenderer.on("dala:menu", (_event, action) => {

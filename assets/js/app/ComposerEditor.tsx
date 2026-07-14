@@ -6,6 +6,7 @@ import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown
 import { collectTransferFiles } from "./pasteFiles";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
+import { useTheme } from "./theme";
 import { composerSizing } from "./composerSize";
 
 
@@ -143,6 +144,9 @@ export default function ComposerEditor({
   const placeholderCompartment = useRef(new Compartment());
   const keymapCompartment = useRef(new Compartment());
   const sizingCompartment = useRef(new Compartment());
+  const themeCompartment = useRef(new Compartment());
+  const { resolvedTheme } = useTheme();
+  const appliedThemeRef = useRef(resolvedTheme);
   // The latest callbacks, visible to the once-registered keymap.
   const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize });
   cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize };
@@ -196,7 +200,7 @@ export default function ComposerEditor({
               return true;
             },
           }),
-          dalaTheme,
+          themeCompartment.current.of(dalaTheme(resolvedTheme)),
           EditorView.theme({
             // 16px on touch devices — iOS Safari auto-zooms the whole page
             // when an editable element with a smaller font gains focus.
@@ -256,6 +260,14 @@ export default function ComposerEditor({
 
   // External value changes (mention pick, attach, session switch, send-clear):
   // replace the document and park the cursor at the end.
+  useEffect(() => {
+    if (appliedThemeRef.current === resolvedTheme) return;
+    appliedThemeRef.current = resolvedTheme;
+    viewRef.current?.dispatch({
+      effects: themeCompartment.current.reconfigure(dalaTheme(resolvedTheme)),
+    });
+  }, [resolvedTheme]);
+
   useEffect(() => {
     const view = viewRef.current;
     if (!view || view.state.doc.toString() === value) return;

@@ -153,9 +153,8 @@
   font-display: swap;
 }
 
-/* Dala design tokens — dark, neutral, terminal-first.
-   The accent is named "mint" to avoid colliding with daisyUI's
-   --color-accent variable, which the auth pages still use. */
+/* Dala design tokens. Values are overridden by the resolved SPA theme below;
+   semantic names keep every React surface on one palette. */
 @theme {
   --color-bg0: #0b0c0e;
   --color-bg1: #121417;
@@ -165,7 +164,63 @@
   --color-fg-muted: #8f96a0;
   --color-mint: #4cc38a;
   --color-danger: #f0716e;
+  --color-on-accent: #102019;
+  --color-on-danger: #260606;
+  --color-dala-warning: #d9a860;
+  --color-dala-info: #6d9fd6;
+  --color-dala-success: #5fbf87;
+  --color-dala-cyan: #5fb8b8;
+  --color-dala-magenta: #b087c9;
   --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root,
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg0: #0b0c0e;
+  --color-bg1: #121417;
+  --color-bg2: #1b1e23;
+  --color-line: #24272c;
+  --color-fg: #e6e8eb;
+  --color-fg-muted: #8f96a0;
+  --color-mint: #4cc38a;
+  --color-danger: #f0716e;
+  --color-on-accent: #102019;
+  --color-on-danger: #260606;
+  --color-dala-warning: #d9a860;
+  --color-dala-info: #6d9fd6;
+  --color-dala-success: #5fbf87;
+  --color-dala-cyan: #5fb8b8;
+  --color-dala-magenta: #b087c9;
+  --dala-scrollbar: #2c3037;
+  --dala-scrollbar-hover: #4a5059;
+  --dala-scrollbar-track: rgba(255, 255, 255, 0.06);
+  --dala-code-surface: rgba(255, 255, 255, 0.04);
+  --dala-terminal-bg: #0b0c0e;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-bg0: #f7f8fa;
+  --color-bg1: #ffffff;
+  --color-bg2: #e9edf2;
+  --color-line: #d2d8e0;
+  --color-fg: #1b2027;
+  --color-fg-muted: #68717d;
+  --color-mint: #147a52;
+  --color-danger: #c23b3b;
+  --color-on-accent: #ffffff;
+  --color-on-danger: #ffffff;
+  --color-dala-warning: #9a6500;
+  --color-dala-info: #2469a3;
+  --color-dala-success: #24764c;
+  --color-dala-cyan: #187378;
+  --color-dala-magenta: #70418b;
+  --dala-scrollbar: #b5bdc8;
+  --dala-scrollbar-hover: #929daa;
+  --dala-scrollbar-track: rgba(27, 32, 39, 0.06);
+  --dala-code-surface: rgba(27, 32, 39, 0.05);
+  --dala-terminal-bg: #f7f8fa;
 }
 
 /* SPA root: fill the viewport, no page scroll */
@@ -218,7 +273,7 @@ body:has(> #app) {
   html[data-platform="other"] #app,
   html[data-platform="other"] #app * {
     scrollbar-width: thin;
-    scrollbar-color: #2c3037 transparent;
+    scrollbar-color: var(--dala-scrollbar) transparent;
   }
 }
 
@@ -236,14 +291,14 @@ body:has(> #app) {
   }
 
   html[data-platform="other"] #app ::-webkit-scrollbar-thumb {
-    background: rgba(128, 132, 140, 0.45);
+    background: var(--dala-scrollbar);
     background-clip: content-box;
     border: 3px solid transparent;
     border-radius: 6px;
   }
 
   html[data-platform="other"] #app ::-webkit-scrollbar-thumb:hover {
-    background: rgba(140, 145, 154, 0.7);
+    background: var(--dala-scrollbar-hover);
     background-clip: content-box;
     border: 3px solid transparent;
   }
@@ -278,7 +333,7 @@ body:has(> #app) {
 /* macOS expands the pill and reveals a faint track while the pointer is
    over the scrollbar strip. */
 .xterm .xterm-scrollable-element > .scrollbar.vertical:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--dala-scrollbar-track);
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.vertical:hover > .slider,
@@ -287,7 +342,7 @@ body:has(> #app) {
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.horizontal:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--dala-scrollbar-track);
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.horizontal:hover > .slider,
@@ -354,9 +409,10 @@ body:has(> #app) {
 
 /* LSP hover docs (editor + preview): rendered markdown in a CM tooltip. */
 .cm-tooltip:has(.cm-lsp-hover) {
-  border: 1px solid var(--color-line, #2a2d33);
+  border: 1px solid var(--color-line);
   border-radius: 8px;
-  background: var(--color-bg1, #16181c);
+  background: var(--color-bg1);
+  color: var(--color-fg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 .cm-lsp-hover {
@@ -376,7 +432,7 @@ body:has(> #app) {
   margin: 0.35rem 0;
   overflow-x: auto;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--dala-code-surface);
   padding: 0.4rem 0.55rem;
 }
 .cm-lsp-hover p {
@@ -385,7 +441,7 @@ body:has(> #app) {
 .cm-lsp-hover hr {
   margin: 0.5rem 0;
   border: 0;
-  border-top: 1px solid var(--color-line, #2a2d33);
+  border-top: 1px solid var(--color-line);
 }
 
 /* Key-combo text (⇧⌘K …): the bundled Inter Kbd subset renders modifier
@@ -409,5 +465,5 @@ body:has(> #app) {
  * out as a black frame around the canvas. Pin it to the terminal theme
  * background. */
 .xterm .xterm-viewport {
-  background-color: #0b0c0e !important;
+  background-color: var(--dala-terminal-bg) !important;
 }

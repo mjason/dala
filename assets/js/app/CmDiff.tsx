@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { EditorState, StateField, StateEffect } from "@codemirror/state";
+import { Compartment, EditorState, StateField, StateEffect } from "@codemirror/state";
 import type { Extension, Text } from "@codemirror/state";
 import { Decoration, EditorView, lineNumbers, WidgetType } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
@@ -8,6 +8,7 @@ import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
 import { buildChunkPatch } from "./patchBuilder";
 import type { ChunkLines } from "./patchBuilder";
+import { useTheme } from "./theme";
 
 export type ChunkPatch = { forward: string; reverse: string };
 
@@ -38,6 +39,12 @@ type Props = {
  */
 export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkActions }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const viewsRef = useRef<EditorView[]>([]);
+  const themeCompartment = useRef(new Compartment());
+  const { resolvedTheme } = useTheme();
+  const resolvedThemeRef = useRef(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
+  const appliedThemeRef = useRef(resolvedTheme);
   const [language, setLanguage] = useState<Extension | null | "loading">("loading");
 
   useEffect(() => {
@@ -61,7 +68,7 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       lineNumbers(),
-      dalaTheme,
+      themeCompartment.current.of(dalaTheme(resolvedThemeRef.current)),
       ...(wrap ? [EditorView.lineWrapping] : []),
       ...(language ? [language] : []),
     ];
@@ -78,6 +85,7 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
         highlightChanges: true,
         collapseUnchanged,
       });
+      viewsRef.current = [view.a, view.b];
 
       if (chunkActions && chunkActions.length > 0) {
         attachHunkButtons(view.b, filename, oldText, newText, chunkActions, view.a.state.doc);
@@ -101,6 +109,7 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
           ],
         }),
       });
+      viewsRef.current = [view];
 
       if (chunkActions && chunkActions.length > 0) {
         attachHunkButtons(view, filename, oldText, newText, chunkActions);
@@ -109,8 +118,21 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
       destroy = () => view.destroy();
     }
 
-    return destroy;
+    return () => {
+      viewsRef.current = [];
+      destroy();
+    };
   }, [oldText, newText, mode, wrap, language, chunkActions, filename]);
+
+  useEffect(() => {
+    if (appliedThemeRef.current === resolvedTheme) return;
+    appliedThemeRef.current = resolvedTheme;
+    for (const view of viewsRef.current) {
+      view.dispatch({
+        effects: themeCompartment.current.reconfigure(dalaTheme(resolvedTheme)),
+      });
+    }
+  }, [resolvedTheme]);
 
   return <div ref={hostRef} data-cm-diff className="min-h-0" />;
 }

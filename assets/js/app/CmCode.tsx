@@ -4,6 +4,7 @@ import { EditorView, keymap, lineNumbers, drawSelection } from "@codemirror/view
 import { defaultKeymap } from "@codemirror/commands";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { dalaTheme } from "./cm/theme";
+import { useTheme } from "./theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
 
@@ -26,6 +27,9 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
   const lspCompartment = useRef(new Compartment());
+  const themeCompartment = useRef(new Compartment());
+  const { resolvedTheme } = useTheme();
+  const appliedThemeRef = useRef(resolvedTheme);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -45,7 +49,7 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
           wrapCompartment.current.of([]),
           languageCompartment.current.of([]),
           lspCompartment.current.of([]),
-          dalaTheme,
+          themeCompartment.current.of(dalaTheme(resolvedTheme)),
         ],
       }),
       parent: host,
@@ -68,6 +72,14 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
       view.dispatch({ changes: { from: 0, to: current.length, insert: content } });
     }
   }, [content]);
+
+  useEffect(() => {
+    if (appliedThemeRef.current === resolvedTheme) return;
+    appliedThemeRef.current = resolvedTheme;
+    viewRef.current?.dispatch({
+      effects: themeCompartment.current.reconfigure(dalaTheme(resolvedTheme)),
+    });
+  }, [resolvedTheme]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

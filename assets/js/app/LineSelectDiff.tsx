@@ -103,12 +103,12 @@ export default function LineSelectDiff({ oldText, newText, filename, wrap, actio
         return (
           <section key={index} data-line-chunk={index} className="border-b border-line last:border-b-0">
             <header className="flex items-center gap-2 bg-bg2/60 px-3 py-1">
-              <label className="flex cursor-pointer items-center gap-2 font-mono text-[11px] italic text-[#7fd0d0]">
+              <label className="flex cursor-pointer items-center gap-2 font-mono text-[11px] italic text-dala-cyan">
                 <input
                   type="checkbox"
                   checked={count === total && total > 0}
                   onChange={(e) => setAll(index, lines, e.target.checked)}
-                  className="h-3 w-3 accent-[#4cc38a]"
+                  className="h-3 w-3 accent-mint"
                   title={t("selectAllLines")}
                 />
                 <span>
@@ -162,7 +162,7 @@ export default function LineSelectDiff({ oldText, newText, filename, wrap, actio
                   className={`rounded border px-2 py-0.5 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                     action.kind === "primary"
                       ? "border-mint/50 text-mint enabled:hover:border-mint enabled:hover:bg-mint/10"
-                      : "border-line text-fg-muted enabled:hover:border-[#e5716e]/60 enabled:hover:bg-[#e5716e]/10 enabled:hover:text-[#e5716e]"
+                      : "border-line text-fg-muted enabled:hover:border-danger/60 enabled:hover:bg-danger/10 enabled:hover:text-danger"
                   }`}
                 >
                   {action.lineLabel ?? action.label} ({count})
@@ -241,9 +241,9 @@ function SelectableRow({
   onToggle: () => void;
   wrap: boolean;
 }) {
-  const bg = kind === "add" ? "bg-[#5fbf87]/[0.11]" : "bg-[#e5716e]/[0.10]";
+  const bg = kind === "add" ? "bg-dala-success/[0.11]" : "bg-danger/[0.10]";
   const sign = kind === "add" ? "+" : "−";
-  const signColor = kind === "add" ? "text-[#5fbf87]" : "text-[#e5716e]";
+  const signColor = kind === "add" ? "text-dala-success" : "text-danger";
 
   return (
     <tr
@@ -258,7 +258,7 @@ function SelectableRow({
           checked={checked}
           onChange={onToggle}
           onClick={(e) => e.stopPropagation()}
-          className="h-3 w-3 accent-[#4cc38a]"
+          className="h-3 w-3 accent-mint"
         />
       </td>
       <LineNo no={kind === "del" ? no : null} />

@@ -21,6 +21,7 @@ import { bracketMatching, indentOnInput, indentUnit } from "@codemirror/language
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { dalaTheme } from "./cm/theme";
+import { useTheme } from "./theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
 
@@ -48,6 +49,9 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
   const lspCompartment = useRef(new Compartment());
+  const themeCompartment = useRef(new Compartment());
+  const { resolvedTheme } = useTheme();
+  const appliedThemeRef = useRef(resolvedTheme);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -88,7 +92,7 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
         wrapCompartment.current.of([]),
         languageCompartment.current.of([]),
         lspCompartment.current.of([]),
-        dalaTheme,
+        themeCompartment.current.of(dalaTheme(resolvedTheme)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
         }),
@@ -117,6 +121,14 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
       view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
     }
   }, [value]);
+
+  useEffect(() => {
+    if (appliedThemeRef.current === resolvedTheme) return;
+    appliedThemeRef.current = resolvedTheme;
+    viewRef.current?.dispatch({
+      effects: themeCompartment.current.reconfigure(dalaTheme(resolvedTheme)),
+    });
+  }, [resolvedTheme]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

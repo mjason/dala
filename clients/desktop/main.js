@@ -8,7 +8,7 @@ const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nati
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
-const { normalizeConfig } = require("./src/config");
+const { normalizeConfig, themeRequestAllowed } = require("./src/config");
 const fs = require("fs");
 const path = require("path");
 
@@ -25,9 +25,10 @@ process.on("uncaughtException", (err) => {
 });
 
 // ---------------------------------------------------------------------------
-// Config: { servers: [{ name, url }], last: url | null, locale: string | null }
+// Config: { servers: [{ name, url }], last: url | null, locale: string | null,
+//           theme: "system" | "light" | "dark" }
 
-let config = { servers: [], last: null, locale: null };
+let config = { servers: [], last: null, locale: null, theme: "system" };
 
 // Menu language: whatever the dala page reports (its own language picker),
 // falling back to the system locale until the first report arrives.
@@ -81,7 +82,7 @@ function loadConfig() {
     if (imported.servers.length > 0) saveConfig(imported);
     return imported;
   } catch {
-    return { servers: [], last: null, locale: null };
+    return { servers: [], last: null, locale: null, theme: "system" };
   }
 }
 
@@ -105,7 +106,7 @@ function createShellWindow(server) {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
-    backgroundColor: "#0b0c0e",
+    backgroundColor: windowBackground(),
     title: server ? server.name : "Dala",
     icon: WINDOW_ICON,
     webPreferences: {
@@ -125,6 +126,17 @@ function createShellWindow(server) {
   if (server) win.loadURL(server.url);
   else win.loadFile(MANAGE_PAGE);
   return win;
+}
+
+function windowBackground() {
+  return nativeTheme.shouldUseDarkColors ? "#0b0c0e" : "#f7f8fa";
+}
+
+function syncWindowBackgrounds() {
+  const color = windowBackground();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.setBackgroundColor(color);
+  }
 }
 
 // Slim, theme-neutral scrollbars for pages the built-in browser shows —
@@ -152,7 +164,7 @@ function openBrowserWindow(url) {
   const win = new BrowserWindow({
     width: 1100,
     height: 800,
-    backgroundColor: "#ffffff",
+    backgroundColor: windowBackground(),
     icon: WINDOW_ICON,
   });
   win.webContents.setWindowOpenHandler(externalLinkHandler);
@@ -471,6 +483,10 @@ ipcMain.handle("clip_write", (_event, text) => {
   clipboard.writeText(String(text ?? ""));
 });
 
+ipcMain.on("get_theme", (event) => {
+  event.returnValue = config.theme;
+});
+
 // Custom shortcuts from the page become real menu accelerators.
 ipcMain.handle("set_shortcuts", (_event, accelerators = {}) => {
   let changed = false;
@@ -492,6 +508,22 @@ ipcMain.handle("set_locale", (_event, { locale } = {}) => {
   config.locale = normalized;
   saveConfig(config);
   rebuildMenu();
+});
+
+ipcMain.handle("set_theme", (event, { theme } = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const mainFrame = event.senderFrame === event.sender.mainFrame;
+  if (!win?.isDalaShell || !themeRequestAllowed(event.senderFrame?.url, win.serverUrl, mainFrame)) {
+    throw new Error("not allowed from this page");
+  }
+  if (!["system", "light", "dark"].includes(theme) || theme === config.theme) return;
+  config.theme = theme;
+  nativeTheme.themeSource = theme;
+  saveConfig(config);
+  syncWindowBackgrounds();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && win.isDalaShell) win.webContents.send("dala:theme", theme);
+  }
 });
 
 // Native OS notifications (Notification Center on macOS, toasts on Windows)
@@ -582,6 +614,7 @@ if (!app.requestSingleInstanceLock()) {
   // access after the next client restart.
   config = loadConfig();
   menuLocale = config.locale || null;
+  nativeTheme.themeSource = config.theme;
   const insecureOrigins = [
     ...new Set(
       config.servers
@@ -618,9 +651,7 @@ if (!app.requestSingleInstanceLock()) {
       }
       callback(true);
     });
-    // Dark window chrome (title bar on macOS/Windows) regardless of the
-    // system theme — the app itself is dark, a white title bar clashes.
-    nativeTheme.themeSource = "dark";
+    nativeTheme.on("updated", syncWindowBackgrounds);
     rebuildMenu();
     app.on("browser-window-focus", rebuildMenu);
     createShellWindow(startupServer());

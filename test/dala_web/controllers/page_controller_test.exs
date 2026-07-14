@@ -7,5 +7,7 @@ defmodule DalaWeb.PageControllerTest do
 
     assert html =~ ~s(id="app")
     assert html =~ ~s(name="auth-enabled" content="false")
+    assert html =~ ~s(src="/assets/theme.js")
+    refute html =~ ~s(<html lang="en" data-theme="dark">)
   end
 end

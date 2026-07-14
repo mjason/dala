@@ -8,6 +8,16 @@
     :root {
       --bg0: #0b0c0e; --bg1: #121417; --bg2: #1b1e23; --line: #24272c;
       --fg: #e6e8eb; --muted: #8f96a0; --mint: #4cc38a; --danger: #e5716e;
+      --placeholder: #5b626b; --logo-bg: #15181c; --logo-line: #2c3037;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg0: #f7f8fa; --bg1: #ffffff; --bg2: #e9edf2; --line: #d2d8e0;
+        --fg: #1b2027; --muted: #68717d; --mint: #147a52; --danger: #c23b3b;
+        --placeholder: #89939f; --logo-bg: #ffffff; --logo-line: #d2d8e0;
+        color-scheme: light;
+      }
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -44,7 +54,7 @@
     input { font: inherit; font-size: 13px; background: var(--bg1); color: var(--fg);
             border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; }
     input:focus { border-color: rgba(76,195,138,.6); }
-    input::placeholder { color: #5b626b; }
+    input::placeholder { color: var(--placeholder); }
     #error { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 18px; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 20px; line-height: 1.8; }
     kbd { background: var(--bg2); border: 1px solid var(--line); border-radius: 4px;
@@ -56,7 +66,7 @@
 <body>
   <div class="card">
     <div class="logo">
-      <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#15181c"/><rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="#2c3037" stroke-width="2"/><path d="M17 21 L33 32 L17 43" fill="none" stroke="#4cc38a" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/><rect x="37" y="39.5" width="13" height="7.5" rx="2.5" fill="#4cc38a"/></svg>
+      <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="var(--logo-bg)"/><rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="var(--logo-line)" stroke-width="2"/><path d="M17 21 L33 32 L17 43" fill="none" stroke="var(--mint)" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/><rect x="37" y="39.5" width="13" height="7.5" rx="2.5" fill="var(--mint)"/></svg>
       <h1 id="title">DALA</h1>
     </div>
     <div class="tagline" data-i18n="tagline"></div>

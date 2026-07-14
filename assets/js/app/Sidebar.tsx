@@ -222,9 +222,9 @@ export default function Sidebar({
               <span
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${(() => {
                   const agent = agentStatus?.[s.id]?.state;
-                  if (agent === "attention") return "animate-pulse bg-[#d9a860]";
+                  if (agent === "attention") return "animate-pulse bg-dala-warning";
                   if (agent === "working") return "animate-pulse bg-mint";
-                  if (agent === "done") return "bg-[#6d9fd6]";
+                  if (agent === "done") return "bg-dala-info";
                   return s.status === "running" ? "bg-mint" : "bg-fg-muted/50";
                 })()}`}
               />

@@ -400,7 +400,7 @@ export default function GitPanel({
                     type="checkbox"
                     checked={amend}
                     onChange={(e) => setAmend(e.target.checked)}
-                    className="h-3 w-3 accent-[#4cc38a]"
+                    className="h-3 w-3 accent-mint"
                   />
                   {t("amend")}
                 </label>
@@ -411,7 +411,7 @@ export default function GitPanel({
                     busy === "commit" ||
                     (amend ? false : staged.length === 0 || !message.trim())
                   }
-                  className="mt-1.5 w-full rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
+                  className="mt-1.5 w-full rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-on-accent transition-colors hover:brightness-110 disabled:opacity-40"
                 >
                   {amend ? t("amend") : t("commitButton")}
                   {!amend && staged.length > 0 ? ` · ${staged.length}` : ""}

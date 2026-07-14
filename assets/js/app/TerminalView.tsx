@@ -32,37 +32,8 @@ import { isMac } from "./shortcuts";
 import { getDeviceId } from "./deviceId";
 import { sizeRole, type SizeRole } from "./sizeRole";
 import { useI18n } from "./i18n";
-
-const theme = {
-  background: "#0b0c0e",
-  foreground: "#d7dde3",
-  cursor: "#4cc38a",
-  cursorAccent: "#0b0c0e",
-  selectionBackground: "#2d3f4d",
-  // xterm 6 draws its own DOM scrollbar (VS Code's scrollable-element) —
-  // ::-webkit-scrollbar CSS never touches it; colors come from the theme
-  // and the pill shape from app.css.
-  // macOS dark-mode overlay thumb is translucent white, not gray.
-  scrollbarSliderBackground: "rgba(255, 255, 255, 0.28)",
-  scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.45)",
-  scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.55)",
-  black: "#1a1d21",
-  red: "#e5716e",
-  green: "#5fbf87",
-  yellow: "#d9a860",
-  blue: "#6d9fd6",
-  magenta: "#b087c9",
-  cyan: "#5fb8b8",
-  white: "#c9ced4",
-  brightBlack: "#5b626b",
-  brightRed: "#f0928f",
-  brightGreen: "#7fd6a3",
-  brightYellow: "#ecc57f",
-  brightBlue: "#8fb8e8",
-  brightMagenta: "#c9a5dd",
-  brightCyan: "#7fd0d0",
-  brightWhite: "#e6e8eb",
-};
+import { useTheme } from "./theme";
+import { terminalTheme } from "./themePalette";
 
 // Wait for the bundled font faces (the guaranteed fallback of every stack)
 // before the terminal measures its cell size — measuring against a fallback
@@ -156,6 +127,10 @@ export default function TerminalView({
   debugHandle,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const { resolvedTheme } = useTheme();
+  const resolvedThemeRef = useRef(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
@@ -194,7 +169,7 @@ export default function TerminalView({
       if (disposed) return;
 
       const term = new Terminal({
-        theme,
+        theme: terminalTheme(resolvedThemeRef.current),
         fontFamily: fontStack(prefs),
         fontSize: prefs.fontSize,
         lineHeight: prefs.lineHeight,
@@ -207,6 +182,7 @@ export default function TerminalView({
         allowTransparency: false,
         allowProposedApi: true,
       });
+      terminalRef.current = term;
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
@@ -980,6 +956,7 @@ export default function TerminalView({
         ackCounter.dispose();
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
+        if (terminalRef.current === term) terminalRef.current = null;
         term.dispose();
       };
     });
@@ -989,6 +966,10 @@ export default function TerminalView({
       cleanup?.();
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = terminalTheme(resolvedTheme);
+  }, [resolvedTheme]);
 
   return (
     <div className="relative h-full w-full">
