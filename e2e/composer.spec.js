@@ -56,15 +56,15 @@ test.describe("Given 一个有活动会话的用户", () => {
       )
       .toBe(true);
 
-    // ① 初始态：空草稿只占约 3 行 —— COMPOSER_MIN_HEIGHT = 4.5rem = 72px
-    //    （.cm-content 是 border-box：12px 内边距 + 3×21px 行高，14px/1.5）。
-    //    与 git 提交信息框同族：那是 rows=2 的 13px textarea ≈ 2×19.5 + 12
-    //    内边距 + 2 边框 ≈ 53px；两个小输入框差一行以内。
-    //    ±12px 容差：行高取整与字体度量在不同机器上会有亚像素差异。
-    //    从前是 7.5rem（≈5 行），空着就吃掉两行终端 —— 这条断言防它回来。
+    // ① 初始态：空草稿只占 2 行 —— COMPOSER_MIN_HEIGHT = 3.375rem = 54px
+    //    （.cm-content 是 border-box：12px 内边距 + 2×21px 行高，14px/1.5）。
+    //    这也是全应用的"紧凑输入框"高度：git 提交框用同一个常量
+    //    （COMPACT_FIELD_CLASS），两个框并排时必须像素级一致 —— 见下一条
+    //    专门的对齐用例。±6px 容差：字体度量在不同机器上有亚像素差。
+    //    从前是 7.5rem（≈5 行），空着就吃掉三行终端 —— 这条断言防它回来。
     const initial = await editorHeight();
-    expect(initial).toBeGreaterThanOrEqual(60);
-    expect(initial).toBeLessThanOrEqual(84);
+    expect(initial).toBeGreaterThanOrEqual(48);
+    expect(initial).toBeLessThanOrEqual(60);
     expect(initial).toBeLessThan(0.2 * viewport.height); // 空态绝不占大块视口
 
     // ② 自动生长：8 行草稿（> 3 行的地板）必须把编辑器撑高，而且终端仍然
@@ -237,5 +237,31 @@ test.describe("Given 一个位于 git 仓库的会话（@ 文件引用）", () =
     await expect(page.locator("#composer-editor .cm-content")).toContainText(
       "strategies/选币\\ 研究demo.py",
     );
+  });
+
+  test("composer 与 git 提交框像素级等高：两者共用同一个紧凑输入框高度常量", async ({
+    page,
+  }) => {
+    // 两个输入框在桌面上并排出现（composer 在会话列底部、提交框在 git 面板
+    // 底部）。它们各自的高度曾经独立演化（120px vs 53px，视觉上一高一低）。
+    // 现在 GitPanel 的 textarea 用 composerSize.ts 的 COMPACT_FIELD_CLASS
+    // 钉在同一个常量上 —— 这条断言防止任何一侧再次单独漂移。
+    // composer 已由 beforeEach 打开（本 describe 的所有用例都从这个状态起步）。
+    await expect(page.locator("#composer-editor")).toBeVisible();
+    await page.keyboard.press("Control+Shift+G"); // git 面板（会话在 git 仓库里）
+    const commit = page.locator("#commit-message-input");
+    await expect(commit).toBeVisible();
+
+    const heights = await page.evaluate(() => ({
+      composer: document
+        .querySelector("#composer-editor .cm-editor")
+        .getBoundingClientRect().height,
+      commit: document.querySelector("#commit-message-input").getBoundingClientRect()
+        .height,
+    }));
+
+    // ±1px：两者的盒模型不同（CodeMirror 无边框、textarea 有 1px 边框），
+    // 共享常量保证的是"渲染高度一致"，亚像素取整允许 1px 差。
+    expect(Math.abs(heights.composer - heights.commit)).toBeLessThanOrEqual(1);
   });
 });

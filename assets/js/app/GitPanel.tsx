@@ -20,6 +20,7 @@ import type {
 } from "../ash_rpc";
 import { call, type RpcOutcome } from "./rpc";
 import { TextArea } from "./ui";
+import { COMPACT_FIELD_CLASS } from "./composerSize";
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { hasOpenWindows, inTextInput, Tooltip } from "./shortcuts";
@@ -389,7 +390,9 @@ export default function GitPanel({
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder={t("commitMessage")}
                   rows={2}
-                  className="resize-none"
+                  // Same floor as the composer (composerSize.ts): the two text
+                  // inputs sit side by side and must read as one family.
+                  className={`resize-none ${COMPACT_FIELD_CLASS}`}
                 />
                 <label className="mt-1 flex cursor-pointer select-none items-center gap-1.5 px-0.5 font-mono text-[11px] text-fg-muted">
                   <input

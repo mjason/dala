@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   COMPOSER_MAX_HEIGHT,
+  COMPACT_FIELD_CLASS,
   COMPOSER_MIN_HEIGHT,
   COMPOSER_MIN_HEIGHT_TOUCH,
   composerSizing,
@@ -35,18 +36,20 @@ describe("composerSizing", () => {
     expect(COMPOSER_MAX_HEIGHT.startsWith("min(")).toBe(true);
   });
 
-  it("floors the empty editor at ~3 lines, in line with the git commit box", () => {
-    // 4.5rem = 72px: 12px of .cm-content padding + ~2.9 lines of 14px/1.5
-    // text. The old 7.5rem floor was ~5 lines and stole terminal rows while
-    // the composer sat empty.
-    expect(COMPOSER_MIN_HEIGHT).toBe("4.5rem");
+  it("floors the empty editor at 2 lines — the app's shared compact-field height", () => {
+    // 3.375rem = 54px: 12px of .cm-content padding + 2 lines of 14px/1.5.
+    // The git commit box pins itself to the SAME constant (COMPACT_FIELD_CLASS,
+    // consumed by GitPanel), so the two boxes are pixel-identical side by side.
+    // The old 7.5rem floor was ~5 lines and stole terminal rows while empty.
+    expect(COMPOSER_MIN_HEIGHT).toBe("3.375rem");
+    expect(COMPACT_FIELD_CLASS).toBe(`min-h-[${COMPOSER_MIN_HEIGHT}]`);
     expect(parseFloat(COMPOSER_MIN_HEIGHT)).toBeLessThan(7.5);
   });
 
-  it("touch keeps a taller floor: 16px text needs more room for the same 3 lines", () => {
-    // 5.25rem = 84px = 12px padding + 3 × 24px lines (16px/1.5 on coarse
+  it("touch keeps a taller floor: 16px text needs more room for the same 2 lines", () => {
+    // 3.75rem = 60px = 12px padding + 2 × 24px lines (16px/1.5 on coarse
     // pointers, where the font is bumped to dodge iOS auto-zoom).
-    expect(COMPOSER_MIN_HEIGHT_TOUCH).toBe("5.25rem");
+    expect(COMPOSER_MIN_HEIGHT_TOUCH).toBe("3.75rem");
     expect(parseFloat(COMPOSER_MIN_HEIGHT_TOUCH)).toBeGreaterThan(
       parseFloat(COMPOSER_MIN_HEIGHT),
     );

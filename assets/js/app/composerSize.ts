@@ -13,22 +13,26 @@
  */
 
 /**
- * Floor for the empty/short editor, matched to the git commit box so the two
- * text inputs of the app read as one family. The commit box is a `rows={2}`
- * textarea: 2 × 19.5px (13px/1.5) + 12px padding + 2px border ≈ 53px. The
- * composer runs a bigger 14px/1.5 face and gets one line more of headroom:
- * 12px of `.cm-content` padding + ~3 × 21px lines ≈ 72px = 4.5rem (the box is
- * border-box, so the floor IS the rendered height). It used to be 7.5rem
- * (~5 lines), which ate terminal rows while sitting empty.
+ * Floor for the empty/short editor. It is THE shared compact-field height of
+ * the app: the git commit box (GitPanel) pins itself to the same constant via
+ * `COMPACT_FIELD_CLASS`, so the two text inputs are pixel-identical side by
+ * side and cannot drift apart again.
+ *
+ * 54px = 2 text lines (14px/1.5 = 21px) + 12px of `.cm-content` padding. The
+ * boxes are border-box, so the floor IS the rendered height. It used to be
+ * 7.5rem (~5 lines), which ate terminal rows while sitting empty.
  */
-export const COMPOSER_MIN_HEIGHT = "4.5rem";
+export const COMPOSER_MIN_HEIGHT = "3.375rem";
+
+/** Tailwind form of the same floor, for the git commit textarea. */
+export const COMPACT_FIELD_CLASS = "min-h-[3.375rem]";
 
 /**
  * Coarse pointers type at 16px (iOS auto-zooms anything smaller), so the same
- * 3 lines need more room: 12px padding + 3 × 24px = 84px = 5.25rem. Phones
+ * 2 lines need more room: 12px padding + 2 × 24px = 60px = 3.75rem. Phones
  * also have no hover affordances — a too-short tap target is worse there.
  */
-export const COMPOSER_MIN_HEIGHT_TOUCH = "5.25rem";
+export const COMPOSER_MIN_HEIGHT_TOUCH = "3.75rem";
 
 /**
  * Growth cap: the terminal above must keep the clear majority of the view.
