@@ -6,7 +6,7 @@ import { isMac } from "./shortcuts";
  * via a window event. Combo grammar: "+"-joined lowercase tokens —
  * modifiers `mod` (⌘ on Mac, Ctrl elsewhere — matches either, like the
  * hardcoded shortcuts always did), `ctrl`, `alt`, `shift`, then one key
- * (letter, "enter", "`").
+ * (letter, "enter", "`", or a bare function key like "f2").
  */
 
 export type BindingScope = "global" | "composer";
@@ -30,6 +30,10 @@ export const BINDINGS: BindingSpec[] = [
   { id: "sidebar", labelKey: "kbSidebar", default: "mod+b", scope: "global" },
   { id: "drawer", labelKey: "kbDrawer", default: "mod+shift+e", scope: "global" },
   { id: "git", labelKey: "kbGit", default: "mod+shift+g", scope: "global" },
+  // F2 is the conventional rename key and collides with nothing in the
+  // browser or the OS; it is claimed even while the terminal has focus (the
+  // handler stops propagation), and stays rebindable for TUIs that want it.
+  { id: "renameSession", labelKey: "kbRenameSession", default: "f2", scope: "global" },
   { id: "refit", labelKey: "refitWidth", default: "mod+shift+f", scope: "global" },
   { id: "resetTerminal", labelKey: "resetTerminal", default: "mod+shift+x", scope: "global" },
   { id: "composerSend", labelKey: "inputBarSend", default: "shift+enter", scope: "composer" },
@@ -150,10 +154,22 @@ export function comboFromEvent(e: KeyboardEvent): string | null {
 
 const MAC_KEYS: Record<string, string> = { enter: "⏎", escape: "⎋", backspace: "⌫" };
 
+/** F1–F24: the function keys browsers report and Electron accepts. */
+function functionKey(key: string): boolean {
+  return /^f([1-9]|1\d|2[0-4])$/.test(key);
+}
+
+/** Function keys ("f2") render as "F2"; other named keys keep their spelling. */
+function displayKey(key: string): string {
+  if (key.length === 1) return key.toUpperCase();
+  if (functionKey(key)) return key.toUpperCase();
+  return key;
+}
+
 /** Human-readable combo: "⇧⌘K" on Mac, "Ctrl+Shift+K" elsewhere. */
 export function formatCombo(combo: string): string {
   const parsed = parseCombo(combo);
-  const key = parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key;
+  const key = displayKey(parsed.key);
   if (isMac) {
     return [
       parsed.ctrl ? "⌃" : "",
@@ -196,14 +212,18 @@ export function comboToCodeMirror(combo: string): string {
 /** Electron accelerator ("CmdOrCtrl+Shift+K") for the client menu. */
 export function comboToAccelerator(combo: string): string | null {
   const parsed = parseCombo(combo);
+  // Electron accelerators cover F1–F24 as well as Enter and single keys —
+  // a client-menu binding remapped onto an F-key keeps its accelerator.
   const key =
     parsed.key === "enter"
       ? "Enter"
       : parsed.key === "`"
         ? "`"
-        : parsed.key.length === 1
+        : functionKey(parsed.key)
           ? parsed.key.toUpperCase()
-          : null;
+          : parsed.key.length === 1
+            ? parsed.key.toUpperCase()
+            : null;
   if (!key) return null;
   return [
     parsed.mod ? "CmdOrCtrl" : "",

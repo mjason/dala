@@ -15,7 +15,7 @@ import SettingsModal from "./SettingsModal";
 import QuickOpen from "./QuickOpen";
 import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
-import { isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
+import { focusOrphaned, isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
 import { useSessions, SESSION_FIELDS } from "./hooks/useSessions";
 import { usePanelLayout, clampWidth, PANEL_W } from "./hooks/usePanelLayout";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -45,11 +45,15 @@ export default function App() {
       localStorage.setItem("dala:sidebar-hidden", v ? "0" : "1");
       return !v;
     });
+  const sidebarHiddenRef = useRef(sidebarHidden);
+  sidebarHiddenRef.current = sidebarHidden;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
   const [followCwd, setFollowCwd] = useState(true);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  // Session whose sidebar row is being renamed in place (F2 / double-click).
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   // Composer is per-session: each session keeps its own open flag, draft
@@ -149,6 +153,7 @@ export default function App() {
     handleRestart: restartMainSession,
     handleDelete,
     handleReorder,
+    handleRename,
   } = useSessions({
     toast,
     onAgentEvent: (payload) => agentEventRef.current(payload),
@@ -451,6 +456,38 @@ export default function App() {
     setDrawerOpen(false);
   };
 
+  // The rename editor lives on the sidebar row, so a collapsed sidebar has to
+  // be revealed for the duration of the edit — WITHOUT clobbering the user's
+  // preference: the pre-rename collapsed state is remembered here (never
+  // persisted) and restored when the editor closes.
+  const sidebarBeforeRename = useRef<boolean | null>(null);
+
+  const startRename = (id: string | null) => {
+    if (!id) return;
+    if (window.matchMedia("(min-width: 768px)").matches) {
+      if (sidebarBeforeRename.current === null)
+        sidebarBeforeRename.current = sidebarHiddenRef.current;
+      setSidebarHidden(false);
+    } else {
+      setNavOpen(true);
+    }
+    setRenamingId(id);
+  };
+
+  // Commit or cancel: restore the sidebar, then hand focus back to the
+  // terminal — but only if the unmounting input orphaned it (a blur-commit
+  // caused by clicking the composer must keep the composer focused).
+  const endRename = () => {
+    setRenamingId(null);
+    if (sidebarBeforeRename.current !== null) {
+      setSidebarHidden(sidebarBeforeRename.current);
+      sidebarBeforeRename.current = null;
+    }
+    window.setTimeout(() => {
+      if (focusOrphaned()) termActions.current?.focus();
+    }, 0);
+  };
+
   useGlobalShortcuts({
     termActions,
     qsActions,
@@ -462,6 +499,7 @@ export default function App() {
     openQuickOpen: () => setQuickOpen(true),
     toggleDrawer,
     toggleGit,
+    startRename: () => startRename(activeIdRef.current),
     onNotifyClick: (id) => {
       if (sessionsRef.current.some((s) => s.id === id)) setActiveId(id);
     },
@@ -543,6 +581,9 @@ export default function App() {
           onOpenSettings={setSettingsFor}
           onDelete={setDeleteFor}
           onReorder={(id, beforeId) => void handleReorder(id, beforeId)}
+          renamingId={renamingId}
+          onRenameStart={(id) => (id ? startRename(id) : endRename())}
+          onRename={(id, name) => void handleRename(id, name)}
         />
       </div>
 

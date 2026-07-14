@@ -62,6 +62,56 @@ test.describe("Given 侧栏里有三个会话", () => {
     }
   });
 
+  // F2 = 约定俗成的重命名键，浏览器/系统都不占用；焦点在终端里也照样生效
+  // （处理器 stopPropagation，不会把 F2 透给 shell）。两条路径（F2 提交、
+  // 双击取消）共用同一个会话——建会话是 e2e 里最贵的一步。
+  test("F2 与双击都能就地重命名：回车提交并落库，Esc 取消不改名", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await h.selectSession(page, id); // 焦点落在终端上——最常见的场景
+      const row = h.sessionEntry(page, id);
+      await expect(row).toBeVisible();
+
+      const input = page.locator(`[data-rename-session="${id}"]`);
+      await expect(input).toHaveCount(0);
+
+      await page.keyboard.press("F2");
+      await expect(input).toBeFocused();
+
+      await input.fill("renamed-by-f2");
+      await input.press("Enter");
+      await expect(input).toHaveCount(0);
+      await expect(row).toContainText("renamed-by-f2");
+      // 焦点交还终端，而不是掉到 <body> 上（否则接着敲字哪儿都进不去）。
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.activeElement?.classList?.contains("xterm-helper-textarea") ?? false,
+          ),
+        )
+        .toBe(true);
+
+      // 已落库：刷新后（等价于另一台设备打开）名字还在。
+      await page.reload();
+      await expect(page.locator("#new-session-button")).toBeVisible();
+      await expect(h.sessionEntry(page, id)).toContainText("renamed-by-f2");
+
+      // 双击进入编辑，Esc 取消——名字不动。
+      const label = h.sessionEntry(page, id).locator("div.font-mono.text-sm").first();
+      await label.dblclick();
+      await expect(input).toBeFocused();
+      await input.fill("throwaway");
+      await input.press("Escape");
+      await expect(input).toHaveCount(0);
+      await expect(h.sessionEntry(page, id)).toContainText("renamed-by-f2");
+      await expect(h.sessionEntry(page, id)).not.toContainText("throwaway");
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("只有 handle 禁用触摸平移，列表本身仍可滚动", async ({ page }) => {
     // 真实的移动端滚动断言需要一个溢出的长列表（几十个会话），太重且易
     // flaky；退而断言约束本身：touch-action:none 只落在 handle 上，

@@ -8,6 +8,7 @@ import {
   matchCombo,
   onBindingsChange,
 } from "../keybindings";
+import { hasOpenWindows, inTextInput } from "../shortcuts";
 
 /**
  * Plain Ctrl+letter combos typed inside the terminal defer to readline
@@ -18,6 +19,20 @@ export function deferToTerminal(
 ): boolean {
   const inTerminal = (e.target as HTMLElement | null)?.closest?.(".xterm");
   return Boolean(inTerminal) && !e.metaKey && !e.shiftKey;
+}
+
+/**
+ * Guards for the rename shortcut. F2 is a BARE key, so unlike the mod+letter
+ * shortcuts it lands in the middle of typing: it must not fire from a text
+ * field (composer, git commit box, the rename input itself) nor from under an
+ * open window (QuickOpen, the settings modal — whose Shortcuts tab would
+ * otherwise record F2 *and* trigger a rename). The terminal is the exception:
+ * that IS the main use case, even though xterm's hidden helper is a textarea.
+ */
+export function renameBlocked(e: Pick<KeyboardEvent, "target">): boolean {
+  if (hasOpenWindows()) return true;
+  const inTerminal = Boolean((e.target as HTMLElement | null)?.closest?.(".xterm"));
+  return !inTerminal && inTextInput(e);
 }
 
 /**
@@ -36,6 +51,8 @@ export function useGlobalShortcuts(opts: {
   openQuickOpen: () => void;
   toggleDrawer: () => void;
   toggleGit: () => void;
+  /** Start the inline rename of the active session's sidebar row. */
+  startRename: () => void;
   onNotifyClick: (id: string) => void;
 }) {
   const {
@@ -49,6 +66,7 @@ export function useGlobalShortcuts(opts: {
     openQuickOpen,
     toggleDrawer,
     toggleGit,
+    startRename,
     onNotifyClick,
   } = opts;
 
@@ -101,6 +119,17 @@ export function useGlobalShortcuts(opts: {
       git: (e) => {
         e.preventDefault();
         toggleGit();
+      },
+      renameSession: (e) => {
+        // Not from a text field or under an open window (see renameBlocked);
+        // the key falls through untouched there.
+        if (renameBlocked(e)) return;
+        // Claimed even with the terminal focused (that IS the common case):
+        // stop the event before xterm's own key handler forwards it to the
+        // shell. TUIs that need F2 can rebind this in Settings → Shortcuts.
+        e.preventDefault();
+        e.stopPropagation();
+        startRename();
       },
       refit: (e) => {
         e.preventDefault();

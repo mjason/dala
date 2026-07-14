@@ -111,6 +111,16 @@ function buildKeymap(sendKey: string, cbs: Callbacks) {
   );
 }
 
+/**
+ * Coarse pointer = touch: bigger type (iOS auto-zoom) and, because of it, a
+ * taller floor for the same three lines (see composerSize.ts).
+ */
+function coarsePointerNow(): boolean {
+  return (
+    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches
+  );
+}
+
 export default function ComposerEditor({
   value,
   onChange,
@@ -141,11 +151,7 @@ export default function ComposerEditor({
     const host = hostRef.current;
     if (!host) return;
 
-    // 16px on touch devices — iOS Safari auto-zooms the whole page when an
-    // editable element with a smaller font gains focus. Desktop keeps 14px.
-    const coarsePointer =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(pointer: coarse)").matches;
+    const coarsePointer = coarsePointerNow();
 
     const view = new EditorView({
       state: EditorState.create({
@@ -192,11 +198,15 @@ export default function ComposerEditor({
           }),
           dalaTheme,
           EditorView.theme({
+            // 16px on touch devices — iOS Safari auto-zooms the whole page
+            // when an editable element with a smaller font gains focus.
             "&": { fontSize: coarsePointer ? "16px" : "14px" },
             ".cm-scroller": { fontFamily: "inherit", lineHeight: "1.5" },
             ".cm-content": { padding: "6px 10px" },
           }),
-          sizingCompartment.current.of(EditorView.theme(composerSizing(fullscreen))),
+          sizingCompartment.current.of(
+            EditorView.theme(composerSizing(fullscreen, coarsePointer)),
+          ),
         ],
       }),
       parent: host,
@@ -275,7 +285,9 @@ export default function ComposerEditor({
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: sizingCompartment.current.reconfigure(EditorView.theme(composerSizing(fullscreen))),
+      effects: sizingCompartment.current.reconfigure(
+        EditorView.theme(composerSizing(fullscreen, coarsePointerNow())),
+      ),
     });
   }, [fullscreen]);
 

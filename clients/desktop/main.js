@@ -290,18 +290,26 @@ function rebuildMenu() {
     click: () => createShellWindow(server),
   }));
 
+  // Every role item needs an explicit `label:` — Electron's role defaults are
+  // hardcoded English (see menu-item-roles.ts), so without one they ignore the
+  // menu locale. The `role:` keeps the native behavior/accelerator.
   const template = [
     ...(isMac
       ? [{
           label: app.name,
           submenu: [
-            { role: "about" },
+            { role: "about", label: t("about", { name: app.name }) },
             { type: "separator" },
-            { role: "hide" },
-            { role: "hideOthers" },
-            { role: "unhide" },
+            // The Services submenu's *contents* come from macOS (per-app
+            // service providers, already in the system language); only its
+            // title is ours.
+            { role: "services", label: t("services") },
             { type: "separator" },
-            { role: "quit" },
+            { role: "hide", label: t("hide", { name: app.name }) },
+            { role: "hideOthers", label: t("hideOthers") },
+            { role: "unhide", label: t("unhide") },
+            { type: "separator" },
+            { role: "quit", label: t("quitApp", { name: app.name }) },
           ],
         }]
       : []),
@@ -334,9 +342,49 @@ function rebuildMenu() {
           : { role: "quit", label: t("quit") },
       ],
     },
-    // Role-based edit menu: native (localized) copy/paste — this is what
-    // makes ⌘C/⌘V work in the terminal on macOS.
-    { role: "editMenu" },
+    // Hand-built Edit menu: same items as the `editMenu` role (which renders
+    // English), with labels. The roles are what make ⌘C/⌘V/⌘Z work natively in
+    // the terminal on macOS.
+    //
+    // NOT here, and not ours to translate: macOS itself appends AutoFill,
+    // Start Dictation and Emoji & Symbols to whatever Edit menu the app
+    // installs (NSApplication does it at menu-attach time) — those already
+    // follow the *system* language and cannot be labeled from Electron.
+    {
+      label: t("edit"),
+      submenu: [
+        { role: "undo", label: t("undo") },
+        { role: "redo", label: t("redo") },
+        { type: "separator" },
+        { role: "cut", label: t("cut") },
+        { role: "copy", label: t("copy") },
+        { role: "paste", label: t("paste") },
+        ...(isMac
+          ? [
+              { role: "pasteAndMatchStyle", label: t("pasteAndMatchStyle") },
+              { role: "delete", label: t("delete") },
+              { role: "selectAll", label: t("selectAll") },
+              { type: "separator" },
+              // Deliberately NOT here (and not part of Electron's `editMenu`
+              // role either): the Substitutions submenu. Smart quotes / smart
+              // dashes / text replacement REWRITE keystrokes inside xterm's
+              // hidden textarea — `"` → `“`, `--` → `—` — which is fatal in a
+              // shell. Speech stays: it only reads the selection aloud.
+              {
+                label: t("speech"),
+                submenu: [
+                  { role: "startSpeaking", label: t("startSpeaking") },
+                  { role: "stopSpeaking", label: t("stopSpeaking") },
+                ],
+              },
+            ]
+          : [
+              { role: "delete", label: t("delete") },
+              { type: "separator" },
+              { role: "selectAll", label: t("selectAll") },
+            ]),
+      ],
+    },
     {
       label: t("servers"),
       submenu: [

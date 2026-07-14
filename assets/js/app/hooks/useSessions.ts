@@ -4,6 +4,7 @@ import {
   createSession,
   deleteSession,
   listSessions,
+  renameSession,
   reorderSession,
   restartSession,
 } from "../../ash_rpc";
@@ -220,6 +221,22 @@ export function useSessions(opts: {
     }
   };
 
+  /**
+   * Rename a session: optimistic local name, rolled back on error (same
+   * shape as the reorder above). The session_updated broadcast then carries
+   * the authoritative name to every device.
+   */
+  const handleRename = async (id: string, name: string) => {
+    const previous = sessionsRef.current.find((s) => s.id === id)?.name;
+    if (previous === undefined || previous === name) return;
+    setSessions((list) => list.map((s) => (s.id === id ? { ...s, name } : s)));
+    const result = await call<unknown>(renameSession, { identity: id, input: { name } });
+    if (!result.ok) {
+      setSessions((list) => list.map((s) => (s.id === id ? { ...s, name: previous } : s)));
+      toast(result.error || t("somethingWentWrong"));
+    }
+  };
+
   const deleting = useRef(new Set<string>());
   const handleDelete = async (id: string) => {
     if (deleting.current.has(id)) return;
@@ -253,5 +270,6 @@ export function useSessions(opts: {
     handleRestart,
     handleDelete,
     handleReorder,
+    handleRename,
   };
 }

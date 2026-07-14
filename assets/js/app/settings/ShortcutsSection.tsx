@@ -91,6 +91,11 @@ export default function ShortcutsSection() {
         <div className="space-y-1">
           <span className="block text-[13px] font-medium text-fg">{t("keyGuideTitle")}</span>
           <p className="text-[12px] leading-relaxed text-fg-muted">{t("keyGuideDesc")}</p>
+          {/* dala eats F2 before the shell sees it — say so where the TUI
+              users look, and point them at the rebind above. */}
+          <p id="key-guide-f2-note" className="text-[12px] leading-relaxed text-fg-muted">
+            {t("keyGuideF2Note")}
+          </p>
         </div>
         {KEY_GUIDE.map((group) => (
           <div key={group.app} className="space-y-1.5">

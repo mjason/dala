@@ -43,6 +43,9 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
     onOpenSettings: vi.fn(),
     onDelete: vi.fn(),
     onReorder: vi.fn(),
+    renamingId: null as string | null,
+    onRenameStart: vi.fn(),
+    onRename: vi.fn(),
     ...overrides,
   };
   render(
@@ -84,6 +87,91 @@ describe("Sidebar", () => {
     fireEvent.click(document.querySelector('[data-delete-session="s2"]')!);
     expect(props.onDelete).toHaveBeenCalledWith("s2");
     expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  describe("inline rename", () => {
+    const input = () =>
+      document.querySelector<HTMLInputElement>('[data-rename-session="s1"]');
+
+    it("shows no input until a rename starts", () => {
+      renderSidebar();
+      expect(input()).toBeNull();
+      expect(screen.getByText("build")).toBeInTheDocument();
+    });
+
+    it("starts a rename on a double click of the name", () => {
+      const props = renderSidebar();
+      fireEvent.doubleClick(screen.getByText("logs"));
+      expect(props.onRenameStart).toHaveBeenCalledWith("s2");
+    });
+
+    it("edits the active row in place, seeded with the current name", () => {
+      renderSidebar({ renamingId: "s1" });
+      expect(input()).not.toBeNull();
+      expect(input()!.value).toBe("build");
+      // The static name is replaced by the input, not shown alongside it.
+      expect(screen.queryByText("build")).toBeNull();
+    });
+
+    it("commits on Enter", () => {
+      const props = renderSidebar({ renamingId: "s1" });
+      fireEvent.change(input()!, { target: { value: "  deploy  " } });
+      fireEvent.keyDown(input()!, { key: "Enter" });
+      expect(props.onRename).toHaveBeenCalledWith("s1", "deploy");
+      expect(props.onRenameStart).toHaveBeenCalledWith(null);
+    });
+
+    it("commits on blur", () => {
+      const props = renderSidebar({ renamingId: "s1" });
+      fireEvent.change(input()!, { target: { value: "deploy" } });
+      fireEvent.blur(input()!);
+      expect(props.onRename).toHaveBeenCalledWith("s1", "deploy");
+      expect(props.onRenameStart).toHaveBeenCalledWith(null);
+    });
+
+    it("cancels on Escape, and a later blur commits nothing", () => {
+      const props = renderSidebar({ renamingId: "s1" });
+      fireEvent.change(input()!, { target: { value: "deploy" } });
+      fireEvent.keyDown(input()!, { key: "Escape" });
+      fireEvent.blur(input()!);
+      expect(props.onRename).not.toHaveBeenCalled();
+      expect(props.onRenameStart).toHaveBeenCalledWith(null);
+    });
+
+    it("keeps Escape away from the window-level handlers", () => {
+      const onWindowEscape = vi.fn();
+      window.addEventListener("keydown", onWindowEscape);
+      renderSidebar({ renamingId: "s1" });
+      const event = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      input()!.dispatchEvent(event);
+      window.removeEventListener("keydown", onWindowEscape);
+      expect(onWindowEscape).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("commits nothing when the name is unchanged or blank", () => {
+      const props = renderSidebar({ renamingId: "s1" });
+      fireEvent.keyDown(input()!, { key: "Enter" });
+      expect(props.onRename).not.toHaveBeenCalled();
+      expect(props.onRenameStart).toHaveBeenCalledWith(null);
+
+      const blank = renderSidebar({ renamingId: "s1" });
+      const inputs = document.querySelectorAll<HTMLInputElement>('[data-rename-session="s1"]');
+      const second = inputs[inputs.length - 1];
+      fireEvent.change(second, { target: { value: "   " } });
+      fireEvent.keyDown(second, { key: "Enter" });
+      expect(blank.onRename).not.toHaveBeenCalled();
+    });
+
+    it("does not select the row while editing", () => {
+      const props = renderSidebar({ renamingId: "s1" });
+      fireEvent.click(input()!);
+      expect(props.onSelect).not.toHaveBeenCalled();
+    });
   });
 
   describe("drag to reorder", () => {
@@ -177,6 +265,9 @@ describe("Sidebar", () => {
         onOpenSettings: vi.fn(),
         onDelete: vi.fn(),
         onReorder: vi.fn(),
+        renamingId: null,
+        onRenameStart: vi.fn(),
+        onRename: vi.fn(),
       };
       const view = render(
         <I18nProvider>

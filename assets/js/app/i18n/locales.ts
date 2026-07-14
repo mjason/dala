@@ -31,6 +31,7 @@ export const en = {
   kbSidebar: "Toggle sidebar",
   kbDrawer: "Files panel",
   kbGit: "Git panel",
+  kbRenameSession: "Rename session",
   shortcutsTab: "Shortcuts",
   shortcutsDesc: "Click a shortcut, then press the new key combination (Esc cancels). Stored in this browser; the desktop client mirrors the menu shortcuts.",
   shortcutPressKeys: "Press keys…",
@@ -136,6 +137,8 @@ export const en = {
   keyGuideTitle: "TUI key guide",
   keyGuideDesc:
     "Useful keys inside the apps running in the terminal — they belong to those apps, not to dala (dala's own shortcuts are listed above).",
+  keyGuideF2Note:
+    "dala takes F2 to rename the session, so a TUI that wants it (mc, nnn, some vim setups) never sees the key — rebind “Rename session” above if you need it there.",
   keyGuideClaudeReflow:
     "Press twice: re-render the transcript at the current width — claude code doesn't rewrap it after a resize",
   keyGuideClaudePermissions: "Cycle permission modes (default / auto-accept edits / plan)",
@@ -277,6 +280,7 @@ export const zhCN: Messages = {
   kbSidebar: "切换侧栏",
   kbDrawer: "文件面板",
   kbGit: "Git 面板",
+  kbRenameSession: "重命名会话",
   shortcutsTab: "快捷键",
   shortcutsDesc: "点击快捷键后按下新组合（Esc 取消）。保存在此浏览器；桌面客户端会同步菜单快捷键。",
   shortcutPressKeys: "按下按键…",
@@ -380,6 +384,8 @@ export const zhCN: Messages = {
   keyGuideTitle: "TUI 按键指南",
   keyGuideDesc:
     "终端内运行的应用里的实用按键——它们属于这些应用本身，不是 dala 的快捷键（dala 的快捷键在上方列表）。",
+  keyGuideF2Note:
+    "dala 占用 F2 用于重命名会话，因此用到 F2 的 TUI（mc、nnn、部分 vim 配置）收不到这个键——需要的话请在上方改绑“重命名会话”。",
   keyGuideClaudeReflow:
     "连按两次：按当前宽度重新渲染历史——claude code 改变宽度后不会自动重排",
   keyGuideClaudePermissions: "循环切换权限模式（默认 / 自动接受编辑 / 计划模式）",
@@ -518,6 +524,7 @@ export const zhTW: Messages = {
   kbSidebar: "切換側欄",
   kbDrawer: "檔案面板",
   kbGit: "Git 面板",
+  kbRenameSession: "重新命名工作階段",
   shortcutsTab: "快捷鍵",
   shortcutsDesc: "點擊快捷鍵後按下新組合（Esc 取消）。儲存在此瀏覽器；桌面客戶端會同步選單快捷鍵。",
   shortcutPressKeys: "按下按鍵…",
@@ -621,6 +628,8 @@ export const zhTW: Messages = {
   keyGuideTitle: "TUI 按鍵指南",
   keyGuideDesc:
     "終端內執行的應用裡的實用按鍵——它們屬於這些應用本身，不是 dala 的快捷鍵（dala 的快捷鍵在上方列表）。",
+  keyGuideF2Note:
+    "dala 佔用 F2 用於重新命名工作階段，因此用到 F2 的 TUI（mc、nnn、部分 vim 設定）收不到這個鍵——需要的話請在上方改綁「重新命名工作階段」。",
   keyGuideClaudeReflow:
     "連按兩次：按目前寬度重新渲染歷史——claude code 改變寬度後不會自動重排",
   keyGuideClaudePermissions: "循環切換權限模式（預設 / 自動接受編輯 / 計劃模式）",
@@ -759,6 +768,7 @@ export const ja: Messages = {
   kbSidebar: "サイドバー切替",
   kbDrawer: "ファイルパネル",
   kbGit: "Git パネル",
+  kbRenameSession: "セッション名を変更",
   shortcutsTab: "ショートカット",
   shortcutsDesc: "ショートカットをクリックして新しいキーを押します（Esc でキャンセル）。このブラウザに保存され、デスクトップクライアントはメニューのショートカットを同期します。",
   shortcutPressKeys: "キーを押す…",
@@ -862,6 +872,8 @@ export const ja: Messages = {
   keyGuideTitle: "TUI キーガイド",
   keyGuideDesc:
     "ターミナル内で動くアプリの便利なキー — これらはアプリ自身のもので、dala のショートカットではありません（dala のものは上のリスト）。",
+  keyGuideF2Note:
+    "dala は F2 をセッション名の変更に使うため、F2 を使う TUI（mc、nnn、一部の vim 設定）にキーが届きません。必要なら上の「セッション名を変更」を割り当て直してください。",
   keyGuideClaudeReflow:
     "2回押し: 現在の幅でトランスクリプトを再描画 — claude code はリサイズ後に自動では再折り返ししません",
   keyGuideClaudePermissions: "権限モードを循環切替（デフォルト / 編集自動承認 / プラン）",
@@ -1000,6 +1012,7 @@ export const ko: Messages = {
   kbSidebar: "사이드바 전환",
   kbDrawer: "파일 패널",
   kbGit: "Git 패널",
+  kbRenameSession: "세션 이름 변경",
   shortcutsTab: "단축키",
   shortcutsDesc: "단축키를 클릭한 뒤 새 조합을 누르세요(Esc 취소). 이 브라우저에 저장되며 데스크톱 클라이언트가 메뉴 단축키를 동기화합니다.",
   shortcutPressKeys: "키 입력…",
@@ -1103,6 +1116,8 @@ export const ko: Messages = {
   keyGuideTitle: "TUI 키 가이드",
   keyGuideDesc:
     "터미널 안에서 실행되는 앱들의 유용한 키 — 해당 앱 자체의 키이며 dala 단축키가 아닙니다(dala 단축키는 위 목록에 있습니다).",
+  keyGuideF2Note:
+    "dala는 F2를 세션 이름 변경에 사용하므로 F2를 쓰는 TUI(mc, nnn, 일부 vim 설정)에는 키가 전달되지 않습니다. 필요하면 위의 “세션 이름 변경”을 다시 지정하세요.",
   keyGuideClaudeReflow:
     "두 번 누르기: 현재 너비로 기록을 다시 렌더링 — claude code는 크기 변경 후 자동으로 다시 줄바꿈하지 않습니다",
   keyGuideClaudePermissions: "권한 모드 순환 전환(기본 / 편집 자동 수락 / 플랜)",
@@ -1241,6 +1256,7 @@ export const es: Messages = {
   kbSidebar: "Alternar barra lateral",
   kbDrawer: "Panel de archivos",
   kbGit: "Panel de Git",
+  kbRenameSession: "Renombrar sesión",
   shortcutsTab: "Atajos",
   shortcutsDesc: "Haz clic en un atajo y pulsa la nueva combinación (Esc cancela). Se guarda en este navegador; el cliente de escritorio refleja los atajos del menú.",
   shortcutPressKeys: "Pulsa teclas…",
@@ -1344,6 +1360,8 @@ export const es: Messages = {
   keyGuideTitle: "Guía de teclas TUI",
   keyGuideDesc:
     "Teclas útiles dentro de las apps que corren en el terminal: pertenecen a esas apps, no a dala (los atajos de dala están en la lista de arriba).",
+  keyGuideF2Note:
+    "dala reserva F2 para renombrar la sesión, así que las TUI que la usan (mc, nnn, algunas configuraciones de vim) nunca reciben la tecla: reasigna «Renombrar sesión» arriba si la necesitas.",
   keyGuideClaudeReflow:
     "Pulsa dos veces: redibuja el historial al ancho actual — claude code no lo reajusta tras un cambio de tamaño",
   keyGuideClaudePermissions: "Cicla los modos de permisos (predeterminado / aceptar ediciones / plan)",
@@ -1482,6 +1500,7 @@ export const fr: Messages = {
   kbSidebar: "Basculer la barre latérale",
   kbDrawer: "Panneau fichiers",
   kbGit: "Panneau Git",
+  kbRenameSession: "Renommer la session",
   shortcutsTab: "Raccourcis",
   shortcutsDesc: "Cliquez sur un raccourci puis pressez la nouvelle combinaison (Échap annule). Enregistré dans ce navigateur ; le client de bureau reflète les raccourcis du menu.",
   shortcutPressKeys: "Appuyez…",
@@ -1585,6 +1604,8 @@ export const fr: Messages = {
   keyGuideTitle: "Guide des touches TUI",
   keyGuideDesc:
     "Touches utiles dans les applications qui tournent dans le terminal — elles appartiennent à ces applications, pas à dala (les raccourcis de dala sont listés ci-dessus).",
+  keyGuideF2Note:
+    "dala réserve F2 pour renommer la session : les TUI qui l’utilisent (mc, nnn, certaines configs vim) ne reçoivent jamais la touche — réattribuez « Renommer la session » ci-dessus si besoin.",
   keyGuideClaudeReflow:
     "Appuyez deux fois : réaffiche l'historique à la largeur actuelle — claude code ne le réajuste pas après un redimensionnement",
   keyGuideClaudePermissions: "Fait défiler les modes de permission (défaut / accepter les éditions / plan)",
@@ -1723,6 +1744,7 @@ export const de: Messages = {
   kbSidebar: "Seitenleiste umschalten",
   kbDrawer: "Dateibereich",
   kbGit: "Git-Bereich",
+  kbRenameSession: "Sitzung umbenennen",
   shortcutsTab: "Tastenkürzel",
   shortcutsDesc: "Kürzel anklicken und neue Kombination drücken (Esc bricht ab). Im Browser gespeichert; der Desktop-Client spiegelt die Menükürzel.",
   shortcutPressKeys: "Tasten drücken…",
@@ -1826,6 +1848,8 @@ export const de: Messages = {
   keyGuideTitle: "TUI-Tastenführer",
   keyGuideDesc:
     "Nützliche Tasten in den Apps, die im Terminal laufen — sie gehören zu diesen Apps, nicht zu dala (dalas eigene Kurzbefehle stehen oben in der Liste).",
+  keyGuideF2Note:
+    "dala belegt F2 zum Umbenennen der Sitzung — TUIs, die F2 nutzen (mc, nnn, manche vim-Konfigurationen), sehen die Taste nie. Bei Bedarf oben „Sitzung umbenennen“ neu belegen.",
   keyGuideClaudeReflow:
     "Zweimal drücken: rendert das Protokoll in der aktuellen Breite neu — claude code bricht es nach einer Größenänderung nicht selbst um",
   keyGuideClaudePermissions: "Wechselt zyklisch den Berechtigungsmodus (Standard / Änderungen auto-annehmen / Plan)",
@@ -1964,6 +1988,7 @@ export const ru: Messages = {
   kbSidebar: "Переключить боковую панель",
   kbDrawer: "Панель файлов",
   kbGit: "Панель Git",
+  kbRenameSession: "Переименовать сессию",
   shortcutsTab: "Горячие клавиши",
   shortcutsDesc: "Нажмите на сочетание, затем введите новое (Esc — отмена). Хранится в этом браузере; клиент отражает пункты меню.",
   shortcutPressKeys: "Нажмите клавиши…",
@@ -2067,6 +2092,8 @@ export const ru: Messages = {
   keyGuideTitle: "Гид по клавишам TUI",
   keyGuideDesc:
     "Полезные клавиши внутри приложений, работающих в терминале — они принадлежат самим приложениям, а не dala (сочетания dala перечислены выше).",
+  keyGuideF2Note:
+    "dala занимает F2 для переименования сессии, поэтому использующие её TUI (mc, nnn, некоторые конфиги vim) не получают эту клавишу — при необходимости переназначьте «Переименовать сессию» выше.",
   keyGuideClaudeReflow:
     "Нажмите дважды: перерисовывает историю по текущей ширине — claude code не переносит её заново после изменения размера",
   keyGuideClaudePermissions: "Циклически переключает режимы разрешений (обычный / авто-принятие правок / план)",
@@ -2205,6 +2232,7 @@ export const pt: Messages = {
   kbSidebar: "Alternar barra lateral",
   kbDrawer: "Painel de arquivos",
   kbGit: "Painel do Git",
+  kbRenameSession: "Renomear sessão",
   shortcutsTab: "Atalhos",
   shortcutsDesc: "Clique em um atalho e pressione a nova combinação (Esc cancela). Salvo neste navegador; o cliente desktop espelha os atalhos do menu.",
   shortcutPressKeys: "Pressione as teclas…",
@@ -2308,6 +2336,8 @@ export const pt: Messages = {
   keyGuideTitle: "Guia de teclas TUI",
   keyGuideDesc:
     "Teclas úteis dentro dos apps que rodam no terminal — elas pertencem a esses apps, não ao dala (os atalhos do dala estão na lista acima).",
+  keyGuideF2Note:
+    "o dala reserva F2 para renomear a sessão, então as TUIs que a usam (mc, nnn, algumas configurações do vim) nunca recebem a tecla — reatribua «Renomear sessão» acima se precisar.",
   keyGuideClaudeReflow:
     "Pressione duas vezes: redesenha o histórico na largura atual — o claude code não o requebra após um redimensionamento",
   keyGuideClaudePermissions: "Alterna ciclicamente os modos de permissão (padrão / aceitar edições / plano)",

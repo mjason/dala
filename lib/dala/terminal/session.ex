@@ -345,6 +345,11 @@ defmodule Dala.Terminal.Session do
     uuid_primary_key :id
 
     attribute :name, :string do
+      # Ash's string type trims and rejects the empty string by default, so a
+      # blank rename is refused; the cap keeps a pathological paste (or an API
+      # caller) from stuffing a novel into the sidebar. Validated on write —
+      # rows created before the cap are untouched.
+      constraints max_length: 200
       allow_nil? false
       public? true
     end

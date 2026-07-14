@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, composerSizing } from "./composerSize";
+import {
+  COMPOSER_MAX_HEIGHT,
+  COMPOSER_MIN_HEIGHT,
+  COMPOSER_MIN_HEIGHT_TOUCH,
+  composerSizing,
+} from "./composerSize";
 
 // jsdom cannot lay out CodeMirror (every offsetHeight is 0), so the height
 // policy is pinned here as a pure CSS spec; e2e measures the real pixels.
@@ -30,8 +35,27 @@ describe("composerSizing", () => {
     expect(COMPOSER_MAX_HEIGHT.startsWith("min(")).toBe(true);
   });
 
-  it("keeps the old fixed height as the floor (no regression for short drafts)", () => {
-    expect(COMPOSER_MIN_HEIGHT).toBe("7.5rem");
+  it("floors the empty editor at ~3 lines, in line with the git commit box", () => {
+    // 4.5rem = 72px: 12px of .cm-content padding + ~2.9 lines of 14px/1.5
+    // text. The old 7.5rem floor was ~5 lines and stole terminal rows while
+    // the composer sat empty.
+    expect(COMPOSER_MIN_HEIGHT).toBe("4.5rem");
+    expect(parseFloat(COMPOSER_MIN_HEIGHT)).toBeLessThan(7.5);
+  });
+
+  it("touch keeps a taller floor: 16px text needs more room for the same 3 lines", () => {
+    // 5.25rem = 84px = 12px padding + 3 × 24px lines (16px/1.5 on coarse
+    // pointers, where the font is bumped to dodge iOS auto-zoom).
+    expect(COMPOSER_MIN_HEIGHT_TOUCH).toBe("5.25rem");
+    expect(parseFloat(COMPOSER_MIN_HEIGHT_TOUCH)).toBeGreaterThan(
+      parseFloat(COMPOSER_MIN_HEIGHT),
+    );
+    expect(composerSizing(false, true)[".cm-content"].minHeight).toBe(COMPOSER_MIN_HEIGHT_TOUCH);
+    expect(composerSizing(false, false)[".cm-content"].minHeight).toBe(COMPOSER_MIN_HEIGHT);
+  });
+
+  it("the floor never applies in fullscreen (the host owns the height)", () => {
+    expect(composerSizing(true, true)[".cm-content"]).toBeUndefined();
   });
 
   it("scrolls internally beyond the bound in both modes", () => {

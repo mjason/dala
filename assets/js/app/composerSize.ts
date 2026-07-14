@@ -12,8 +12,23 @@
  * the policy here while e2e measures the real pixels.
  */
 
-/** The old fixed height — short drafts render exactly as before. */
-export const COMPOSER_MIN_HEIGHT = "7.5rem";
+/**
+ * Floor for the empty/short editor, matched to the git commit box so the two
+ * text inputs of the app read as one family. The commit box is a `rows={2}`
+ * textarea: 2 × 19.5px (13px/1.5) + 12px padding + 2px border ≈ 53px. The
+ * composer runs a bigger 14px/1.5 face and gets one line more of headroom:
+ * 12px of `.cm-content` padding + ~3 × 21px lines ≈ 72px = 4.5rem (the box is
+ * border-box, so the floor IS the rendered height). It used to be 7.5rem
+ * (~5 lines), which ate terminal rows while sitting empty.
+ */
+export const COMPOSER_MIN_HEIGHT = "4.5rem";
+
+/**
+ * Coarse pointers type at 16px (iOS auto-zooms anything smaller), so the same
+ * 3 lines need more room: 12px padding + 3 × 24px = 84px = 5.25rem. Phones
+ * also have no hover affordances — a too-short tap target is worse there.
+ */
+export const COMPOSER_MIN_HEIGHT_TOUCH = "5.25rem";
 
 /**
  * Growth cap: the terminal above must keep the clear majority of the view.
@@ -25,7 +40,10 @@ export const COMPOSER_MIN_HEIGHT = "7.5rem";
  */
 export const COMPOSER_MAX_HEIGHT = "min(40vh, calc(var(--vvh, 100vh) * 0.4))";
 
-export function composerSizing(fullscreen: boolean): Record<string, Record<string, string>> {
+export function composerSizing(
+  fullscreen: boolean,
+  coarsePointer = false,
+): Record<string, Record<string, string>> {
   if (fullscreen) {
     return {
       // The host is a definite-height flex child — fill it.
@@ -38,7 +56,9 @@ export function composerSizing(fullscreen: boolean): Record<string, Record<strin
     // by the cap; the floor lives on the content so the empty editor keeps
     // its familiar size.
     "&": { maxHeight: COMPOSER_MAX_HEIGHT },
-    ".cm-content": { minHeight: COMPOSER_MIN_HEIGHT },
+    ".cm-content": {
+      minHeight: coarsePointer ? COMPOSER_MIN_HEIGHT_TOUCH : COMPOSER_MIN_HEIGHT,
+    },
     ".cm-scroller": { overflowY: "auto" },
   };
 }

@@ -153,3 +153,20 @@ describe("inTextInput", () => {
     expect(shortcuts.inTextInput({ target: label })).toBe(false);
   });
 });
+
+describe("focusOrphaned", () => {
+  it("is true when nothing (or only <body>) holds focus", () => {
+    expect(shortcuts.focusOrphaned()).toBe(true);
+  });
+
+  it("is false while a real element holds focus — never steal it back", () => {
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    try {
+      expect(shortcuts.focusOrphaned()).toBe(false);
+    } finally {
+      input.remove();
+    }
+  });
+});

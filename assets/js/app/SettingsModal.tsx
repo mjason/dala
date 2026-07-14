@@ -38,6 +38,11 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Each tab starts at the top: the scroll position of the (long) Shortcuts
+  // tab must not carry over into the next one.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => bodyRef.current?.scrollTo(0, 0), [tab]);
+
   const fail = (error: string) => onError(error || t("somethingWentWrong"));
 
   const save = async () => {
@@ -105,15 +110,18 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
   return (
     <div
-      className="fixed inset-0 z-40 grid place-items-center overflow-y-auto bg-black/60 p-4 backdrop-blur-[2px] sm:p-6"
+      className="fixed inset-0 z-40 grid place-items-center overflow-hidden bg-black/60 p-4 backdrop-blur-[2px] sm:p-6"
       onClick={onClose}
     >
+      {/* The cap follows the VISUAL viewport (--vvh, published by index.tsx)
+          so a raised soft keyboard shrinks the modal instead of pushing the
+          footer under the keyboard; the inset mirrors the overlay's p-4/sm:p-6. */}
       <div
         id="session-settings"
-        className="w-full max-w-lg animate-[dala-modal-in_150ms_ease-out] rounded-xl border border-line bg-bg1 shadow-2xl shadow-black/50"
+        className="flex max-h-[calc(var(--vvh,100dvh)-2rem)] w-full max-w-lg flex-col animate-[dala-modal-in_150ms_ease-out] rounded-xl border border-line bg-bg1 shadow-2xl shadow-black/50 sm:max-h-[calc(var(--vvh,100dvh)-3rem)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center gap-3 px-5 pt-4 pb-3">
+        <header className="flex shrink-0 items-center gap-3 px-5 pt-4 pb-3">
           <span className="text-[15px] font-medium text-fg">{t("sessionSettings")}</span>
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[11px] ${
@@ -148,7 +156,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           </button>
         </header>
 
-        <div className="px-5">
+        <div className="shrink-0 px-5">
           <div className="grid grid-cols-4 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
             {tabs.map(({ key, label }) => (
               <button
@@ -167,7 +175,15 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           </div>
         </div>
 
-        <div className="min-h-[21rem] space-y-4 px-5 py-4">
+        {/* The comfort min-height only applies when there is room for it in
+            BOTH axes: `sm:` alone is width-only, and a landscape phone
+            (844×390) would pin the body to 21rem, overflow the capped modal
+            and clip the save button. */}
+        <div
+          id="settings-body"
+          ref={bodyRef}
+          className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 [@media(min-width:640px)_and_(min-height:44rem)]:min-h-[21rem]"
+        >
           {tab === "session" ? (
             <>
               <label className="block space-y-1.5">
@@ -329,7 +345,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           )}
         </div>
 
-        <footer className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+        <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button
             onClick={onClose}
             className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"

@@ -25,6 +25,17 @@ export function inTextInput(e: { target: EventTarget | null }): boolean {
   return false;
 }
 
+/**
+ * True when focus fell back to `<body>` (or nowhere) — e.g. after an inline
+ * editor unmounted. Callers use it to hand focus back to the terminal only
+ * when it is actually orphaned, never stealing it from whatever the user
+ * clicked next.
+ */
+export function focusOrphaned(): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body;
+}
+
 // Stacked Windowed instances: Escape must only close the topmost one, and
 // panels underneath must know a window is still open.
 const windowStack: symbol[] = [];

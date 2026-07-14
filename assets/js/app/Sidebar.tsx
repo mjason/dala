@@ -22,6 +22,12 @@ type Props = {
   onDelete: (id: string) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
+  /** Session whose row is currently being renamed in place (F2 / double-click). */
+  renamingId: string | null;
+  /** Open (id) or close (null) the inline rename editor. */
+  onRenameStart: (id: string | null) => void;
+  /** Persist a new name (already trimmed, non-empty and actually changed). */
+  onRename: (id: string, name: string) => void;
   /** Agent activity per session (OSC 777 events): overrides the status dot. */
   agentStatus?: Record<string, { state: "working" | "attention" | "done" }>;
   /** Desktop width in px (draggable via the right-edge handle). */
@@ -40,6 +46,9 @@ export default function Sidebar({
   onOpenSettings,
   onDelete,
   onReorder,
+  renamingId,
+  onRenameStart,
+  onRename,
   agentStatus,
   width,
   onResize,
@@ -220,7 +229,29 @@ export default function Sidebar({
                 })()}`}
               />
               <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-sm">{s.name}</div>
+                {renamingId === s.id ? (
+                  <RenameInput
+                    id={s.id}
+                    name={s.name}
+                    label={t("kbRenameSession")}
+                    onCommit={(next) => {
+                      if (next && next !== s.name) onRename(s.id, next);
+                      onRenameStart(null);
+                    }}
+                    onCancel={() => onRenameStart(null)}
+                  />
+                ) : (
+                  <div
+                    className="truncate font-mono text-sm"
+                    title={t("kbRenameSession")}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      onRenameStart(s.id);
+                    }}
+                  >
+                    {s.name}
+                  </div>
+                )}
                 <div className="truncate font-mono text-xs text-fg-muted/80">
                   {shortPath(s.cwd, 28)}
                 </div>
@@ -293,5 +324,63 @@ export default function Sidebar({
         </Select>
       </footer>
     </aside>
+  );
+}
+
+/**
+ * In-place name editor for one sidebar row: Enter and blur commit, Escape
+ * cancels. Escape is swallowed here (stopPropagation + preventDefault) — the
+ * editor is not a "window" on the Esc stack, so it must not pop one.
+ */
+function RenameInput({
+  id,
+  name,
+  label,
+  onCommit,
+  onCancel,
+}: {
+  id: string;
+  name: string;
+  label: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  // Enter commits and then blurs: the first outcome wins, the blur is a no-op.
+  const settled = useRef(false);
+  const commit = (value: string) => {
+    if (settled.current) return;
+    settled.current = true;
+    onCommit(value.trim());
+  };
+  const cancel = () => {
+    if (settled.current) return;
+    settled.current = true;
+    onCancel();
+  };
+
+  return (
+    <input
+      data-rename-session={id}
+      aria-label={label}
+      defaultValue={name}
+      autoFocus
+      spellCheck={false}
+      onFocus={(e) => e.currentTarget.select()}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit(e.currentTarget.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={(e) => commit(e.currentTarget.value)}
+      className="w-full rounded border border-mint/60 bg-bg0 px-1 py-px font-mono text-sm text-fg outline-none"
+    />
   );
 }

@@ -98,19 +98,52 @@ describe("translate", () => {
     }
   });
 
-  test("the View-menu role items have labels in every locale", () => {
+  test("the role items main.js labels have translations in every locale", () => {
     // Electron role items render English unless given an explicit label —
     // main.js pulls these keys, so they must exist everywhere.
     const roleKeys = [
+      // View / Window
       "reload", "forceReload", "toggleDevTools",
       "actualSize", "zoomIn", "zoomOut", "toggleFullScreen",
       "window", "minimize", "zoomWindow", "closeWindow", "quit", "front",
+      // Edit (incl. the macOS-only Speech submenu)
+      "edit", "undo", "redo", "cut", "copy", "paste", "pasteAndMatchStyle",
+      "delete", "selectAll", "speech", "startSpeaking", "stopSpeaking",
+      // macOS app menu
+      "about", "services", "hide", "hideOthers", "unhide", "quitApp",
     ];
     for (const locale of Object.keys(MESSAGES)) {
       for (const key of roleKeys) {
         const message = MESSAGES[locale][key];
         assert.equal(typeof message, "string", `${locale}.${key} missing`);
         assert.notEqual(message.trim(), "", `${locale}.${key} empty`);
+      }
+    }
+  });
+
+  test("the smart-substitution roles stay out of the Edit menu", () => {
+    // Smart quotes / dashes / text replacement rewrite what the user types in
+    // xterm's hidden textarea (`"` → `“`, `--` → `—`) — poison in a shell.
+    // They are not part of Electron's `editMenu` role; keep them out of ours.
+    const main = require("node:fs").readFileSync(require("node:path").join(__dirname, "../main.js"), "utf8");
+    for (const role of ["toggleSmartQuotes", "toggleSmartDashes", "toggleTextReplacement", "showSubstitutions"]) {
+      assert.equal(main.includes(role), false, `main.js still installs the ${role} role`);
+    }
+    for (const key of ["substitutions", "showSubstitutions", "smartQuotes", "smartDashes", "textReplacement"]) {
+      assert.equal(key in MESSAGES.en, false, `menu-locales still carries the unused ${key} key`);
+    }
+  });
+
+  test("the app-name role labels keep their {name} placeholder in every locale", () => {
+    // about/hide/quitApp are rendered as "About Dala" & co — a translation
+    // that drops {name} silently loses the app name.
+    for (const locale of Object.keys(MESSAGES)) {
+      for (const key of ["about", "hide", "quitApp"]) {
+        assert.ok(
+          MESSAGES[locale][key].includes("{name}"),
+          `${locale}.${key} lost the {name} placeholder`
+        );
+        assert.equal(translate(locale, key, { name: "Dala" }).includes("Dala"), true);
       }
     }
   });
