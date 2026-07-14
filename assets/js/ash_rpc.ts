@@ -201,6 +201,145 @@ export async function executeValidationRpcRequest<T>(
 
 
 
+export type SetSpeechSettingsInput = {
+  endpoint?: string | null;
+  model?: string | null;
+  apiKey?: string | null;
+  clearApiKey?: boolean | null;
+};
+
+export type SetSpeechSettingsFields = UnifiedFieldSelection<{endpoint: string | null, model: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "apiKeySet"}>[];
+
+export type InferSetSpeechSettingsResult<
+  Fields extends SetSpeechSettingsFields | undefined,
+> = InferResult<{endpoint: string | null, model: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "apiKeySet"}, Fields>;
+
+export type SetSpeechSettingsResult<Fields extends SetSpeechSettingsFields | undefined = undefined> = | { success: true; data: InferSetSpeechSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Speech
+ *
+ * @ashActionType :action
+ */
+export async function setSpeechSettings<Fields extends SetSpeechSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input?: SetSpeechSettingsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetSpeechSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_speech_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetSpeechSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Speech
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSetSpeechSettings(
+  config: {
+  tenant?: string;
+  input?: SetSpeechSettingsInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "set_speech_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SpeechSettingsFields = UnifiedFieldSelection<{endpoint: string | null, model: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "apiKeySet"}>[];
+
+export type InferSpeechSettingsResult<
+  Fields extends SpeechSettingsFields | undefined,
+> = InferResult<{endpoint: string | null, model: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "apiKeySet"}, Fields>;
+
+export type SpeechSettingsResult<Fields extends SpeechSettingsFields | undefined = undefined> = | { success: true; data: InferSpeechSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Speech
+ *
+ * @ashActionType :action
+ */
+export async function speechSettings<Fields extends SpeechSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SpeechSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "speech_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SpeechSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Speech
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSpeechSettings(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "speech_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type DeleteEntryInput = {
   path: string;
 };
@@ -2487,9 +2626,6 @@ export async function validateSpeechPromptConfig(
 
 
 export type TranscribeInput = {
-  endpoint: string;
-  model: string;
-  apiKey?: string | null;
   prompt?: string | null;
   cwd?: string | null;
   audioBase64: string;

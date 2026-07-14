@@ -22,20 +22,19 @@ defmodule Dala.Terminal.Speech do
   actions do
     action :transcribe, :map do
       description """
-      Forward recorded audio to the configured OpenAI-compatible
-      `/audio/transcriptions` endpoint and return the transcript.
+      Forward recorded audio to the OpenAI-compatible
+      `/audio/transcriptions` endpoint **configured on the server**
+      (`Dala.Settings.Speech`, per user when signed in) and return the
+      transcript.
+
+      The endpoint deliberately does NOT come from the client: letting a
+      browser name the URL made this a server-side request forgery pump.
       """
 
       constraints fields: [
                     text: [type: :string],
                     error: [type: :string]
                   ]
-
-      # Base URL like "http://127.0.0.1:8000/v1" (or the full
-      # /audio/transcriptions URL — both accepted).
-      argument :endpoint, :string, allow_nil?: false
-      argument :model, :string, allow_nil?: false
-      argument :api_key, :string
 
       # Whisper "prompt": decoder context — the model treats it as the
       # preceding transcript and mimics its spelling/punctuation. When
@@ -49,23 +48,20 @@ defmodule Dala.Terminal.Speech do
         constraints trim?: false
       end
 
-      run fn input, _context ->
+      run fn input, context ->
+        settings = Dala.Settings.Speech.config(context.actor)
+
         with {:ok, audio} <- Base.decode64(input.arguments.audio_base64),
              :ok <- check_size(audio),
-             {:ok, url} <- transcription_url(input.arguments.endpoint) do
+             :ok <- check_configured(settings),
+             {:ok, url} <- transcription_url(settings.endpoint) do
           prompt =
             case Map.get(input.arguments, :prompt) do
               p when is_binary(p) and p != "" -> p
               _ -> project_prompt(Map.get(input.arguments, :cwd))
             end
 
-          request(
-            url,
-            input.arguments.model,
-            Map.get(input.arguments, :api_key),
-            prompt,
-            audio
-          )
+          request(url, settings.model, settings.api_key, prompt, audio)
         else
           :error -> {:ok, %{text: nil, error: "invalid base64 audio"}}
           {:error, message} -> {:ok, %{text: nil, error: message}}
@@ -124,6 +120,19 @@ defmodule Dala.Terminal.Speech do
   end
 
   defp project_prompt(_cwd), do: nil
+
+  # Machine-readable sentinel: the web client turns it into the localized
+  # "configure the speech service in settings first" message (`t
+  # ("speechNotConfigured")`), other callers get something they can match on.
+  @not_configured "speech_not_configured"
+
+  @doc "The error string returned when no speech endpoint is configured."
+  def not_configured_error, do: @not_configured
+
+  defp check_configured(%{endpoint: endpoint}) when is_binary(endpoint) and endpoint != "",
+    do: :ok
+
+  defp check_configured(_settings), do: {:error, @not_configured}
 
   defp check_size(audio) when byte_size(audio) > @audio_max_bytes,
     do: {:error, "audio too large (max #{div(@audio_max_bytes, 1024 * 1024)} MB)"}

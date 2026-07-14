@@ -379,7 +379,10 @@ describe("FileDrawer keyboard and delete", () => {
     fireEvent.keyDown(tree(), { key: "ArrowDown" });
     fireEvent.keyDown(tree(), { key: "Delete" });
     expect(document.getElementById("delete-entry-modal")).toBeInTheDocument();
-    expect(screen.getByTitle("/proj/a.txt")).toBeInTheDocument();
+    // The dialog spells the path out in FULL (it used to be a truncated
+    // single line with the path only in a title tooltip — you cannot confirm
+    // a delete you cannot read).
+    expect(document.getElementById("delete-target-path")).toHaveTextContent("/proj/a.txt");
   });
 
   it("download links point at the raw endpoint", async () => {

@@ -76,7 +76,7 @@ config :dala,
   generators: [timestamp_type: :utc_datetime],
   data_dir: "priv/data",
   auth_enabled: false,
-  ash_domains: [Dala.Accounts, Dala.Terminal],
+  ash_domains: [Dala.Accounts, Dala.Settings, Dala.Terminal],
   ash_authentication: [return_error_on_invalid_magic_link_token?: true]
 
 # Configure the endpoint

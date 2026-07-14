@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { agentCommands, listFiles, savePastedFile, transcribe } from "../ash_rpc";
+import { agentCommands, listFiles, savePastedFile, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
-import { blobToBase64, loadSpeechPrefs, startRecording, type Recorder } from "./speech";
+import { blobToBase64, startRecording, type Recorder } from "./speech";
 import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
@@ -153,6 +153,11 @@ export default function InputBar({
     return () => window.removeEventListener("dala:voice", onVoice);
   }, []);
 
+  // The server's "nothing configured" sentinel becomes the localized nudge;
+  // anything else is a real endpoint/network error and speaks for itself.
+  const speechError = (error?: string | null) =>
+    error === "speech_not_configured" ? t("speechNotConfigured") : (error ?? t("speechFailed"));
+
   // Push-to-talk: click starts the mic, click again stops → transcribe →
   // the text lands at the end of the draft.
   const toggleVoice = async () => {
@@ -162,12 +167,10 @@ export default function InputBar({
       try {
         const wav = await recorderRef.current!.stop();
         recorderRef.current = null;
-        const prefs = loadSpeechPrefs();
+        // Endpoint/model/key are the SERVER's business now: shared across
+        // devices, and a client-named URL would be an SSRF pump.
         const result = await call<{ text: string | null; error: string | null }>(transcribe, {
           input: {
-            endpoint: prefs.endpoint,
-            model: prefs.model,
-            apiKey: prefs.apiKey || undefined,
             cwd: root,
             audioBase64: await blobToBase64(wav),
           },
@@ -175,7 +178,7 @@ export default function InputBar({
         });
         const data = result.ok ? result.data : null;
         if (!data || data.error || !data.text) {
-          onError(data?.error ?? t("speechFailed"));
+          onError(speechError(data?.error));
         } else {
           setValue(value === "" || value.endsWith(" ") ? value + data.text : value + " " + data.text);
         }
@@ -186,7 +189,13 @@ export default function InputBar({
       }
       return;
     }
-    if (!loadSpeechPrefs().endpoint) {
+    // Ask the server whether a speech endpoint is configured before opening
+    // the mic — recording into a void is a lousy way to find out.
+    const settings = await call<{ endpoint: string }>(speechSettings, {
+      input: {},
+      fields: ["endpoint"] as never,
+    });
+    if (!settings.ok || !settings.data.endpoint) {
       onError(t("speechNotConfigured"));
       return;
     }
@@ -540,6 +549,7 @@ export default function InputBar({
         </button>
         <button
           id="input-bar-voice"
+          data-voice={voice}
           onClick={() => void toggleVoice()}
           className={[
             "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors pointer-coarse:h-10 pointer-coarse:w-10",

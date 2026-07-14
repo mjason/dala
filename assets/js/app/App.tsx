@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { createSession, deleteSession, foregroundApp, kickViewers } from "../ash_rpc";
+import {
+  createSession,
+  deleteSession,
+  foregroundApp,
+  kickViewers,
+  setSpeechSettings,
+  speechSettings,
+} from "../ash_rpc";
+import { ensureLegacySpeechMigrated } from "./speech";
 import { getDeviceId } from "./deviceId";
 import { call } from "./rpc";
 import type { AgentEventPayload } from "../ash_types";
@@ -121,6 +129,33 @@ export default function App() {
       cancelled = true;
       off();
     };
+  }, []);
+
+  // Hand off any endpoint/model/key this browser still holds from the
+  // localStorage era up to the server — fired ONCE at mount (not gated on
+  // opening Settings→Voice), so an upgrading user's voice keeps working and
+  // the plaintext key stops lingering locally even if they never open
+  // settings. No-op (zero RPCs) once there's nothing left to migrate.
+  useEffect(() => {
+    void ensureLegacySpeechMigrated(
+      async () => {
+        const result = await call<{ endpoint: string }>(speechSettings, {
+          input: {},
+          fields: ["endpoint", "model", "apiKeySet"] as never,
+        });
+        return result.ok ? { endpoint: result.data.endpoint ?? "" } : null;
+      },
+      async (legacy) => {
+        const result = await call<unknown>(setSpeechSettings, {
+          input: {
+            endpoint: legacy.endpoint,
+            model: legacy.model,
+            apiKey: legacy.apiKey || undefined,
+          },
+        });
+        return result.ok;
+      },
+    );
   }, []);
 
   // The quick shells live in one overlay panel (not the sidebar): ephemeral
@@ -1065,6 +1100,7 @@ export default function App() {
         {toasts.map((item) => (
           <div
             key={item.id}
+            data-toast
             className="pointer-events-auto max-w-xs rounded-lg border border-danger/40 bg-bg1 px-3 py-2 text-[13px] text-fg shadow-xl [overflow-wrap:anywhere]"
           >
             {item.message}

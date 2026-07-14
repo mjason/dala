@@ -108,6 +108,29 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     { key: "voice", label: t("speechSection") },
   ];
 
+  // ARIA roving-tabindex keyboard nav: Left/Right (and Home/End) move focus
+  // AND selection between tabs, per the tabs pattern. Only the active tab is
+  // in the tab order; the arrows walk the rest.
+  const onTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Anchor on the FOCUSED tab (roving tabindex), not the selected one — they
+    // track together in normal use, but keying off focus is what the WAI-ARIA
+    // tabs pattern specifies.
+    const focusedKey = (e.target as HTMLElement)?.getAttribute?.("data-settings-tab");
+    const anchor = tabs.findIndex((x) => x.key === focusedKey);
+    const idx = anchor === -1 ? tabs.findIndex((x) => x.key === tab) : anchor;
+    let nextIdx: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") nextIdx = (idx + 1) % tabs.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
+      nextIdx = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") nextIdx = 0;
+    else if (e.key === "End") nextIdx = tabs.length - 1;
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const nextKey = tabs[nextIdx].key;
+    setTab(nextKey);
+    document.getElementById(`settings-tab-${nextKey}`)?.focus();
+  };
+
   return (
     <div
       className="fixed inset-0 z-40 grid place-items-center overflow-hidden bg-black/60 p-4 backdrop-blur-[2px] sm:p-6"
@@ -115,10 +138,14 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     >
       {/* The cap follows the VISUAL viewport (--vvh, published by index.tsx)
           so a raised soft keyboard shrinks the modal instead of pushing the
-          footer under the keyboard; the inset mirrors the overlay's p-4/sm:p-6. */}
+          footer under the keyboard; the inset mirrors the overlay's p-4/sm:p-6.
+          `min-w-0`: as a grid item the box's default `min-width: auto` lets
+          wide content push it past the centered grid area and out of the
+          viewport (overflow-hidden then clips its right edge) — cap it at the
+          area's width and let inner content wrap/scroll instead. */}
       <div
         id="session-settings"
-        className="flex max-h-[calc(var(--vvh,100dvh)-2rem)] w-full max-w-lg flex-col animate-[dala-modal-in_150ms_ease-out] rounded-xl border border-line bg-bg1 shadow-2xl shadow-black/50 sm:max-h-[calc(var(--vvh,100dvh)-3rem)]"
+        className="flex max-h-[calc(var(--vvh,100dvh)-2rem)] w-full min-w-0 max-w-lg flex-col animate-[dala-modal-in_150ms_ease-out] rounded-xl border border-line bg-bg1 shadow-2xl shadow-black/50 sm:max-h-[calc(var(--vvh,100dvh)-3rem)]"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex shrink-0 items-center gap-3 px-5 pt-4 pb-3">
@@ -156,14 +183,34 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           </button>
         </header>
 
+        {/* Four tabs on one row only survive on `sm` and up. At 390px the row
+            leaves ~52px of text per cell — measured at 13px, EVERY locale's
+            longest label blows past that (zh-CN 语音输入 52px, de
+            Spracheingabe 97.5px, ru Горячие клавиши 120.8px), so the strip
+            overflowed and clipped the last tab. Narrow screens get a 2×2
+            grid instead: ~131px of text per cell at 390px, ~104px at 320px —
+            every label fits, and the ones that don't (ru at 320) wrap inside
+            their button instead of being cut off. `break-words` keeps a long
+            unbreakable word (de) from pushing the track wider than the modal.
+            Desktop (`sm:`) is untouched: 4 columns, px-3. */}
         <div className="shrink-0 px-5">
-          <div className="grid grid-cols-4 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
+          <div
+            role="tablist"
+            aria-label={t("sessionSettings")}
+            onKeyDown={onTabKeyDown}
+            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5 sm:grid-cols-4"
+          >
             {tabs.map(({ key, label }) => (
               <button
                 key={key}
+                id={`settings-tab-${key}`}
+                role="tab"
+                aria-selected={tab === key}
+                aria-controls="settings-body"
+                tabIndex={tab === key ? 0 : -1}
                 data-settings-tab={key}
                 onClick={() => setTab(key)}
-                className={`rounded-md px-3 py-1.5 text-[13px] transition-colors ${
+                className={`min-w-0 break-words rounded-md px-2 py-1.5 text-[13px] transition-colors sm:px-3 ${
                   tab === key
                     ? "bg-bg2 font-medium text-fg shadow-sm"
                     : "text-fg-muted hover:text-fg"
@@ -182,6 +229,8 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
         <div
           id="settings-body"
           ref={bodyRef}
+          role="tabpanel"
+          aria-labelledby={`settings-tab-${tab}`}
           className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 [@media(min-width:640px)_and_(min-height:44rem)]:min-h-[21rem]"
         >
           {tab === "session" ? (

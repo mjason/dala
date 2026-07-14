@@ -6,6 +6,28 @@
 export type UUID = string;
 export type UtcDateTimeUsec = string;
 
+// SpeechSettings Schema
+export type SpeechSettingsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "endpoint" | "model" | "userId";
+  id: UUID;
+  endpoint: string;
+  model: string;
+  userId: UUID | null;
+};
+
+
+
+export type SpeechSettingsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "endpoint" | "model" | "userId";
+  id: UUID;
+  endpoint: string;
+  model: string;
+  userId: UUID | null;
+};
+
+
 // FileSystem Schema
 export type FileSystemResourceSchema = {
   __type: "Resource";
@@ -98,6 +120,39 @@ export type UpdaterAttributesOnlySchema = {
 };
 
 
+export type SpeechSettingsFilterInput = {
+  and?: Array<SpeechSettingsFilterInput>;
+  or?: Array<SpeechSettingsFilterInput>;
+  not?: Array<SpeechSettingsFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  endpoint?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  model?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  userId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+    isNil?: boolean;
+  };
+
+
+
+};
 export type FileSystemFilterInput = {
   and?: Array<FileSystemFilterInput>;
   or?: Array<FileSystemFilterInput>;
@@ -230,6 +285,9 @@ export type UpdaterFilterInput = {
 };
 
 
+export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
+export type SpeechSettingsFilterField = (typeof speechSettingsFilterFields)[number];
+
 
 
 export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
@@ -237,6 +295,9 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
 
+
+export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;
+export type SpeechSettingsSortField = (typeof speechSettingsSortFields)[number];
 
 
 

@@ -1,6 +1,12 @@
 /**
- * Voice input: browser recording + client prefs for an OpenAI-compatible
- * transcription endpoint (vLLM Whisper serving and friends).
+ * Voice input: browser recording + the ONE genuinely per-device pref.
+ *
+ * The endpoint, model and API key used to live here too, which meant
+ * reconfiguring the voice service on every phone and laptop — and it let any
+ * client aim the server's HTTP client at an arbitrary URL. They now live on
+ * the server (`Dala.Settings.Speech`, read/written over RPC). What stays
+ * local is `micDeviceId`: a deviceId from `enumerateDevices()` is meaningless
+ * on another machine.
  *
  * Recording uses MediaRecorder (webm/opus), then decodes and re-encodes to
  * 16 kHz mono WAV before upload — WAV is the one format every Whisper
@@ -9,30 +15,17 @@
 import { createStore } from "./store";
 
 export type SpeechPrefs = {
-  /** Base URL, e.g. "http://127.0.0.1:8000/v1" — empty = not configured. */
-  endpoint: string;
-  /** Served model name (vLLM uses the model id it was launched with). */
-  model: string;
-  apiKey: string;
   /** Input device id; "" = auto (prefer the built-in mic — using a
    * Bluetooth headset mic flips it into call mode: sidetone + loud, tinny
    * playback for the whole system). */
   micDeviceId: string;
 };
 
-export const DEFAULT_SPEECH_PREFS: SpeechPrefs = {
-  endpoint: "",
-  model: "whisper-large-v3",
-  apiKey: "",
-  micDeviceId: "",
-};
+export const DEFAULT_SPEECH_PREFS: SpeechPrefs = { micDeviceId: "" };
 
 const KEY = "dala:speech-prefs";
 
 const store = createStore<SpeechPrefs>(KEY, DEFAULT_SPEECH_PREFS, (raw) => ({
-  endpoint: typeof raw.endpoint === "string" ? raw.endpoint : "",
-  model: typeof raw.model === "string" && raw.model ? raw.model : DEFAULT_SPEECH_PREFS.model,
-  apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
   micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : "",
 }));
 
@@ -42,6 +35,94 @@ export function loadSpeechPrefs(): SpeechPrefs {
 
 export function saveSpeechPrefs(patch: Partial<SpeechPrefs>): SpeechPrefs {
   return store.save(patch);
+}
+
+// ------------------------------------------------- one-time server migration
+
+/** The endpoint/model/key shape that used to be persisted in this browser. */
+export type LegacySpeechPrefs = { endpoint: string; model: string; apiKey: string };
+
+/** Endpoint/model/key left over from the localStorage era, if any. */
+export function readLegacySpeechPrefs(): LegacySpeechPrefs | null {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+    const stored = raw as Record<string, unknown>;
+    const endpoint = typeof stored.endpoint === "string" ? stored.endpoint.trim() : "";
+    if (!endpoint) return null;
+    return {
+      endpoint,
+      model: typeof stored.model === "string" ? stored.model : "",
+      apiKey: typeof stored.apiKey === "string" ? stored.apiKey : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Rewrite the entry with only what is still local (micDeviceId). */
+export function dropLegacySpeechPrefs(): void {
+  saveSpeechPrefs({});
+}
+
+/**
+ * Silent, one-time hand-off: prefs configured in this browser before the
+ * settings moved server-side get pushed up — but only when the server has
+ * nothing yet, so an existing server config is never clobbered. Either way
+ * the legacy keys leave localStorage. Resolves to what was pushed, or null.
+ */
+export async function migrateLegacySpeechPrefs(
+  server: { endpoint: string },
+  push: (legacy: LegacySpeechPrefs) => Promise<boolean>,
+): Promise<LegacySpeechPrefs | null> {
+  const legacy = readLegacySpeechPrefs();
+  if (!legacy) return null;
+
+  if (server.endpoint) {
+    dropLegacySpeechPrefs();
+    return null;
+  }
+
+  const pushed = await push(legacy);
+  if (!pushed) return null;
+  dropLegacySpeechPrefs();
+  return legacy;
+}
+
+// The migration fires at APP MOUNT (not just when Settings→Voice is opened),
+// so an upgrading user's voice keeps working — and their plaintext key stops
+// lingering in localStorage — even if they never touch settings. This guard
+// keeps it to one attempt per page session: React strict mode double-invokes
+// mount effects, and the settings panel could ask again.
+let migrationDone = false;
+
+/** Test-only: forget that the migration ran this session. */
+export function resetSpeechMigrationGuard(): void {
+  migrationDone = false;
+}
+
+/**
+ * Run the legacy hand-off at most once. Does ZERO server round-trips on the
+ * common path (nothing left in localStorage → returns immediately). Only when
+ * there IS something to migrate does it read the server and push. Race-safe:
+ * the guard flips synchronously before the first await, so a concurrent caller
+ * (app mount + settings open) can't double-push. A failed server read resets
+ * the guard so a later mount retries.
+ */
+export async function ensureLegacySpeechMigrated(
+  fetchServer: () => Promise<{ endpoint: string } | null>,
+  push: (legacy: LegacySpeechPrefs) => Promise<boolean>,
+): Promise<LegacySpeechPrefs | null> {
+  if (migrationDone) return null;
+  if (!readLegacySpeechPrefs()) return null;
+  migrationDone = true;
+
+  const server = await fetchServer();
+  if (!server) {
+    migrationDone = false;
+    return null;
+  }
+  return migrateLegacySpeechPrefs(server, push);
 }
 
 // ---------------------------------------------------------------- recorder
