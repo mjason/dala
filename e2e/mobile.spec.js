@@ -298,8 +298,9 @@ test.describe("Given 手机上的 dala 用户", () => {
         .toBeLessThanOrEqual(phone.viewport.width);
 
       // 显式接管且宽度确实变了(桌面宽 → 手机窄):出现 claude code
-      // Ctrl+O 重排小提示,点 × 可关闭。
+      // Ctrl+O 重排小提示,带秒数倒计时,点 × 立即关闭。
       await expect(phonePage.locator("#reflow-tip")).toBeVisible();
+      await expect(phonePage.locator("#reflow-tip-countdown")).toBeVisible();
       await phonePage.locator("#reflow-tip-close").click();
       await expect(phonePage.locator("#reflow-tip")).toHaveCount(0);
 
@@ -311,6 +312,8 @@ test.describe("Given 手机上的 dala 用户", () => {
       // 桌面端点工具栏"适配宽度"(宽视口下直接可见,不在 ⋯ 菜单里):
       // follower 状态下 Refit = "适配到我的屏幕" = 接管尺寸。
       await desktopPage.locator("#terminal-refit-button").click();
+      // 桌面端接管也弹出重排提示(手机宽 → 桌面宽,宽度确实变了)。
+      await expect(desktopPage.locator("#reflow-tip")).toBeVisible();
       // 桌面重新成为所有者:横幅消失,布局宽度涨回桌面容器宽度,无缩放。
       await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
       await expect
@@ -322,6 +325,8 @@ test.describe("Given 手机上的 dala 用户", () => {
       await expect(phonePage.locator("#size-follower-banner")).toBeVisible({
         timeout: 10_000,
       });
+      // 桌面端的重排提示这次不点 ×:验证 5s 倒计时自动关闭(≤7s 消失)。
+      await expect(desktopPage.locator("#reflow-tip")).toHaveCount(0, { timeout: 7000 });
     } finally {
       if (id) await h.deleteSession(desktopPage, id).catch(() => {});
       await phoneCtx?.close();

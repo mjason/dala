@@ -22,6 +22,9 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useNotifications, agentStateFor } from "./hooks/useNotifications";
 import { historyLines, shortPath } from "./util";
 import { useI18n } from "./i18n";
+import { onReconnect } from "./socket";
+import { serverVersion } from "./meta";
+import { checkServerUpdated } from "./versionCheck";
 
 type Toast = { id: number; message: string };
 
@@ -92,6 +95,28 @@ export default function App() {
     const id = ++toastSeq.current;
     setToasts((list) => [...list, { id, message }]);
     window.setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), 5000);
+  }, []);
+
+  // The server was upgraded underneath this tab: the page still runs the
+  // old bundle. Checked only on socket RECONNECT (the one signal a restart
+  // gives us — no polling): compare GET /version against the version this
+  // page was served with. The banner offers a one-click reload; dismissable.
+  const [serverUpdated, setServerUpdated] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    const off = onReconnect(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void checkServerUpdated(serverVersion).then((updated) => {
+        inFlight = false;
+        if (updated && !cancelled) setServerUpdated(true);
+      });
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
   }, []);
 
   // The quick shells live in one overlay panel (not the sidebar): ephemeral
@@ -970,6 +995,28 @@ export default function App() {
       )}
 
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        {serverUpdated && (
+          <div
+            id="server-updated-banner"
+            className="pointer-events-auto flex max-w-xs items-center gap-1 rounded-lg border border-mint/40 bg-bg1 py-1 pl-3 pr-1 shadow-xl"
+          >
+            <button
+              id="server-updated-reload"
+              onClick={() => location.reload()}
+              className="py-1 text-left text-[13px] text-mint transition-colors hover:brightness-110"
+            >
+              {t("serverUpdatedReload")}
+            </button>
+            <button
+              id="server-updated-dismiss"
+              aria-label={t("close")}
+              onClick={() => setServerUpdated(false)}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {toasts.map((item) => (
           <div
             key={item.id}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
+import { KEY_GUIDE } from "../keyGuide";
 import {
   BINDINGS,
   comboFromEvent,
@@ -82,6 +83,42 @@ export default function ShortcutsSection() {
       >
         {t("shortcutResetAll")}
       </button>
+
+      {/* Reference-only guide for keys owned by the TUI apps themselves
+          (claude code, zellij, …) — nothing here is rebindable, the data
+          lives in keyGuide.ts. */}
+      <div id="key-guide" className="space-y-3 border-t border-line pt-4">
+        <div className="space-y-1">
+          <span className="block text-[13px] font-medium text-fg">{t("keyGuideTitle")}</span>
+          <p className="text-[12px] leading-relaxed text-fg-muted">{t("keyGuideDesc")}</p>
+        </div>
+        {KEY_GUIDE.map((group) => (
+          <div key={group.app} className="space-y-1.5">
+            <span className="block font-mono text-[11px] uppercase tracking-wide text-fg-muted/80">
+              {group.app}
+            </span>
+            <div className="divide-y divide-line/60 rounded-lg border border-line">
+              {group.rows.map((row) => (
+                <div key={row.descKey} className="flex items-center gap-2 px-3 py-2">
+                  <span className="flex-1 text-[12px] leading-relaxed text-fg">
+                    {t(row.descKey)}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {row.keys.map((key, index) => (
+                      <span
+                        key={index}
+                        className="kbd-combo rounded-md border border-line px-2 py-1 text-[12px] text-fg-muted"
+                      >
+                        {key}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

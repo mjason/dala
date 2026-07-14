@@ -130,7 +130,17 @@ export const en = {
   sizeFollowerBanner: "Size is controlled by another client",
   sizeFollowerTakeover: "Take over",
   reflowTip:
-    "Width changed — claude code won't rewrap its transcript. Press Ctrl+O twice inside claude to re-render at the new width (in zellij, press Ctrl+G first).",
+    "Width changed — claude code won't rewrap its transcript. Press Ctrl+O twice inside claude to re-render at the new width (in zellij, press Ctrl+G first). More TUI key tips: Settings → Shortcuts.",
+  keyGuideTitle: "TUI key guide",
+  keyGuideDesc:
+    "Useful keys inside the apps running in the terminal — they belong to those apps, not to dala (dala's own shortcuts are listed above).",
+  keyGuideClaudeReflow:
+    "Press twice: re-render the transcript at the current width — claude code doesn't rewrap it after a resize",
+  keyGuideClaudePermissions: "Cycle permission modes (default / auto-accept edits / plan)",
+  keyGuideZellijLock:
+    "Toggle lock mode: keys pass through to the inner app (press it before Ctrl+O inside zellij)",
+  keyGuideZellijScroll: "Scroll / search mode",
+  keyGuideOpencodeSidebar: "Toggle the sidebar",
   dblclickReset: "Drag to resize · double-click to reset",
   resetLayout: "Reset layout",
   maximize: "Maximize",
@@ -203,6 +213,7 @@ export const en = {
   updateTo: "Update to {version}",
   updating: "Updating…",
   updateReload: "Restarting — the page will reload",
+  serverUpdatedReload: "Server updated — click to reload",
   appearance: "Terminal appearance",
   preferencesTab: "Preferences",
   toggleSidebar: "Toggle sidebar",
@@ -361,7 +372,17 @@ export const zhCN: Messages = {
   sizeFollowerBanner: "尺寸由其他端控制",
   sizeFollowerTakeover: "接管",
   reflowTip:
-    "宽度已改变——claude code 的历史排版不会自动重排，在 claude 里连按两次 Ctrl+O 可按新宽度重新渲染（zellij 内先按 Ctrl+G 锁定）",
+    "宽度已改变——claude code 的历史排版不会自动重排，在 claude 里连按两次 Ctrl+O 可按新宽度重新渲染（zellij 内先按 Ctrl+G 锁定）。更多 TUI 按键技巧见 设置 → 快捷键",
+  keyGuideTitle: "TUI 按键指南",
+  keyGuideDesc:
+    "终端内运行的应用里的实用按键——它们属于这些应用本身，不是 dala 的快捷键（dala 的快捷键在上方列表）。",
+  keyGuideClaudeReflow:
+    "连按两次：按当前宽度重新渲染历史——claude code 改变宽度后不会自动重排",
+  keyGuideClaudePermissions: "循环切换权限模式（默认 / 自动接受编辑 / 计划模式）",
+  keyGuideZellijLock:
+    "切换锁定模式：按键直通内部应用（在 zellij 里按 Ctrl+O 前先按它）",
+  keyGuideZellijScroll: "滚动 / 搜索模式",
+  keyGuideOpencodeSidebar: "开关侧边栏",
   dblclickReset: "拖拽调宽 · 双击恢复默认",
   resetLayout: "恢复默认布局",
   maximize: "全屏",
@@ -433,6 +454,7 @@ export const zhCN: Messages = {
   updateTo: "升级到 {version}",
   updating: "升级中…",
   updateReload: "重启中，页面将自动刷新",
+  serverUpdatedReload: "服务器已更新，点击刷新",
   appearance: "终端外观",
   preferencesTab: "偏好设置",
   toggleSidebar: "显示/隐藏侧边栏",
@@ -589,7 +611,17 @@ export const zhTW: Messages = {
   sizeFollowerBanner: "尺寸由其他端控制",
   sizeFollowerTakeover: "接管",
   reflowTip:
-    "寬度已改變——claude code 的歷史排版不會自動重排，在 claude 裡連按兩次 Ctrl+O 可按新寬度重新渲染（zellij 內先按 Ctrl+G 鎖定）",
+    "寬度已改變——claude code 的歷史排版不會自動重排，在 claude 裡連按兩次 Ctrl+O 可按新寬度重新渲染（zellij 內先按 Ctrl+G 鎖定）。更多 TUI 按鍵技巧見 設定 → 快捷鍵",
+  keyGuideTitle: "TUI 按鍵指南",
+  keyGuideDesc:
+    "終端內執行的應用裡的實用按鍵——它們屬於這些應用本身，不是 dala 的快捷鍵（dala 的快捷鍵在上方列表）。",
+  keyGuideClaudeReflow:
+    "連按兩次：按目前寬度重新渲染歷史——claude code 改變寬度後不會自動重排",
+  keyGuideClaudePermissions: "循環切換權限模式（預設 / 自動接受編輯 / 計劃模式）",
+  keyGuideZellijLock:
+    "切換鎖定模式：按鍵直通內部應用（在 zellij 裡按 Ctrl+O 前先按它）",
+  keyGuideZellijScroll: "捲動 / 搜尋模式",
+  keyGuideOpencodeSidebar: "開關側邊欄",
   dblclickReset: "拖曳調寬 · 雙擊恢復預設",
   resetLayout: "恢復預設版面",
   maximize: "全螢幕",
@@ -661,6 +693,7 @@ export const zhTW: Messages = {
   updateTo: "升級到 {version}",
   updating: "升級中…",
   updateReload: "重新啟動中，頁面將自動重新整理",
+  serverUpdatedReload: "伺服器已更新，點擊重新整理",
   appearance: "終端外觀",
   preferencesTab: "偏好設定",
   toggleSidebar: "顯示/隱藏側邊欄",
@@ -817,7 +850,17 @@ export const ja: Messages = {
   sizeFollowerBanner: "サイズは他のクライアントが制御中",
   sizeFollowerTakeover: "引き継ぐ",
   reflowTip:
-    "幅が変わりました — claude code の履歴は自動では再折り返しされません。claude 内で Ctrl+O を2回押すと新しい幅で再描画されます（zellij 内では先に Ctrl+G）",
+    "幅が変わりました — claude code の履歴は自動では再折り返しされません。claude 内で Ctrl+O を2回押すと新しい幅で再描画されます（zellij 内では先に Ctrl+G）。TUI キーのヒント: 設定 → ショートカット",
+  keyGuideTitle: "TUI キーガイド",
+  keyGuideDesc:
+    "ターミナル内で動くアプリの便利なキー — これらはアプリ自身のもので、dala のショートカットではありません（dala のものは上のリスト）。",
+  keyGuideClaudeReflow:
+    "2回押し: 現在の幅でトランスクリプトを再描画 — claude code はリサイズ後に自動では再折り返ししません",
+  keyGuideClaudePermissions: "権限モードを循環切替（デフォルト / 編集自動承認 / プラン）",
+  keyGuideZellijLock:
+    "ロックモード切替: キーを内側のアプリへ素通しします（zellij 内で Ctrl+O を押す前に）",
+  keyGuideZellijScroll: "スクロール / 検索モード",
+  keyGuideOpencodeSidebar: "サイドバーの表示切替",
   dblclickReset: "ドラッグでリサイズ · ダブルクリックでリセット",
   resetLayout: "レイアウトをリセット",
   maximize: "最大化",
@@ -889,6 +932,7 @@ export const ja: Messages = {
   updateTo: "{version} に更新",
   updating: "更新中…",
   updateReload: "再起動中 — ページは自動的に再読み込みされます",
+  serverUpdatedReload: "サーバーが更新されました — クリックで再読み込み",
   appearance: "ターミナルの外観",
   preferencesTab: "環境設定",
   toggleSidebar: "サイドバーの表示切替",
@@ -1045,7 +1089,17 @@ export const ko: Messages = {
   sizeFollowerBanner: "다른 클라이언트가 크기를 제어 중",
   sizeFollowerTakeover: "가져오기",
   reflowTip:
-    "너비가 변경되었습니다 — claude code의 기록은 자동으로 다시 줄바꿈되지 않습니다. claude에서 Ctrl+O를 두 번 누르면 새 너비로 다시 렌더링됩니다(zellij 안에서는 먼저 Ctrl+G)",
+    "너비가 변경되었습니다 — claude code의 기록은 자동으로 다시 줄바꿈되지 않습니다. claude에서 Ctrl+O를 두 번 누르면 새 너비로 다시 렌더링됩니다(zellij 안에서는 먼저 Ctrl+G). 더 많은 TUI 키 팁: 설정 → 단축키",
+  keyGuideTitle: "TUI 키 가이드",
+  keyGuideDesc:
+    "터미널 안에서 실행되는 앱들의 유용한 키 — 해당 앱 자체의 키이며 dala 단축키가 아닙니다(dala 단축키는 위 목록에 있습니다).",
+  keyGuideClaudeReflow:
+    "두 번 누르기: 현재 너비로 기록을 다시 렌더링 — claude code는 크기 변경 후 자동으로 다시 줄바꿈하지 않습니다",
+  keyGuideClaudePermissions: "권한 모드 순환 전환(기본 / 편집 자동 수락 / 플랜)",
+  keyGuideZellijLock:
+    "잠금 모드 전환: 키를 내부 앱으로 그대로 전달합니다(zellij 안에서 Ctrl+O를 누르기 전에 먼저)",
+  keyGuideZellijScroll: "스크롤 / 검색 모드",
+  keyGuideOpencodeSidebar: "사이드바 표시/숨기기",
   dblclickReset: "드래그로 크기 조절 · 더블클릭으로 초기화",
   resetLayout: "레이아웃 초기화",
   maximize: "최대화",
@@ -1117,6 +1171,7 @@ export const ko: Messages = {
   updateTo: "{version}(으)로 업데이트",
   updating: "업데이트 중…",
   updateReload: "재시작 중 — 페이지가 자동으로 새로고침됩니다",
+  serverUpdatedReload: "서버가 업데이트되었습니다 — 클릭하여 새로고침",
   appearance: "터미널 모양",
   preferencesTab: "환경설정",
   toggleSidebar: "사이드바 표시/숨기기",
@@ -1273,7 +1328,17 @@ export const es: Messages = {
   sizeFollowerBanner: "El tamaño lo controla otro cliente",
   sizeFollowerTakeover: "Tomar control",
   reflowTip:
-    "El ancho cambió: claude code no reajusta su historial. Pulsa Ctrl+O dos veces dentro de claude para redibujarlo al nuevo ancho (dentro de zellij, pulsa Ctrl+G primero).",
+    "El ancho cambió: claude code no reajusta su historial. Pulsa Ctrl+O dos veces dentro de claude para redibujarlo al nuevo ancho (dentro de zellij, pulsa Ctrl+G primero). Más trucos de teclas TUI: Ajustes → Atajos.",
+  keyGuideTitle: "Guía de teclas TUI",
+  keyGuideDesc:
+    "Teclas útiles dentro de las apps que corren en el terminal: pertenecen a esas apps, no a dala (los atajos de dala están en la lista de arriba).",
+  keyGuideClaudeReflow:
+    "Pulsa dos veces: redibuja el historial al ancho actual — claude code no lo reajusta tras un cambio de tamaño",
+  keyGuideClaudePermissions: "Cicla los modos de permisos (predeterminado / aceptar ediciones / plan)",
+  keyGuideZellijLock:
+    "Alterna el modo bloqueo: las teclas pasan directas a la app interna (púlsalo antes de Ctrl+O dentro de zellij)",
+  keyGuideZellijScroll: "Modo desplazamiento / búsqueda",
+  keyGuideOpencodeSidebar: "Alterna la barra lateral",
   dblclickReset: "Arrastra para redimensionar · doble clic para restablecer",
   resetLayout: "Restablecer diseño",
   maximize: "Maximizar",
@@ -1345,6 +1410,7 @@ export const es: Messages = {
   updateTo: "Actualizar a {version}",
   updating: "Actualizando…",
   updateReload: "Reiniciando: la página se recargará",
+  serverUpdatedReload: "Servidor actualizado — haz clic para recargar",
   appearance: "Apariencia del terminal",
   preferencesTab: "Preferencias",
   toggleSidebar: "Mostrar/ocultar barra lateral",
@@ -1501,7 +1567,17 @@ export const fr: Messages = {
   sizeFollowerBanner: "La taille est contrôlée par un autre client",
   sizeFollowerTakeover: "Prendre la main",
   reflowTip:
-    "La largeur a changé : claude code ne réajuste pas son historique. Appuyez deux fois sur Ctrl+O dans claude pour le réafficher à la nouvelle largeur (dans zellij, appuyez d'abord sur Ctrl+G).",
+    "La largeur a changé : claude code ne réajuste pas son historique. Appuyez deux fois sur Ctrl+O dans claude pour le réafficher à la nouvelle largeur (dans zellij, appuyez d'abord sur Ctrl+G). Plus d'astuces TUI : Réglages → Raccourcis.",
+  keyGuideTitle: "Guide des touches TUI",
+  keyGuideDesc:
+    "Touches utiles dans les applications qui tournent dans le terminal — elles appartiennent à ces applications, pas à dala (les raccourcis de dala sont listés ci-dessus).",
+  keyGuideClaudeReflow:
+    "Appuyez deux fois : réaffiche l'historique à la largeur actuelle — claude code ne le réajuste pas après un redimensionnement",
+  keyGuideClaudePermissions: "Fait défiler les modes de permission (défaut / accepter les éditions / plan)",
+  keyGuideZellijLock:
+    "Bascule le mode verrouillage : les touches passent directement à l'application interne (à presser avant Ctrl+O dans zellij)",
+  keyGuideZellijScroll: "Mode défilement / recherche",
+  keyGuideOpencodeSidebar: "Affiche/masque la barre latérale",
   dblclickReset: "Glisser pour redimensionner · double-clic pour réinitialiser",
   resetLayout: "Réinitialiser la disposition",
   maximize: "Agrandir",
@@ -1573,6 +1649,7 @@ export const fr: Messages = {
   updateTo: "Mettre à jour vers {version}",
   updating: "Mise à jour…",
   updateReload: "Redémarrage — la page va se recharger",
+  serverUpdatedReload: "Serveur mis à jour — cliquez pour recharger",
   appearance: "Apparence du terminal",
   preferencesTab: "Préférences",
   toggleSidebar: "Afficher/masquer la barre latérale",
@@ -1729,7 +1806,17 @@ export const de: Messages = {
   sizeFollowerBanner: "Die Größe wird von einem anderen Client gesteuert",
   sizeFollowerTakeover: "Übernehmen",
   reflowTip:
-    "Breite geändert — claude code bricht sein Protokoll nicht neu um. Drücke in claude zweimal Strg+O, um es in der neuen Breite neu zu rendern (in zellij zuerst Strg+G).",
+    "Breite geändert — claude code bricht sein Protokoll nicht neu um. Drücke in claude zweimal Strg+O, um es in der neuen Breite neu zu rendern (in zellij zuerst Strg+G). Mehr TUI-Tastentricks: Einstellungen → Kurzbefehle.",
+  keyGuideTitle: "TUI-Tastenführer",
+  keyGuideDesc:
+    "Nützliche Tasten in den Apps, die im Terminal laufen — sie gehören zu diesen Apps, nicht zu dala (dalas eigene Kurzbefehle stehen oben in der Liste).",
+  keyGuideClaudeReflow:
+    "Zweimal drücken: rendert das Protokoll in der aktuellen Breite neu — claude code bricht es nach einer Größenänderung nicht selbst um",
+  keyGuideClaudePermissions: "Wechselt zyklisch den Berechtigungsmodus (Standard / Änderungen auto-annehmen / Plan)",
+  keyGuideZellijLock:
+    "Schaltet den Sperrmodus um: Tasten gehen direkt an die innere App (in zellij vor Strg+O drücken)",
+  keyGuideZellijScroll: "Scroll-/Suchmodus",
+  keyGuideOpencodeSidebar: "Seitenleiste ein-/ausblenden",
   dblclickReset: "Ziehen zum Anpassen · Doppelklick zum Zurücksetzen",
   resetLayout: "Layout zurücksetzen",
   maximize: "Maximieren",
@@ -1801,6 +1888,7 @@ export const de: Messages = {
   updateTo: "Auf {version} aktualisieren",
   updating: "Aktualisiere…",
   updateReload: "Neustart — die Seite lädt neu",
+  serverUpdatedReload: "Server aktualisiert — zum Neuladen klicken",
   appearance: "Terminal-Darstellung",
   preferencesTab: "Einstellungen",
   toggleSidebar: "Seitenleiste ein-/ausblenden",
@@ -1957,7 +2045,17 @@ export const ru: Messages = {
   sizeFollowerBanner: "Размером управляет другой клиент",
   sizeFollowerTakeover: "Перехватить",
   reflowTip:
-    "Ширина изменилась — claude code не переносит историю заново. Дважды нажмите Ctrl+O внутри claude, чтобы перерисовать её по новой ширине (в zellij сначала нажмите Ctrl+G).",
+    "Ширина изменилась — claude code не переносит историю заново. Дважды нажмите Ctrl+O внутри claude, чтобы перерисовать её по новой ширине (в zellij сначала нажмите Ctrl+G). Больше TUI-приёмов: Настройки → Сочетания клавиш.",
+  keyGuideTitle: "Гид по клавишам TUI",
+  keyGuideDesc:
+    "Полезные клавиши внутри приложений, работающих в терминале — они принадлежат самим приложениям, а не dala (сочетания dala перечислены выше).",
+  keyGuideClaudeReflow:
+    "Нажмите дважды: перерисовывает историю по текущей ширине — claude code не переносит её заново после изменения размера",
+  keyGuideClaudePermissions: "Циклически переключает режимы разрешений (обычный / авто-принятие правок / план)",
+  keyGuideZellijLock:
+    "Переключает режим блокировки: клавиши идут напрямую во внутреннее приложение (нажмите перед Ctrl+O внутри zellij)",
+  keyGuideZellijScroll: "Режим прокрутки / поиска",
+  keyGuideOpencodeSidebar: "Показать/скрыть боковую панель",
   dblclickReset: "Перетащите для изменения · двойной клик — сброс",
   resetLayout: "Сбросить раскладку",
   maximize: "Развернуть",
@@ -2029,6 +2127,7 @@ export const ru: Messages = {
   updateTo: "Обновить до {version}",
   updating: "Обновление…",
   updateReload: "Перезапуск — страница перезагрузится",
+  serverUpdatedReload: "Сервер обновлён — нажмите, чтобы перезагрузить",
   appearance: "Внешний вид терминала",
   preferencesTab: "Настройки",
   toggleSidebar: "Показать/скрыть боковую панель",
@@ -2185,7 +2284,17 @@ export const pt: Messages = {
   sizeFollowerBanner: "O tamanho é controlado por outro cliente",
   sizeFollowerTakeover: "Assumir",
   reflowTip:
-    "A largura mudou — o claude code não requebra o histórico. Pressione Ctrl+O duas vezes dentro do claude para redesenhá-lo na nova largura (dentro do zellij, pressione Ctrl+G primeiro).",
+    "A largura mudou — o claude code não requebra o histórico. Pressione Ctrl+O duas vezes dentro do claude para redesenhá-lo na nova largura (dentro do zellij, pressione Ctrl+G primeiro). Mais truques de teclas TUI: Ajustes → Atalhos.",
+  keyGuideTitle: "Guia de teclas TUI",
+  keyGuideDesc:
+    "Teclas úteis dentro dos apps que rodam no terminal — elas pertencem a esses apps, não ao dala (os atalhos do dala estão na lista acima).",
+  keyGuideClaudeReflow:
+    "Pressione duas vezes: redesenha o histórico na largura atual — o claude code não o requebra após um redimensionamento",
+  keyGuideClaudePermissions: "Alterna ciclicamente os modos de permissão (padrão / aceitar edições / plano)",
+  keyGuideZellijLock:
+    "Alterna o modo de bloqueio: as teclas passam direto para o app interno (pressione antes de Ctrl+O dentro do zellij)",
+  keyGuideZellijScroll: "Modo de rolagem / busca",
+  keyGuideOpencodeSidebar: "Alterna a barra lateral",
   dblclickReset: "Arraste para redimensionar · duplo clique para restaurar",
   resetLayout: "Restaurar layout",
   maximize: "Maximizar",
@@ -2257,6 +2366,7 @@ export const pt: Messages = {
   updateTo: "Atualizar para {version}",
   updating: "Atualizando…",
   updateReload: "Reiniciando — a página será recarregada",
+  serverUpdatedReload: "Servidor atualizado — clique para recarregar",
   appearance: "Aparência do terminal",
   preferencesTab: "Preferências",
   toggleSidebar: "Mostrar/ocultar barra lateral",

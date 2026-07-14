@@ -39,6 +39,10 @@ defmodule DalaWeb.Router do
     # Self-guarding: signed-in users AND loopback peers (AI agents run on
     # this host and already own a shell — reading LSP health adds nothing).
     get "/lsp/debug", LspController, :debug
+
+    # Public: lets the SPA detect a server upgrade after a socket reconnect
+    # (see VersionController for why this needs no auth).
+    get "/version", VersionController, :show
   end
 
   scope "/", DalaWeb do

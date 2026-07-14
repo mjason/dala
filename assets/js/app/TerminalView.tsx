@@ -27,6 +27,7 @@ import {
 } from "./touchScroll";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
 import { createTypeahead } from "./typeahead";
+import { useCountdown } from "./hooks/useCountdown";
 import { isMac } from "./shortcuts";
 import { getDeviceId } from "./deviceId";
 import { sizeRole, type SizeRole } from "./sizeRole";
@@ -141,6 +142,9 @@ type Props = {
 // must not keep nagging.
 const reflowTipSeen = new Set<string>();
 
+// How long the width-change tip stays up (visible countdown, then gone).
+const REFLOW_TIP_SECONDS = 5;
+
 export default function TerminalView({
   sessionId,
   scrollbackLines,
@@ -162,8 +166,12 @@ export default function TerminalView({
   const [sizeFollower, setSizeFollower] = useState(false);
   // After an explicit takeover that actually changed the PTY width: a
   // dismissable tip about claude code's stale transcript wrapping (it
-  // does not rewrap on SIGWINCH — Ctrl+O twice re-renders it).
-  const [reflowTip, setReflowTip] = useState(false);
+  // does not rewrap on SIGWINCH — Ctrl+O twice re-renders it). Auto-hides
+  // via a visible per-second countdown; × closes immediately.
+  const reflowTip = useCountdown();
+  // Stable function identities (useCallback inside the hook) — safe for
+  // the per-session setup effect below to capture across renders.
+  const { start: startReflowTip, clear: hideReflowTip } = reflowTip;
   const claimSizeRef = useRef<(() => void) | null>(null);
   const { t } = useI18n();
   const cwdChangeRef = useRef(onCwdChange);
@@ -559,19 +567,17 @@ export default function TerminalView({
         applyServerSize(rows, cols);
         // Demoted: the takeover tip's slot belongs to the follower banner
         // now (and the advice is stale — someone else drives the width).
-        window.clearTimeout(reflowTipTimer);
-        setReflowTip(false);
+        hideReflowTip();
         setSizeFollower(banner);
       };
       // An explicit takeover just rewrapped the PTY to a different width:
       // remind (once per session) that claude code does not rewrap its
-      // transcript on SIGWINCH — Ctrl+O twice does. Auto-hides; × closes.
-      let reflowTipTimer: number | undefined;
+      // transcript on SIGWINCH — Ctrl+O twice does. Auto-hides after a
+      // visible 5s countdown (useCountdown owns the interval); × closes.
       const showReflowTip = () => {
         if (reflowTipSeen.has(sessionId)) return;
         reflowTipSeen.add(sessionId);
-        setReflowTip(true);
-        reflowTipTimer = window.setTimeout(() => setReflowTip(false), 15_000);
+        startReflowTip(REFLOW_TIP_SECONDS);
       };
 
       // `claim`: how to assert ownership server-side — a plain resize when
@@ -947,8 +953,7 @@ export default function TerminalView({
         if (w.__dalaTerm === term) delete w.__dalaTerm;
         claimSizeRef.current = null;
         setSizeFollower(false);
-        window.clearTimeout(reflowTipTimer);
-        setReflowTip(false);
+        hideReflowTip();
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("dragover", onDragOver);
         container.removeEventListener("drop", onDrop);
@@ -988,7 +993,7 @@ export default function TerminalView({
           terminal element's own padding — parent padding makes it overshoot
           by a row and TUI bottom bars get clipped. */}
       <div ref={containerRef} className="h-full w-full" />
-      {reflowTip && !sizeFollower && (
+      {reflowTip.seconds != null && !sizeFollower && (
         <div
           id="reflow-tip"
           className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 border-b border-line bg-bg1/90 px-3 py-1 backdrop-blur-sm pointer-coarse:py-2"
@@ -996,10 +1001,16 @@ export default function TerminalView({
           <span className="font-mono text-[11px] text-fg-muted pointer-coarse:text-[13px]">
             {t("reflowTip")}
           </span>
+          <span
+            id="reflow-tip-countdown"
+            className="font-mono text-[10px] tabular-nums text-fg-muted/60 pointer-coarse:text-[12px]"
+          >
+            {reflowTip.seconds}s
+          </span>
           <button
             id="reflow-tip-close"
             aria-label={t("close")}
-            onClick={() => setReflowTip(false)}
+            onClick={() => hideReflowTip()}
             className="rounded border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg pointer-coarse:px-3 pointer-coarse:py-1.5 pointer-coarse:text-[13px]"
           >
             ×

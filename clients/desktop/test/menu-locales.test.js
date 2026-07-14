@@ -1,7 +1,7 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { detectLocale, normalizeLocale, translate } = require("../menu-locales");
+const { MESSAGES, detectLocale, normalizeLocale, translate } = require("../menu-locales");
 
 describe("detectLocale", () => {
   test("maps simplified Chinese variants to zhCN", () => {
@@ -87,20 +87,30 @@ describe("translate", () => {
     assert.equal(translate("en", "upToDate"), "Up to date (v{version})");
   });
 
-  test("every locale defines every key present in en", () => {
-    // Guards against a locale silently missing a key added later. Uses the
-    // fallback behavior: a missing key in locale X would return the en text.
-    const enOnlyKeys = [
-      "file", "newWindow", "manageServers", "checkUpdates", "restartUpdate",
-      "servers", "openInNewWindow", "view", "composer", "quickShell",
-      "voiceInput", "devNoUpdates", "upToDate", "updateDownloaded",
-      "updateDetail", "restartNow", "later", "updateFailed",
+  test("every locale defines exactly the keys present in en", () => {
+    // Guards against a locale silently missing a key added later (or
+    // carrying a stray one). Compares the dictionaries directly — the
+    // translate() fallback would mask a missing key with the en text.
+    const enKeys = Object.keys(MESSAGES.en).sort();
+    assert.ok(enKeys.length > 0);
+    for (const locale of Object.keys(MESSAGES)) {
+      assert.deepEqual(Object.keys(MESSAGES[locale]).sort(), enKeys, `${locale} key set drifted`);
+    }
+  });
+
+  test("the View-menu role items have labels in every locale", () => {
+    // Electron role items render English unless given an explicit label —
+    // main.js pulls these keys, so they must exist everywhere.
+    const roleKeys = [
+      "reload", "forceReload", "toggleDevTools",
+      "actualSize", "zoomIn", "zoomOut", "toggleFullScreen",
+      "window", "minimize", "zoomWindow", "closeWindow", "quit", "front",
     ];
-    for (const locale of ["zhCN", "zhTW", "ja", "ko", "es", "fr", "de", "ru", "pt"]) {
-      for (const key of enOnlyKeys) {
-        const translated = translate(locale, key);
-        assert.equal(typeof translated, "string");
-        assert.notEqual(translated, key, `${locale}.${key} missing`);
+    for (const locale of Object.keys(MESSAGES)) {
+      for (const key of roleKeys) {
+        const message = MESSAGES[locale][key];
+        assert.equal(typeof message, "string", `${locale}.${key} missing`);
+        assert.notEqual(message.trim(), "", `${locale}.${key} empty`);
       }
     }
   });

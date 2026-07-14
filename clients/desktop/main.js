@@ -329,7 +329,9 @@ function rebuildMenu() {
               click: () => void checkForUpdates({ interactive: true }),
             },
         { type: "separator" },
-        isMac ? { role: "close" } : { role: "quit" },
+        isMac
+          ? { role: "close", label: t("closeWindow") }
+          : { role: "quit", label: t("quit") },
       ],
     },
     // Role-based edit menu: native (localized) copy/paste — this is what
@@ -368,18 +370,39 @@ function rebuildMenu() {
           click: () => sendMenuAction("voice"),
         },
         { type: "separator" },
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "toggleDevTools" },
+        // Role items keep Electron's behavior/accelerators but need explicit
+        // labels — without one they render in English regardless of locale.
+        { role: "reload", label: t("reload") },
+        { role: "forceReload", label: t("forceReload") },
+        { role: "toggleDevTools", label: t("toggleDevTools") },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        { role: "resetZoom", label: t("actualSize") },
+        { role: "zoomIn", label: t("zoomIn") },
+        { role: "zoomOut", label: t("zoomOut") },
         { type: "separator" },
-        { role: "togglefullscreen" },
+        // NOTE the doubled "Toggle Full Screen" seen on macOS was NOT a
+        // second template entry: Electron 37.10.x picked up the cause of
+        // electron#49048 (a backport of #48795 makes macOS's hidden
+        // injected toggleFullScreenMode: item visible) but never got the
+        // fix (#49074, 38+ only — 37 is EOL). Fixed by the electron bump
+        // in package.json (^38.8.6 contains #49074).
+        { role: "togglefullscreen", label: t("toggleFullScreen") },
       ],
     },
-    { role: "windowMenu" },
+    // Hand-built Window menu (the bare `windowMenu` role renders English):
+    // same items as the role's defaults, with labels; `role: "window"` on
+    // the top-level item keeps macOS's automatic window list.
+    {
+      label: t("window"),
+      role: "window",
+      submenu: [
+        { role: "minimize", label: t("minimize") },
+        { role: "zoom", label: t("zoomWindow") },
+        ...(isMac
+          ? [{ type: "separator" }, { role: "front", label: t("front") }]
+          : [{ role: "close", label: t("closeWindow") }]),
+      ],
+    },
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
