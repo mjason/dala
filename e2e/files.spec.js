@@ -17,6 +17,48 @@ test.describe("Given 打开文件抽屉的用户", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  test("删除确认框完整显示路径，绝不省略号截断（要删的东西必须看得清）", async ({ page }) => {
+    // 曾经用 truncate：路径尾部——恰恰是"这到底是哪个文件"的关键——被切成
+    // "…"。现在整条路径换行显示（break-all，路径没有空格可断），高度封顶后
+    // 内部滚动。断言看的是渲染文本与真实几何量，不是 class 名。
+    const deep = "very/deeply/nested/directory/chain/with_a_long_file_name_indeed.py";
+    fs.mkdirSync(path.join(cwd, path.dirname(deep)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, deep), "x\n");
+
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    await h.selectSession(page, id);
+    try {
+      await page.click("#toggle-drawer-button");
+      // 逐级展开到目标文件所在目录
+      for (const dir of ["very", "very/deeply", "very/deeply/nested", "very/deeply/nested/directory", "very/deeply/nested/directory/chain"]) {
+        await page.click(`[data-path="${path.join(cwd, dir)}"]`);
+      }
+      const full = path.join(cwd, deep);
+      await page.hover(`[data-path="${full}"]`);
+      await page.click(`[data-delete="${full}"]`);
+
+      const shown = page.locator("#delete-target-path");
+      await expect(shown).toBeVisible();
+      // ① 文本完整：整条绝对路径都在，没有省略号
+      await expect(shown).toHaveText(full);
+      const text = await shown.textContent();
+      expect(text).not.toContain("…");
+      // ② 真的渲染出来了（不是被 CSS 裁掉）：多行、且没有横向溢出
+      const geom = await shown.evaluate((el) => ({
+        scrollW: el.scrollWidth,
+        clientW: el.clientWidth,
+        lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+      }));
+      expect(geom.scrollW).toBeLessThanOrEqual(geom.clientW + 1); // 没被横向裁切
+      expect(geom.lines).toBeGreaterThanOrEqual(2); // 长路径确实换了行
+
+      await page.click("#cancel-delete-entry-button");
+    } finally {
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("外部建删文件时抽屉自动跟上（含嵌套目录），可见目录 ≤1s", async ({ page }) => {
     fs.writeFileSync(path.join(cwd, "seed.txt"), "seed");
     fs.mkdirSync(path.join(cwd, "nested"));

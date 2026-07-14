@@ -573,9 +573,18 @@ export default function FileDrawer({
             <header className="border-b border-line px-4 py-3">
               <span className="text-[15px] font-medium text-fg">{t("reallyDelete")}</span>
             </header>
-            <div className="flex items-center gap-2 px-4 py-4">
-              <FileTypeIcon name={deleteTarget.path} isDir={deleteTarget.isDir} />
-              <span className="truncate font-mono text-sm text-fg" title={deleteTarget.path}>
+            {/* Never truncate what is about to be DELETED: the tail of the
+                path is exactly the part that says which file this is. Wrap on
+                any character (paths have no spaces to break at), cap the
+                growth and scroll past it for pathological depths. */}
+            <div className="flex max-h-40 items-start gap-2 overflow-y-auto px-4 py-4">
+              <span className="mt-0.5 shrink-0">
+                <FileTypeIcon name={deleteTarget.path} isDir={deleteTarget.isDir} />
+              </span>
+              <span
+                id="delete-target-path"
+                className="min-w-0 break-all font-mono text-sm leading-relaxed text-fg"
+              >
                 {deleteTarget.path}
               </span>
             </div>
