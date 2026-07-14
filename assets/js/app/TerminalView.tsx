@@ -93,6 +93,9 @@ class Osc52Provider implements IClipboardProvider {
 export type { SendStrategy } from "./terminalSend";
 
 export type TerminalActions = {
+  /** Wipe the local emulator, then pull a fresh holder snapshot from the
+   * server (reset replay) — repaints even inside TUIs, where asking the
+   * app to redraw via a keystroke would be swallowed. */
   reset: () => void;
   /** Recompute the terminal size for THIS screen. `takeover` marks an
    * explicit user action (the 适配宽度 button/shortcut): as a size follower
@@ -133,6 +136,11 @@ type Props = {
   debugHandle?: boolean;
 };
 
+// Sessions that already showed the width-change tip (module memory): one
+// takeover tip per session per page load is plenty — repeated takeovers
+// must not keep nagging.
+const reflowTipSeen = new Set<string>();
+
 export default function TerminalView({
   sessionId,
   scrollbackLines,
@@ -152,6 +160,10 @@ export default function TerminalView({
   // own device also renders scaled (soft follower) but WITHOUT the banner —
   // the toolbar's explicit refit already retakes silently.
   const [sizeFollower, setSizeFollower] = useState(false);
+  // After an explicit takeover that actually changed the PTY width: a
+  // dismissable tip about claude code's stale transcript wrapping (it
+  // does not rewrap on SIGWINCH — Ctrl+O twice re-renders it).
+  const [reflowTip, setReflowTip] = useState(false);
   const claimSizeRef = useRef<(() => void) | null>(null);
   const { t } = useI18n();
   const cwdChangeRef = useRef(onCwdChange);
@@ -545,8 +557,23 @@ export default function TerminalView({
         // scrolls and touch pans stay with the terminal scrollback.
         if (term.element) term.element.style.padding = "0";
         applyServerSize(rows, cols);
+        // Demoted: the takeover tip's slot belongs to the follower banner
+        // now (and the advice is stale — someone else drives the width).
+        window.clearTimeout(reflowTipTimer);
+        setReflowTip(false);
         setSizeFollower(banner);
       };
+      // An explicit takeover just rewrapped the PTY to a different width:
+      // remind (once per session) that claude code does not rewrap its
+      // transcript on SIGWINCH — Ctrl+O twice does. Auto-hides; × closes.
+      let reflowTipTimer: number | undefined;
+      const showReflowTip = () => {
+        if (reflowTipSeen.has(sessionId)) return;
+        reflowTipSeen.add(sessionId);
+        setReflowTip(true);
+        reflowTipTimer = window.setTimeout(() => setReflowTip(false), 15_000);
+      };
+
       // `claim`: how to assert ownership server-side — a plain resize when
       // the device memory already lets us drive (free, ours, or a sibling
       // window's: "resize"), or the explicit takeover event ("claim").
@@ -555,14 +582,19 @@ export default function TerminalView({
         follower = false;
         if (term.element) term.element.style.transform = "";
         resetPadding();
+        const prevCols = term.cols;
         fit.fit();
         clampOverflow();
         centerPadding();
         syncWebglCanvas();
         lastSize = term.rows + "x" + term.cols;
         if (claim === "resize") pushResize();
-        if (claim === "claim")
+        if (claim === "claim") {
           phxChannel.push("claim_size", { rows: term.rows, cols: term.cols });
+          // Only the explicit takeover flavor, and only when the width
+          // really changed (re-claiming the same grid rewraps nothing).
+          if (term.cols !== prevCols) showReflowTip();
+        }
         // Repaint after the geometry settles (stale edge pixels otherwise).
         term.refresh(0, term.rows - 1);
         setSizeFollower(false);
@@ -624,12 +656,21 @@ export default function TerminalView({
         // at its edges (the brownish sliver behind the composer strip) —
         // repaint everything after the geometry settles.
         term.refresh(0, term.rows - 1);
+        // `takeover` marks the explicit user action (button/shortcut) — the
+        // click stole focus from the terminal, give it back. Programmatic
+        // refits (composer toggle, restart, …) must NOT steal focus.
+        if (takeover) term.focus();
       };
       const reset = () => {
         term.reset();
         refit();
-        // Ctrl-L: ask the shell to redraw a fresh prompt after the clear.
-        phxChannel.push("input", { data: "\f" });
+        // Ask the server for a fresh holder snapshot, delivered to this
+        // client as a reset replay. (A \f keystroke would only redraw a bare
+        // shell prompt — zellij/claude-code/any TUI swallows it, leaving the
+        // just-blanked terminal dead until a session switch re-attaches.)
+        phxChannel.push("repaint", {});
+        // The button click stole focus from the terminal.
+        term.focus();
       };
       const sendText = (text: string, submit: boolean, strategy?: SendStrategy) => {
         // Empty text with submit=true is a bare "press Enter" (the composer
@@ -906,6 +947,8 @@ export default function TerminalView({
         if (w.__dalaTerm === term) delete w.__dalaTerm;
         claimSizeRef.current = null;
         setSizeFollower(false);
+        window.clearTimeout(reflowTipTimer);
+        setReflowTip(false);
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("dragover", onDragOver);
         container.removeEventListener("drop", onDrop);
@@ -945,6 +988,24 @@ export default function TerminalView({
           terminal element's own padding — parent padding makes it overshoot
           by a row and TUI bottom bars get clipped. */}
       <div ref={containerRef} className="h-full w-full" />
+      {reflowTip && !sizeFollower && (
+        <div
+          id="reflow-tip"
+          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 border-b border-line bg-bg1/90 px-3 py-1 backdrop-blur-sm pointer-coarse:py-2"
+        >
+          <span className="font-mono text-[11px] text-fg-muted pointer-coarse:text-[13px]">
+            {t("reflowTip")}
+          </span>
+          <button
+            id="reflow-tip-close"
+            aria-label={t("close")}
+            onClick={() => setReflowTip(false)}
+            className="rounded border border-line px-2 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg pointer-coarse:px-3 pointer-coarse:py-1.5 pointer-coarse:text-[13px]"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {sizeFollower && (
         <div
           id="size-follower-banner"

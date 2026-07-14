@@ -8,6 +8,7 @@ import {
   restartSession,
 } from "../../ash_rpc";
 import { applyReorder, byPosition } from "../reorder";
+import { getDeviceId } from "../deviceId";
 import { call } from "../rpc";
 import {
   createSessionsChannel,
@@ -170,8 +171,11 @@ export function useSessions(opts: {
     input: { cwd?: string; ephemeral?: boolean } = {},
   ): Promise<Session | null> => {
     setCreating(true);
+    // deviceId stamps THIS device as the session's size owner at creation:
+    // an idle tab elsewhere that auto-mounts the new session can no longer
+    // win the first-attach adoption race (the creating phone stays owner).
     const result = await call<Session>(createSession, {
-      input,
+      input: { ...input, deviceId: getDeviceId() },
       fields: [...SESSION_FIELDS],
     });
     setCreating(false);

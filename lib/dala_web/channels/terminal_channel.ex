@@ -179,8 +179,11 @@ defmodule DalaWeb.TerminalChannel do
     fc = socket.assigns.fc
 
     cond do
-      fc.skipping and fc.repaint_requested ->
-        # Flow-control snapshot: client resets and continues from seq.
+      fc.repaint_requested ->
+        # Requested snapshot — flow-control skip or a user-initiated reset
+        # (handle_in "repaint"); either way the client resets and continues
+        # from seq. One snapshot settles both: it replaces the screen AND
+        # clears any in-flight skip state.
         socket = push_replay(socket, data, seq, true)
         # sent counts the snapshot too — the client acks those bytes as it
         # parses them, keeping the cumulative ledger consistent.
@@ -296,6 +299,35 @@ defmodule DalaWeb.TerminalChannel do
     )
 
     {:noreply, socket}
+  end
+
+  # User-initiated repaint (the toolbar Reset button): fetch one holder
+  # snapshot and deliver it to THIS client as a reset replay (clear +
+  # replace). A `\f` keystroke only redraws a bare shell prompt; inside
+  # zellij/claude-code/any TUI it is swallowed (or typed as input), so the
+  # holder snapshot is the only reliable full-screen repaint.
+  def handle_in("repaint", _payload, socket) do
+    id = socket.assigns.session_id
+    fc = socket.assigns.fc
+
+    cond do
+      not Dala.Terminal.Server.alive?(id) ->
+        # Session no longer running: re-serve the final screen the holder
+        # left behind (the client just blanked itself locally).
+        {:noreply, push_replay(socket, Holder.read_final(id), 0, true)}
+
+      fc.repaint_requested ->
+        # A snapshot is already in flight for this client (the flow-control
+        # skip path) — it lands as a reset replay, which is exactly what
+        # this reset wants. Requesting another would double-repaint.
+        {:noreply, socket}
+
+      true ->
+        # Mark it in the flow ledger so a concurrent skip drain reuses this
+        # snapshot instead of requesting its own (see maybe_flow_repaint).
+        Dala.Terminal.Server.request_repaint(id, self())
+        {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
+    end
   end
 
   def handle_in("ack", %{"bytes" => bytes} = payload, socket) when is_integer(bytes) do

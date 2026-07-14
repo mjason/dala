@@ -39,7 +39,14 @@ defmodule Dala.Terminal.Session do
       argument :shell, :string
       argument :cwd, :string
 
+      # Optional stable device id of the CREATING client: stamped as the
+      # size owner at creation so no other device can win the first-attach
+      # adoption race (see StampCreatorDevice). Omitted → nil, and the
+      # first device to ever attach adopts (legacy/API fallback).
+      argument :device_id, :string
+
       change Dala.Terminal.Session.Changes.SetDefaults
+      change Dala.Terminal.Session.Changes.StampCreatorDevice
       change Dala.Terminal.Session.Changes.AppendPosition
       change Dala.Terminal.Session.Changes.StartServer
     end

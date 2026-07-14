@@ -165,6 +165,13 @@ Codex needs no plugin (its native OSC 9 notifications work). Note that
 zellij/tmux do not forward inner OSC, and sessions started before an
 upgrade need their shell restarted (holders outlive releases).
 
+**Tip — Claude Code after a width change**: when the terminal width changes
+(e.g. a phone takes over the session's size), Claude Code keeps its
+transcript hard-wrapped at the old width (upstream:
+[anthropics/claude-code#43113](https://github.com/anthropics/claude-code/issues/43113)).
+Press **Ctrl+O twice** to re-render the transcript at the current width
+in-session — or `claude --continue` after exiting.
+
 ### Directory following & zellij/tmux
 
 The file drawer follows the terminal's working directory. Inside

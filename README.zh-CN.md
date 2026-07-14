@@ -151,6 +151,12 @@ Codex 无需插件（原生 OSC 9 通知即可触发完成提醒）。注意 zel
 不透传内层 OSC，插件事件在多路复用器里收不到。已运行的旧会话需重启
 其 shell 才启用（holder 随发版更新，但存量进程仍是旧的）。
 
+**小技巧——Claude Code 变宽之后**：终端宽度变化后（比如手机接管了会话
+尺寸），Claude Code 的对话记录仍按旧宽度硬换行（上游问题
+[anthropics/claude-code#43113](https://github.com/anthropics/claude-code/issues/43113)）。
+连按两次 **Ctrl+O** 即可让记录按当前宽度重新渲染，无需重启——退出后也
+可用 `claude --continue` 重进。
+
 ### 目录跟随与 zellij/tmux
 
 文件抽屉跟随终端的当前目录，**zellij/tmux 内部无需任何配置**：dala

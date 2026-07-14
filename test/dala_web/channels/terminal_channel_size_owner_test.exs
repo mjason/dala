@@ -23,8 +23,8 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
 
   alias Dala.Terminal.{Holder, Server}
 
-  defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
+  defp create_session!(extra \\ %{}) do
+    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, extra))
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -48,6 +48,60 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
   defp sync!(socket, session_id) do
     _ = :sys.get_state(socket.channel_pid)
     _ = :sys.get_state(Server.whereis(session_id))
+  end
+
+  test "create with device_id stamps the memory: the creator owns before anyone attaches" do
+    # The adoption race this closes: a phone creates a session, and an idle
+    # desktop tab auto-mounts it off the session_created broadcast — under
+    # first-attach adoption the desktop often WON, locking the phone into
+    # following a wide desktop grid. Stamping at creation makes the creating
+    # device the remembered owner before any attach can happen.
+    session = create_session!(%{device_id: "dev-phone"})
+    assert Dala.Terminal.get_session!(session.id).size_owner_device == "dev-phone"
+
+    # The idle desktop attaches FIRST (it wins the race) — and still must
+    # not adopt: its viewport report is ignored and answered with a
+    # corrective push naming the creator.
+    assert {:ok, %{owner: nil, owner_device: "dev-phone"}, desktop} =
+             join!(session.id, "dev-desktop")
+
+    # Consume the join-gap re-sync push so the next match pins the correction.
+    assert_push "size_owner", %{owner: nil, owner_device: "dev-phone"}
+
+    push(desktop, "attach", %{"rows" => 50, "cols" => 163})
+    sync!(desktop, session.id)
+
+    assert Server.viewport(session.id) == {24, 80}
+    assert Dala.Terminal.get_session!(session.id).size_owner_device == "dev-phone"
+    assert_push "size_owner", %{owner: nil, owner_device: "dev-phone", rows: 24, cols: 80}
+
+    # The creating phone attaches second and its resize applies natively.
+    assert {:ok, %{client_id: phone_id}, phone} = join!(session.id, "dev-phone")
+    push(phone, "resize", %{"rows" => 40, "cols" => 46})
+    sync!(phone, session.id)
+
+    assert Server.viewport(session.id) == {40, 46}
+    assert_broadcast "size_owner", %{owner: ^phone_id, owner_device: "dev-phone"}
+  end
+
+  test "create without device_id keeps the memory nil — first attach still adopts (fallback)" do
+    session = create_session!()
+    assert Dala.Terminal.get_session!(session.id).size_owner_device == nil
+
+    assert {:ok, _reply, socket} = join!(session.id, "dev-b")
+    push(socket, "resize", %{"rows" => 30, "cols" => 90})
+    sync!(socket, session.id)
+
+    assert Server.viewport(session.id) == {30, 90}
+    assert Dala.Terminal.get_session!(session.id).size_owner_device == "dev-b"
+  end
+
+  test "a blank device_id at creation stamps nothing" do
+    # An empty/whitespace device must never become the memory: the channel
+    # maps "" to nil on join, so a stamped "" would ghost-lock the session
+    # for every real device.
+    session = create_session!(%{device_id: "  "})
+    assert Dala.Terminal.get_session!(session.id).size_owner_device == nil
   end
 
   test "join reply carries a client id, current PTY size, and no owner/device on a fresh session" do

@@ -129,6 +129,8 @@ export const en = {
   kickedViewers: "Detached {count} other {mux} client(s)",
   sizeFollowerBanner: "Size is controlled by another client",
   sizeFollowerTakeover: "Take over",
+  reflowTip:
+    "Width changed — claude code won't rewrap its transcript. Press Ctrl+O twice inside claude to re-render at the new width (in zellij, press Ctrl+G first).",
   dblclickReset: "Drag to resize · double-click to reset",
   resetLayout: "Reset layout",
   maximize: "Maximize",
@@ -358,6 +360,8 @@ export const zhCN: Messages = {
   kickedViewers: "已断开 {count} 个其他 {mux} 客户端",
   sizeFollowerBanner: "尺寸由其他端控制",
   sizeFollowerTakeover: "接管",
+  reflowTip:
+    "宽度已改变——claude code 的历史排版不会自动重排，在 claude 里连按两次 Ctrl+O 可按新宽度重新渲染（zellij 内先按 Ctrl+G 锁定）",
   dblclickReset: "拖拽调宽 · 双击恢复默认",
   resetLayout: "恢复默认布局",
   maximize: "全屏",
@@ -584,6 +588,8 @@ export const zhTW: Messages = {
   kickedViewers: "已斷開 {count} 個其他 {mux} 用戶端",
   sizeFollowerBanner: "尺寸由其他端控制",
   sizeFollowerTakeover: "接管",
+  reflowTip:
+    "寬度已改變——claude code 的歷史排版不會自動重排，在 claude 裡連按兩次 Ctrl+O 可按新寬度重新渲染（zellij 內先按 Ctrl+G 鎖定）",
   dblclickReset: "拖曳調寬 · 雙擊恢復預設",
   resetLayout: "恢復預設版面",
   maximize: "全螢幕",
@@ -810,6 +816,8 @@ export const ja: Messages = {
   kickedViewers: "他の {mux} クライアントを {count} 件切断しました",
   sizeFollowerBanner: "サイズは他のクライアントが制御中",
   sizeFollowerTakeover: "引き継ぐ",
+  reflowTip:
+    "幅が変わりました — claude code の履歴は自動では再折り返しされません。claude 内で Ctrl+O を2回押すと新しい幅で再描画されます（zellij 内では先に Ctrl+G）",
   dblclickReset: "ドラッグでリサイズ · ダブルクリックでリセット",
   resetLayout: "レイアウトをリセット",
   maximize: "最大化",
@@ -1036,6 +1044,8 @@ export const ko: Messages = {
   kickedViewers: "다른 {mux} 클라이언트 {count}개를 분리했습니다",
   sizeFollowerBanner: "다른 클라이언트가 크기를 제어 중",
   sizeFollowerTakeover: "가져오기",
+  reflowTip:
+    "너비가 변경되었습니다 — claude code의 기록은 자동으로 다시 줄바꿈되지 않습니다. claude에서 Ctrl+O를 두 번 누르면 새 너비로 다시 렌더링됩니다(zellij 안에서는 먼저 Ctrl+G)",
   dblclickReset: "드래그로 크기 조절 · 더블클릭으로 초기화",
   resetLayout: "레이아웃 초기화",
   maximize: "최대화",
@@ -1262,6 +1272,8 @@ export const es: Messages = {
   kickedViewers: "{count} cliente(s) {mux} desconectado(s)",
   sizeFollowerBanner: "El tamaño lo controla otro cliente",
   sizeFollowerTakeover: "Tomar control",
+  reflowTip:
+    "El ancho cambió: claude code no reajusta su historial. Pulsa Ctrl+O dos veces dentro de claude para redibujarlo al nuevo ancho (dentro de zellij, pulsa Ctrl+G primero).",
   dblclickReset: "Arrastra para redimensionar · doble clic para restablecer",
   resetLayout: "Restablecer diseño",
   maximize: "Maximizar",
@@ -1488,6 +1500,8 @@ export const fr: Messages = {
   kickedViewers: "{count} client(s) {mux} détaché(s)",
   sizeFollowerBanner: "La taille est contrôlée par un autre client",
   sizeFollowerTakeover: "Prendre la main",
+  reflowTip:
+    "La largeur a changé : claude code ne réajuste pas son historique. Appuyez deux fois sur Ctrl+O dans claude pour le réafficher à la nouvelle largeur (dans zellij, appuyez d'abord sur Ctrl+G).",
   dblclickReset: "Glisser pour redimensionner · double-clic pour réinitialiser",
   resetLayout: "Réinitialiser la disposition",
   maximize: "Agrandir",
@@ -1714,6 +1728,8 @@ export const de: Messages = {
   kickedViewers: "{count} andere(r) {mux}-Client(s) getrennt",
   sizeFollowerBanner: "Die Größe wird von einem anderen Client gesteuert",
   sizeFollowerTakeover: "Übernehmen",
+  reflowTip:
+    "Breite geändert — claude code bricht sein Protokoll nicht neu um. Drücke in claude zweimal Strg+O, um es in der neuen Breite neu zu rendern (in zellij zuerst Strg+G).",
   dblclickReset: "Ziehen zum Anpassen · Doppelklick zum Zurücksetzen",
   resetLayout: "Layout zurücksetzen",
   maximize: "Maximieren",
@@ -1940,6 +1956,8 @@ export const ru: Messages = {
   kickedViewers: "Отключено {count} других клиентов {mux}",
   sizeFollowerBanner: "Размером управляет другой клиент",
   sizeFollowerTakeover: "Перехватить",
+  reflowTip:
+    "Ширина изменилась — claude code не переносит историю заново. Дважды нажмите Ctrl+O внутри claude, чтобы перерисовать её по новой ширине (в zellij сначала нажмите Ctrl+G).",
   dblclickReset: "Перетащите для изменения · двойной клик — сброс",
   resetLayout: "Сбросить раскладку",
   maximize: "Развернуть",
@@ -2166,6 +2184,8 @@ export const pt: Messages = {
   kickedViewers: "{count} cliente(s) {mux} desconectado(s)",
   sizeFollowerBanner: "O tamanho é controlado por outro cliente",
   sizeFollowerTakeover: "Assumir",
+  reflowTip:
+    "A largura mudou — o claude code não requebra o histórico. Pressione Ctrl+O duas vezes dentro do claude para redesenhá-lo na nova largura (dentro do zellij, pressione Ctrl+G primeiro).",
   dblclickReset: "Arraste para redimensionar · duplo clique para restaurar",
   resetLayout: "Restaurar layout",
   maximize: "Maximizar",

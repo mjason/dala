@@ -1705,6 +1705,7 @@ export type CreateSessionInput = {
   name?: string | null;
   shell?: string | null;
   cwd?: string | null;
+  deviceId?: string | null;
 };
 
 export type CreateSessionFields = UnifiedFieldSelection<SessionResourceSchema>[];

@@ -132,25 +132,43 @@ async function screenWidths(page) {
 }
 
 test.describe("Given 手机上的 dala 用户", () => {
-  test("手机自己创建的会话:首次附着即收养尺寸,按手机宽度渲染出内容", async ({ browser }) => {
+  test("手机自己创建的会话:即使闲置桌面页抢先附着,手机仍是所有者、按手机宽度渲染", async ({ browser }) => {
+    // 收养竞态回归(创建时盖章设备):useSessions 会在没有活跃会话的标签页
+    // 里自动激活广播来的新会话 —— 一个闲置的桌面标签页会和创建它的手机
+    // "同时"附着,旧的"首次附着收养"模型下桌面经常抢赢,手机沦为 163 列
+    // 桌面网格的 follower。现在创建 RPC 直接把创建设备写进
+    // size_owner_device:附着顺序不再重要,桌面永远只能当 follower。
+    const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const desktopPage = await desktop.newPage();
     const context = await browser.newContext({ ...phone });
     const page = await context.newPage();
     let id;
     try {
+      // 桌面标签页先打开,闲置在应用里(没有活跃会话):session_created
+      // 广播一到它就会自动挂载新会话并上报自己的 1280px 视口 —— 正是竞态。
+      await h.gotoApp(desktopPage);
+
+      // 手机走真实 UI 创建(新建按钮 → handleCreate 带上本机 deviceId)。
+      // 窄视口下侧栏收在抽屉里(translate 出屏外),必须先点汉堡展开,
+      // 否则新建按钮永远接不到点按。
       await h.gotoApp(page);
-      id = await h.createSession(page);
+      await page.locator("#nav-toggle-button").tap();
+      await expect(page.locator("#new-session-button")).toBeVisible();
+      await page.locator("#new-session-button").tap();
       await expect(page.locator(".xterm").first()).toBeVisible();
+      id = await page.evaluate(() => localStorage.getItem("dala:active"));
+      expect(id).toBeTruthy();
 
       // 等 shell 输出到达并被 xterm 解析(prompt 就绪)。
       await expect
         .poll(() => page.evaluate(() => window.__dalaFlow?.acked ?? 0), { timeout: 15_000 })
         .toBeGreaterThan(0);
 
-      // 全新会话的第一个附着设备就是手机:收养生效,自己是所有者,
+      // 创建设备就是手机:哪怕桌面先附着也抢不走 —— 手机是所有者,
       // 没有 follower 横幅。
       await expect(page.locator("#size-follower-banner")).toHaveCount(0);
 
-      // PTY 按手机宽度渲染:.xterm-screen 不超过容器宽度(绝不是桌面的 667px),
+      // PTY 按手机宽度渲染:.xterm-screen 不超过容器宽度(绝不是桌面的宽度),
       // 也没有缩放 transform(layout ≈ visual)。
       await expect
         .poll(async () => (await screenWidths(page)).layout, { timeout: 10_000 })
@@ -165,9 +183,21 @@ test.describe("Given 手机上的 dala 用户", () => {
           { timeout: 10_000 },
         )
         .toBeGreaterThan(30);
+
+      // 竞态的另一半:自动挂载了该会话的桌面页只能是 follower —— 横幅出现,
+      // 网格保持手机宽度(布局宽度不涨到桌面视口)。
+      await expect(desktopPage.locator("#size-follower-banner")).toBeVisible({
+        timeout: 10_000,
+      });
+      // 手机网格(~45 列)在桌面上只有几百像素;桌面若是所有者会占满
+      // ~1200px。留出字体度量差异的余量,700px 足以区分两种世界。
+      await expect
+        .poll(async () => (await screenWidths(desktopPage)).layout, { timeout: 10_000 })
+        .toBeLessThan(700);
     } finally {
       if (id) await h.deleteSession(page, id).catch(() => {});
       await context.close();
+      await desktop.close();
     }
   });
 
@@ -266,6 +296,12 @@ test.describe("Given 手机上的 dala 用户", () => {
       await expect
         .poll(async () => (await screenWidths(phonePage)).layout, { timeout: 10_000 })
         .toBeLessThanOrEqual(phone.viewport.width);
+
+      // 显式接管且宽度确实变了(桌面宽 → 手机窄):出现 claude code
+      // Ctrl+O 重排小提示,点 × 可关闭。
+      await expect(phonePage.locator("#reflow-tip")).toBeVisible();
+      await phonePage.locator("#reflow-tip-close").click();
+      await expect(phonePage.locator("#reflow-tip")).toHaveCount(0);
 
       // 原所有者被降级为 follower:桌面端出现同样的横幅。
       await expect(desktopPage.locator("#size-follower-banner")).toBeVisible({

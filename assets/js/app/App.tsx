@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createSession, deleteSession, foregroundApp, kickViewers } from "../ash_rpc";
+import { getDeviceId } from "./deviceId";
 import { call } from "./rpc";
 import type { AgentEventPayload } from "../ash_types";
 import Sidebar, { Session } from "./Sidebar";
@@ -201,8 +202,10 @@ export default function App() {
   // keeps the shells; `exit`/Ctrl+D inside one destroys that session, which
   // drops its tab via the session_deleted broadcast.
   const createQuickShell = async (cwd?: string) => {
+    // Quick shells are stamped to this device too: they open right here,
+    // so no other device should ever win their first-attach adoption.
     const result = await call<Session>(createSession, {
-      input: { cwd: cwd || undefined, ephemeral: true },
+      input: { cwd: cwd || undefined, ephemeral: true, deviceId: getDeviceId() },
       fields: [...SESSION_FIELDS],
     });
     if (!result.ok) {
