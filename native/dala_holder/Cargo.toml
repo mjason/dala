@@ -8,6 +8,7 @@ name = "dala_holder"
 path = "src/main.rs"
 
 [dependencies]
+notify = "8"
 portable-pty = "0.9"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import TerminalView, { type TerminalActions } from "./TerminalView";
 import ResizeHandle from "./ResizeHandle";
 import { useI18n } from "./i18n";
+import { isTopWindow, popWindow, pushWindow } from "./shortcuts";
 import { historyLines, shortPath } from "./util";
 import type { Session } from "./Sidebar";
 
@@ -43,6 +44,27 @@ export default function QuickShellPanel({
 }: Props) {
   const { t } = useI18n();
 
+  // The panel is a layer on the window stack: Escape closes the topmost
+  // layer only (a fullscreen composer underneath keeps its Esc for later).
+  // This window-level handler covers focus anywhere in the panel; Esc inside
+  // the terminal goes through TerminalView's onEscape instead (it must not
+  // fire on the alternate buffer — vim keeps its Escape key).
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const token = pushWindow();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || !isTopWindow(token)) return;
+      e.preventDefault();
+      closeRef.current();
+    };
+    window.addEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      popWindow(token);
+    };
+  }, []);
+
   return (
     <div
       id="quick-shell-panel"
@@ -54,15 +76,10 @@ export default function QuickShellPanel({
       {!maximized && (
         <ResizeHandle id="quick-shell-resize" edge="left" onResize={onResize} onReset={onResetWidth} />
       )}
-      {/* h-11 matches the main header, so the split line tops align. */}
-      <header
-        className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3"
-        onKeyDown={(e) => {
-          // Esc with focus on the header buttons/tabs also hides the panel;
-          // Esc inside the terminal is handled by TerminalView's onEscape.
-          if (e.key === "Escape") onClose();
-        }}
-      >
+      {/* h-11 matches the main header, so the split line tops align.
+          Esc anywhere in the panel (header included) closes it via the
+          window-stack handler above. */}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3">
         <span className="text-sm text-mint">⚡</span>
         <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
           {sessions.map((s, i) => (

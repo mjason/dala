@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTreeRows, crumbs, join, relativePath } from "./tree";
+import { buildTreeRows, crumbs, join, relativePath, routeChanged } from "./tree";
 import type { Entry, Listing } from "./tree";
 
 const t = (key: string, params?: Record<string, string | number>) =>
@@ -97,5 +97,42 @@ describe("buildTreeRows", () => {
       t,
     );
     expect(rows.some((r) => r.kind === "note" && r.id === "/proj/src:empty")).toBe(true);
+  });
+});
+
+describe("routeChanged", () => {
+  const expanded = new Set(["/proj", "/proj/lib"]);
+  const loaded = new Set(["/proj", "/proj/lib", "/proj/assets"]);
+
+  it("refreshes an expanded dir directly", () => {
+    expect(routeChanged("/proj/lib", expanded, loaded)).toEqual({
+      kind: "refresh",
+      dir: "/proj/lib",
+    });
+  });
+
+  it("invalidates a loaded-but-collapsed dir so re-expanding refetches", () => {
+    expect(routeChanged("/proj/assets", expanded, loaded)).toEqual({
+      kind: "invalidate",
+      dir: "/proj/assets",
+    });
+  });
+
+  it("routes a deep unloaded dir to the nearest expanded ancestor", () => {
+    expect(routeChanged("/proj/lib/dala/terminal", expanded, loaded)).toEqual({
+      kind: "refresh",
+      dir: "/proj/lib",
+    });
+  });
+
+  it("returns none when the change is outside everything visible", () => {
+    expect(routeChanged("/elsewhere/deep", expanded, loaded)).toEqual({ kind: "none" });
+  });
+
+  it("walks all the way up to a root at /", () => {
+    expect(routeChanged("/a/b/c", new Set(["/"]), new Set())).toEqual({
+      kind: "refresh",
+      dir: "/",
+    });
   });
 });

@@ -546,7 +546,8 @@ export default function App() {
         />
       </div>
 
-      <main className="flex min-w-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]">
+      {/* `relative`: the composer's fullscreen overlay positions against it. */}
+      <main className="relative flex min-w-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]">
         {active ? (
           <>
             <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3 sm:gap-3 sm:px-4">
@@ -835,6 +836,9 @@ export default function App() {
                 onFocusConsumed={(n) => (composerFocusConsumedRef.current = n)}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
+                // Bounded auto-grow changed the editor's height (already
+                // debounced editor-side) — same refit path as open/close.
+                onResize={() => termActions.current?.refit()}
                 onClose={() => {
                   setComposerOpen((m) => ({ ...m, [active.id]: false }));
                   termActions.current?.focus();

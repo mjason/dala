@@ -250,6 +250,10 @@ export default function TerminalView({
           escapeRef.current &&
           term.buffer.active.type === "normal"
         ) {
+          // Mark the key consumed: window-level Escape handlers (fullscreen
+          // composer, settings modal) skip defaultPrevented events — one Esc
+          // must close exactly one layer.
+          event.preventDefault();
           escapeRef.current();
           return false;
         }

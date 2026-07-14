@@ -6,7 +6,7 @@ import { rankFiles } from "./fuzzy";
 import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
-import { Kbd, modShiftCombo } from "./shortcuts";
+import { isTopWindow, Kbd, modShiftCombo, popWindow, pushWindow } from "./shortcuts";
 import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "./keybindings";
 import ComposerEditor from "./ComposerEditor";
 
@@ -26,6 +26,8 @@ type Props = {
   onSend: (text: string, submit: boolean) => void;
   onClose: () => void;
   onError: (message: string) => void;
+  /** The editor's height changed (bounded auto-grow) — refit the terminal. */
+  onResize: () => void;
 };
 
 export const AGENT_LABELS: Record<string, string> = {
@@ -69,6 +71,7 @@ export default function InputBar({
   onSend,
   onClose,
   onError,
+  onResize,
 }: Props) {
   const { t } = useI18n();
   const setValue = onChange;
@@ -83,6 +86,43 @@ export default function InputBar({
   const attachRef = useRef<HTMLInputElement>(null);
   const [bindings, setBindings] = useState(loadBindings);
   useEffect(() => onBindingsChange(setBindings), []);
+
+  // Fullscreen: the bar leaves the flow and overlays the whole session area.
+  // Per-mount on purpose — reopening the composer starts back in normal mode.
+  const [fullscreen, setFullscreen] = useState(false);
+  // While fullscreen a spacer holds the bar's old slot, so the terminal
+  // behind the overlay keeps its grid (no SIGWINCH round-trip for its TUI).
+  const [spacerHeight, setSpacerHeight] = useState(0);
+  const barRef = useRef<HTMLDivElement>(null);
+  const toggleFullscreen = () => {
+    if (!fullscreen) setSpacerHeight(barRef.current?.offsetHeight ?? 0);
+    setFullscreen((v) => !v);
+  };
+
+  // Fullscreen participates in the window stack: Escape must close the
+  // topmost layer only — a preview above us first, then fullscreen, and only
+  // then (next press, via the editor's keymap) the composer itself. Open
+  // mention/slash menus close before fullscreen, matching the in-editor
+  // keymap's order (state read via ref: the handler registers once per
+  // fullscreen entry but must see current menus).
+  const menusRef = useRef({ mention, slash });
+  menusRef.current = { mention, slash };
+  useEffect(() => {
+    if (!fullscreen) return;
+    const token = pushWindow();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || !isTopWindow(token)) return;
+      e.preventDefault();
+      if (menusRef.current.mention) setMention(null);
+      else if (menusRef.current.slash !== null) setSlash(null);
+      else setFullscreen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      popWindow(token);
+    };
+  }, [fullscreen]);
 
   const insertMention = () => {
     const inject = value === "" || value.endsWith(" ") ? "@" : " @";
@@ -295,12 +335,28 @@ export default function InputBar({
     ? t("composerAgentPlaceholder", { agent: agentLabel })
     : t("composerShellPlaceholder");
 
+  // Fullscreen anchors the pickers just above the toolbar row instead of
+  // above the (viewport-covering) bar, which would land them offscreen.
+  const menuAnchor = fullscreen ? "bottom-16" : "bottom-full mb-1";
+
   return (
-    <div id="input-bar" className="relative shrink-0 border-t border-line bg-bg1 px-3 pt-2 pb-1.5">
+    <>
+      {fullscreen && (
+        <div id="input-bar-spacer" className="shrink-0" style={{ height: spacerHeight }} />
+      )}
+    <div
+      ref={barRef}
+      id="input-bar"
+      data-fullscreen={fullscreen ? "true" : undefined}
+      className={[
+        "border-t border-line bg-bg1 px-3 pt-2 pb-1.5",
+        fullscreen ? "absolute inset-0 z-20 flex flex-col" : "relative shrink-0",
+      ].join(" ")}
+    >
       {slash !== null && slashMatches.length > 0 && !mention && (
         <div
           id="slash-menu"
-          className="absolute bottom-full left-3 z-10 mb-1 max-h-72 w-[34rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+          className={`absolute ${menuAnchor} left-3 z-10 max-h-72 w-[34rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50`}
         >
           {slashMatches.map((c, i) => (
             <button
@@ -330,7 +386,7 @@ export default function InputBar({
       {mention && (matches.length > 0 || (filesTruncated && files !== null)) && (
         <div
           id="mention-menu"
-          className="absolute bottom-full left-3 z-10 mb-1 max-h-64 w-[32rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+          className={`absolute ${menuAnchor} left-3 z-10 max-h-64 w-[32rem] max-w-[90%] overflow-y-auto rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50`}
         >
           {matches.map((m, i) => (
             <button
@@ -373,6 +429,7 @@ export default function InputBar({
         onEscape={() => {
           if (mention) setMention(null);
           else if (slash !== null) setSlash(null);
+          else if (fullscreen) setFullscreen(false);
           else onClose();
         }}
         onArrow={(dir) => {
@@ -411,6 +468,8 @@ export default function InputBar({
         sendKey={comboToCodeMirror(bindings.composerSend)}
         focusConsumed={focusConsumed}
         onFocusConsumed={onFocusConsumed}
+        fullscreen={fullscreen}
+        onResize={onResize}
       />
 
       <div className="mt-1 flex items-center gap-2">
@@ -456,6 +515,30 @@ export default function InputBar({
           }}
         />
         <button
+          id="composer-fullscreen"
+          aria-label={fullscreen ? t("composerFullscreenExit") : t("composerFullscreen")}
+          title={fullscreen ? `${t("composerFullscreenExit")} · Esc` : t("composerFullscreen")}
+          // Keep the editor focused through the toggle (Esc must keep
+          // working right after the click).
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggleFullscreen}
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors pointer-coarse:h-10 pointer-coarse:w-10 ${
+            fullscreen
+              ? "border-mint/50 text-mint"
+              : "border-line text-fg-muted hover:border-mint/60 hover:text-mint"
+          }`}
+        >
+          {fullscreen ? (
+            <svg viewBox="0 0 16 16" className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 16 16" className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+        <button
           id="input-bar-voice"
           onClick={() => void toggleVoice()}
           className={[
@@ -490,5 +573,6 @@ export default function InputBar({
         </span>
       </div>
     </div>
+    </>
   );
 }

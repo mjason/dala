@@ -6,6 +6,7 @@ import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown
 import { collectTransferFiles } from "./pasteFiles";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
+import { composerSizing } from "./composerSize";
 
 
 type Props = {
@@ -31,12 +32,17 @@ type Props = {
   onCursor: (text: string, pos: number) => void;
   /** Local files pasted or dropped into the editor (uploaded by the parent). */
   onFiles: (files: File[]) => void;
+  /** Fullscreen: fill the host (a flex child) instead of growing to the cap. */
+  fullscreen: boolean;
+  /** Debounced editor-height changes (auto-grow) — the terminal refits. */
+  onResize: () => void;
 };
 
 /**
  * The composer's editor: CodeMirror with Markdown + fenced-code syntax
  * highlighting for every bundled language (```python and friends), history,
- * and IME-safe key handling. Grows with content up to ~9 lines.
+ * and IME-safe key handling. Grows with content between the old fixed
+ * height and a viewport-bounded cap (see composerSize.ts).
  */
 type Callbacks = {
   current: {
@@ -47,6 +53,7 @@ type Callbacks = {
     onChange: (value: string) => void;
     onCursor: (text: string, pos: number) => void;
     onFiles: (files: File[]) => void;
+    onResize: () => void;
   };
 };
 
@@ -118,14 +125,17 @@ export default function ComposerEditor({
   onPick,
   onCursor,
   onFiles,
+  fullscreen,
+  onResize,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const placeholderCompartment = useRef(new Compartment());
   const keymapCompartment = useRef(new Compartment());
+  const sizingCompartment = useRef(new Compartment());
   // The latest callbacks, visible to the once-registered keymap.
-  const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles });
-  cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles };
+  const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize });
+  cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -140,6 +150,10 @@ export default function ComposerEditor({
     const view = new EditorView({
       state: EditorState.create({
         doc: value,
+        // A mount with an existing draft parks the cursor at the END — where
+        // the user left off (user-initiated opens re-assert this via
+        // focusNonce, auto-opens just keep it without stealing focus).
+        selection: { anchor: value.length },
         extensions: [
           history(),
           drawSelection(),
@@ -182,13 +196,48 @@ export default function ComposerEditor({
             ".cm-scroller": { fontFamily: "inherit", lineHeight: "1.5" },
             ".cm-content": { padding: "6px 10px" },
           }),
+          sizingCompartment.current.of(EditorView.theme(composerSizing(fullscreen))),
         ],
       }),
       parent: host,
     });
     viewRef.current = view;
 
+    // A draft that outgrew the box must open showing its END (the cursor).
+    // Deferred one tick: CodeMirror applies scroll targets during its
+    // measure cycle, which needs the initial layout to exist first.
+    let scrollTimer: number | undefined;
+    if (value.length > 0) {
+      scrollTimer = window.setTimeout(() => {
+        view.dispatch({
+          effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "end" }),
+        });
+      }, 0);
+    }
+
+    // Auto-grow changes the editor's height as the user types — the terminal
+    // above must refit. Debounced: a paste can wrap many lines at once.
+    let resizeTimer: number | undefined;
+    let observer: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      let initial = true;
+      observer = new ResizeObserver(() => {
+        // The observe() call itself fires once — that's the open/close
+        // resize the app already refits for.
+        if (initial) {
+          initial = false;
+          return;
+        }
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => cbs.current.onResize(), 150);
+      });
+      observer.observe(host);
+    }
+
     return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(resizeTimer);
+      observer?.disconnect();
       viewRef.current = null;
       view.destroy();
     };
@@ -222,13 +271,26 @@ export default function ComposerEditor({
     });
   }, [sendKey]);
 
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: sizingCompartment.current.reconfigure(EditorView.theme(composerSizing(fullscreen))),
+    });
+  }, [fullscreen]);
+
   // User-initiated opens focus with the cursor at the END of the draft.
   useEffect(() => {
     const view = viewRef.current;
     if (!view || focusNonce === 0 || focusNonce === focusConsumed) return;
     onFocusConsumed(focusNonce);
     view.focus();
-    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    const end = view.state.doc.length;
+    view.dispatch({
+      selection: { anchor: end },
+      // A long draft must land showing its end, not its top.
+      effects: EditorView.scrollIntoView(end, { y: "end" }),
+    });
     // focusConsumed is a render-time snapshot on purpose (see Props).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusNonce]);
@@ -237,9 +299,14 @@ export default function ComposerEditor({
     <div
       ref={hostRef}
       id="composer-editor"
-      // Fixed height: growing per typed line would reflow the terminal (and
-      // its TUI) on every wrap — resize exactly once per open/close.
-      className="h-[7.5rem] w-full overflow-hidden rounded-md border border-line bg-bg0 font-mono transition-colors focus-within:border-mint/60"
+      // Height policy lives in composerSize.ts: bounded auto-grow normally,
+      // fill-the-host in fullscreen (the host becomes a flex-1 child there).
+      className={[
+        "w-full overflow-hidden rounded-md border border-line bg-bg0 font-mono transition-colors focus-within:border-mint/60",
+        fullscreen && "min-h-0 flex-1",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     />
   );
 }

@@ -12,7 +12,7 @@ import { FieldLabel, TextInput } from "./ui";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
 import { historyLines as normalizeHistoryLines } from "./util";
-import { Kbd, modCombo } from "./shortcuts";
+import { isTopWindow, Kbd, modCombo, popWindow, pushWindow } from "./shortcuts";
 import AppearanceSection from "./settings/AppearanceSection";
 import NotificationsSection from "./settings/NotificationsSection";
 import ShortcutsSection from "./settings/ShortcutsSection";
@@ -64,12 +64,14 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     onClose();
   };
 
-  // Esc closes, Ctrl/Cmd+S saves.
+  // Esc closes, Ctrl/Cmd+S saves. The modal joins the window stack so Esc
+  // only ever closes the topmost layer.
   const handlersRef = useRef({ save, onClose, busy });
   handlersRef.current = { save, onClose, busy };
   useEffect(() => {
+    const token = pushWindow();
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) {
+      if (e.key === "Escape" && !e.defaultPrevented && isTopWindow(token)) {
         e.preventDefault();
         handlersRef.current.onClose();
       }
@@ -79,7 +81,10 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
       }
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      popWindow(token);
+    };
   }, []);
 
   const act = async (fn: () => Promise<RpcOutcome<unknown>>) => {

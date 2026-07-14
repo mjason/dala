@@ -29,6 +29,7 @@
 //! EXIT, unlinks the socket and exits.
 
 mod screen;
+mod watch;
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -129,6 +130,11 @@ struct State {
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| usage());
+    // Second personality: `dala_holder watch` — the file drawer's
+    // recursive filesystem watcher (see watch.rs). Never returns.
+    if arg == "watch" {
+        watch::run();
+    }
     let mut config: Config = serde_json::from_str(&arg).unwrap_or_else(|e| {
         eprintln!("dala_holder: bad config json: {e}");
         exit(2);
@@ -515,7 +521,7 @@ struct SendMaster(Box<dyn MasterPty>);
 unsafe impl Send for SendMaster {}
 
 fn usage() -> ! {
-    eprintln!("usage: dala_holder '<config json>'");
+    eprintln!("usage: dala_holder '<config json>' | dala_holder watch");
     exit(2);
 }
 

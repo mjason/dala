@@ -49,6 +49,35 @@ export function crumbs(path: string): { label: string; path: string }[] {
   return out;
 }
 
+/** What the tree should do about a server-side change notification. */
+export type ChangeAction =
+  | { kind: "refresh"; dir: string }
+  | { kind: "invalidate"; dir: string }
+  | { kind: "none" };
+
+/**
+ * Routes a `{"changed": dir}` push (the watcher covers the whole tree
+ * recursively, so `dir` may be anywhere under the root) to what is on
+ * screen: an expanded dir refetches; a loaded-but-collapsed dir drops its
+ * cached listing so re-expanding refetches instead of showing stale
+ * entries; anything else refreshes the nearest expanded ancestor.
+ */
+export function routeChanged(
+  dir: string,
+  expanded: Set<string>,
+  loaded: Set<string>,
+): ChangeAction {
+  if (expanded.has(dir)) return { kind: "refresh", dir };
+  if (loaded.has(dir)) return { kind: "invalidate", dir };
+
+  let cursor = dir;
+  while (cursor !== "/" && cursor.includes("/")) {
+    cursor = cursor.slice(0, cursor.lastIndexOf("/")) || "/";
+    if (expanded.has(cursor)) return { kind: "refresh", dir: cursor };
+  }
+  return { kind: "none" };
+}
+
 type Translate = (key: MessageKey, params?: Record<string, string | number>) => string;
 
 /**

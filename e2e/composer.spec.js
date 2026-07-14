@@ -36,6 +36,100 @@ test.describe("Given 一个有活动会话的用户", () => {
       .toBe(true);
   });
 
+  test("长草稿：编辑器随内容增高但有上限，终端与工具行不被遮住", async ({ page }) => {
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => Boolean(document.activeElement?.closest("#composer-editor"))),
+      )
+      .toBe(true);
+
+    const before = (await page.locator("#composer-editor").boundingBox()).height;
+
+    // 30 行长草稿：编辑器应当增高（Enter 是换行，发送是 Shift+Enter）。
+    const draft = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    await page.keyboard.type(draft);
+
+    const box = await page.locator("#composer-editor").boundingBox();
+    expect(box.height).toBeGreaterThan(before + 40);
+
+    // 上限：不超过视口高度的 ~45%，终端和工具行仍然可见。
+    const viewport = page.viewportSize();
+    expect(box.height).toBeLessThanOrEqual(viewport.height * 0.45);
+    await expect(page.locator("#input-bar-send")).toBeVisible();
+    const term = await page.locator(".xterm").first().boundingBox();
+    expect(term.height).toBeGreaterThan(100);
+
+    // 超过上限后编辑器内部滚动（滚动条真的在动）。
+    const scrolled = await page.evaluate(() => {
+      const s = document.querySelector("#composer-editor .cm-scroller");
+      return s ? s.scrollHeight > s.clientHeight && s.scrollTop > 0 : false;
+    });
+    expect(scrolled).toBe(true);
+  });
+
+  test("全屏按钮覆盖会话区，Esc 先退全屏、再按才关 composer", async ({ page }) => {
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => Boolean(document.activeElement?.closest("#composer-editor"))),
+      )
+      .toBe(true);
+
+    await page.locator("#composer-fullscreen").click();
+    await expect(page.locator('#input-bar[data-fullscreen="true"]')).toBeVisible();
+
+    // 覆盖整个会话区（App 的 main 区域），而不是原来贴底的一条。
+    const viewport = page.viewportSize();
+    const bar = await page.locator("#input-bar").boundingBox();
+    expect(bar.height).toBeGreaterThan(viewport.height * 0.7);
+
+    // 第一次 Esc：只退出全屏，composer 仍然打开。
+    await page.keyboard.press("Escape");
+    await expect(page.locator('#input-bar[data-fullscreen="true"]')).toHaveCount(0);
+    await expect(page.locator("#composer-editor")).toBeVisible();
+
+    // 第二次 Esc：才关闭 composer 本体。
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#composer-editor")).toHaveCount(0);
+  });
+
+  test("带长草稿重开 composer：视图滚到底部，最后一行可见", async ({ page }) => {
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => Boolean(document.activeElement?.closest("#composer-editor"))),
+      )
+      .toBe(true);
+
+    const draft = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    await page.keyboard.type(draft);
+
+    // 关闭（草稿保留在父组件），再重开。
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toBeVisible();
+
+    // 光标在末尾且视图滚到了底部——用户看到的是草稿结尾，不是开头。
+    // 16px 余量：scrollIntoView(y:"end") 把光标行底边对齐可视区底边，
+    // .cm-content 的 6px 下内边距会留在视口外，属于正常对齐结果。
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const s = document.querySelector("#composer-editor .cm-scroller");
+          return s ? s.scrollTop + s.clientHeight >= s.scrollHeight - 16 : false;
+        }),
+      )
+      .toBe(true);
+    // 最后一行真实可见（IntersectionObserver 会考虑滚动容器的裁剪）。
+    await expect(page.locator("#composer-editor .cm-line").last()).toHaveText("line 29");
+    await expect(page.locator("#composer-editor .cm-line").last()).toBeInViewport();
+  });
+
   test("关闭后焦点回到终端", async ({ page }) => {
     await page.keyboard.press("Control+Shift+K");
     await expect(page.locator("#composer-editor")).toBeVisible();

@@ -16,6 +16,7 @@ vi.mock("../ash_rpc", () => ({
 }));
 
 import InputBar from "./InputBar";
+import { popWindow, pushWindow } from "./shortcuts";
 
 /** The CodeMirror view inside the composer host div. */
 function editorView(): EditorView {
@@ -35,8 +36,18 @@ function typeDraft(text: string) {
   });
 }
 
-function Harness({ root }: { root: string }) {
-  const [value, setValue] = useState("");
+function Harness({
+  root,
+  initialValue = "",
+  focusNonce = 0,
+  onClose = () => {},
+}: {
+  root: string;
+  initialValue?: string;
+  focusNonce?: number;
+  onClose?: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
   return (
     <I18nProvider>
       <InputBar
@@ -45,12 +56,13 @@ function Harness({ root }: { root: string }) {
         app="claude"
         value={value}
         onChange={setValue}
-        focusNonce={0}
+        focusNonce={focusNonce}
         focusConsumed={0}
         onFocusConsumed={() => {}}
         onSend={() => {}}
-        onClose={() => {}}
+        onClose={onClose}
         onError={() => {}}
+        onResize={() => {}}
       />
     </I18nProvider>
   );
@@ -148,5 +160,81 @@ describe("InputBar @-mention", () => {
     // The old root's list is stale: it must be dropped and refetched.
     await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2));
     expect(listFiles.mock.calls[1][0]).toMatchObject({ input: { path: "/elsewhere" } });
+  });
+});
+
+describe("InputBar fullscreen mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agentCommands.mockResolvedValue({ success: true, data: { app: "claude", commands: [] } });
+    listFiles.mockResolvedValue(filesResult([]));
+  });
+
+  it("toggles with #composer-fullscreen; a spacer keeps the terminal's layout", () => {
+    render(<Harness root="/proj" />);
+    const button = document.querySelector("#composer-fullscreen")!;
+    expect(button).not.toBeNull();
+
+    fireEvent.click(button);
+    expect(document.querySelector("#input-bar")!.getAttribute("data-fullscreen")).toBe("true");
+    // The bar left the flow — the spacer holds its slot so the terminal
+    // behind the overlay never reflows.
+    expect(document.querySelector("#input-bar-spacer")).not.toBeNull();
+
+    fireEvent.click(button);
+    expect(document.querySelector("#input-bar")!.getAttribute("data-fullscreen")).toBeNull();
+    expect(document.querySelector("#input-bar-spacer")).toBeNull();
+  });
+
+  it("Escape exits fullscreen first — the composer stays open", () => {
+    const onClose = vi.fn();
+    render(<Harness root="/proj" onClose={onClose} />);
+    fireEvent.click(document.querySelector("#composer-fullscreen")!);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(document.querySelector("#input-bar")!.getAttribute("data-fullscreen")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.querySelector("#composer-editor")).not.toBeNull();
+  });
+
+  it("Escape belongs to the topmost window — one stacked above fullscreen wins", () => {
+    render(<Harness root="/proj" />);
+    fireEvent.click(document.querySelector("#composer-fullscreen")!);
+    const token = pushWindow();
+    try {
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(document.querySelector("#input-bar")!.getAttribute("data-fullscreen")).toBe("true");
+    } finally {
+      popWindow(token);
+    }
+  });
+});
+
+describe("InputBar scroll-to-cursor on open", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agentCommands.mockResolvedValue({ success: true, data: { app: "claude", commands: [] } });
+    listFiles.mockResolvedValue(filesResult([]));
+  });
+
+  it("mounting with a draft scrolls the end-of-draft cursor into view", async () => {
+    const spy = vi.spyOn(EditorView, "scrollIntoView");
+    const draft = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+    render(<Harness root="/proj" initialValue={draft} focusNonce={1} />);
+
+    // jsdom can't measure heights, but the scroll request itself must be
+    // dispatched (after the initial layout tick) and target the draft's end.
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const positions = spy.mock.calls.map((c) => c[0]);
+    expect(positions).toContain(draft.length);
+    expect(editorView().state.selection.main.head).toBe(draft.length);
+  });
+
+  it("mounting with an empty draft requests no scroll", async () => {
+    const spy = vi.spyOn(EditorView, "scrollIntoView");
+    render(<Harness root="/proj" />);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(spy).not.toHaveBeenCalled();
   });
 });

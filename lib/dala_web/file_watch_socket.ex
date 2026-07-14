@@ -2,12 +2,26 @@ defmodule DalaWeb.FileWatchSocket do
   @moduledoc """
   Pushes directory-change notifications to the file drawer.
 
-  The client sends `{"watch": ["/abs/dir", …]}` whenever its set of expanded
-  directories changes; the server answers with `{"changed": "/abs/dir"}` as
-  soon as entries appear/disappear there. Backend: `inotifywait` when the
-  host has it (real events, immediate), otherwise directory-mtime polling —
-  POSIX bumps a dir's mtime on create/delete/rename, which is exactly what
-  the tree displays.
+  The client sends `{"watch": ["/abs/dir", …], "root": "/abs"}` whenever its
+  set of expanded directories (or its root) changes; the server answers with
+  `{"changed": "/abs/dir"}` frames naming directories whose listings went
+  stale. Backend: the `dala_holder watch` subcommand — the PTY holder binary
+  built at compile time — covering the whole tree under the root with one
+  non-recursive watch per directory (inotify on Linux, FSEvents on macOS),
+  heavy machine-generated trees skipped at registration so they consume no
+  watch descriptors. Changes anywhere under the root are seen, not just in
+  expanded dirs, and the client routes each to the nearest visible ancestor.
+
+  Orphan-proofing: the watcher exits on stdin EOF, which the OS delivers the
+  moment this socket's port closes — including when the BEAM is SIGKILLed.
+  No teardown message can be missed, so no watcher can outlive dala.
+
+  Fallback when the binary is missing (or dies): directory-mtime polling of
+  the expanded dirs — POSIX bumps a dir's mtime on create/delete/rename,
+  which is exactly what the tree displays. The watcher also *asks* for that
+  degradation with sentinel stdout lines: `!fallback <reason>` (pathological
+  root — `/`, `$HOME`, or one whose walk blows the dir budget) and
+  `!error <reason>` (fatal watch failure, followed by exit(1)).
   """
 
   @behaviour WebSock
@@ -15,27 +29,38 @@ defmodule DalaWeb.FileWatchSocket do
   require Logger
 
   @poll_ms 800
-  # inotify events flood on bulk operations (npm install…) — coalesce.
-  @debounce_ms 250
+  # The watcher already coalesces for ~200ms; this only merges cross-batch
+  # arrivals into fewer frames.
+  @debounce_ms 100
   @max_dirs 200
 
   @impl true
   def init(_params) do
-    backend = if System.find_executable("inotifywait"), do: :inotify, else: :poll
+    backend = if watcher_binary(), do: :native, else: :poll
     if backend == :poll, do: Process.send_after(self(), :poll, @poll_ms)
-    {:ok, %{backend: backend, dirs: %{}, port: nil, pending: MapSet.new(), flush: nil}}
+
+    {:ok,
+     %{
+       backend: backend,
+       dirs: %{},
+       root: nil,
+       port: nil,
+       pending: MapSet.new(),
+       flush: nil,
+       buffer: ""
+     }}
   end
 
   @impl true
   def handle_in({message, [opcode: :text]}, state) do
     case Jason.decode(message) do
-      {:ok, %{"watch" => dirs}} when is_list(dirs) ->
+      {:ok, %{"watch" => dirs} = payload} when is_list(dirs) ->
         dirs =
           dirs
           |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
           |> Enum.take(@max_dirs)
 
-        {:ok, set_dirs(state, dirs)}
+        {:ok, state |> set_dirs(dirs) |> set_root(watch_root(payload, dirs))}
 
       _ ->
         {:ok, state}
@@ -45,21 +70,31 @@ defmodule DalaWeb.FileWatchSocket do
   def handle_in(_frame, state), do: {:ok, state}
 
   @impl true
-  def handle_info({port, {:data, chunk}}, %{port: port} = state) do
-    # inotifywait --format %w prints the watched directory, one per line.
-    changed =
-      chunk
-      |> String.split("\n", trim: true)
-      |> Enum.map(&String.trim_trailing(&1, "/"))
-      |> Enum.filter(&Map.has_key?(state.dirs, &1))
-
-    {:ok, schedule_flush(%{state | pending: Enum.into(changed, state.pending)})}
+  def handle_info({port, {:data, {:noeol, chunk}}}, %{port: port} = state) do
+    {:ok, %{state | buffer: state.buffer <> chunk}}
   end
 
-  def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
-    # inotifywait died (e.g. a watched dir was deleted) — restart with the
-    # still-existing dirs.
-    {:ok, set_dirs(%{state | port: nil}, state.dirs |> Map.keys() |> Enum.filter(&File.dir?/1))}
+  def handle_info({port, {:data, {:eol, chunk}}}, %{port: port} = state) do
+    line = state.buffer <> chunk
+    state = %{state | buffer: ""}
+
+    case line do
+      # Sentinels: the watcher itself asks for degradation (`!fallback` for
+      # pathological roots / dir-budget blowouts, `!error` just before a
+      # fatal exit). Either way: poll instead.
+      "!" <> _ ->
+        {:ok, degrade_to_poll(state, "watcher reported #{inspect(line)}")}
+
+      _ ->
+        dir = String.trim_trailing(line, "/")
+        {:ok, schedule_flush(%{state | pending: MapSet.put(state.pending, dir)})}
+    end
+  end
+
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    # The watcher died underneath us (crash, kill, OOM). Degrade to mtime
+    # polling of the expanded dirs rather than respawn-looping.
+    {:ok, degrade_to_poll(state, "watcher exited with status #{status}")}
   end
 
   def handle_info(:flush, state) do
@@ -97,37 +132,78 @@ defmodule DalaWeb.FileWatchSocket do
     :ok
   end
 
+  # The recursive watch root: what the client names, or (for old payloads
+  # naming only expanded dirs) the shallowest of them — the tree root is
+  # always in the expanded set.
+  defp watch_root(%{"root" => root}, _dirs) when is_binary(root) do
+    if File.dir?(root), do: root
+  end
+
+  defp watch_root(_payload, []), do: nil
+  defp watch_root(_payload, dirs), do: Enum.min_by(dirs, &byte_size/1)
+
   defp set_dirs(state, dirs) do
     case state.backend do
-      :inotify ->
-        Dala.ShellPort.close(state.port)
-        port = if dirs == [], do: nil, else: open_inotify(dirs)
-        %{state | dirs: Map.new(dirs, &{&1, nil}), port: port}
-
-      :poll ->
-        mtimes =
-          Map.new(dirs, fn dir ->
-            case File.stat(dir, time: :posix) do
-              {:ok, %{mtime: mtime}} -> {dir, mtime}
-              _ -> {dir, nil}
-            end
-          end)
-
-        %{state | dirs: mtimes}
+      # Kept for parity with what the client shows; becomes the poll set if
+      # the watcher ever dies.
+      :native -> %{state | dirs: Map.new(dirs, &{&1, nil})}
+      :poll -> %{state | dirs: poll_baseline(Map.new(dirs, &{&1, nil}))}
     end
   end
 
-  defp open_inotify(dirs) do
-    events =
-      Enum.flat_map(["create", "delete", "moved_to", "moved_from", "close_write"], fn e ->
-        ["--event", e]
-      end)
+  defp set_root(%{backend: :native} = state, nil) do
+    Dala.ShellPort.close(state.port)
+    %{state | root: nil, port: nil}
+  end
 
-    args = ["--monitor", "--quiet", "--format", "%w"] ++ events ++ dirs
+  defp set_root(%{backend: :native, root: root} = state, root), do: state
 
-    # Through the shell wrapper so a lingering inotifywait can't hold the
-    # beam's stderr fd open (see Dala.ShellPort).
-    Dala.ShellPort.open([System.find_executable("inotifywait") | args], "/dev/null")
+  defp set_root(%{backend: :native} = state, root) do
+    port = state.port || open_watcher()
+
+    # The port can die between its exit_status landing in our mailbox and
+    # this send (Port.command on a dead port raises) — degrade right away,
+    # exactly what the queued exit_status would have done.
+    try do
+      Port.command(port, root <> "\n")
+      %{state | root: root, port: port}
+    rescue
+      ArgumentError ->
+        degrade_to_poll(%{state | port: port}, "watcher port dead on set_root")
+    end
+  end
+
+  defp set_root(state, _root), do: state
+
+  # The shared degradation path: drop the native watcher, become a polling
+  # socket for the currently-watched dirs.
+  defp degrade_to_poll(state, reason) do
+    Logger.warning("file watcher: #{reason}; degrading to mtime polling")
+    Dala.ShellPort.close(state.port)
+    Process.send_after(self(), :poll, @poll_ms)
+    %{state | backend: :poll, port: nil, root: nil, dirs: poll_baseline(state.dirs)}
+  end
+
+  defp poll_baseline(dirs) do
+    Map.new(dirs, fn {dir, _} ->
+      case File.stat(dir, time: :posix) do
+        {:ok, %{mtime: mtime}} -> {dir, mtime}
+        _ -> {dir, nil}
+      end
+    end)
+  end
+
+  defp open_watcher do
+    # Through the shell wrapper for the stderr redirect (a port child
+    # inherits the BEAM's stderr; see Dala.ShellPort). `exec` keeps the
+    # watcher itself as the port's os_pid, and its stdin is the port pipe —
+    # the EOF tether. Line mode: the protocol is one directory per line.
+    Dala.ShellPort.open([watcher_binary(), "watch"], "/dev/null", [{:line, 4096}])
+  end
+
+  defp watcher_binary do
+    path = Path.join(:code.priv_dir(:dala), "bin/dala_holder")
+    if File.exists?(path), do: path
   end
 
   defp schedule_flush(%{flush: nil} = state),
