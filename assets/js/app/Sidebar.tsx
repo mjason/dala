@@ -385,9 +385,12 @@ function RenameInput({
       // 52px → 58px, text +5px right). So: no border (a ring is painted, it
       // costs no layout), and the horizontal padding is cancelled by an equal
       // negative margin. h-5/leading-5 pins the line box to the div's 20px.
-      // `block` matters: an inline-block input sits on the text baseline, so
-      // the line box reserves descender space under it and the row grows 4px.
-      className="-mx-1 block h-5 w-[calc(100%+0.5rem)] rounded-sm bg-bg0 px-1 font-mono text-sm leading-5 text-fg outline-none ring-1 ring-mint/60 ring-inset"
+      // No border/ring: the darkest background (bg0, against the row's bg2)
+      // is the whole affordance — a "well" that reads as editable without
+      // adding a single pixel of layout. `block` matters too: an inline-block
+      // input sits on the text baseline, so the line box would reserve
+      // descender space under it and the row would grow 4px.
+      className="-mx-1 block h-5 w-[calc(100%+0.5rem)] rounded bg-bg0 px-1 font-mono text-sm leading-5 text-fg caret-mint outline-none selection:bg-mint/30"
     />
   );
 }
