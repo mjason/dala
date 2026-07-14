@@ -380,7 +380,14 @@ function RenameInput({
         }
       }}
       onBlur={(e) => commit(e.currentTarget.value)}
-      className="w-full rounded border border-mint/60 bg-bg0 px-1 py-px font-mono text-sm text-fg outline-none"
+      // Must occupy EXACTLY the box the name div occupied — a border and
+      // padding would shove the text sideways and grow the row (measured:
+      // 52px → 58px, text +5px right). So: no border (a ring is painted, it
+      // costs no layout), and the horizontal padding is cancelled by an equal
+      // negative margin. h-5/leading-5 pins the line box to the div's 20px.
+      // `block` matters: an inline-block input sits on the text baseline, so
+      // the line box reserves descender space under it and the row grows 4px.
+      className="-mx-1 block h-5 w-[calc(100%+0.5rem)] rounded-sm bg-bg0 px-1 font-mono text-sm leading-5 text-fg outline-none ring-1 ring-mint/60 ring-inset"
     />
   );
 }

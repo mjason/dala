@@ -67,6 +67,43 @@ test.describe("Given 侧栏里有三个会话", () => {
   // 焦点在终端里也照样生效（处理器 stopPropagation，不会透给 shell）。
   // 两条路径（快捷键提交、
   // 双击取消）共用同一个会话——建会话是 e2e 里最贵的一步。
+  test("重命名输入框原地无缝替换：行高与文字位置一个像素都不动", async ({ page }) => {
+    // 曾经的样子：输入框自带 1px 边框 + 4px 内边距 + inline-block 基线降部
+    // → 行高 52→58、文字右移 5px、整行"跳一下"。现在用负边距抵消内边距、
+    // ring 描边不占布局、block 消除基线降部，几何完全一致。
+    await h.gotoApp(page);
+    const sessionId = await h.createSession(page, cwd);
+    await h.selectSession(page, sessionId);
+    await expect(h.sessionEntry(page, sessionId)).toBeVisible();
+
+    const geom = async () =>
+      page.evaluate((id) => {
+        const row = document.querySelector(`[data-session-row="${id}"]`);
+        const input = row.querySelector("input[data-rename-session]");
+        const el = input || row.querySelector(".truncate.font-mono");
+        const r = row.getBoundingClientRect();
+        const e = el.getBoundingClientRect();
+        // 输入框的文字起点要加回它自己的 4px 左内边距
+        return {
+          rowH: Math.round(r.height),
+          textX: Math.round(e.x + (input ? 4 : 0)),
+          textY: Math.round(e.y),
+        };
+      }, sessionId);
+
+    const before = await geom();
+    await page.keyboard.press("Control+Alt+R");
+    await expect(page.locator(`input[data-rename-session="${sessionId}"]`)).toBeVisible();
+    const after = await geom();
+
+    expect(after.rowH).toBe(before.rowH);
+    expect(Math.abs(after.textX - before.textX)).toBeLessThanOrEqual(1);
+    expect(Math.abs(after.textY - before.textY)).toBeLessThanOrEqual(1);
+
+    await page.keyboard.press("Escape");
+    await h.deleteSession(page, sessionId).catch(() => {});
+  });
+
   test("⌥⌘R/Ctrl+Alt+R 与双击都能就地重命名：回车提交并落库，Esc 取消不改名", async ({ page }) => {
     await h.gotoApp(page);
     let id;
