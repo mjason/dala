@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { FieldLabel, TextInput, ValueChip } from "../ui";
 import { useI18n } from "../i18n";
 import {
@@ -11,6 +11,8 @@ import {
   savePrefs,
 } from "../termPrefs";
 import type { CursorStyle, TermPrefs } from "../termPrefs";
+import { applyTheme, loadThemeSetting, saveThemeSetting } from "../theme";
+import type { ThemeSetting } from "../theme";
 import ToggleRow from "./ToggleRow";
 
 /**
@@ -21,26 +23,23 @@ import ToggleRow from "./ToggleRow";
 export default function AppearanceSection() {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<TermPrefs>(loadPrefs);
-  // Live terminal geometry — the ground truth for clipping bug reports:
-  // wrapper (clipping box) / container (fit target) / screen (canvas),
-  // devicePixelRatio (includes browser zoom).
-  const [geometry, setGeometry] = useState("");
-  useEffect(() => {
-    const read = () => {
-      const container = document.querySelector(".xterm")?.parentElement;
-      const wrapper = container?.parentElement?.parentElement;
-      const screen = document.querySelector(".xterm-screen");
-      if (!container || !screen) return;
-      setGeometry(
-        `wrap ${wrapper?.clientHeight ?? "?"} · box ${container.clientHeight} · canvas ${screen.clientHeight} · dpr ${window.devicePixelRatio}`,
-      );
-    };
-    read();
-    const timer = window.setInterval(read, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const apply = (patch: Partial<TermPrefs>) => setPrefs(savePrefs(patch));
+
+  // App-wide light/dark theme (shell + terminal). Browser-local, resolved
+  // against the OS in "system" mode. Saving broadcasts to the controller;
+  // applyTheme() re-resolves and writes <html data-theme> immediately.
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(loadThemeSetting);
+  const chooseTheme = (value: ThemeSetting) => {
+    saveThemeSetting(value);
+    applyTheme();
+    setThemeSetting(value);
+  };
+  const themeOptions: { value: ThemeSetting; label: string }[] = [
+    { value: "system", label: t("themeSystem") },
+    { value: "light", label: t("themeLight") },
+    { value: "dark", label: t("themeDark") },
+  ];
 
   const cursorStyles: { value: CursorStyle; label: string }[] = [
     { value: "bar", label: t("cursorBar") },
@@ -51,19 +50,7 @@ export default function AppearanceSection() {
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
-        <span className="text-xs leading-5 text-fg-muted/80">
-          {t("appearanceScope")}
-          {typeof document !== "undefined" && document.documentElement.dataset.termRenderer && (
-            <span className="ml-2 font-mono text-[10px] uppercase text-fg-muted/60">
-              {t("renderer")}: {document.documentElement.dataset.termRenderer}
-            </span>
-          )}
-          {geometry && (
-            <span id="terminal-geometry" className="ml-2 font-mono text-[10px] text-fg-muted/60">
-              {geometry}
-            </span>
-          )}
-        </span>
+        <span className="text-xs leading-5 text-fg-muted/80">{t("appearanceScope")}</span>
         <div className="flex shrink-0 items-baseline gap-3">
           <button
             id="layout-reset-button"
@@ -79,6 +66,30 @@ export default function AppearanceSection() {
           >
             {t("resetDefaults")}
           </button>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <FieldLabel>{t("themeLabel")}</FieldLabel>
+        <div
+          id="theme-setting-control"
+          className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5"
+        >
+          {themeOptions.map(({ value, label }) => (
+            <button
+              key={value}
+              data-theme-setting={value}
+              aria-pressed={themeSetting === value}
+              onClick={() => chooseTheme(value)}
+              className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
+                themeSetting === value
+                  ? "bg-bg2 font-medium text-mint shadow-sm"
+                  : "text-fg-muted hover:text-fg"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 

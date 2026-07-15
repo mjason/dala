@@ -831,7 +831,7 @@ export default function App() {
               </div>
             </header>
 
-            <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0e]">
+            <div className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
               <TerminalView
                 key={active.id}
                 sessionId={active.id}
@@ -855,7 +855,7 @@ export default function App() {
                     <button
                       id="overlay-restart-button"
                       onClick={() => void handleRestart(active.id)}
-                      className="rounded-md bg-mint px-4 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110"
+                      className="rounded-md bg-mint px-4 py-1.5 text-[13px] font-medium text-bg0 transition-colors hover:brightness-110"
                     >
                       {t("restartShell")}
                     </button>
@@ -935,7 +935,7 @@ export default function App() {
               <button
                 onClick={() => void handleCreate()}
                 disabled={creating}
-                className="rounded-md bg-mint px-4 py-1.5 text-[13px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-50"
+                className="rounded-md bg-mint px-4 py-1.5 text-[13px] font-medium text-bg0 transition-colors hover:brightness-110 disabled:opacity-50"
               >
                 {t("newTerminal")}
               </button>
@@ -1053,7 +1053,7 @@ export default function App() {
                   setDeleteFor(null);
                   void handleDelete(sessionToDelete.id);
                 }}
-                className="inline-flex items-center gap-1.5 rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-black transition-colors hover:bg-danger"
+                className="inline-flex items-center gap-1.5 rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-bg0 transition-colors hover:bg-danger"
               >
                 {t("deleteSession")} <Kbd>⏎</Kbd>
               </button>

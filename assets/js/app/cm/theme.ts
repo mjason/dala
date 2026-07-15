@@ -10,13 +10,29 @@ import type { Extension } from "@codemirror/state";
  */
 
 const colors = {
-  bg0: "#0b0c0e",
-  bg1: "#121417",
-  bg2: "#1b1e23",
-  line: "#24272c",
-  fg: "#e6e8eb",
-  fgMuted: "#8f96a0",
-  mint: "#4cc38a",
+  // Chrome/structure references the app tokens (var(--color-*)) so the editor
+  // re-themes together with the shell: the CSS custom properties flip with
+  // <html data-theme> and CodeMirror re-resolves them live, no reconfigure.
+  // (Before this, the default text color was a hardcoded near-white — invisible
+  // on the light background.)
+  bg0: "var(--color-bg0)",
+  bg1: "var(--color-bg1)",
+  bg2: "var(--color-bg2)",
+  line: "var(--color-line)",
+  fg: "var(--color-fg)",
+  fgMuted: "var(--color-fg-muted)",
+  mint: "var(--color-mint)",
+  // Chrome that needs its own light/dark values (gutter wash, active line,
+  // hunk-actions strip, selection) also references app tokens so it flips with
+  // data-theme. Dark defaults + light overrides live in app.css. Selection was
+  // a dark-hardcoded #2d3f4d — invisible-selection / unreadable on light.
+  gutterBg: "var(--color-cm-gutter-bg)",
+  gutterFg: "var(--color-cm-gutter-fg)",
+  activeBg: "var(--color-cm-active-bg)",
+  hunkBg: "var(--color-cm-hunk-bg)",
+  selection: "var(--color-cm-selection)",
+  // Syntax palette — still dark-tuned. Readable but low-contrast on light; a
+  // proper light syntax palette belongs to the next-version semantic-token work.
   comment: "#6b7280",
   keyword: "#b087c9",
   string: "#5fbf87",
@@ -24,7 +40,6 @@ const colors = {
   title: "#6d9fd6",
   type: "#5fb8b8",
   danger: "#e5716e",
-  selection: "#2d3f4d",
 };
 
 export const dalaHighlightStyle = HighlightStyle.define([
@@ -75,12 +90,12 @@ const chrome = EditorView.theme(
       { backgroundColor: colors.selection },
     ".cm-selectionMatch": { backgroundColor: "rgba(77, 195, 138, 0.15)" },
     ".cm-gutters": {
-      backgroundColor: "rgba(18, 20, 23, 0.5)",
-      color: "rgba(143, 150, 160, 0.45)",
+      backgroundColor: colors.gutterBg,
+      color: colors.gutterFg,
       borderRight: `1px solid ${colors.line}`,
     },
     ".cm-lineNumbers .cm-gutterElement": { padding: "0 10px 0 14px" },
-    ".cm-activeLine": { backgroundColor: "rgba(27, 30, 35, 0.55)" },
+    ".cm-activeLine": { backgroundColor: colors.activeBg },
     ".cm-activeLineGutter": { backgroundColor: "transparent", color: colors.fgMuted },
     ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
       backgroundColor: "rgba(77, 195, 138, 0.2)",
@@ -140,7 +155,7 @@ const chrome = EditorView.theme(
       display: "flex",
       gap: "6px",
       padding: "3px 10px",
-      backgroundColor: "rgba(27, 30, 35, 0.6)",
+      backgroundColor: colors.hunkBg,
       borderTop: `1px solid ${colors.line}`,
       borderBottom: `1px solid ${colors.line}`,
     },
@@ -168,6 +183,14 @@ const chrome = EditorView.theme(
     },
     ".cm-merge-revert": { width: "0", display: "none" },
   },
+  // Kept static. `dark` only selects which of CodeMirror's *base-theme*
+  // defaults apply (selection, caret, scrollbar, text color); every one of
+  // those surfaces is set explicitly above via var(--color-*) tokens that flip
+  // with data-theme, so our rules shadow the base defaults in both themes and
+  // nothing dark leaks on light. (The composer — the most visible light-mode
+  // editor — already renders correctly under this flag with token-driven
+  // colors.) A per-theme factory + reconfigure across all four CM consumers
+  // was therefore unnecessary.
   { dark: true },
 );
 

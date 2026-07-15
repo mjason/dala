@@ -1,9 +1,37 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="csrf-token" content={get_csrf_token()} />
+    <%!-- Apply the stored theme before first paint so a light-preferring OS
+          never flashes the dark shell. Resolves "system" via matchMedia and
+          writes the EFFECTIVE theme to <html data-theme> — the same value
+          theme.ts maintains once the bundle boots. Kept inline (and tiny) on
+          purpose: an external module would load too late to beat paint.
+          phx-no-curly-interpolation so the JS braces are not read as HEEx. --%>
+    <script phx-no-curly-interpolation>
+      (function () {
+        try {
+          var setting = "system";
+          var raw = localStorage.getItem("dala:theme");
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.setting === "light" || parsed.setting === "dark")) {
+              setting = parsed.setting;
+            }
+          }
+          var dark =
+            setting === "dark" ||
+            (setting === "system" &&
+              (!window.matchMedia ||
+                window.matchMedia("(prefers-color-scheme: dark)").matches));
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
     <meta name="auth-enabled" content={to_string(Dala.Auth.enabled?())} />
     <meta name="dala-version" content={to_string(Application.spec(:dala, :vsn))} />
     <%= if assigns[:user_email] do %>

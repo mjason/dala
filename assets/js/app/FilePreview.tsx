@@ -153,7 +153,7 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
         id="save-file-button"
         onClick={() => void save()}
         disabled={saving || !dirty}
-        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-mint px-2.5 py-0.5 font-mono text-[11px] font-medium text-black transition-colors hover:brightness-110 disabled:opacity-40"
+        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-mint px-2.5 py-0.5 font-mono text-[11px] font-medium text-bg0 transition-colors hover:brightness-110 disabled:opacity-40"
       >
         {t("save")} <Kbd>{modCombo("s")}</Kbd>
       </button>

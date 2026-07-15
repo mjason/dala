@@ -103,7 +103,7 @@ export default function LineSelectDiff({ oldText, newText, filename, wrap, actio
         return (
           <section key={index} data-line-chunk={index} className="border-b border-line last:border-b-0">
             <header className="flex items-center gap-2 bg-bg2/60 px-3 py-1">
-              <label className="flex cursor-pointer items-center gap-2 font-mono text-[11px] italic text-[#7fd0d0]">
+              <label className="flex cursor-pointer items-center gap-2 font-mono text-[11px] italic text-[var(--color-diff-hunk)]">
                 <input
                   type="checkbox"
                   checked={count === total && total > 0}
@@ -162,7 +162,7 @@ export default function LineSelectDiff({ oldText, newText, filename, wrap, actio
                   className={`rounded border px-2 py-0.5 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                     action.kind === "primary"
                       ? "border-mint/50 text-mint enabled:hover:border-mint enabled:hover:bg-mint/10"
-                      : "border-line text-fg-muted enabled:hover:border-[#e5716e]/60 enabled:hover:bg-[#e5716e]/10 enabled:hover:text-[#e5716e]"
+                      : "border-line text-fg-muted enabled:hover:border-danger/60 enabled:hover:bg-danger/10 enabled:hover:text-danger"
                   }`}
                 >
                   {action.lineLabel ?? action.label} ({count})
@@ -241,9 +241,10 @@ function SelectableRow({
   onToggle: () => void;
   wrap: boolean;
 }) {
-  const bg = kind === "add" ? "bg-[#5fbf87]/[0.11]" : "bg-[#e5716e]/[0.10]";
+  const bg = kind === "add" ? "bg-[var(--color-diff-add-bg)]" : "bg-[var(--color-diff-del-bg)]";
   const sign = kind === "add" ? "+" : "−";
-  const signColor = kind === "add" ? "text-[#5fbf87]" : "text-[#e5716e]";
+  const signColor =
+    kind === "add" ? "text-[var(--color-diff-add-fg)]" : "text-[var(--color-diff-del-fg)]";
 
   return (
     <tr

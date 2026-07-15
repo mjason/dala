@@ -9,6 +9,7 @@ const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
 const { normalizeConfig } = require("./src/config");
+const { applyTheme: applyShellTheme, backgroundFor, coldStartTheme } = require("./src/theme");
 const fs = require("fs");
 const path = require("path");
 
@@ -32,6 +33,14 @@ let config = { servers: [], last: null, locale: null };
 // Menu language: whatever the dala page reports (its own language picker),
 // falling back to the system locale until the first report arrives.
 let menuLocale = null;
+
+// Effective light/dark theme, as reported by the dala page (which owns the
+// follow-system + manual-override logic). New shell windows are seeded with
+// its background so they never flash the wrong shade before the page's first
+// report. Seeded from the OS scheme in whenReady (below) before the first
+// window; "dark" is only the pre-ready placeholder (nativeTheme is not ready
+// to read at module-eval time).
+let shellTheme = "dark";
 
 // Menu accelerators reported by the page (Settings → Shortcuts); defaults
 // match the web app's until the first report arrives.
@@ -105,7 +114,7 @@ function createShellWindow(server) {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
-    backgroundColor: "#0b0c0e",
+    backgroundColor: backgroundFor(shellTheme),
     title: server ? server.name : "Dala",
     icon: WINDOW_ICON,
     webPreferences: {
@@ -484,6 +493,16 @@ ipcMain.handle("set_shortcuts", (_event, accelerators = {}) => {
   if (changed) rebuildMenu();
 });
 
+// The dala page reports its EFFECTIVE light/dark theme (it resolves
+// follow-system + manual override itself). The native shell follows: title
+// bar / traffic lights via nativeTheme.themeSource, and every shell window's
+// background so the chrome never clashes with the page. Reported on first
+// load and on every subsequent flip.
+ipcMain.handle("set_theme", (_event, { theme } = {}) => {
+  const applied = applyShellTheme(nativeTheme, BrowserWindow.getAllWindows(), theme);
+  if (applied) shellTheme = applied;
+});
+
 // The dala page reports its UI language; the application menu follows it.
 ipcMain.handle("set_locale", (_event, { locale } = {}) => {
   const normalized = normalizeLocale(locale);
@@ -618,9 +637,13 @@ if (!app.requestSingleInstanceLock()) {
       }
       callback(true);
     });
-    // Dark window chrome (title bar on macOS/Windows) regardless of the
-    // system theme — the app itself is dark, a white title bar clashes.
-    nativeTheme.themeSource = "dark";
+    // Seed the shell chrome from the OS scheme so the very first window (and
+    // its titlebar) opens in the right shade instead of a hardcoded-dark flash
+    // on a light-preferring OS; the page reports its effective theme right
+    // after load (set_theme) and it tracks from there. nativeTheme is only
+    // readable now that the app is ready — hence not at the module-level init.
+    shellTheme = coldStartTheme(nativeTheme);
+    applyShellTheme(nativeTheme, [], shellTheme);
     rebuildMenu();
     app.on("browser-window-focus", rebuildMenu);
     createShellWindow(startupServer());

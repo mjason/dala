@@ -168,6 +168,104 @@
   --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Semantic diff + CodeMirror-chrome tokens. Defined as plain custom props
+   (not @theme utilities) so they exist in :root at runtime and can be
+   referenced live via var() from both Tailwind arbitrary values
+   (text-[var(--color-diff-add-fg)]) and CodeMirror's injected theme CSS.
+   These are the DARK defaults; :root[data-theme="light"] below re-tints them.
+
+   The diff signals used to be dark-hardcoded hexes (add #5fbf87, del #e5716e,
+   hunk #7fd0d0, tints as rgba) that were invisible/unreadable on the light
+   shell. The light overrides are WCAG-verified (see the diff-token notes on
+   the light block). Anything referencing these vars re-colors on data-theme
+   flip with no reconfigure. */
+:root {
+  /* Diff foregrounds + row tints (dark = the original hardcoded values). */
+  --color-diff-add-fg: #5fbf87;
+  --color-diff-del-fg: #e5716e;
+  --color-diff-hunk: #7fd0d0;
+  --color-diff-add-bg: rgba(95, 191, 135, 0.11);
+  --color-diff-del-bg: rgba(229, 113, 110, 0.1);
+  /* CodeMirror chrome (dark = the values previously inlined in cm/theme.ts). */
+  --color-cm-gutter-bg: rgba(18, 20, 23, 0.5);
+  --color-cm-gutter-fg: rgba(143, 150, 160, 0.45);
+  --color-cm-active-bg: rgba(27, 30, 35, 0.55);
+  --color-cm-hunk-bg: rgba(27, 30, 35, 0.6);
+  --color-cm-selection: #2d3f4d;
+}
+
+/* Light theme. The dark values above are the `@theme` defaults (and drive
+   the utility classes: bg-bg0 → background: var(--color-bg0), …). Redefining
+   the same custom properties under a light selector re-themes the whole
+   shell — the 300+ token utilities across the app follow automatically.
+
+   Precedence: the controller (theme.ts) resolves "system" in JS and writes
+   the EFFECTIVE theme to <html data-theme>, so `data-theme="light"` (below,
+   unconditional) is the normal runtime path and an explicit "light"/"dark"
+   always wins. The @media block is only the pre-JS / unresolved fallback:
+   when the attribute is missing or still "system", follow the OS — a tiny
+   head script applies the resolved value before first paint, so this
+   fallback mainly guards the split-second before it runs.
+
+   Palette — warm off-white, dark ink, mint darkened for AA contrast on
+   light (contrast vs bg0: fg 16:1, fg-muted 5.6:1, mint 5.2:1, danger
+   5.2:1). Not an inversion: a proper terminal-first light theme. */
+:root[data-theme="light"] {
+  --color-bg0: #fbfbfa;
+  --color-bg1: #f3f3f1;
+  --color-bg2: #e8e8e4;
+  --color-line: #dcdcd6;
+  --color-fg: #1c1e21;
+  --color-fg-muted: #5f666e;
+  --color-mint: #0c7a4f;
+  --color-danger: #c92f2c;
+
+  /* Diff signals, re-tinted for the light shell. The dark add/del/hunk hexes
+     and rgba tints were invisible on #fbfbfa. Contrasts (computed):
+       add-fg #116329 → 6.02:1 on bg2, 5.23:1 as the + sign on the add tint.
+       del-fg #b31d28 → 5.47:1 on bg2, 4.85:1 as the − sign on the del tint.
+         (darker than a plain #cf222e, which fell to 4.36:1 on bg2 — under the
+          4.5 text bar for the +N/−N stat numbers; #b31d28 clears it.)
+       hunk   #0969da → 4.55:1 on the bg2/60 hunk header over bg0.
+       add tint #aae7ba → row-band contrast 1.37:1 vs a context row (bg0).
+       del tint #ffd0cd → row-band contrast 1.34:1 vs a context row (bg0).
+       body text (--color-fg dark ink) on either tint stays ≥ 11:1.
+     Only the explicit-light path needs these: the diff/CM views render after
+     the bundle boots (data-theme is always resolved by then), so the pre-JS
+     @media fallback below — which only guards the first paint of the shell —
+     doesn't need to carry them. */
+  --color-diff-add-fg: #116329;
+  --color-diff-del-fg: #b31d28;
+  --color-diff-hunk: #0969da;
+  --color-diff-add-bg: #aae7ba;
+  --color-diff-del-bg: #ffd0cd;
+
+  /* CodeMirror chrome on light: a faint black-wash gutter/active line instead
+     of the dark translucent bands, line numbers at fg-muted (5.24:1 on the
+     gutter), and a pale-blue selection matching the xterm light palette
+     (dark ink on it stays ≥ 12:1). */
+  --color-cm-gutter-bg: rgba(0, 0, 0, 0.03);
+  --color-cm-gutter-fg: #5f666e;
+  --color-cm-active-bg: rgba(0, 0, 0, 0.04);
+  --color-cm-hunk-bg: rgba(0, 0, 0, 0.05);
+  --color-cm-selection: #cfe3fb;
+}
+
+@media (prefers-color-scheme: light) {
+  /* Missing attribute or "system": follow the OS. Explicit "light"/"dark"
+     are excluded so a manual override always wins over the media query. */
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    --color-bg0: #fbfbfa;
+    --color-bg1: #f3f3f1;
+    --color-bg2: #e8e8e4;
+    --color-line: #dcdcd6;
+    --color-fg: #1c1e21;
+    --color-fg-muted: #5f666e;
+    --color-mint: #0c7a4f;
+    --color-danger: #c92f2c;
+  }
+}
+
 /* SPA root: fill the viewport, no page scroll */
 body:has(> #app) {
   background: var(--color-bg0);
@@ -281,6 +379,13 @@ body:has(> #app) {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Light theme: a translucent-white hover track is invisible on the pale
+   terminal background — use a faint black wash instead. */
+:root[data-theme="light"] .xterm .xterm-scrollable-element > .scrollbar.vertical:hover,
+:root[data-theme="light"] .xterm .xterm-scrollable-element > .scrollbar.horizontal:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
 .xterm .xterm-scrollable-element > .scrollbar.vertical:hover > .slider,
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
   width: 9px !important;
@@ -376,7 +481,8 @@ body:has(> #app) {
   margin: 0.35rem 0;
   overflow-x: auto;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
+  /* Token-based so it themes: a translucent-white fill vanished on light. */
+  background: var(--color-bg2);
   padding: 0.4rem 0.55rem;
 }
 .cm-lsp-hover p {
@@ -409,5 +515,5 @@ body:has(> #app) {
  * out as a black frame around the canvas. Pin it to the terminal theme
  * background. */
 .xterm .xterm-viewport {
-  background-color: #0b0c0e !important;
+  background-color: var(--color-bg0) !important;
 }

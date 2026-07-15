@@ -249,8 +249,8 @@ function FileRailEntry({
         <bdi>{label}</bdi>
       </span>
       <span className="shrink-0 text-[10px]">
-        <span className="text-[#5fbf87]">+{additions}</span>{" "}
-        <span className="text-[#e5716e]">−{deletions}</span>
+        <span className="text-[var(--color-diff-add-fg)]">+{additions}</span>{" "}
+        <span className="text-[var(--color-diff-del-fg)]">−{deletions}</span>
       </span>
     </button>
   );

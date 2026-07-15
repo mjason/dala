@@ -3,10 +3,17 @@ import { createRoot } from "react-dom/client";
 import App from "./app/App";
 import { I18nProvider } from "./app/i18n";
 import { isMac } from "./app/shortcuts";
+import { initTheme } from "./app/theme";
 
 // macOS gets its native overlay scrollbars untouched; other platforms get
 // the slim custom styling (see app.css, gated on this attribute).
 document.documentElement.dataset.platform = isMac ? "mac" : "other";
+
+// Light/dark theme: reconcile <html data-theme> (already set pre-paint by the
+// inline head script in spa_root.html.heex) and keep it tracking the OS
+// scheme, same-tab setting changes, and other tabs. Also reports the
+// effective theme to the desktop client so the window chrome follows.
+initTheme();
 
 // Soft-keyboard handling: mirror the VISUAL viewport height into --vvh so
 // the app shell (#app, see app.css) shrinks when the on-screen keyboard

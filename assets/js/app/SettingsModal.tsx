@@ -366,7 +366,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                         })
                       }
                       disabled={busy}
-                      className="rounded-md bg-danger/90 px-2.5 py-1 text-[13px] font-medium text-black transition-colors hover:bg-danger disabled:opacity-50"
+                      className="rounded-md bg-danger/90 px-2.5 py-1 text-[13px] font-medium text-bg0 transition-colors hover:bg-danger disabled:opacity-50"
                     >
                       {t("reallyDelete")}
                     </button>
@@ -405,7 +405,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             id="save-settings-button"
             onClick={() => void save()}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-black transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-mint px-3 py-1.5 text-[13px] font-medium text-bg0 transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
           >
             {t("save")} <Kbd>{modCombo("s")}</Kbd>
           </button>

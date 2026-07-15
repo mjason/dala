@@ -104,8 +104,8 @@ function FileSection({
         </span>
         <div className="flex-1" />
         <span className="shrink-0 font-mono text-[11px]">
-          <span className="text-[#5fbf87]">+{file.additions}</span>{" "}
-          <span className="text-[#e5716e]">−{file.deletions}</span>
+          <span className="text-[var(--color-diff-add-fg)]">+{file.additions}</span>{" "}
+          <span className="text-[var(--color-diff-del-fg)]">−{file.deletions}</span>
         </span>
       </header>
 
@@ -140,16 +140,16 @@ function FileSection({
 }
 
 const KIND_BG: Record<string, string> = {
-  add: "bg-[#5fbf87]/[0.11]",
-  del: "bg-[#e5716e]/[0.10]",
+  add: "bg-[var(--color-diff-add-bg)]",
+  del: "bg-[var(--color-diff-del-bg)]",
   ctx: "",
 };
 
 const KIND_SIGN: Record<string, string> = { add: "+", del: "−", ctx: " " };
 
 const KIND_SIGN_COLOR: Record<string, string> = {
-  add: "text-[#5fbf87]",
-  del: "text-[#e5716e]",
+  add: "text-[var(--color-diff-add-fg)]",
+  del: "text-[var(--color-diff-del-fg)]",
   ctx: "text-transparent",
 };
 
@@ -168,7 +168,7 @@ function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
             <tr>
               <td
                 colSpan={4}
-                className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[#7fd0d0]"
+                className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[var(--color-diff-hunk)]"
               >
                 {hunk.header}
               </td>
@@ -199,7 +199,7 @@ function SplitFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
             <tr>
               <td
                 colSpan={4}
-                className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[#7fd0d0]"
+                className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[var(--color-diff-hunk)]"
               >
                 {hunk.header}
               </td>
