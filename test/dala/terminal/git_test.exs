@@ -113,13 +113,18 @@ defmodule Dala.Terminal.GitTest do
       assert diff =~ "+line one CHANGED"
     end
 
-    test "staged-only changes still show up (diff is against HEAD)", %{dir: dir} do
+    test "the staged view diffs HEAD↔index; the unstaged view of it is empty", %{dir: dir} do
       File.write!(Path.join(dir, "a.txt"), "totally new\n")
       git!(dir, ["add", "a.txt"])
 
-      assert %{diff: diff} = run!(:git_diff, %{path: dir, file: "a.txt"})
-      assert diff =~ "+totally new"
-      assert diff =~ "-line one"
+      # staged: true → HEAD ↔ index shows the staged rewrite.
+      assert %{diff: staged} = run!(:git_diff, %{path: dir, file: "a.txt", staged: true})
+      assert staged =~ "+totally new"
+      assert staged =~ "-line one"
+
+      # default (unstaged) → index ↔ workdir: nothing on top of the index.
+      assert %{diff: unstaged} = run!(:git_diff, %{path: dir, file: "a.txt"})
+      refute unstaged =~ "totally new"
     end
 
     test "untracked file shows as fully added", %{dir: dir} do

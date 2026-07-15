@@ -12,7 +12,7 @@ defmodule Dala.Git do
   use Rustler, otp_app: :dala, crate: "dala_git"
 
   def status(_path), do: nif_error()
-  def diff_file(_path, _file), do: nif_error()
+  def diff_file(_path, _file, _staged), do: nif_error()
   def file_at(_path, _rev, _file), do: nif_error()
   def stage(_path, _file), do: nif_error()
   def unstage(_path, _file), do: nif_error()

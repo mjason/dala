@@ -45,7 +45,11 @@ defmodule Dala.Terminal.Git do
     end
 
     action :git_diff, :map do
-      description "Unified diff of one file against HEAD (untracked = fully added)."
+      description """
+      Unified diff of one file for the given view: `staged? = false` is the
+      unstaged view (index ↔ workdir, untracked = fully added), `staged? = true`
+      the staged view (HEAD ↔ index).
+      """
 
       constraints fields: [
                     diff: [type: :string, allow_nil?: false],
@@ -55,9 +59,14 @@ defmodule Dala.Terminal.Git do
 
       argument :path, :string, allow_nil?: false
       argument :file, :string, allow_nil?: false
+      argument :staged, :boolean, allow_nil?: false, default: false
 
       run fn input, _context ->
-        Dala.Terminal.GitOps.diff(input.arguments.path, input.arguments.file)
+        Dala.Terminal.GitOps.diff(
+          input.arguments.path,
+          input.arguments.file,
+          input.arguments.staged
+        )
       end
     end
 

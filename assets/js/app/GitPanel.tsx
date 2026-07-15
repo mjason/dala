@@ -123,7 +123,9 @@ export default function GitPanel({
     if (!root) return;
     setBusy(`diff:${file.path}`);
     const result = await call<{ diff: string; binary: boolean; truncated: boolean }>(gitDiff, {
-      input: { path: root, file: file.path },
+      // Diff the same perspective the merge view renders (index↔worktree for
+      // unstaged, HEAD↔index for staged), so counts + line numbers line up.
+      input: { path: root, file: file.path, staged: context === "staged" },
       fields: DIFF_FIELDS,
     });
     setBusy(null);

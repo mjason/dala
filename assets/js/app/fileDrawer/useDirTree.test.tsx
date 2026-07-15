@@ -79,6 +79,30 @@ describe("useDirTree — change-storm handling", () => {
     expect(listDirectoryMock.mock.calls.at(-1)?.[0].input.path).toBe("/proj");
   });
 
+  it("restores a root's expanded folders after the drawer path leaves and returns", async () => {
+    const { result, rerender } = renderHook(({ p }) => useDirTree(p, () => {}), {
+      wrapper,
+      initialProps: { p: "/proj" },
+    });
+    await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
+
+    // Expand a subdirectory under /proj.
+    await act(async () => {
+      await result.current.toggleDir("/proj/lib");
+    });
+    expect(result.current.expanded.has("/proj/lib")).toBe(true);
+
+    // Switch the drawer to another session's cwd — a fresh, collapsed tree.
+    rerender({ p: "/other" });
+    await waitFor(() => expect(result.current.root?.path).toBe("/other"));
+    expect(result.current.expanded.has("/proj/lib")).toBe(false);
+
+    // Switch back — /proj's tree is restored with `lib` still expanded.
+    rerender({ p: "/proj" });
+    await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
+    expect(result.current.expanded.has("/proj/lib")).toBe(true);
+  });
+
   it("malformed frames are ignored and do not refetch", async () => {
     const { result } = renderHook(() => useDirTree("/proj", () => {}), { wrapper });
     await waitFor(() => expect(result.current.root?.path).toBe("/proj"));

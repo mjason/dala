@@ -62,12 +62,39 @@ defmodule Dala.Terminal.GitOpsTest do
     assert diff =~ "+line one CHANGED"
   end
 
-  test "diff of a staged file is included (diff vs HEAD)", %{dir: dir} do
+  test "staged view diffs HEAD↔index; the unstaged view of the same file is empty", %{dir: dir} do
     File.write!(Path.join(dir, "a.txt"), "totally new\n")
     git!(dir, ["add", "a.txt"])
 
-    assert {:ok, %{diff: diff}} = GitOps.diff(dir, "a.txt")
-    assert diff =~ "+totally new"
+    # Staged view (HEAD ↔ index) shows the staged change.
+    assert {:ok, %{diff: staged}} = GitOps.diff(dir, "a.txt", true)
+    assert staged =~ "+totally new"
+
+    # Unstaged view (index ↔ workdir): nothing on top of the index.
+    assert {:ok, %{diff: unstaged}} = GitOps.diff(dir, "a.txt", false)
+    refute unstaged =~ "totally new"
+  end
+
+  test "a file that is both staged AND modified splits cleanly by perspective", %{dir: dir} do
+    # HEAD: 2 lines. Stage a 4-line rewrite, then delete one of those lines in
+    # the working tree without re-staging → git status `MM`. This is the case
+    # that used to render additions as red deletions with wrong line numbers
+    # (the diff text was HEAD↔workdir while the merge view was index↔workdir).
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree\nfour\n")
+    git!(dir, ["add", "a.txt"])
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree\n")
+
+    # Unstaged view = index (4 lines) ↔ workdir (3 lines): only the `four`
+    # deletion, and NOT the staged additions.
+    assert {:ok, %{diff: unstaged}} = GitOps.diff(dir, "a.txt", false)
+    assert unstaged =~ "-four"
+    refute unstaged =~ "+three"
+
+    # Staged view = HEAD (2 lines) ↔ index (4 lines): the staged additions,
+    # and NOT the working-tree deletion.
+    assert {:ok, %{diff: staged}} = GitOps.diff(dir, "a.txt", true)
+    assert staged =~ "+three"
+    assert staged =~ "+four"
   end
 
   test "diff of an untracked file shows it as fully added", %{dir: dir} do

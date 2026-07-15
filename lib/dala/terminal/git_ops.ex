@@ -22,9 +22,17 @@ defmodule Dala.Terminal.GitOps do
     end
   end
 
-  @doc "Unified diff of one file against HEAD (untracked files show as added)."
-  def diff(path, file) do
-    case Dala.Git.diff_file(expand(path), file) do
+  @doc """
+  Unified diff of one file, per view perspective: `staged? == false` is the
+  unstaged view (index ↔ workdir, untracked shown as added), `staged? == true`
+  is the staged view (HEAD ↔ index). This matches the side-by-side merge view,
+  so counts/hunk headers/line numbers line up for files that are both staged
+  and modified.
+  """
+  def diff(path, file), do: diff(path, file, false)
+
+  def diff(path, file, staged?) when is_boolean(staged?) do
+    case Dala.Git.diff_file(expand(path), file, staged?) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, reason}
     end

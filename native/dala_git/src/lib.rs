@@ -210,7 +210,7 @@ fn has_index_change(s: Status) -> bool {
 // --- diff -------------------------------------------------------------------
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn diff_file(path: String, file: String) -> Result<DiffResult, String> {
+fn diff_file(path: String, file: String, staged: bool) -> Result<DiffResult, String> {
     let repo = open(&path)?;
 
     let mut opts = DiffOptions::new();
@@ -219,10 +219,23 @@ fn diff_file(path: String, file: String) -> Result<DiffResult, String> {
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
 
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    let diff = repo
-        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
-        .map_err(git_error)?;
+    // Match the perspective the diff view renders each hunk against (the
+    // CmDiff sides), so the counts, hunk headers and fallback rows line up:
+    //   * unstaged ("changes"): index ↔ workdir
+    //   * staged:               HEAD  ↔ index
+    // A combined HEAD ↔ workdir diff (the old behaviour) only agrees with
+    // those when the file has no changes on the OTHER side; a file that is
+    // both staged AND modified (`MM`) otherwise renders additions as red
+    // deletions with mismatched line numbers.
+    let index = repo.index().map_err(git_error)?;
+    let diff = if staged {
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))
+            .map_err(git_error)?
+    } else {
+        repo.diff_index_to_workdir(Some(&index), Some(&mut opts))
+            .map_err(git_error)?
+    };
 
     let (text, binary) = format_diff(&diff)?;
     let truncated = text.len() > MAX_DIFF_BYTES;

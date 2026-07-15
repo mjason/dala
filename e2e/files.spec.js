@@ -17,6 +17,44 @@ test.describe("Given 打开文件抽屉的用户", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  test("展开的目录在切到别的会话再切回后依然展开（不重新 collapse）", async ({ page }) => {
+    // 会话 A 的目录里放一个嵌套目录；会话 B 用另一个目录，切过去时抽屉换成
+    // 另一棵树。回到 A 时，之前展开的 nested 应当恢复，而不是塌回根。
+    fs.mkdirSync(path.join(cwd, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "nested/inner.txt"), "x\n");
+    const cwdB = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-files-b-`);
+    fs.writeFileSync(path.join(cwdB, "other.txt"), "y\n");
+
+    let a, b;
+    try {
+      await h.gotoApp(page);
+      a = await h.createSession(page, cwd);
+      await h.selectSession(page, a);
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+
+      const inner = `[data-path="${path.join(cwd, "nested/inner.txt")}"]`;
+      await page.click(`[data-path="${path.join(cwd, "nested")}"]`);
+      await expect(page.locator(inner)).toBeVisible();
+
+      // 切到 B：抽屉换成 B 的树，A 里展开的子文件消失。
+      b = await h.createSession(page, cwdB);
+      await h.selectSession(page, b);
+      await expect(page.locator(`[data-path="${path.join(cwdB, "other.txt")}"]`)).toBeVisible();
+      await expect(page.locator(inner)).toHaveCount(0);
+
+      // 切回 A：nested 无需再点就仍是展开的。
+      await h.selectSession(page, a);
+      await expect(page.locator(inner)).toBeVisible();
+    } finally {
+      // Clean up both sessions so a later spec never inherits a session whose
+      // cwd we're about to delete, then remove B's scratch dir.
+      if (b) await h.deleteSession(page, b).catch(() => {});
+      if (a) await h.deleteSession(page, a).catch(() => {});
+      fs.rmSync(cwdB, { recursive: true, force: true });
+    }
+  });
+
   test("删除确认框完整显示路径，绝不省略号截断（要删的东西必须看得清）", async ({ page }) => {
     // 曾经用 truncate：路径尾部——恰恰是"这到底是哪个文件"的关键——被切成
     // "…"。现在整条路径换行显示（break-all，路径没有空格可断），高度封顶后

@@ -1687,6 +1687,7 @@ export async function validateGitCommit(
 export type GitDiffInput = {
   path: string;
   file: string;
+  staged?: boolean;
 };
 
 export type GitDiffFields = UnifiedFieldSelection<{diff: string, binary: boolean, truncated: boolean, __type: "TypedMap", __primitiveFields: "diff" | "binary" | "truncated"}>[];

@@ -27,6 +27,16 @@ export function useDirTree(path: string, onError: (message: string) => void) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
 
+  // Remember each root's tree (expanded folders + loaded children) so switching
+  // the drawer path away and back — chiefly switching session tabs, which
+  // retargets the drawer at the new session's cwd — restores it instead of
+  // collapsing everything to the root. Kept in a ref (survives the path-change
+  // re-renders) on the single app-level FileDrawer; lost only when the drawer
+  // itself unmounts.
+  const cacheRef = useRef<
+    Map<string, { root: Listing; children: Record<string, Entry[]>; expanded: Set<string> }>
+  >(new Map());
+
   const fetchDir = useCallback(
     async (target: string): Promise<Listing | null> => {
       const result = await call<Listing>(listDirectory, {
@@ -48,9 +58,37 @@ export function useDirTree(path: string, onError: (message: string) => void) {
     [fetchDir],
   );
 
-  // (Re)load the tree root whenever the drawer path changes.
+  // Keep each root's snapshot current so it can be restored later.
+  useEffect(() => {
+    if (root) cacheRef.current.set(root.path, { root, children, expanded });
+  }, [root, children, expanded]);
+
+  // (Re)load the tree root whenever the drawer path changes. If we've shown
+  // this root before, restore its snapshot instantly (expanded folders intact)
+  // and refresh the visible dirs in the background, so a session round-trip
+  // doesn't re-collapse the tree; otherwise load it fresh.
   useEffect(() => {
     let stale = false;
+    const cached = cacheRef.current.get(path);
+
+    if (cached) {
+      setRoot(cached.root);
+      setChildren(cached.children);
+      setExpanded(cached.expanded);
+      // Refresh the restored (possibly stale) dirs silently — a folder deleted
+      // while we were away must not pop an error toast on return.
+      for (const dir of cached.expanded) {
+        void call<Listing>(listDirectory, { input: { path: dir }, fields: DIR_FIELDS }).then(
+          (r) => {
+            if (!stale && r.ok) setChildren((prev) => ({ ...prev, [dir]: r.data.entries }));
+          },
+        );
+      }
+      return () => {
+        stale = true;
+      };
+    }
+
     void fetchDir(path).then((listing) => {
       if (stale || !listing) return;
       setRoot(listing);
