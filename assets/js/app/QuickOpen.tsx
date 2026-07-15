@@ -51,7 +51,21 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   }, [root]);
 
   const ranked = useMemo(() => rankFiles(query, files ?? [], 100, root), [query, files, root]);
-  const selected = ranked[Math.min(index, ranked.length - 1)];
+
+  // A path-like query (absolute, or containing a "/") can open a file DIRECTLY
+  // by its exact path — including one the fuzzy index never lists because its
+  // directory is git-ignored. Shown as a trailing entry; when nothing fuzzy
+  // matches (the ignored-file case) it is the only, auto-selected row.
+  const trimmed = query.trim();
+  const directTarget = !trimmed.includes("/")
+    ? null
+    : trimmed.startsWith("/")
+      ? trimmed
+      : `${root === "/" ? "" : root}/${trimmed}`;
+
+  const total = ranked.length + (directTarget ? 1 : 0);
+  const active = Math.min(index, Math.max(0, total - 1));
+  const directActive = directTarget != null && active === ranked.length;
 
   useEffect(() => setIndex(0), [query]);
 
@@ -69,7 +83,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        setIndex((i) => Math.min(ranked.length - 1, i + 1));
+        setIndex((i) => Math.min(total - 1, i + 1));
         break;
       case "ArrowUp":
         e.preventDefault();
@@ -77,7 +91,8 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
         break;
       case "Enter":
         e.preventDefault();
-        if (selected) pick(selected.path);
+        if (directActive && directTarget) onPick(directTarget);
+        else if (ranked[active]) pick(ranked[active].path);
         break;
       case "Escape":
         e.preventDefault();
@@ -122,7 +137,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
           {files === null && (
             <div className="px-3 py-3 text-center font-mono text-xs text-fg-muted">…</div>
           )}
-          {files !== null && ranked.length === 0 && (
+          {files !== null && total === 0 && (
             <div className="px-3 py-3 text-center font-mono text-xs text-fg-muted">
               {t("quickOpenEmpty")}
             </div>
@@ -131,12 +146,12 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
             <div
               key={match.path}
               role="option"
-              aria-selected={i === index}
+              aria-selected={i === active}
               data-quick-path={match.path}
               onClick={() => pick(match.path)}
               onMouseMove={() => setIndex(i)}
               className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 ${
-                i === index ? "bg-bg2" : ""
+                i === active ? "bg-bg2" : ""
               }`}
             >
               <FileTypeIcon name={match.display} />
@@ -144,6 +159,29 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
               <HighlightedPath path={match.display} positions={match.positions} />
             </div>
           ))}
+          {directTarget && (
+            <div
+              role="option"
+              aria-selected={directActive}
+              data-quick-direct-path={directTarget}
+              onClick={() => onPick(directTarget)}
+              onMouseMove={() => setIndex(ranked.length)}
+              className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 ${
+                directActive ? "bg-bg2" : ""
+              }`}
+            >
+              <FileTypeIcon name={directTarget} />
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg"
+                title={directTarget}
+              >
+                {directTarget}
+              </span>
+              <span className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-fg-muted">
+                {t("quickOpenByPath")}
+              </span>
+            </div>
+          )}
         </div>
 
         <footer className="flex items-center gap-3 border-t border-line px-3 py-1.5 font-mono text-[10px] text-fg-muted/70">

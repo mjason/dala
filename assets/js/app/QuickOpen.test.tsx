@@ -87,3 +87,52 @@ describe("QuickOpen highlighting", () => {
     expect(picked).toEqual([`/proj/${nfd}`]);
   });
 });
+
+describe("QuickOpen open-by-path", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("opens a relative path the fuzzy index never lists (git-ignored dir)", async () => {
+    const picked: string[] = [];
+    // The index only has src/app.ts — data/… is ignored and absent.
+    listFiles.mockResolvedValue(filesResult(["src/app.ts"]));
+    renderQuickOpen((p) => picked.push(p));
+
+    const input = document.querySelector("#quick-open-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "data/子策略/out.csv" } });
+    await waitFor(() => {
+      expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
+    });
+
+    fireEvent.click(document.querySelector("[data-quick-direct-path]")!);
+    expect(picked).toEqual(["/proj/data/子策略/out.csv"]);
+  });
+
+  it("resolves an absolute-path query as-is", async () => {
+    const picked: string[] = [];
+    listFiles.mockResolvedValue(filesResult([]));
+    renderQuickOpen((p) => picked.push(p));
+
+    const input = document.querySelector("#quick-open-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/etc/hosts" } });
+    await waitFor(() => {
+      expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
+    });
+
+    fireEvent.click(document.querySelector("[data-quick-direct-path]")!);
+    expect(picked).toEqual(["/etc/hosts"]);
+  });
+
+  it("Enter opens the direct path when nothing else matches", async () => {
+    const picked: string[] = [];
+    listFiles.mockResolvedValue(filesResult(["src/app.ts"]));
+    renderQuickOpen((p) => picked.push(p));
+
+    const input = document.querySelector("#quick-open-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "build/artifacts/bundle.js" } });
+    await waitFor(() => {
+      expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
+    });
+    fireEvent.keyDown(document.querySelector("#quick-open") as HTMLElement, { key: "Enter" });
+    expect(picked).toEqual(["/proj/build/artifacts/bundle.js"]);
+  });
+});

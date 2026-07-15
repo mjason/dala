@@ -19,7 +19,7 @@ export default function DiffModal({
   onHunk?: (patch: string, applyTo: "index" | "workdir") => Promise<void>;
 }) {
   const { t } = useI18n();
-  const [mode, setMode] = useState<DiffDisplayMode>("inline");
+  const [mode, setMode] = useState<DiffDisplayMode>("split");
   const [wrap, setWrap] = useState(true);
   const [onlyFile, setOnlyFile] = useState<string | null>(null);
 
