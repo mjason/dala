@@ -24,8 +24,9 @@ defmodule DalaWeb.Router do
     plug :set_actor, :user
   end
 
-  # MCP has its own bearer-token gate (DALA_MCP_TOKEN), separate from the app
-  # auth used by :rpc — so it is deliberately NOT piped through :rpc.
+  # MCP has its own bearer-token gate (a server-generated token stored in
+  # Dala.Settings.Mcp), separate from the app auth used by :rpc — so it is
+  # deliberately NOT piped through :rpc.
   pipeline :mcp do
     plug :accepts, ["json"]
     plug DalaWeb.Plugs.RequireMcp
@@ -61,8 +62,8 @@ defmodule DalaWeb.Router do
   end
 
   # AI-driven server settings over MCP (JSON-RPC 2.0, Streamable HTTP). Gated by
-  # DalaWeb.Plugs.RequireMcp: invisible (404) unless DALA_MCP_ENABLED, and then
-  # token-guarded. See docs/mcp.md.
+  # DalaWeb.Plugs.RequireMcp: 404 unless MCP is enabled in the Settings panel,
+  # and then token-guarded. See docs/mcp.md.
   scope "/", DalaWeb do
     pipe_through :mcp
 

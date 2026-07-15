@@ -201,6 +201,206 @@ export async function executeValidationRpcRequest<T>(
 
 
 
+export type McpSettingsFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}>[];
+
+export type InferMcpSettingsResult<
+  Fields extends McpSettingsFields | undefined,
+> = InferResult<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}, Fields>;
+
+export type McpSettingsResult<Fields extends McpSettingsFields | undefined = undefined> = | { success: true; data: InferMcpSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ */
+export async function mcpSettings<Fields extends McpSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<McpSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mcp_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<McpSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateMcpSettings(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "mcp_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type RegenerateMcpTokenFields = UnifiedFieldSelection<{token: string | null, __type: "TypedMap", __primitiveFields: "token"}>[];
+
+export type InferRegenerateMcpTokenResult<
+  Fields extends RegenerateMcpTokenFields | undefined,
+> = InferResult<{token: string | null, __type: "TypedMap", __primitiveFields: "token"}, Fields>;
+
+export type RegenerateMcpTokenResult<Fields extends RegenerateMcpTokenFields | undefined = undefined> = | { success: true; data: InferRegenerateMcpTokenResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ */
+export async function regenerateMcpToken<Fields extends RegenerateMcpTokenFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RegenerateMcpTokenResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "regenerate_mcp_token",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RegenerateMcpTokenResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateRegenerateMcpToken(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "regenerate_mcp_token",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SetMcpEnabledInput = {
+  enabled: boolean;
+};
+
+export type SetMcpEnabledFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}>[];
+
+export type InferSetMcpEnabledResult<
+  Fields extends SetMcpEnabledFields | undefined,
+> = InferResult<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}, Fields>;
+
+export type SetMcpEnabledResult<Fields extends SetMcpEnabledFields | undefined = undefined> = | { success: true; data: InferSetMcpEnabledResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ */
+export async function setMcpEnabled<Fields extends SetMcpEnabledFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetMcpEnabledInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetMcpEnabledResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_mcp_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetMcpEnabledResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSetMcpEnabled(
+  config: {
+  tenant?: string;
+  input: SetMcpEnabledInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "set_mcp_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type SetSpeechSettingsInput = {
   endpoint?: string | null;
   model?: string | null;

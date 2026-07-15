@@ -1,13 +1,16 @@
 defmodule DalaWeb.Plugs.RequireMcp do
   @moduledoc """
-  The gate in front of `POST /mcp`. Opt-in and fail-closed:
+  The gate in front of `POST /mcp`. Opt-in and fail-closed. Its state now lives
+  in the DB (`Dala.Settings.Mcp`, a global singleton) and is toggled at runtime
+  from the web Settings panel — no longer an env var + restart.
 
-    * `DALA_MCP_ENABLED` off (the default) → **404**: the endpoint is inert
-      when disabled and does nothing else (the route still exists in the
-      router, so this is a plain not-found, not true invisibility).
-    * enabled but `DALA_MCP_TOKEN` unset/blank → **fail closed**: log the
-      misconfiguration once and reject every request with **503**. We never
-      open an unauthenticated hole.
+    * MCP disabled (the default) → **404**: the endpoint is inert when disabled
+      and does nothing else (the route still exists in the router, so this is a
+      plain not-found, not true invisibility).
+    * enabled but the stored token is blank (defensive — the token is
+      server-generated and normally never empty) → **fail closed**: log the
+      misconfiguration once and reject every request with **503**. We never open
+      an unauthenticated hole.
     * enabled with a token → every request MUST carry
       `Authorization: Bearer <token>`; the presented value is compared with
       `Plug.Crypto.secure_compare/2` (constant time). Missing/malformed/wrong →
@@ -28,25 +31,25 @@ defmodule DalaWeb.Plugs.RequireMcp do
 
   @impl true
   def call(conn, _opts) do
+    # Read-only: a disabled/missing singleton must not trigger a DB write on the
+    # unauthenticated /mcp path (provisioning happens in the authed :current).
+    {enabled, token} = Dala.Settings.Mcp.config_or_default()
+
     cond do
-      not enabled?() ->
+      not enabled ->
         deny(conn, 404, "not found")
 
-      blank?(token()) ->
+      blank?(token) ->
         log_missing_token_once()
-        deny(conn, 503, "mcp is enabled but DALA_MCP_TOKEN is not set")
+        deny(conn, 503, "mcp is enabled but its token is not set")
 
-      authorized?(conn, token()) ->
+      authorized?(conn, token) ->
         assign(conn, :mcp_authed, true)
 
       true ->
         deny(conn, 401, "unauthorized")
     end
   end
-
-  defp enabled?, do: Application.get_env(:dala, :mcp_enabled, false) == true
-
-  defp token, do: Application.get_env(:dala, :mcp_token)
 
   defp blank?(nil), do: true
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
@@ -78,8 +81,8 @@ defmodule DalaWeb.Plugs.RequireMcp do
       :persistent_term.put(key, true)
 
       Logger.error(
-        "DALA_MCP_ENABLED is true but DALA_MCP_TOKEN is unset/blank — refusing all " <>
-          "/mcp requests (503). Set DALA_MCP_TOKEN to a secret to enable the MCP server."
+        "MCP is enabled but its stored token is blank — refusing all /mcp " <>
+          "requests (503). Regenerate the token from the Settings panel."
       )
     end
   end

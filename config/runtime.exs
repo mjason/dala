@@ -26,13 +26,9 @@ config :dala, DalaWeb.Endpoint, http: [port: String.to_integer(System.get_env("P
 # DALA_USERS ("email:password,email2:password2") can sign in.
 config :dala, auth_enabled: System.get_env("DALA_AUTH_ENABLED", "false") in ~w(true 1)
 
-# MCP (Model Context Protocol) server — lets an AI agent drive server-side
-# settings (define themes, voice config) over POST /mcp. Opt-in and fail-closed:
-# when disabled the endpoint is invisible (404); when enabled it demands a
-# bearer token that MUST be set explicitly (a blank token rejects every request
-# rather than opening up). See docs/mcp.md.
-config :dala, mcp_enabled: System.get_env("DALA_MCP_ENABLED", "false") in ~w(true 1)
-config :dala, mcp_token: System.get_env("DALA_MCP_TOKEN")
+# The MCP (Model Context Protocol) server is enabled/disabled at RUNTIME from
+# the web Settings panel, and its bearer token is server-generated — both live
+# in `Dala.Settings.Mcp` (a DB singleton), not the environment. See docs/mcp.md.
 
 if data_dir = System.get_env("DALA_DATA_DIR") do
   config :dala, data_dir: data_dir

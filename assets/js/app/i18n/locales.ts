@@ -274,9 +274,15 @@ export const en = {
   mcpIntro:
     "dala's MCP server lets an AI assistant read and write your server-side settings directly (mainly defining themes).",
   mcpAddressLabel: "Address",
-  mcpTokenNote:
-    "Authenticate with the DALA_MCP_TOKEN you set on the server as the Bearer token — the real token is never shown here.",
-  mcpTokenPlaceholder: "<YOUR_DALA_MCP_TOKEN>",
+  mcpTokenNote: "Clients connect by sending this token as the Authorization: Bearer header.",
+  mcpEnableLabel: "Enable MCP server",
+  mcpEnableHint: "Once on, /mcp accepts connections; turning it off 404s immediately.",
+  mcpDisabledHint: "Connection details appear once MCP is enabled.",
+  mcpTokenLabel: "Access token",
+  mcpTokenSecurityNote:
+    "The token is a secret — anyone who can open this settings panel can use it to connect to MCP; if it leaks, hit Regenerate.",
+  mcpRegenerate: "Regenerate",
+  mcpRegenerated: "Regenerated",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -562,8 +568,14 @@ export const zhCN: Messages = {
   mcpHeading: "MCP 服务器",
   mcpIntro: "dala 的 MCP 服务器让 AI 助手直接读写你的服务端设置（主要是定义主题）。",
   mcpAddressLabel: "地址",
-  mcpTokenNote: "连接时用你在服务器上设的 DALA_MCP_TOKEN 作为 Bearer 令牌（此处不显示真实令牌）。",
-  mcpTokenPlaceholder: "<你的 DALA_MCP_TOKEN>",
+  mcpTokenNote: "客户端在 Authorization 头里用下面的令牌作 Bearer 连接。",
+  mcpEnableLabel: "启用 MCP 服务器",
+  mcpEnableHint: "打开后 /mcp 才可连接；关闭立即回到 404。",
+  mcpDisabledHint: "连接详情将在启用后显示。",
+  mcpTokenLabel: "访问令牌",
+  mcpTokenSecurityNote: "令牌是密钥——能打开此设置面板的人都能用它连 MCP；泄露了就点重新生成。",
+  mcpRegenerate: "重新生成",
+  mcpRegenerated: "已重新生成",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote: "需要较新的 Codex；旧版请加 experimental_use_rmcp_client=true，或退回 mcp-remote。",
@@ -845,8 +857,14 @@ export const zhTW: Messages = {
   mcpHeading: "MCP 伺服器",
   mcpIntro: "dala 的 MCP 伺服器讓 AI 助手直接讀寫你的伺服端設定（主要是定義主題）。",
   mcpAddressLabel: "位址",
-  mcpTokenNote: "連線時用你在伺服器上設定的 DALA_MCP_TOKEN 作為 Bearer 權杖（此處不顯示真實權杖）。",
-  mcpTokenPlaceholder: "<你的 DALA_MCP_TOKEN>",
+  mcpTokenNote: "用戶端在 Authorization 標頭裡用下面的權杖作 Bearer 連線。",
+  mcpEnableLabel: "啟用 MCP 伺服器",
+  mcpEnableHint: "開啟後 /mcp 才可連線；關閉立即回到 404。",
+  mcpDisabledHint: "連線詳情將在啟用後顯示。",
+  mcpTokenLabel: "存取權杖",
+  mcpTokenSecurityNote: "權杖是密鑰——能打開此設定面板的人都能用它連 MCP；洩漏了就點重新產生。",
+  mcpRegenerate: "重新產生",
+  mcpRegenerated: "已重新產生",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote: "需要較新的 Codex；舊版請加 experimental_use_rmcp_client=true，或退回 mcp-remote。",
@@ -1129,9 +1147,15 @@ export const ja: Messages = {
   mcpIntro:
     "dala の MCP サーバーを使うと、AI アシスタントがサーバー側の設定（主にテーマ定義）を直接読み書きできます。",
   mcpAddressLabel: "アドレス",
-  mcpTokenNote:
-    "接続にはサーバーで設定した DALA_MCP_TOKEN を Bearer トークンとして使います（実際のトークンはここには表示されません）。",
-  mcpTokenPlaceholder: "<あなたの DALA_MCP_TOKEN>",
+  mcpTokenNote: "クライアントは下のトークンを Authorization: Bearer ヘッダーとして送って接続します。",
+  mcpEnableLabel: "MCP サーバーを有効化",
+  mcpEnableHint: "オンにすると /mcp が接続を受け付けます。オフにすると即座に 404 を返します。",
+  mcpDisabledHint: "接続情報は MCP を有効にすると表示されます。",
+  mcpTokenLabel: "アクセストークン",
+  mcpTokenSecurityNote:
+    "トークンは秘密鍵です——この設定パネルを開ける人は誰でも MCP に接続できます。漏れたら「再生成」を押してください。",
+  mcpRegenerate: "再生成",
+  mcpRegenerated: "再生成しました",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -1415,9 +1439,15 @@ export const ko: Messages = {
   mcpIntro:
     "dala의 MCP 서버를 사용하면 AI 어시스턴트가 서버 측 설정(주로 테마 정의)을 직접 읽고 쓸 수 있습니다.",
   mcpAddressLabel: "주소",
-  mcpTokenNote:
-    "연결할 때 서버에 설정한 DALA_MCP_TOKEN을 Bearer 토큰으로 사용하세요(실제 토큰은 여기에 표시되지 않습니다).",
-  mcpTokenPlaceholder: "<당신의 DALA_MCP_TOKEN>",
+  mcpTokenNote: "클라이언트는 아래 토큰을 Authorization: Bearer 헤더로 보내 연결합니다.",
+  mcpEnableLabel: "MCP 서버 사용",
+  mcpEnableHint: "켜면 /mcp가 연결을 받고, 끄면 즉시 404로 돌아갑니다.",
+  mcpDisabledHint: "연결 정보는 MCP를 켜면 표시됩니다.",
+  mcpTokenLabel: "액세스 토큰",
+  mcpTokenSecurityNote:
+    "토큰은 비밀 키입니다——이 설정 패널을 열 수 있는 사람은 누구나 MCP에 연결할 수 있습니다. 유출되면 다시 생성을 누르세요.",
+  mcpRegenerate: "다시 생성",
+  mcpRegenerated: "다시 생성됨",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -1702,8 +1732,15 @@ export const es: Messages = {
     "El servidor MCP de dala permite que un asistente de IA lea y escriba directamente tu configuración del servidor (sobre todo definir temas).",
   mcpAddressLabel: "Dirección",
   mcpTokenNote:
-    "Autentícate con el DALA_MCP_TOKEN que configuraste en el servidor como token Bearer (el token real nunca se muestra aquí).",
-  mcpTokenPlaceholder: "<TU_DALA_MCP_TOKEN>",
+    "Los clientes se conectan enviando este token como cabecera Authorization: Bearer.",
+  mcpEnableLabel: "Activar el servidor MCP",
+  mcpEnableHint: "Al activarlo, /mcp acepta conexiones; al desactivarlo devuelve 404 de inmediato.",
+  mcpDisabledHint: "Los detalles de conexión aparecen cuando MCP está activado.",
+  mcpTokenLabel: "Token de acceso",
+  mcpTokenSecurityNote:
+    "El token es un secreto: cualquiera que pueda abrir este panel de ajustes puede usarlo para conectarse a MCP; si se filtra, pulsa Regenerar.",
+  mcpRegenerate: "Regenerar",
+  mcpRegenerated: "Regenerado",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -1989,8 +2026,15 @@ export const fr: Messages = {
     "Le serveur MCP de dala permet à un assistant IA de lire et écrire directement vos réglages côté serveur (surtout la définition de thèmes).",
   mcpAddressLabel: "Adresse",
   mcpTokenNote:
-    "Authentifiez-vous avec le DALA_MCP_TOKEN défini sur le serveur comme jeton Bearer (le vrai jeton n'est jamais affiché ici).",
-  mcpTokenPlaceholder: "<VOTRE_DALA_MCP_TOKEN>",
+    "Les clients se connectent en envoyant ce jeton dans l'en-tête Authorization: Bearer.",
+  mcpEnableLabel: "Activer le serveur MCP",
+  mcpEnableHint: "Une fois activé, /mcp accepte les connexions ; le désactiver renvoie 404 immédiatement.",
+  mcpDisabledHint: "Les détails de connexion apparaissent une fois MCP activé.",
+  mcpTokenLabel: "Jeton d'accès",
+  mcpTokenSecurityNote:
+    "Le jeton est un secret : quiconque peut ouvrir ce panneau de réglages peut l'utiliser pour se connecter à MCP ; en cas de fuite, cliquez sur Régénérer.",
+  mcpRegenerate: "Régénérer",
+  mcpRegenerated: "Régénéré",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -2277,8 +2321,15 @@ export const de: Messages = {
     "Der MCP-Server von dala lässt einen KI-Assistenten deine serverseitigen Einstellungen direkt lesen und schreiben (vor allem Themes definieren).",
   mcpAddressLabel: "Adresse",
   mcpTokenNote:
-    "Authentifiziere dich mit dem auf dem Server gesetzten DALA_MCP_TOKEN als Bearer-Token (das echte Token wird hier nie angezeigt).",
-  mcpTokenPlaceholder: "<DEIN_DALA_MCP_TOKEN>",
+    "Clients verbinden sich, indem sie dieses Token als Authorization: Bearer-Header senden.",
+  mcpEnableLabel: "MCP-Server aktivieren",
+  mcpEnableHint: "Aktiviert nimmt /mcp Verbindungen an; beim Deaktivieren gibt es sofort 404 zurück.",
+  mcpDisabledHint: "Verbindungsdetails erscheinen, sobald MCP aktiviert ist.",
+  mcpTokenLabel: "Zugriffstoken",
+  mcpTokenSecurityNote:
+    "Das Token ist ein Geheimnis – wer dieses Einstellungsfenster öffnen kann, kann sich damit mit MCP verbinden; bei einem Leck auf Neu generieren klicken.",
+  mcpRegenerate: "Neu generieren",
+  mcpRegenerated: "Neu generiert",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -2565,8 +2616,15 @@ export const ru: Messages = {
     "MCP-сервер dala позволяет ИИ-ассистенту напрямую читать и изменять ваши серверные настройки (в основном определять темы).",
   mcpAddressLabel: "Адрес",
   mcpTokenNote:
-    "Для подключения используйте заданный на сервере DALA_MCP_TOKEN как Bearer-токен (настоящий токен здесь не показывается).",
-  mcpTokenPlaceholder: "<ВАШ_DALA_MCP_TOKEN>",
+    "Клиенты подключаются, отправляя этот токен в заголовке Authorization: Bearer.",
+  mcpEnableLabel: "Включить сервер MCP",
+  mcpEnableHint: "После включения /mcp принимает подключения; при выключении сразу возвращает 404.",
+  mcpDisabledHint: "Данные для подключения появятся после включения MCP.",
+  mcpTokenLabel: "Токен доступа",
+  mcpTokenSecurityNote:
+    "Токен — это секрет: любой, кто может открыть эту панель настроек, сможет подключиться к MCP; если он утёк, нажмите «Перегенерировать».",
+  mcpRegenerate: "Перегенерировать",
+  mcpRegenerated: "Перегенерирован",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:
@@ -2851,8 +2909,15 @@ export const pt: Messages = {
     "O servidor MCP do dala permite que um assistente de IA leia e escreva diretamente suas configurações no servidor (principalmente definir temas).",
   mcpAddressLabel: "Endereço",
   mcpTokenNote:
-    "Autentique-se com o DALA_MCP_TOKEN definido no servidor como token Bearer (o token real nunca é exibido aqui).",
-  mcpTokenPlaceholder: "<SEU_DALA_MCP_TOKEN>",
+    "Os clientes se conectam enviando este token no cabeçalho Authorization: Bearer.",
+  mcpEnableLabel: "Ativar o servidor MCP",
+  mcpEnableHint: "Quando ativado, o /mcp aceita conexões; ao desativar retorna 404 imediatamente.",
+  mcpDisabledHint: "Os detalhes de conexão aparecem quando o MCP está ativado.",
+  mcpTokenLabel: "Token de acesso",
+  mcpTokenSecurityNote:
+    "O token é um segredo: qualquer pessoa que possa abrir este painel de configurações pode usá-lo para se conectar ao MCP; se vazar, clique em Regenerar.",
+  mcpRegenerate: "Regenerar",
+  mcpRegenerated: "Regenerado",
   mcpClaudeCodeTitle: "Claude Code",
   mcpCodexTitle: "Codex",
   mcpCodexNote:

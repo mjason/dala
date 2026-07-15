@@ -21,6 +21,14 @@ defmodule Dala.Mcp.Registry do
   @domain Dala.Settings
   @reference_tool_name "theme_reference"
 
+  # SECURITY: resources that manage the MCP endpoint ITSELF must never become
+  # MCP tools. `Dala.Settings.Mcp` is exposed over `typescript_rpc` for the
+  # auth-gated web Settings panel, but if its actions leaked into `tools/list`,
+  # an AI talking to `/mcp` could toggle MCP off (locking itself out), read its
+  # own bearer token, or rotate it — privilege escalation / a footgun. We filter
+  # such resources out here so they can NEVER surface as a callable tool.
+  @self_managed_resources [Dala.Settings.Mcp]
+
   @doc "The name of the non-Ash `theme_reference` helper tool."
   def reference_tool_name, do: @reference_tool_name
 
@@ -31,6 +39,7 @@ defmodule Dala.Mcp.Registry do
   """
   def specs do
     for resource_rpc <- AshTypescript.Rpc.Info.typescript_rpc(@domain),
+        resource_rpc.resource not in @self_managed_resources,
         rpc_action <- resource_rpc.rpc_actions do
       spec(resource_rpc.resource, rpc_action)
     end

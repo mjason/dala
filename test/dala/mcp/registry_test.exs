@@ -16,6 +16,17 @@ defmodule Dala.Mcp.RegistryTest do
     end
   end
 
+  test "SECURITY: the Dala.Settings.Mcp self-management actions are excluded" do
+    names = Enum.map(Registry.tools(), & &1["name"])
+
+    # These are exposed over typescript_rpc for the web UI, but must NEVER
+    # become MCP tools — an AI on /mcp toggling MCP or rotating its own token
+    # would be privilege escalation. See Registry's @self_managed_resources.
+    for forbidden <- ~w(mcp_settings set_mcp_enabled regenerate_mcp_token) do
+      refute forbidden in names, "#{forbidden} must not be an MCP tool"
+    end
+  end
+
   test "create_theme inputSchema inlines all 39 token keys and a light|dark base enum" do
     schema = tool("create_theme")["inputSchema"]
 

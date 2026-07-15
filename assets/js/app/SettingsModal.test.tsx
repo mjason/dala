@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 
 // jsdom ships no scroll engine; the modal resets its body scroll on tab change.
@@ -8,13 +8,8 @@ if (typeof Element.prototype.scrollTo !== "function") {
   Element.prototype.scrollTo = () => {};
 }
 
-// mcpEnabled comes from the server-rendered <meta name="mcp-enabled">. A getter
-// lets each test flip the value that the live import binding reads at render.
-let mcpEnabledValue = false;
+// meta is server-rendered; the modal only needs these to exist.
 vi.mock("./meta", () => ({
-  get mcpEnabled() {
-    return mcpEnabledValue;
-  },
   authEnabled: false,
   userEmail: null,
   socketToken: null,
@@ -67,19 +62,22 @@ function renderModal() {
 
 afterEach(cleanup);
 
-describe("SettingsModal MCP tab gating", () => {
-  it("shows the MCP tab when the server has MCP enabled", () => {
-    mcpEnabledValue = true;
+describe("SettingsModal tabs", () => {
+  it("always shows the MCP tab (enablement is a runtime toggle inside it)", () => {
     const { container } = renderModal();
     expect(container.querySelector('[data-settings-tab="mcp"]')).not.toBeNull();
   });
 
-  it("hides the MCP tab when the server has MCP disabled", () => {
-    mcpEnabledValue = false;
+  it("renders the full always-present tab strip", () => {
     const { container } = renderModal();
-    expect(container.querySelector('[data-settings-tab="mcp"]')).toBeNull();
-    // the always-present tabs still render
-    expect(container.querySelector('[data-settings-tab="session"]')).not.toBeNull();
-    expect(container.querySelector('[data-settings-tab="appearance"]')).not.toBeNull();
+    for (const key of ["session", "appearance", "shortcuts", "voice", "mcp"]) {
+      expect(container.querySelector(`[data-settings-tab="${key}"]`)).not.toBeNull();
+    }
+  });
+
+  it("selecting the MCP tab shows the MCP section", () => {
+    const { container } = renderModal();
+    fireEvent.click(container.querySelector('[data-settings-tab="mcp"]') as HTMLElement);
+    expect(container.querySelector("#mcp-section")).not.toBeNull();
   });
 });

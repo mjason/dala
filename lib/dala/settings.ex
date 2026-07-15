@@ -26,10 +26,21 @@ defmodule Dala.Settings do
       rpc_action :update_theme, :update
       rpc_action :delete_theme, :destroy
     end
+
+    # For the WEB Settings panel only (via the auth-gated /rpc/run). These are
+    # DELIBERATELY excluded from the MCP tool registry — an AI on /mcp must
+    # never be able to toggle MCP or read/rotate its own token. See
+    # `Dala.Mcp.Registry`'s `@self_managed_resources`.
+    resource Dala.Settings.Mcp do
+      rpc_action :mcp_settings, :current
+      rpc_action :set_mcp_enabled, :set_enabled
+      rpc_action :regenerate_mcp_token, :regenerate_token
+    end
   end
 
   resources do
     resource Dala.Settings.Speech
     resource Dala.Settings.Theme
+    resource Dala.Settings.Mcp
   end
 end

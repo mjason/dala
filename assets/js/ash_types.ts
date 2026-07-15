@@ -6,6 +6,26 @@
 export type UUID = string;
 export type UtcDateTimeUsec = string;
 
+// McpConfig Schema
+export type McpConfigResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "enabled" | "token";
+  id: UUID;
+  enabled: boolean;
+  token: string;
+};
+
+
+
+export type McpConfigAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "enabled" | "token";
+  id: UUID;
+  enabled: boolean;
+  token: string;
+};
+
+
 // SpeechSettings Schema
 export type SpeechSettingsResourceSchema = {
   __type: "Resource";
@@ -152,6 +172,31 @@ export type UpdaterAttributesOnlySchema = {
 };
 
 
+export type McpConfigFilterInput = {
+  and?: Array<McpConfigFilterInput>;
+  or?: Array<McpConfigFilterInput>;
+  not?: Array<McpConfigFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  enabled?: {
+    eq?: boolean;
+    notEq?: boolean;
+  };
+
+  token?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+
+
+};
 export type SpeechSettingsFilterInput = {
   and?: Array<SpeechSettingsFilterInput>;
   or?: Array<SpeechSettingsFilterInput>;
@@ -387,6 +432,9 @@ export type UpdaterFilterInput = {
 };
 
 
+export const mcpConfigFilterFields = ["id", "enabled", "token"] as const;
+export type McpConfigFilterField = (typeof mcpConfigFilterFields)[number];
+
 export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
 export type SpeechSettingsFilterField = (typeof speechSettingsFilterFields)[number];
 
@@ -400,6 +448,9 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
 
+
+export const mcpConfigSortFields = ["id", "enabled", "token"] as const;
+export type McpConfigSortField = (typeof mcpConfigSortFields)[number];
 
 export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;
 export type SpeechSettingsSortField = (typeof speechSettingsSortFields)[number];

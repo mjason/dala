@@ -18,7 +18,6 @@ import NotificationsSection from "./settings/NotificationsSection";
 import ShortcutsSection from "./settings/ShortcutsSection";
 import SpeechSection from "./settings/SpeechSection";
 import McpSection from "./settings/McpSection";
-import { mcpEnabled } from "./meta";
 
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
@@ -105,15 +104,17 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
   const running = session.status === "running";
 
-  // The MCP tab only exists when the server's MCP endpoint is enabled
-  // (DALA_MCP_ENABLED). It participates in the roving-tabindex keyboard/ARIA
-  // nav exactly like the others because everything keys off this `tabs` array.
+  // The MCP tab is ALWAYS present: enablement is now a runtime toggle living
+  // inside the tab itself (Dala.Settings.Mcp), so the tab must stay reachable
+  // whether MCP is on or off. It participates in the roving-tabindex
+  // keyboard/ARIA nav exactly like the others because everything keys off this
+  // `tabs` array.
   const tabs: { key: SettingsTab; label: string }[] = [
     { key: "session", label: t("sessionTab") },
     { key: "appearance", label: t("preferencesTab") },
     { key: "shortcuts", label: t("shortcutsTab") },
     { key: "voice", label: t("speechSection") },
-    ...(mcpEnabled ? [{ key: "mcp" as const, label: t("mcpTab") }] : []),
+    { key: "mcp", label: t("mcpTab") },
   ];
 
   // ARIA roving-tabindex keyboard nav: Left/Right (and Home/End) move focus
@@ -191,22 +192,21 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           </button>
         </header>
 
-        {/* Four tabs on one row only survive on `sm` and up. At 390px the row
-            leaves ~52px of text per cell — measured at 13px, EVERY locale's
-            longest label blows past that (zh-CN 语音输入 52px, de
-            Spracheingabe 97.5px, ru Горячие клавиши 120.8px), so the strip
-            overflowed and clipped the last tab. Narrow screens get a 2×2
-            grid instead: ~131px of text per cell at 390px, ~104px at 320px —
-            every label fits, and the ones that don't (ru at 320) wrap inside
-            their button instead of being cut off. `break-words` keeps a long
-            unbreakable word (de) from pushing the track wider than the modal.
-            Desktop (`sm:`) is untouched: 4 columns, px-3. */}
+        {/* Five tabs (the MCP tab is always present now). On `sm` and up they
+            sit on one row (grid-cols-5) inside the max-w-lg modal; the longest
+            labels (ru Горячие клавиши) wrap to two lines inside their cell via
+            `break-words` rather than clipping — button tops stay aligned. Narrow
+            screens keep a 2-column grid: 5 tabs fill it as 2+2+1 rows, ~131px of
+            text per cell at 390px / ~104px at 320px, so every label fits and the
+            ones that don't (ru at 320) wrap inside their button instead of being
+            cut off. `break-words` keeps a long unbreakable word (de) from
+            pushing the track wider than the modal. */}
         <div className="shrink-0 px-5">
           <div
             role="tablist"
             aria-label={t("sessionSettings")}
             onKeyDown={onTabKeyDown}
-            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5 sm:grid-cols-4"
+            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5 sm:grid-cols-5"
           >
             {tabs.map(({ key, label }) => (
               <button
@@ -395,7 +395,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           ) : tab === "voice" ? (
             <SpeechSection root={session.cwd} />
           ) : tab === "mcp" ? (
-            <McpSection />
+            <McpSection onError={fail} />
           ) : (
             <>
               <AppearanceSection onError={fail} />

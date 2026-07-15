@@ -1,22 +1,26 @@
 defmodule DalaWeb.McpControllerTest do
-  # async: false — these flip the global :dala mcp_enabled/mcp_token app env.
+  # async: false — the MCP config is a single instance-wide DB singleton row.
   use DalaWeb.ConnCase, async: false
 
   @token "test-mcp-token-8f3c2a"
 
   setup do
-    prev_enabled = Application.get_env(:dala, :mcp_enabled)
-    prev_token = Application.get_env(:dala, :mcp_token)
-
-    Application.put_env(:dala, :mcp_enabled, true)
-    Application.put_env(:dala, :mcp_token, @token)
-
-    on_exit(fn ->
-      Application.put_env(:dala, :mcp_enabled, prev_enabled)
-      Application.put_env(:dala, :mcp_token, prev_token)
-    end)
-
+    # Enable the endpoint and pin a KNOWN token so `mcp_post` can present it.
+    # Gate cases below re-seed to exercise the disabled/blank-token paths.
+    seed_mcp(true, @token)
     :ok
+  end
+
+  # Provision the singleton, then force a known {enabled, token} through the
+  # resource's internal :write action (never exposed over rpc/MCP).
+  defp seed_mcp(enabled, token) do
+    _ = Dala.Settings.Mcp.config()
+
+    Dala.Settings.Mcp
+    |> Ash.read!(authorize?: false)
+    |> hd()
+    |> Ash.Changeset.for_update(:write, %{enabled: enabled, token: token}, authorize?: false)
+    |> Ash.update!(authorize?: false)
   end
 
   # Every request starts from a fresh conn (avoids ConnTest header-recycling)
@@ -51,17 +55,17 @@ defmodule DalaWeb.McpControllerTest do
 
   describe "gate" do
     test "disabled -> 404 (endpoint invisible)" do
-      Application.put_env(:dala, :mcp_enabled, false)
+      seed_mcp(false, @token)
       assert mcp_post(rpc("ping", 1)).status == 404
     end
 
-    test "enabled but no token -> 503 fail-closed" do
-      Application.put_env(:dala, :mcp_token, nil)
+    test "enabled but empty token -> 503 fail-closed" do
+      seed_mcp(true, "")
       assert mcp_post(rpc("ping", 1), auth: :none).status == 503
     end
 
     test "enabled but blank token -> 503 fail-closed" do
-      Application.put_env(:dala, :mcp_token, "   ")
+      seed_mcp(true, "   ")
       assert mcp_post(rpc("ping", 1), auth: :none).status == 503
     end
 
@@ -173,6 +177,16 @@ defmodule DalaWeb.McpControllerTest do
       create = Enum.find(body["result"]["tools"], &(&1["name"] == "create_theme"))
       assert map_size(create["inputSchema"]["properties"]["tokens"]["properties"]) == 39
       assert create["inputSchema"]["properties"]["base"]["enum"] == ["light", "dark"]
+    end
+
+    test "SECURITY: the MCP self-management actions are NOT exposed as tools" do
+      body = json_response(mcp_post(rpc("tools/list", 6)), 200)
+      names = Enum.map(body["result"]["tools"], & &1["name"])
+
+      for forbidden <- ~w(mcp_settings set_mcp_enabled regenerate_mcp_token) do
+        refute forbidden in names,
+               "#{forbidden} must never be an MCP tool (privilege escalation)"
+      end
     end
   end
 
