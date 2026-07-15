@@ -1,0 +1,257 @@
+# dala MCP 服务器
+
+让 AI 助手（Claude Code、Claude Desktop 等）通过 [MCP（Model Context
+Protocol）](https://modelcontextprotocol.io) 直接驱动 dala 的**服务端设置**——主要是
+**定义主题（themes）**，以及语音（voice）设置。
+
+传输方式为 **Streamable HTTP**：在 dala 已有的 Phoenix 端口上暴露一个
+`POST /mcp`，用 JSON-RPC 2.0 通信，单个 `application/json` 响应体（无 SSE）。
+无状态（不需要 `Mcp-Session-Id`）。请求须带 `Content-Type: application/json`
+（MCP 客户端默认如此）；其它 content-type 会被当成解析失败返回 `-32700`。
+
+---
+
+## 1. 安全模型
+
+- **默认关闭 + 强制令牌，fail-closed（失败即关）。** 见下方“启用”。
+- **只绑定回环地址。** dala 默认 `DALA_LISTEN_IP=127.0.0.1`，`/mcp` 只对本机可达。
+  AI 助手本来就跑在这台机器上，无需对外暴露。
+- **共享 / 全局 actor 模型。** 所有工具动作都以 `actor: nil` 运行，也就是写入
+  “全局 / 共享”那一份设置（`owner_id` = 全零哨兵 uuid）。这与 dala 在**关闭登录**
+  时“大家共用 `user_id nil` 那一行”的设计一致：**AI 创建的主题是全局的，所有设备
+  都能看到**。
+- **绝不外泄敏感字段。** 结果只序列化资源的“公开且非 `sensitive?`”属性；语音 API
+  key 是私有 + 敏感字段，任何工具结果里都**不会**出现它的值（只会返回
+  `api_key_set: true/false`）。令牌本身也**绝不写进日志或响应体**。
+
+三态门（`DalaWeb.Plugs.RequireMcp`）：
+
+| 状态 | 结果 |
+| --- | --- |
+| `DALA_MCP_ENABLED` 未开 | **404**——`/mcp` 当作不存在 |
+| 已开、但 `DALA_MCP_TOKEN` 空/未设 | **503**——失败即关，首个 `/mcp` 请求到达时告警一次，拒绝每个请求 |
+| 已开、缺少/错误的 `Authorization` | **401** |
+| 已开、`Authorization: Bearer <token>` 正确 | 放行（常量时间比较） |
+
+---
+
+## 2. 启用
+
+需要两个环境变量：
+
+```bash
+DALA_MCP_ENABLED=true
+DALA_MCP_TOKEN=<一段高熵随机密钥>
+```
+
+生成一个令牌：
+
+```bash
+head -c 32 /dev/urandom | base64
+```
+
+### systemd / release 安装
+
+编辑安装脚本写好的环境文件（默认 `~/.config/dala/dala.env`），追加两行：
+
+```ini
+DALA_MCP_ENABLED=true
+DALA_MCP_TOKEN=粘贴上面生成的密钥
+```
+
+然后重启服务：
+
+```bash
+systemctl --user restart dala
+```
+
+（该文件权限是 `600`，令牌不会外泄给其他用户。）
+
+### 源码 / 开发
+
+```bash
+DALA_MCP_ENABLED=true DALA_MCP_TOKEN=dev-secret mix phx.server
+```
+
+---
+
+## 3. 客户端配置
+
+下面示例里的端口 **4400** 是 release 默认端口（`DALA_PORT`）；开发环境默认 4000。
+把它换成你的 dala 实际端口。
+
+### Claude Code（CLI）
+
+```bash
+claude mcp add --transport http dala http://127.0.0.1:4400/mcp \
+  --header "Authorization: Bearer <你的 DALA_MCP_TOKEN>"
+```
+
+- `--transport http` 指定 Streamable HTTP。
+- `--header`（可简写 `-H`）注入固定的鉴权头。
+- 可加 `-s user`（或 `-s project`）改变作用域，默认 `local`。
+
+或者直接写进项目根目录的 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "dala": {
+      "type": "http",
+      "url": "http://127.0.0.1:4400/mcp",
+      "headers": {
+        "Authorization": "Bearer <你的 DALA_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+用 `claude mcp list` / `/mcp` 确认连接成功。
+
+### Claude Desktop（经 mcp-remote 桥接）
+
+Claude Desktop 目前只吃 stdio MCP，用官方 `mcp-remote` 桥接到我们的 HTTP 端点。
+编辑其 `claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "dala": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://127.0.0.1:4400/mcp",
+        "--header",
+        "Authorization: Bearer <你的 DALA_MCP_TOKEN>"
+      ]
+    }
+  }
+}
+```
+
+### Codex（OpenAI `codex` CLI）
+
+写进 `~/.codex/config.toml`（或项目级 `.codex/config.toml`）：
+
+```toml
+[mcp_servers.dala]
+url = "http://127.0.0.1:4400/mcp"
+http_headers = { "Authorization" = "Bearer <你的 DALA_MCP_TOKEN>" }
+```
+
+想把令牌放环境变量里（更安全）就用 `bearer_token_env_var`（它会自动拼成
+`Authorization: Bearer …`）：
+
+```toml
+[mcp_servers.dala]
+url = "http://127.0.0.1:4400/mcp"
+bearer_token_env_var = "DALA_TOKEN"
+```
+
+> ⚠️ **需要较新的 Codex。** 旧版本（约 2025 年底之前）的 streamable-HTTP 需要在
+> `config.toml` 顶层加 `experimental_use_rmcp_client = true` 才能启用；若上面的写法连不
+> 上，先补这一行再试，仍不行则退回本页末尾的 `mcp-remote` 桥接（用 `command`/`args`
+> 形式）。
+
+### OpenCode（`sst/opencode`）
+
+写进项目根的 `opencode.json`，或全局 `~/.config/opencode/opencode.json`：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "dala": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4400/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer <你的 DALA_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+> OpenCode 对 remote 服务器默认会尝试 OAuth 发现；dala 用的是纯静态 Bearer 头，
+> 如果 OAuth 探测干扰连接，给这个块加一行 `"oauth": false` 强制走纯头部认证。
+
+### 任意只支持 stdio 的客户端（`mcp-remote` 兜底）
+
+`mcp-remote` 是官方 npm 桥接器，把只会 stdio 的 MCP 客户端接到远程 HTTP 端点、代转
+自定义头。上面三家现版本都**原生**支持远程 HTTP + Bearer，一般用不到它；只有客户端
+不支持远程 HTTP 时才需要：
+
+```bash
+npx -y mcp-remote http://127.0.0.1:4400/mcp --header "Authorization: Bearer <你的 DALA_MCP_TOKEN>"
+```
+
+---
+
+## 4. 工具列表
+
+工具**由 `Dala.Settings` 领域的 `typescript_rpc` 自动派生**——以后在那里新增
+`rpc_action`，工具会自动出现，无需改这里。
+
+| 工具 | 作用 |
+| --- | --- |
+| `theme_reference` | 词汇表：39 个 token 键（分组）、6 个内置预设的 id/名字/base、颜色与对比度规则。**定义主题前先调它一次。** |
+| `list_themes` | 列出可见主题（内置预设 + 全局库，内置优先）。 |
+| `get_theme` | 按 `id` 取单个主题（取不到返回 `null`，不是错误）。 |
+| `create_theme` | 新建全局主题：`name`、`base`（`light`/`dark`）、`tokens`（稀疏颜色覆盖）。 |
+| `update_theme` | 改自己的主题：`id` + 想改的字段。内置预设不可改。 |
+| `delete_theme` | 删自己的主题（按 `id`）。内置预设不可删。 |
+| `speech_settings` | 读语音设置（`endpoint`、`model`、`api_key_set`；**永不返回 key 本体**）。 |
+| `set_speech_settings` | 写语音设置（`endpoint`、`model`、`api_key`、`clear_api_key`）。 |
+
+主题 `tokens` 是一个稀疏的 `键 -> CSS 颜色` 映射，一共 39 个槽位（UI 8 / diff 5 /
+CodeMirror 5 / 终端 5 / ANSI 16）。**只写你要覆盖的槽位**，其余回退到 `base` 调色板。
+颜色只接受纯 CSS 颜色（`#rrggbb`、`rgb()/rgba()/hsl()/hsla()`、`transparent`），
+`url(...)` 之类会在写入时被拒。追求可读对比度：正文 ≥ 4.5:1，UI 装饰 ≥ 3.0:1。
+
+---
+
+## 5. 示例提示词
+
+关键：**明确说“用 dala MCP”**，否则 AI 可能把它当成普通的写代码任务，而不是去调工具。
+
+**（a）定义一个暗色主题**
+
+> 用 dala MCP，创建一个叫 “Midnight Ink” 的暗色主题：背景接近纯黑、正文是柔和的
+> 冷白、强调色用青绿。先调 `theme_reference` 看清 token 词汇表，再调
+> `create_theme`，注意正文对比度要过 4.5:1。
+
+**（b）fork 一个内置预设再微调**
+
+> 使用 dala MCP 服务器，基于内置的 Nord 主题创建一个新主题 “Nord Warm”：先
+> `list_themes` 找到 Nord、复制它的 tokens，把强调色 `mint` 往暖一点调，其余保持
+> 不变，然后 `create_theme` 存下来。
+
+**（c）设置语音转写端点**
+
+> 用 dala MCP，把语音设置的 `set_speech_settings` 端点设为
+> `https://api.openai.com/v1/audio/transcriptions`、模型设为 `whisper-1`，并写入我
+> 的 API key。写完再用 `speech_settings`确认 `api_key_set` 变成了 true。
+
+### 示例对话（节选）
+
+> **你：** 用 dala MCP 创建一个叫 “Midnight Ink” 的暗色主题。
+>
+> **助手：** 我先调 `theme_reference` 看看可用的 token 键和颜色规则……
+> 拿到 39 个键和规则了。现在用 `create_theme` 创建：`base: "dark"`，`tokens` 里设了
+> `bg0: "#0a0a0f"`、`fg: "#e6e9f0"`、`mint: "#3dd7c0"`（对着 `bg0` 是 8.1:1，正文
+> 对比度达标）。
+> ✅ 已创建，id 是 `c2b4…`。它是全局主题，你所有设备都能在主题列表里选到它。
+
+---
+
+## 附：内部实现坐标
+
+- 门：`lib/dala_web/plugs/require_mcp.ex`
+- 控制器（JSON-RPC 2.0）：`lib/dala_web/controllers/mcp_controller.ex`
+- 原始 body 读取（用于 `-32700`）：`lib/dala_web/mcp_body_reader.ex`
+- 工具注册表（内省领域）：`lib/dala/mcp/registry.ex`
+- 执行器：`lib/dala/mcp/tools.ex`
+- 路由：`lib/dala_web/router.ex`（`:mcp` pipeline + `POST /mcp`）

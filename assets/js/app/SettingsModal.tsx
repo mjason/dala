@@ -17,6 +17,8 @@ import AppearanceSection from "./settings/AppearanceSection";
 import NotificationsSection from "./settings/NotificationsSection";
 import ShortcutsSection from "./settings/ShortcutsSection";
 import SpeechSection from "./settings/SpeechSection";
+import McpSection from "./settings/McpSection";
+import { mcpEnabled } from "./meta";
 
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
@@ -28,9 +30,11 @@ type Props = {
   onError: (message: string) => void;
 };
 
+type SettingsTab = "session" | "appearance" | "shortcuts" | "voice" | "mcp";
+
 export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<"session" | "appearance" | "shortcuts" | "voice">("session");
+  const [tab, setTab] = useState<SettingsTab>("session");
   const [name, setName] = useState(session.name);
   const [historyLines, setHistoryLines] = useState(() =>
     normalizeHistoryLines(session.scrollbackLimit),
@@ -101,11 +105,15 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
 
   const running = session.status === "running";
 
-  const tabs: { key: "session" | "appearance" | "shortcuts" | "voice"; label: string }[] = [
+  // The MCP tab only exists when the server's MCP endpoint is enabled
+  // (DALA_MCP_ENABLED). It participates in the roving-tabindex keyboard/ARIA
+  // nav exactly like the others because everything keys off this `tabs` array.
+  const tabs: { key: SettingsTab; label: string }[] = [
     { key: "session", label: t("sessionTab") },
     { key: "appearance", label: t("preferencesTab") },
     { key: "shortcuts", label: t("shortcutsTab") },
     { key: "voice", label: t("speechSection") },
+    ...(mcpEnabled ? [{ key: "mcp" as const, label: t("mcpTab") }] : []),
   ];
 
   // ARIA roving-tabindex keyboard nav: Left/Right (and Home/End) move focus
@@ -386,6 +394,8 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             <ShortcutsSection />
           ) : tab === "voice" ? (
             <SpeechSection root={session.cwd} />
+          ) : tab === "mcp" ? (
+            <McpSection />
           ) : (
             <>
               <AppearanceSection onError={fail} />

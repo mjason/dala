@@ -76,6 +76,11 @@ config :dala,
   generators: [timestamp_type: :utc_datetime],
   data_dir: "priv/data",
   auth_enabled: false,
+  # MCP server: opt-in (DALA_MCP_ENABLED) + mandatory token (DALA_MCP_TOKEN),
+  # both wired from the environment in runtime.exs. Safe-closed defaults here so
+  # dev/test never accidentally expose /mcp (tests flip these per-case).
+  mcp_enabled: false,
+  mcp_token: nil,
   ash_domains: [Dala.Accounts, Dala.Settings, Dala.Terminal],
   ash_authentication: [return_error_on_invalid_magic_link_token?: true]
 

@@ -268,6 +268,29 @@ export const en = {
   couldNotSave: "Could not save",
   discardChanges: "Discard unsaved changes?",
   cannotEditTruncated: "File too large to edit",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP server",
+  mcpIntro:
+    "dala's MCP server lets an AI assistant read and write your server-side settings directly (mainly defining themes).",
+  mcpAddressLabel: "Address",
+  mcpTokenNote:
+    "Authenticate with the DALA_MCP_TOKEN you set on the server as the Bearer token — the real token is never shown here.",
+  mcpTokenPlaceholder: "<YOUR_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Needs a recent Codex; on older versions add experimental_use_rmcp_client=true, or fall back to mcp-remote.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "If OAuth probing interferes, add oauth: false.",
+  mcpRemoteFallback: "Clients that only speak stdio can bridge through mcp-remote:",
+  mcpExamplePromptsLabel: "Example prompts",
+  mcpExample1:
+    "Use the dala MCP to create a dark theme called “Midnight Ink” with an indigo accent.",
+  mcpExample2: "Use the dala MCP to fork the built-in Nord into a warmer “Nord Warm”.",
+  mcpExample3: "Use the dala MCP to set my voice-transcription endpoint and model.",
+  mcpCopy: "Copy",
+  mcpCopied: "Copied",
 };
 
 export type Messages = typeof en;
@@ -534,6 +557,25 @@ export const zhCN: Messages = {
   couldNotSave: "保存失败",
   discardChanges: "放弃未保存的更改？",
   cannotEditTruncated: "文件过大，无法编辑",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP 服务器",
+  mcpIntro: "dala 的 MCP 服务器让 AI 助手直接读写你的服务端设置（主要是定义主题）。",
+  mcpAddressLabel: "地址",
+  mcpTokenNote: "连接时用你在服务器上设的 DALA_MCP_TOKEN 作为 Bearer 令牌（此处不显示真实令牌）。",
+  mcpTokenPlaceholder: "<你的 DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote: "需要较新的 Codex；旧版请加 experimental_use_rmcp_client=true，或退回 mcp-remote。",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "如遇 OAuth 探测干扰，加 oauth: false。",
+  mcpRemoteFallback: "只支持 stdio 的客户端可用 mcp-remote 兜底：",
+  mcpExamplePromptsLabel: "示例话术",
+  mcpExample1: "用 dala MCP 创建一个叫 “Midnight Ink” 的暗色主题，用靛蓝作为强调色。",
+  mcpExample2: "用 dala MCP，基于内置 Nord fork 一个更暖的 “Nord Warm”。",
+  mcpExample3: "用 dala MCP 设置我的语音转写端点和模型。",
+  mcpCopy: "复制",
+  mcpCopied: "已复制",
 };
 
 export const zhTW: Messages = {
@@ -798,6 +840,25 @@ export const zhTW: Messages = {
   couldNotSave: "儲存失敗",
   discardChanges: "放棄未儲存的變更？",
   cannotEditTruncated: "檔案過大，無法編輯",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP 伺服器",
+  mcpIntro: "dala 的 MCP 伺服器讓 AI 助手直接讀寫你的伺服端設定（主要是定義主題）。",
+  mcpAddressLabel: "位址",
+  mcpTokenNote: "連線時用你在伺服器上設定的 DALA_MCP_TOKEN 作為 Bearer 權杖（此處不顯示真實權杖）。",
+  mcpTokenPlaceholder: "<你的 DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote: "需要較新的 Codex；舊版請加 experimental_use_rmcp_client=true，或退回 mcp-remote。",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "如遇 OAuth 探測干擾，加 oauth: false。",
+  mcpRemoteFallback: "只支援 stdio 的用戶端可用 mcp-remote 兜底：",
+  mcpExamplePromptsLabel: "範例話術",
+  mcpExample1: "用 dala MCP 建立一個叫 “Midnight Ink” 的暗色主題，用靛藍作為強調色。",
+  mcpExample2: "用 dala MCP，基於內建 Nord fork 一個更暖的 “Nord Warm”。",
+  mcpExample3: "用 dala MCP 設定我的語音轉寫端點和模型。",
+  mcpCopy: "複製",
+  mcpCopied: "已複製",
 };
 
 export const ja: Messages = {
@@ -1062,6 +1123,28 @@ export const ja: Messages = {
   couldNotSave: "保存できませんでした",
   discardChanges: "未保存の変更を破棄しますか？",
   cannotEditTruncated: "ファイルが大きすぎて編集できません",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP サーバー",
+  mcpIntro:
+    "dala の MCP サーバーを使うと、AI アシスタントがサーバー側の設定（主にテーマ定義）を直接読み書きできます。",
+  mcpAddressLabel: "アドレス",
+  mcpTokenNote:
+    "接続にはサーバーで設定した DALA_MCP_TOKEN を Bearer トークンとして使います（実際のトークンはここには表示されません）。",
+  mcpTokenPlaceholder: "<あなたの DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "新しめの Codex が必要です。古い版では experimental_use_rmcp_client=true を追加するか、mcp-remote で代替してください。",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "OAuth 探索が邪魔になる場合は oauth: false を追加してください。",
+  mcpRemoteFallback: "stdio のみ対応のクライアントは mcp-remote で橋渡しできます：",
+  mcpExamplePromptsLabel: "プロンプト例",
+  mcpExample1: "dala MCP で「Midnight Ink」という名前の、藍色をアクセントにしたダークテーマを作って。",
+  mcpExample2: "dala MCP で、組み込みの Nord をフォークして少し暖かい「Nord Warm」を作って。",
+  mcpExample3: "dala MCP で音声文字起こしのエンドポイントとモデルを設定して。",
+  mcpCopy: "コピー",
+  mcpCopied: "コピーしました",
 };
 
 export const ko: Messages = {
@@ -1326,6 +1409,28 @@ export const ko: Messages = {
   couldNotSave: "저장하지 못했습니다",
   discardChanges: "저장하지 않은 변경 사항을 버릴까요?",
   cannotEditTruncated: "파일이 너무 커서 편집할 수 없습니다",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP 서버",
+  mcpIntro:
+    "dala의 MCP 서버를 사용하면 AI 어시스턴트가 서버 측 설정(주로 테마 정의)을 직접 읽고 쓸 수 있습니다.",
+  mcpAddressLabel: "주소",
+  mcpTokenNote:
+    "연결할 때 서버에 설정한 DALA_MCP_TOKEN을 Bearer 토큰으로 사용하세요(실제 토큰은 여기에 표시되지 않습니다).",
+  mcpTokenPlaceholder: "<당신의 DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "비교적 최신 Codex가 필요합니다. 구버전에서는 experimental_use_rmcp_client=true를 추가하거나 mcp-remote로 대체하세요.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "OAuth 탐지가 방해되면 oauth: false를 추가하세요.",
+  mcpRemoteFallback: "stdio만 지원하는 클라이언트는 mcp-remote로 연결할 수 있습니다:",
+  mcpExamplePromptsLabel: "예시 프롬프트",
+  mcpExample1: "dala MCP로 “Midnight Ink”라는 인디고 강조색의 다크 테마를 만들어 줘.",
+  mcpExample2: "dala MCP로 내장 Nord를 포크해서 더 따뜻한 “Nord Warm”을 만들어 줘.",
+  mcpExample3: "dala MCP로 내 음성 전사 엔드포인트와 모델을 설정해 줘.",
+  mcpCopy: "복사",
+  mcpCopied: "복사됨",
 };
 
 export const es: Messages = {
@@ -1590,6 +1695,29 @@ export const es: Messages = {
   couldNotSave: "No se pudo guardar",
   discardChanges: "¿Descartar los cambios sin guardar?",
   cannotEditTruncated: "Archivo demasiado grande para editar",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "Servidor MCP",
+  mcpIntro:
+    "El servidor MCP de dala permite que un asistente de IA lea y escriba directamente tu configuración del servidor (sobre todo definir temas).",
+  mcpAddressLabel: "Dirección",
+  mcpTokenNote:
+    "Autentícate con el DALA_MCP_TOKEN que configuraste en el servidor como token Bearer (el token real nunca se muestra aquí).",
+  mcpTokenPlaceholder: "<TU_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Requiere un Codex reciente; en versiones antiguas añade experimental_use_rmcp_client=true o recurre a mcp-remote.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "Si el sondeo de OAuth interfiere, añade oauth: false.",
+  mcpRemoteFallback: "Los clientes que solo hablan stdio pueden conectarse mediante mcp-remote:",
+  mcpExamplePromptsLabel: "Ejemplos de instrucciones",
+  mcpExample1:
+    "Usa el dala MCP para crear un tema oscuro llamado “Midnight Ink” con un acento índigo.",
+  mcpExample2: "Usa el dala MCP para bifurcar el Nord integrado en un “Nord Warm” más cálido.",
+  mcpExample3: "Usa el dala MCP para configurar mi endpoint y modelo de transcripción de voz.",
+  mcpCopy: "Copiar",
+  mcpCopied: "Copiado",
 };
 
 export const fr: Messages = {
@@ -1854,6 +1982,30 @@ export const fr: Messages = {
   couldNotSave: "Impossible d'enregistrer",
   discardChanges: "Abandonner les modifications non enregistrées ?",
   cannotEditTruncated: "Fichier trop volumineux pour l'édition",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "Serveur MCP",
+  mcpIntro:
+    "Le serveur MCP de dala permet à un assistant IA de lire et écrire directement vos réglages côté serveur (surtout la définition de thèmes).",
+  mcpAddressLabel: "Adresse",
+  mcpTokenNote:
+    "Authentifiez-vous avec le DALA_MCP_TOKEN défini sur le serveur comme jeton Bearer (le vrai jeton n'est jamais affiché ici).",
+  mcpTokenPlaceholder: "<VOTRE_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Nécessite un Codex récent ; sur les anciennes versions, ajoutez experimental_use_rmcp_client=true ou repliez sur mcp-remote.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "Si le sondage OAuth interfère, ajoutez oauth: false.",
+  mcpRemoteFallback: "Les clients qui ne parlent que stdio peuvent passer par mcp-remote :",
+  mcpExamplePromptsLabel: "Exemples d'invites",
+  mcpExample1:
+    "Utilise le dala MCP pour créer un thème sombre nommé « Midnight Ink » avec un accent indigo.",
+  mcpExample2: "Utilise le dala MCP pour dériver le Nord intégré en un « Nord Warm » plus chaud.",
+  mcpExample3:
+    "Utilise le dala MCP pour configurer mon endpoint et mon modèle de transcription vocale.",
+  mcpCopy: "Copier",
+  mcpCopied: "Copié",
 };
 
 export const de: Messages = {
@@ -2118,6 +2270,30 @@ export const de: Messages = {
   couldNotSave: "Speichern fehlgeschlagen",
   discardChanges: "Nicht gespeicherte Änderungen verwerfen?",
   cannotEditTruncated: "Datei zu groß zum Bearbeiten",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP-Server",
+  mcpIntro:
+    "Der MCP-Server von dala lässt einen KI-Assistenten deine serverseitigen Einstellungen direkt lesen und schreiben (vor allem Themes definieren).",
+  mcpAddressLabel: "Adresse",
+  mcpTokenNote:
+    "Authentifiziere dich mit dem auf dem Server gesetzten DALA_MCP_TOKEN als Bearer-Token (das echte Token wird hier nie angezeigt).",
+  mcpTokenPlaceholder: "<DEIN_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Erfordert ein aktuelles Codex; bei älteren Versionen experimental_use_rmcp_client=true ergänzen oder auf mcp-remote ausweichen.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "Falls die OAuth-Erkennung stört, oauth: false ergänzen.",
+  mcpRemoteFallback: "Clients, die nur stdio sprechen, können über mcp-remote überbrücken:",
+  mcpExamplePromptsLabel: "Beispiel-Prompts",
+  mcpExample1:
+    "Nutze das dala MCP, um ein dunkles Theme namens „Midnight Ink“ mit Indigo-Akzent zu erstellen.",
+  mcpExample2: "Nutze das dala MCP, um das eingebaute Nord zu einem wärmeren „Nord Warm“ zu forken.",
+  mcpExample3:
+    "Nutze das dala MCP, um meinen Endpunkt und mein Modell für die Sprachtranskription einzustellen.",
+  mcpCopy: "Kopieren",
+  mcpCopied: "Kopiert",
 };
 
 export const ru: Messages = {
@@ -2382,6 +2558,28 @@ export const ru: Messages = {
   couldNotSave: "Не удалось сохранить",
   discardChanges: "Отменить несохранённые изменения?",
   cannotEditTruncated: "Файл слишком большой для редактирования",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "MCP-сервер",
+  mcpIntro:
+    "MCP-сервер dala позволяет ИИ-ассистенту напрямую читать и изменять ваши серверные настройки (в основном определять темы).",
+  mcpAddressLabel: "Адрес",
+  mcpTokenNote:
+    "Для подключения используйте заданный на сервере DALA_MCP_TOKEN как Bearer-токен (настоящий токен здесь не показывается).",
+  mcpTokenPlaceholder: "<ВАШ_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Нужен свежий Codex; в старых версиях добавьте experimental_use_rmcp_client=true или используйте mcp-remote.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "Если мешает проба OAuth, добавьте oauth: false.",
+  mcpRemoteFallback: "Клиенты, поддерживающие только stdio, могут подключиться через mcp-remote:",
+  mcpExamplePromptsLabel: "Примеры запросов",
+  mcpExample1: "Через dala MCP создай тёмную тему «Midnight Ink» с индиговым акцентом.",
+  mcpExample2: "Через dala MCP форкни встроенную Nord в более тёплую «Nord Warm».",
+  mcpExample3: "Через dala MCP настрой мой эндпоинт и модель для распознавания речи.",
+  mcpCopy: "Копировать",
+  mcpCopied: "Скопировано",
 };
 
 export const pt: Messages = {
@@ -2646,4 +2844,27 @@ export const pt: Messages = {
   couldNotSave: "Não foi possível salvar",
   discardChanges: "Descartar alterações não salvas?",
   cannotEditTruncated: "Arquivo grande demais para editar",
+  // MCP connection panel
+  mcpTab: "MCP",
+  mcpHeading: "Servidor MCP",
+  mcpIntro:
+    "O servidor MCP do dala permite que um assistente de IA leia e escreva diretamente suas configurações no servidor (principalmente definir temas).",
+  mcpAddressLabel: "Endereço",
+  mcpTokenNote:
+    "Autentique-se com o DALA_MCP_TOKEN definido no servidor como token Bearer (o token real nunca é exibido aqui).",
+  mcpTokenPlaceholder: "<SEU_DALA_MCP_TOKEN>",
+  mcpClaudeCodeTitle: "Claude Code",
+  mcpCodexTitle: "Codex",
+  mcpCodexNote:
+    "Requer um Codex recente; em versões antigas adicione experimental_use_rmcp_client=true ou recorra ao mcp-remote.",
+  mcpOpencodeTitle: "OpenCode",
+  mcpOpencodeNote: "Se a sondagem OAuth atrapalhar, adicione oauth: false.",
+  mcpRemoteFallback: "Clientes que só falam stdio podem usar o mcp-remote como ponte:",
+  mcpExamplePromptsLabel: "Exemplos de prompts",
+  mcpExample1:
+    "Use o dala MCP para criar um tema escuro chamado “Midnight Ink” com um destaque índigo.",
+  mcpExample2: "Use o dala MCP para bifurcar o Nord integrado em um “Nord Warm” mais quente.",
+  mcpExample3: "Use o dala MCP para configurar meu endpoint e modelo de transcrição de voz.",
+  mcpCopy: "Copiar",
+  mcpCopied: "Copiado",
 };

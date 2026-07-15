@@ -57,6 +57,10 @@ defmodule DalaWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, {:multipart, length: 512_000_000}, :json],
     pass: ["*/*"],
+    # POST /mcp keeps its own raw body (see DalaWeb.McpBodyReader) so the MCP
+    # controller can return a JSON-RPC -32700 on malformed JSON; every other
+    # request is an untouched pass-through to Plug.Conn.read_body/2.
+    body_reader: {DalaWeb.McpBodyReader, :read_body, []},
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

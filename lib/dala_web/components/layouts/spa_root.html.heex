@@ -68,6 +68,7 @@
       })();
     </script>
     <meta name="auth-enabled" content={to_string(Dala.Auth.enabled?())} />
+    <meta name="mcp-enabled" content={to_string(Application.get_env(:dala, :mcp_enabled, false))} />
     <meta name="dala-version" content={to_string(Application.spec(:dala, :vsn))} />
     <%= if assigns[:user_email] do %>
       <meta name="user-email" content={@user_email} />
