@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Check, Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { deleteTheme } from "../../ash_rpc";
 import { call } from "../rpc";
 import { FieldLabel, TextInput, ValueChip } from "../ui";
@@ -25,6 +26,7 @@ import {
 import { useThemeLibrary } from "../hooks/useThemeLibrary";
 import type { ThemeSummary } from "../themeLibrary";
 import { baseTokenValue } from "../themeBaseTokens";
+import type { TokenKey } from "../themeTokens";
 import ThemeEditor, { type ThemeDraft } from "./ThemeEditor";
 import ToggleRow from "./ToggleRow";
 
@@ -122,9 +124,19 @@ export default function AppearanceSection({
     { value: "underline", label: t("cursorUnderline") },
   ];
 
-  /** The swatch colour for a chip: its bg0 override, else the base default. */
-  const chipSwatch = (theme: ThemeSummary) =>
-    theme.tokens.bg0 ?? baseTokenValue(theme.base, "bg0");
+  const themeColor = (theme: ThemeSummary, key: TokenKey) =>
+    theme.tokens[key] ?? baseTokenValue(theme.base, key);
+
+  const ansiPreview: TokenKey[] = [
+    "ansiRed",
+    "ansiGreen",
+    "ansiYellow",
+    "ansiBlue",
+    "ansiMagenta",
+    "ansiCyan",
+    "ansiWhite",
+    "ansiBrightBlack",
+  ];
 
   return (
     <div className="space-y-4">
@@ -178,66 +190,118 @@ export default function AppearanceSection({
           <button
             id="new-theme-button"
             onClick={openNew}
-            className="rounded-md border border-mint/50 px-2.5 py-1 text-xs text-mint transition-colors hover:bg-mint/10"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-mint/50 px-2.5 text-xs text-mint transition-colors hover:bg-mint/10"
           >
+            <Plus className="h-3.5 w-3.5" aria-hidden />
             {t("newTheme")}
           </button>
         </div>
-        <div id="theme-library" className="flex flex-wrap gap-1.5">
+        <div id="theme-library" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {themes.map((theme) => {
             const selected = selectedCustomId === theme.id;
+            const bg0 = themeColor(theme, "bg0");
+            const bg1 = themeColor(theme, "bg1");
+            const bg2 = themeColor(theme, "bg2");
+            const line = themeColor(theme, "line");
+            const fg = themeColor(theme, "fg");
+            const muted = themeColor(theme, "fgMuted");
+            const accent = themeColor(theme, "mint");
+            const danger = themeColor(theme, "danger");
+            const termBg = themeColor(theme, "termBackground");
+            const termFg = themeColor(theme, "termForeground");
             return (
               <div
                 key={theme.id}
-                className={`inline-flex items-center gap-1 rounded-lg border p-0.5 transition-colors ${
-                  selected ? "border-mint/60 bg-mint/10" : "border-line bg-bg2"
+                className={`min-w-0 overflow-hidden rounded-md border transition-[box-shadow,transform] ${
+                  selected ? "ring-1 ring-mint/70" : "hover:-translate-y-px hover:shadow-md"
                 }`}
+                style={{ backgroundColor: bg1, borderColor: selected ? accent : line }}
               >
                 <button
                   data-custom-theme-id={theme.id}
                   aria-pressed={selected}
                   onClick={() => selectCustom(theme)}
-                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-fg transition-colors hover:text-mint"
+                  className="group block w-full px-2.5 pb-2 pt-2 text-left"
                 >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs font-semibold" style={{ color: fg }}>
+                      {theme.name}
+                    </span>
+                    <span className="shrink-0 text-[10px]" style={{ color: muted }}>
+                      {theme.base === "dark" ? t("themeDark") : t("themeLight")}
+                    </span>
+                    {selected && (
+                      <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full" style={{ backgroundColor: accent, color: bg0 }}>
+                        <Check className="h-3 w-3" aria-hidden />
+                      </span>
+                    )}
+                  </span>
+
                   <span
-                    className="h-3 w-3 shrink-0 rounded-full border border-line"
-                    style={{ backgroundColor: chipSwatch(theme) }}
-                  />
-                  {theme.name}
-                </button>
-                {theme.builtin ? (
-                  <button
-                    data-fork-theme-id={theme.id}
-                    onClick={() => openFork(theme)}
-                    title={t("themeFork")}
-                    className="rounded px-1 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-mint"
+                    data-theme-terminal-preview={theme.id}
+                    aria-hidden
+                    className="mt-2 block overflow-hidden border font-mono"
+                    style={{ backgroundColor: termBg, borderColor: line }}
                   >
-                    {t("themeFork")}
-                  </button>
-                ) : (
-                  <>
+                    <span className="flex h-4 items-center gap-1 border-b px-1.5" style={{ backgroundColor: bg2, borderColor: line }}>
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: danger }} />
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: themeColor(theme, "ansiYellow") }} />
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accent }} />
+                    </span>
+                    <span className="block px-2 pb-1.5 pt-1 text-[9px] leading-4" style={{ color: termFg }}>
+                      <span style={{ color: themeColor(theme, "ansiCyan") }}>~</span>{" "}
+                      <span style={{ color: accent }}>$</span>{" dala status"}
+                      <br />
+                      <span style={{ color: muted }}>ready</span>{" "}
+                      <span style={{ color: themeColor(theme, "ansiBlue") }}>main</span>
+                    </span>
+                    <span data-theme-palette={theme.id} className="grid h-2 grid-cols-8">
+                      {ansiPreview.map((key) => (
+                        <span key={key} data-theme-ansi-swatch style={{ backgroundColor: themeColor(theme, key) }} />
+                      ))}
+                    </span>
+                  </span>
+                </button>
+
+                <div className="flex h-7 items-center justify-end gap-0.5 border-t px-1.5" style={{ backgroundColor: bg2, borderColor: line }}>
+                  {theme.builtin ? (
                     <button
-                      data-edit-theme-id={theme.id}
-                      onClick={() => openEdit(theme)}
-                      title={t("themeEdit")}
-                      className="rounded px-1 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-mint"
+                      data-fork-theme-id={theme.id}
+                      onClick={() => openFork(theme)}
+                      title={t("themeFork")}
+                      className="grid h-5 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-bg0/60 hover:text-mint"
                     >
-                      {t("themeEdit")}
+                      <Copy className="h-3 w-3" aria-hidden />
+                      <span className="sr-only">{t("themeFork")}</span>
                     </button>
-                    <button
-                      data-delete-theme-id={theme.id}
-                      onClick={() => void deleteThemeChip(theme)}
-                      title={t("themeDelete")}
-                      className={`rounded px-1 py-0.5 text-[11px] transition-colors ${
-                        confirmDeleteId === theme.id
-                          ? "font-medium text-danger"
-                          : "text-fg-muted hover:text-danger"
-                      }`}
-                    >
-                      {confirmDeleteId === theme.id ? t("themeDeleteConfirm") : t("themeDelete")}
-                    </button>
-                  </>
-                )}
+                  ) : (
+                    <>
+                      <button
+                        data-edit-theme-id={theme.id}
+                        onClick={() => openEdit(theme)}
+                        title={t("themeEdit")}
+                        className="grid h-5 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-bg0/60 hover:text-mint"
+                      >
+                        <Pencil className="h-3 w-3" aria-hidden />
+                        <span className="sr-only">{t("themeEdit")}</span>
+                      </button>
+                      <button
+                        data-delete-theme-id={theme.id}
+                        onClick={() => void deleteThemeChip(theme)}
+                        title={t("themeDelete")}
+                        className={`flex h-5 items-center justify-center rounded px-1.5 text-[10px] transition-colors ${
+                          confirmDeleteId === theme.id
+                            ? "gap-1 font-medium text-danger"
+                            : "w-6 text-fg-muted hover:bg-bg0/60 hover:text-danger"
+                        }`}
+                      >
+                        <Trash2 className="h-3 w-3" aria-hidden />
+                        {confirmDeleteId === theme.id && <span>{t("themeDeleteConfirm")}</span>}
+                        <span className="sr-only">{t("themeDelete")}</span>
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             );
           })}

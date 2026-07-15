@@ -1,10 +1,8 @@
 name: Release
 
 # Server releases only. Tag rule:
-#   v*         → server tarball (this workflow)
-#   client-v*  → desktop client (client-release.yml)
-# The two release lines version independently so shipping one side never
-# forces a version bump on the other.
+#   v*         -> server archives (this workflow)
+#   client-v*  -> desktop client (client-release.yml)
 on:
   push:
     tags: ["v*"]
@@ -13,8 +11,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build linux-x86_64 release
+  linux:
+    name: Build linux-x86_64 server
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: prod
@@ -34,7 +32,7 @@ jobs:
           cache: npm
           cache-dependency-path: assets/package-lock.json
 
-      - name: Cache mix deps and build
+      - name: Cache build inputs
         uses: actions/cache@v4
         with:
           path: |
@@ -44,41 +42,188 @@ jobs:
             ~/.cargo/git
             native/dala_git/target
             native/dala_holder/target
-          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: linux-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+          restore-keys: linux-mix-
 
       - name: Install dependencies
-        # npm install (not ci): the lock file is written by npm 11 locally,
-        # while the runner's node 22 bundles npm 10 whose `ci` validation
-        # rejects it over optional-dependency entries.
         run: |
           mix deps.get --only prod
           npm install --prefix assets
 
-      - name: Compile (Elixir + Rust NIF + PTY holder)
-        run: mix compile
-
-      - name: Build production assets (minified + digested)
+      - name: Compile server and assets
         run: |
+          mix compile
           mix tailwind.install --if-missing
           mix esbuild.install --if-missing
           mix assets.deploy
+          mix release --overwrite
 
-      - name: Assemble release
-        run: mix release --overwrite
-
-      - name: Package tarball
+      - name: Package release
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          OUT="dala-${TAG}-linux-x86_64.tar.gz"
+          OUT="dala-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
           tar -C _build/prod/rel/dala -czf "$OUT" .
           sha256sum "$OUT" > "$OUT.sha256"
-          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          mkdir artifacts
+          mv "$OUT" "$OUT.sha256" artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-x86_64
+          path: artifacts/
+          if-no-files-found: error
+
+  macos:
+    name: Build and sign macos-arm64 server
+    runs-on: macos-14
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+
+      - name: Cache build inputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/dala_git/target
+            native/dala_holder/target
+          key: macos-arm64-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+          restore-keys: macos-arm64-mix-
+
+      - name: Install dependencies
+        run: |
+          mix deps.get --only prod
+          npm install --prefix assets
+
+      - name: Compile server and assets
+        run: |
+          mix compile
+          mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$CERTIFICATE_BASE64" || { echo "MACOS_CERTIFICATE_BASE64 is required" >&2; exit 1; }
+          test -n "$CERTIFICATE_PASSWORD" || { echo "MACOS_CERTIFICATE_PASSWORD is required" >&2; exit 1; }
+          CERTIFICATE_PATH="$RUNNER_TEMP/dala-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/dala-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"
+          test -n "$SIGNING_IDENTITY" || { echo "Developer ID Application identity not found" >&2; exit 1; }
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign every Mach-O artifact
+        run: |
+          RELEASE_DIR="_build/prod/rel/dala"
+          SIGNED=0
+          while IFS= read -r -d '' file_path; do
+            FILE_TYPE="$(file -b "$file_path")"
+            if grep -q 'Mach-O' <<< "$FILE_TYPE"; then
+              if grep -q 'executable' <<< "$FILE_TYPE"; then
+                codesign --force --timestamp --options runtime \
+                  --entitlements .github/macos-server.entitlements.plist \
+                  --keychain "$KEYCHAIN_PATH" --sign "$SIGNING_IDENTITY" "$file_path"
+              else
+                codesign --force --timestamp \
+                  --keychain "$KEYCHAIN_PATH" --sign "$SIGNING_IDENTITY" "$file_path"
+              fi
+              SIGNED=$((SIGNED + 1))
+            fi
+          done < <(find "$RELEASE_DIR" -type f -print0)
+          test "$SIGNED" -gt 0 || { echo "No Mach-O artifacts found in release" >&2; exit 1; }
+          echo "Signed $SIGNED Mach-O artifacts"
+
+          while IFS= read -r -d '' file_path; do
+            if grep -q 'Mach-O' <<< "$(file -b "$file_path")"; then
+              codesign --verify --strict --verbose=2 "$file_path"
+            fi
+          done < <(find "$RELEASE_DIR" -type f -print0)
+
+      - name: Notarize signed release
+        env:
+          API_KEY_BASE64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          test -n "$API_KEY_BASE64" || { echo "APPSTORE_API_KEY_BASE64 is required" >&2; exit 1; }
+          test -n "$API_KEY_ID" || { echo "APPSTORE_API_KEY_ID is required" >&2; exit 1; }
+          test -n "$API_ISSUER_ID" || { echo "APPSTORE_API_ISSUER_ID is required" >&2; exit 1; }
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8"
+          NOTARY_ZIP="$RUNNER_TEMP/dala-notary.zip"
+          echo -n "$API_KEY_BASE64" | base64 --decode > "$API_KEY_PATH"
+          ditto -c -k --keepParent _build/prod/rel/dala "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
+            --key "$API_KEY_PATH" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+
+      - name: Package release
+        run: |
+          OUT="dala-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
+          tar -C _build/prod/rel/dala -czf "$OUT" .
+          shasum -a 256 "$OUT" > "$OUT.sha256"
+          mkdir artifacts
+          mv "$OUT" "$OUT.sha256" artifacts/
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-macos-arm64
+          path: artifacts/
+          if-no-files-found: error
+
+  publish:
+    name: Publish server release
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ env.OUT }}
-            ${{ env.OUT }}.sha256
+          files: artifacts/*
           generate_release_notes: true

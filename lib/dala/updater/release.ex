@@ -5,9 +5,26 @@ defmodule Dala.Updater.Release do
   without talking to GitHub.
   """
 
-  @asset_suffix "linux-x86_64.tar.gz"
+  @doc "Native release platform for an OS/ERTS architecture pair."
+  def platform(os_type \\ :os.type(), architecture \\ :erlang.system_info(:system_architecture))
 
-  def asset_suffix, do: @asset_suffix
+  def platform({:unix, :linux}, architecture) do
+    if String.contains?(to_string(architecture), "x86_64"),
+      do: "linux-x86_64",
+      else: "unsupported"
+  end
+
+  def platform({:unix, :darwin}, architecture) do
+    arch = to_string(architecture)
+
+    if String.contains?(arch, "aarch64") or String.contains?(arch, "arm64"),
+      do: "macos-arm64",
+      else: "unsupported"
+  end
+
+  def platform(_os_type, _architecture), do: "unsupported"
+
+  def asset_suffix(platform \\ platform()), do: "#{platform}.tar.gz"
 
   @doc "True when `latest` and `current` parse as versions and `latest` is strictly newer."
   def newer?(latest, current) do
@@ -26,13 +43,17 @@ defmodule Dala.Updater.Release do
       release["draft"] != true and release["prerelease"] != true
   end
 
-  @doc "Download URL of the release's server tarball asset."
-  def asset_url(%{"assets" => assets, "tag_name" => tag} = _release) when is_list(assets) do
-    case Enum.find(assets, &String.ends_with?(&1["name"] || "", @asset_suffix)) do
+  @doc "Download URL of the release's server tarball asset for this platform."
+  def asset_url(release, platform \\ platform())
+
+  def asset_url(%{"assets" => assets, "tag_name" => tag}, platform) when is_list(assets) do
+    suffix = asset_suffix(platform)
+
+    case Enum.find(assets, &String.ends_with?(&1["name"] || "", suffix)) do
       %{"browser_download_url" => url} -> {:ok, url}
-      _ -> {:error, "release #{tag} has no #{@asset_suffix} asset"}
+      _ -> {:error, "release #{tag} has no #{suffix} asset"}
     end
   end
 
-  def asset_url(_), do: {:error, "malformed release payload"}
+  def asset_url(_release, _platform), do: {:error, "malformed release payload"}
 end

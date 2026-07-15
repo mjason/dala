@@ -1,4 +1,4 @@
-export type PreviewKind = "text" | "json" | "csv" | "html" | "image";
+export type PreviewKind = "text" | "json" | "csv" | "spreadsheet" | "html" | "image";
 
 const IMAGE_EXTENSIONS = new Set([
   "png",
@@ -20,6 +20,7 @@ export function previewKind(fileName: string): PreviewKind {
   // JSONC is code, not JSON — the JSON pretty-printer would reject comments.
   if (ext === "jsonc") return "text";
   if (ext === "csv" || ext === "tsv") return "csv";
+  if (ext === "xlsx" || ext === "xlsm") return "spreadsheet";
   if (ext === "html" || ext === "htm") return "html";
   return "text";
 }

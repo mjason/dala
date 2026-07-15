@@ -3,7 +3,6 @@ import { writeFile } from "../ash_rpc";
 import { call } from "./rpc";
 import { humanBytes } from "./util";
 import { useI18n } from "./i18n";
-import { detectDelimiter, parseCsv } from "./csv";
 import { rawFileUrl } from "./fileTypes";
 import type { PreviewKind } from "./fileTypes";
 import { FileTypeIcon } from "./fileIcons";
@@ -12,13 +11,13 @@ import { Kbd, modCombo } from "./shortcuts";
 import CodeEditor from "./CodeEditor";
 import LspDebug from "./LspDebug";
 import CmCode from "./CmCode";
+import SpreadsheetView from "./SpreadsheetView";
 
-const CSV_MAX_ROWS = 500;
-const WRAPPABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv"]);
+const WRAPPABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv", "spreadsheet"]);
 const EDITABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv"]);
 
 export type Preview =
-  | { kind: "image" | "binary"; path: string; size: number }
+  | { kind: "image" | "binary" | "spreadsheet"; path: string; size: number }
   | {
       kind: Exclude<PreviewKind, "image">;
       path: string;
@@ -250,7 +249,17 @@ function Body({ preview, wrap }: { preview: Preview; wrap: boolean }) {
       );
 
     case "csv":
-      return <CsvTable path={preview.path} content={preview.content} wrap={wrap} />;
+      return (
+        <SpreadsheetView
+          path={preview.path}
+          csvContent={preview.content}
+          csvTruncated={preview.truncated}
+          wrap={wrap}
+        />
+      );
+
+    case "spreadsheet":
+      return <SpreadsheetView path={preview.path} wrap={wrap} />;
 
     case "json":
       return <JsonView content={preview.content} wrap={wrap} />;
@@ -281,62 +290,6 @@ function CodeView({
   lspPath?: string;
 }) {
   return <CmCode content={content} filename={fileName} wrap={wrap} lspPath={lspPath} />;
-}
-
-function CsvTable({ path, content, wrap }: { path: string; content: string; wrap: boolean }) {
-  const { t } = useI18n();
-
-  const rows = useMemo(() => {
-    const delimiter = detectDelimiter(content, path);
-    return parseCsv(content, delimiter);
-  }, [content, path]);
-
-  const [header, ...body] = rows;
-  const shown = body.slice(0, CSV_MAX_ROWS);
-
-  return (
-    <div className="flex min-h-0 flex-col">
-      <div className="overflow-auto">
-        <table className="w-full border-collapse font-mono text-xs">
-          {header && (
-            <thead className="sticky top-0 bg-bg2">
-              <tr>
-                {header.map((cell, i) => (
-                  <th
-                    key={i}
-                    className="border-b border-line px-2.5 py-1.5 text-left font-semibold text-fg"
-                  >
-                    {cell}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-          )}
-          <tbody>
-            {shown.map((row, r) => (
-              <tr key={r} className="odd:bg-bg0/40">
-                {row.map((cell, c) => (
-                  <td
-                    key={c}
-                    className={`border-b border-line/50 px-2.5 py-1 text-fg-muted ${
-                      wrap ? "[overflow-wrap:anywhere]" : "whitespace-nowrap"
-                    }`}
-                  >
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="border-t border-line px-3 py-1.5 font-mono text-[11px] text-fg-muted">
-        {body.length > CSV_MAX_ROWS
-          ? t("csvTruncatedRows", { shown: CSV_MAX_ROWS, count: body.length })
-          : t("csvRows", { count: body.length })}
-      </div>
-    </div>
-  );
 }
 
 function JsonView({ content, wrap }: { content: string; wrap: boolean }) {

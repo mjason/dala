@@ -8,10 +8,12 @@ describe("previewKind", () => {
     expect(previewKind("pic.jpeg")).toBe("image");
   });
 
-  it("detects json / csv / html", () => {
+  it("detects json / csv / spreadsheets / html", () => {
     expect(previewKind("package.json")).toBe("json");
     expect(previewKind("data.csv")).toBe("csv");
     expect(previewKind("data.TSV")).toBe("csv");
+    expect(previewKind("report.XLSX")).toBe("spreadsheet");
+    expect(previewKind("report.xlsm")).toBe("spreadsheet");
     expect(previewKind("index.html")).toBe("html");
     expect(previewKind("page.htm")).toBe("html");
   });

@@ -97,6 +97,39 @@ test.describe("Given 打开文件抽屉的用户", () => {
     }
   });
 
+  test("大 CSV 使用虚拟表格完整搜索，DOM 只保留可视行", async ({ page }) => {
+    const csvPath = path.join(cwd, "large.csv");
+    const rows = ["id,name,team"];
+    for (let index = 0; index < 1200; index += 1) {
+      rows.push(`${index},row-${index},${index % 2 === 0 ? "alpha" : "beta"}`);
+    }
+    fs.writeFileSync(csvPath, `${rows.join("\n")}\n`);
+
+    await page.setViewportSize({ width: 1200, height: 760 });
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    await h.selectSession(page, id);
+
+    try {
+      await page.click("#toggle-drawer-button");
+      await page.click(`[data-path="${csvPath}"]`);
+      await expect(page.locator("#file-preview table")).toBeVisible();
+      await expect(page.locator("#file-preview")).toContainText("1,200 rows");
+
+      // 1,200 records are available to filtering, but virtualization keeps the
+      // browser from mounting the whole table at once.
+      const mountedRows = await page.locator("#file-preview tbody tr").count();
+      expect(mountedRows).toBeGreaterThan(0);
+      expect(mountedRows).toBeLessThan(80);
+
+      await page.getByPlaceholder("Search table…").fill("row-1199");
+      await expect(page.locator("#file-preview")).toContainText("row-1199");
+      await expect(page.locator("#file-preview")).toContainText("1 of 1,200 rows");
+    } finally {
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("外部建删文件时抽屉自动跟上（含嵌套目录），可见目录 ≤1s", async ({ page }) => {
     fs.writeFileSync(path.join(cwd, "seed.txt"), "seed");
     fs.mkdirSync(path.join(cwd, "nested"));

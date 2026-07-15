@@ -67,6 +67,8 @@ const BY_EXTENSION: Record<string, IconSpec> = {
   env: { glyph: "", color: "text-fg-muted" },
   csv: { glyph: "", color: "text-[#5fbf87]" },
   tsv: { glyph: "", color: "text-[#5fbf87]" },
+  xlsx: { glyph: "", color: "text-[#5fbf87]" },
+  xlsm: { glyph: "", color: "text-[#5fbf87]" },
   sql: { glyph: "", color: "text-[#8fb8e8]" },
   db: { glyph: "", color: "text-[#8fb8e8]" },
   sqlite: { glyph: "", color: "text-[#8fb8e8]" },

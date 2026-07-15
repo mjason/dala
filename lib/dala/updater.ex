@@ -5,9 +5,10 @@ defmodule Dala.Updater do
   Only active when running from an installed release (`DALA_RELEASE_ROOT`
   points at the `versions/<tag>` + `current` tree that install.sh lays out).
   Applying an update downloads the new tarball next to the current one,
-  atomically re-points the `current` symlink and asks systemd for a restart —
-  running shells survive it inside their PTY holders, and the unit's
-  ExecStartPre migrates the database before the new version boots.
+  atomically re-points the `current` symlink and asks the platform user-service
+  manager (systemd or launchd) for a restart. Running shells survive inside
+  their PTY holders; the service migrates the database before the new version
+  boots.
   """
   require Logger
 
@@ -150,7 +151,23 @@ defmodule Dala.Updater do
   end
 
   defp restart do
-    service = System.get_env("DALA_SERVICE", "dala")
-    System.cmd("systemctl", ["--user", "restart", "--no-block", service], stderr_to_stdout: true)
+    case Release.platform() do
+      "macos-arm64" ->
+        service = System.get_env("DALA_SERVICE", "com.manjialin.dala")
+        {uid, 0} = System.cmd("id", ["-u"])
+
+        System.cmd(
+          "launchctl",
+          ["kickstart", "-k", "gui/#{String.trim(uid)}/#{service}"],
+          stderr_to_stdout: true
+        )
+
+      _ ->
+        service = System.get_env("DALA_SERVICE", "dala")
+
+        System.cmd("systemctl", ["--user", "restart", "--no-block", service],
+          stderr_to_stdout: true
+        )
+    end
   end
 end

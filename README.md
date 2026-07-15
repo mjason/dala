@@ -29,13 +29,15 @@
 
 ![Quick open](docs/screenshots/quick-open.png)
 
-## Quick start (Linux x86_64)
+## Quick start (Linux x86_64 / macOS arm64)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 ```
 
-This installs a prebuilt release as a systemd **user daemon** on `http://localhost:4400`.
+This installs a prebuilt native release as a **user daemon** on
+`http://localhost:4400`: systemd on Linux, or the signed and notarized server
+under launchd on Apple Silicon Macs.
 Config lives in `~/.config/dala/dala.env`, data in `~/.local/share/dala`.
 
 To update later — either click the sidebar update button, or:
@@ -295,7 +297,8 @@ Rules:
 | `~/.local/dala/versions/<tag>` | unpacked releases |
 | `~/.local/dala/current` | symlink to the active version |
 | `~/.config/dala/dala.env` | environment file (secrets, port, toggles) |
-| `~/.config/systemd/user/dala.service` | the daemon unit |
+| `~/.config/systemd/user/dala.service` (Linux) | systemd user unit |
+| `~/Library/LaunchAgents/com.manjialin.dala.plist` (macOS) | launchd user agent |
 | `~/.local/share/dala` | SQLite DB, session store, scrollback cache |
 
 The unit runs `Dala.Release.migrate()` before every start, so upgrades migrate
@@ -315,21 +318,35 @@ shells) alive across service restarts.
 | `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite location |
 | `DALA_DATA_DIR` | `~/.local/share/dala` | Session store & scrollback |
 | `DALA_RELEASE_ROOT` | set by install.sh | Enables the in-app updater |
-| `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / `dala` | Updater source repo / systemd unit name |
+| `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / platform default | Updater source repo / systemd unit or launchd label |
 | `SECRET_KEY_BASE` / `TOKEN_SIGNING_SECRET` | generated | Session/token secrets — keep private |
 
-After editing: `systemctl --user restart dala` (shells survive).
+After editing, restart the user service (shells survive):
+
+```sh
+# Linux
+systemctl --user restart dala
+
+# macOS
+launchctl kickstart -k "gui/$(id -u)/com.manjialin.dala"
+```
 
 ### Service management
 
 ```sh
+# Linux
 systemctl --user status dala
 journalctl --user -u dala -f
 systemctl --user restart dala
+
+# macOS
+launchctl print "gui/$(id -u)/com.manjialin.dala"
+tail -f ~/.local/share/dala/dala.stderr.log
+launchctl kickstart -k "gui/$(id -u)/com.manjialin.dala"
 ```
 
-`install.sh` runs `loginctl enable-linger` so the daemon also runs while you
-are logged out.
+On Linux, `install.sh` runs `loginctl enable-linger` so the daemon also runs
+while you are logged out. The macOS LaunchAgent starts when the user logs in.
 
 ### LAN access
 
@@ -372,8 +389,10 @@ in `dala.env`.
 ### Releases & building from source
 
 Releases are built by GitHub Actions on every `v*` tag
-(`.github/workflows/release.yml`): production assets (minified + digested),
-Rust NIFs, the PTY holder, packaged as `dala-<tag>-linux-x86_64.tar.gz`.
+(`.github/workflows/release.yml`): production assets, Rust NIFs and the PTY
+holder are packaged for Linux x86_64 and macOS arm64. Every Mach-O artifact in
+the macOS release is signed with the Developer ID certificate and the complete
+release is submitted to Apple notarization before publication.
 
 Local development needs Elixir 1.19+/OTP 28, Rust and Node 22:
 

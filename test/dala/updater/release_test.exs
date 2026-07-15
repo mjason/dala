@@ -3,6 +3,15 @@ defmodule Dala.Updater.ReleaseTest do
 
   alias Dala.Updater.Release
 
+  describe "platform/2" do
+    test "maps supported native targets to release asset names" do
+      assert Release.platform({:unix, :linux}, "x86_64-pc-linux-gnu") == "linux-x86_64"
+      assert Release.platform({:unix, :darwin}, "aarch64-apple-darwin") == "macos-arm64"
+      assert Release.platform({:unix, :darwin}, "arm64-apple-darwin") == "macos-arm64"
+      assert Release.platform({:win32, :nt}, "x86_64-pc-windows") == "unsupported"
+    end
+  end
+
   describe "newer?/2" do
     test "table: version pairs" do
       cases = [
@@ -66,6 +75,24 @@ defmodule Dala.Updater.ReleaseTest do
       }
 
       assert Release.asset_url(release) == {:ok, "http://x/linux"}
+    end
+
+    test "selects the macOS arm64 asset explicitly" do
+      release = %{
+        "tag_name" => "v1.2.3",
+        "assets" => [
+          %{
+            "name" => "dala-v1.2.3-linux-x86_64.tar.gz",
+            "browser_download_url" => "http://x/linux"
+          },
+          %{
+            "name" => "dala-v1.2.3-macos-arm64.tar.gz",
+            "browser_download_url" => "http://x/macos"
+          }
+        ]
+      }
+
+      assert Release.asset_url(release, "macos-arm64") == {:ok, "http://x/macos"}
     end
 
     test "errors when no asset matches the suffix" do

@@ -77,6 +77,31 @@ test.describe("Given 一个支持自定义主题的 dala 实例", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  test("主题库以双列终端预览展示完整内置调色板", async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 760 });
+    await openAppearance(page);
+
+    const previews = page.locator("[data-theme-terminal-preview]");
+    const palettes = page.locator("[data-theme-palette]");
+    await expect(page.locator("[data-fork-theme-id]")).toHaveCount(6);
+    expect(await previews.count()).toBeGreaterThanOrEqual(6);
+    expect(await palettes.count()).toBeGreaterThanOrEqual(6);
+
+    for (let index = 0; index < (await palettes.count()); index += 1) {
+      await expect(palettes.nth(index).locator("[data-theme-ansi-swatch]")).toHaveCount(8);
+    }
+
+    const geometry = await page.locator("#theme-library").evaluate((library) => {
+      const cards = Array.from(library.children).map((card) => card.getBoundingClientRect());
+      return {
+        overflow: library.scrollWidth - library.clientWidth,
+        columns: new Set(cards.map((rect) => Math.round(rect.left))).size,
+      };
+    });
+    expect(geometry.overflow).toBeLessThanOrEqual(0);
+    expect(geometry.columns).toBe(2);
+  });
+
   test("跨设备库 + 外壳终端同时重着色：A 新建主题，B 设备看到并选中后一起重着色", async ({
     page,
     browser,

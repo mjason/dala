@@ -16,7 +16,7 @@ export async function loadPreview(
 ): Promise<{ ok: true; preview: Preview } | { ok: false; message: string | null }> {
   const kind = previewKind(path);
 
-  if (kind === "image") {
+  if (kind === "image" || kind === "spreadsheet") {
     // The bytes are served by URL; only the size needs the server. A caller
     // without one (quick-open) used to show "0 bytes" — ask for metadata,
     // and on failure still show the preview.
@@ -27,7 +27,7 @@ export async function loadPreview(
       });
       if (meta.ok) size = meta.data.size;
     }
-    return { ok: true, preview: { kind: "image", path, size } };
+    return { ok: true, preview: { kind, path, size } };
   }
 
   const result = await call<{

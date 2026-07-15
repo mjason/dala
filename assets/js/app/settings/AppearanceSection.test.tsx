@@ -75,6 +75,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AppearanceSection theme library", () => {
+  it("renders each theme as a terminal palette preview", () => {
+    const { container } = renderSection();
+    expect(container.querySelectorAll("[data-theme-terminal-preview]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-theme-palette]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-theme-ansi-swatch]")).toHaveLength(16);
+    expect(q(container, "[data-theme-terminal-preview='c1']").textContent).toContain("dala status");
+  });
+
   it("selecting a custom chip saves {custom, id}, applies, and marks it pressed", () => {
     const { container } = renderSection();
     fireEvent.click(q(container, "[data-custom-theme-id='c1']"));
