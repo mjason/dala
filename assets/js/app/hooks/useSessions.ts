@@ -35,12 +35,29 @@ export const SESSION_FIELDS = [
 ] as const;
 
 /** Insert or replace a session in the list, keeping order stable on update. */
-export function upsertList(list: Session[], session: Session): Session[] {
+export function upsertList<T extends { id: string }>(list: T[], session: T): T[] {
   const idx = list.findIndex((s) => s.id === session.id);
   if (idx === -1) return [...list, session];
   const next = [...list];
   next[idx] = session;
   return next;
+}
+
+/**
+ * Reconcile the first RPC snapshot with channel events received while that
+ * request was in flight. Live rows win over stale snapshot copies; creations
+ * absent from the snapshot survive, and observed deletions are not resurrected.
+ */
+export function mergeInitialSessions<T extends { id: string }>(
+  snapshot: T[],
+  live: T[],
+  deletedIds: ReadonlySet<string>,
+): T[] {
+  let merged = snapshot.filter((session) => !deletedIds.has(session.id));
+  for (const session of live) {
+    if (!deletedIds.has(session.id)) merged = upsertList(merged, session);
+  }
+  return merged;
 }
 
 /** Most recently visited session that still exists, excluding the deleted one. */
@@ -74,8 +91,10 @@ export function useSessions(opts: {
   );
   const [connected, setConnected] = useState(false);
   const [creating, setCreating] = useState(false);
+  const deletedSessionIdsRef = useRef(new Set<string>());
 
   const upsertSession = useCallback((session: Session) => {
+    if (deletedSessionIdsRef.current.has(session.id)) return;
     setSessions((list) => upsertList(list, session));
   }, []);
 
@@ -118,6 +137,7 @@ export function useSessions(opts: {
       session_updated: upsertSession,
       agent_event: (payload) => callbacksRef.current.onAgentEvent(payload),
       session_deleted: ({ id }) => {
+        deletedSessionIdsRef.current.add(id);
         setSessions((list) => list.filter((s) => s.id !== id));
         callbacksRef.current.onSessionDeleted(id);
         // The active session was deleted: return to the most recently
@@ -136,7 +156,9 @@ export function useSessions(opts: {
         sort: ["position", "insertedAt"],
       });
       if (result.ok) {
-        setSessions(result.data);
+        setSessions((live) =>
+          mergeInitialSessions(result.data, live, deletedSessionIdsRef.current),
+        );
       } else {
         toast(result.error || t("couldNotLoadSessions"));
       }
@@ -244,6 +266,7 @@ export function useSessions(opts: {
     try {
       const result = await call<unknown>(deleteSession, { identity: id });
       if (result.ok) {
+        deletedSessionIdsRef.current.add(id);
         setSessions((list) => list.filter((s) => s.id !== id));
         if (activeId === id) setActiveId(null);
       } else {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
@@ -34,7 +34,7 @@ type Props = {
   onFiles: (files: File[]) => void;
   /** Fullscreen: fill the host (a flex child) instead of growing to the cap. */
   fullscreen: boolean;
-  /** Debounced editor-height changes (auto-grow) — the terminal refits. */
+  /** Debounced editor-height changes (auto-grow), if the parent needs them. */
   onResize: () => void;
 };
 
@@ -147,7 +147,10 @@ export default function ComposerEditor({
   const cbs = useRef({ onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize });
   cbs.current = { onEnter, onEscape, onArrow, onPick, onChange, onCursor, onFiles, onResize };
 
-  useEffect(() => {
+  // Build CodeMirror before the browser paints. InputBar measures the resting
+  // composer height in its own layout effect; mounting the editor later would
+  // briefly leave a zero-height spacer and make the terminal resize twice.
+  useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
@@ -225,8 +228,9 @@ export default function ComposerEditor({
       }, 0);
     }
 
-    // Auto-grow changes the editor's height as the user types — the terminal
-    // above must refit. Debounced: a paste can wrap many lines at once.
+    // Auto-grow changes the editor's height as the user types. Report it on a
+    // debounce; the floating composer currently ignores this, while another
+    // host can still choose to react. A paste can wrap many lines at once.
     let resizeTimer: number | undefined;
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {

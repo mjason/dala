@@ -62,6 +62,7 @@ function Harness({
         onSend={() => {}}
         onClose={onClose}
         onError={() => {}}
+        onLayoutReady={() => {}}
         onResize={() => {}}
       />
     </I18nProvider>

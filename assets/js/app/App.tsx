@@ -912,6 +912,7 @@ export default function App() {
                 onFocusConsumed={(n) => (composerFocusConsumedRef.current = n)}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
+                onLayoutReady={() => termActions.current?.refit()}
                 // Auto-grow no longer resizes the terminal: the composer floats
                 // and overlays its growth (see InputBar's baseline spacer), so
                 // there is nothing to refit. Open/close still refits (below).

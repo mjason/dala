@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { pickPreviousSession, upsertList } from "./useSessions";
+import {
+  mergeInitialSessions,
+  pickPreviousSession,
+  upsertList,
+} from "./useSessions";
 import type { Session } from "../Sidebar";
+
+type Row = { id: string; name: string };
 
 const session = (id: string, name = id): Session =>
   ({
@@ -51,5 +57,31 @@ describe("pickPreviousSession", () => {
     const history = ["a", "b"];
     pickPreviousSession(history, "b", live);
     expect(history).toEqual(["a", "b"]);
+  });
+});
+
+describe("mergeInitialSessions", () => {
+  it("keeps a session created while the initial snapshot was loading", () => {
+    const snapshot: Row[] = [{ id: "old", name: "old" }];
+    const live: Row[] = [
+      { id: "old", name: "renamed-live" },
+      { id: "new", name: "new" },
+    ];
+
+    expect(mergeInitialSessions(snapshot, live, new Set())).toEqual([
+      { id: "old", name: "renamed-live" },
+      { id: "new", name: "new" },
+    ]);
+  });
+
+  it("does not resurrect a session deleted while the snapshot was loading", () => {
+    const snapshot: Row[] = [
+      { id: "kept", name: "kept" },
+      { id: "deleted", name: "stale" },
+    ];
+
+    expect(mergeInitialSessions(snapshot, [], new Set(["deleted"]))).toEqual([
+      { id: "kept", name: "kept" },
+    ]);
   });
 });

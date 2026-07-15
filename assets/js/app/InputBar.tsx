@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { agentCommands, listFiles, savePastedFile, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
 import { blobToBase64, startRecording, type Recorder } from "./speech";
@@ -26,7 +26,9 @@ type Props = {
   onSend: (text: string, submit: boolean) => void;
   onClose: () => void;
   onError: (message: string) => void;
-  /** The editor's height changed (bounded auto-grow) — refit the terminal. */
+  /** The resting spacer is in the DOM and the terminal can fit against it. */
+  onLayoutReady: () => void;
+  /** Optional observer hook for bounded editor growth. */
   onResize: () => void;
 };
 
@@ -71,6 +73,7 @@ export default function InputBar({
   onSend,
   onClose,
   onError,
+  onLayoutReady,
   onResize,
 }: Props) {
   const { t } = useI18n();
@@ -98,29 +101,29 @@ export default function InputBar({
   // at the bottom (absolute) and grows UPWARD as the editor auto-grows; the flow
   // reserves only this baseline, so growth overlays the terminal's bottom rows
   // instead of resizing/reflowing the terminal (which jittered it per keystroke).
+  // It is measured once, before paint, with any draft growth subtracted. That
+  // keeps blank lines, a restored long draft and the first rendered frame from
+  // changing the terminal grid.
   const [baseline, setBaseline] = useState<number | null>(null);
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  useEffect(() => {
+  const layoutReadyRef = useRef(false);
+  useLayoutEffect(() => {
     const el = barRef.current;
-    if (!el || fullscreen) return;
-    const measure = () => {
-      const h = el.offsetHeight;
-      setBaseline((b) => {
-        // Empty draft ⇒ the bar sits at its floor: that IS the baseline.
-        if (valueRef.current.trim() === "") return h;
-        // Opened straight into a draft (never saw the floor) ⇒ reserve what we
-        // have; otherwise freeze on growth (overlay) but follow a shrink down.
-        if (b == null) return h;
-        return Math.min(b, h);
-      });
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [fullscreen]);
+    if (!el || fullscreen || baseline != null) return;
+    const editor = el.querySelector<HTMLElement>("#composer-editor .cm-editor");
+    const content = el.querySelector<HTMLElement>("#composer-editor .cm-content");
+    if (!editor || !content) return;
+
+    const floor = Number.parseFloat(window.getComputedStyle(content).minHeight);
+    const editorHeight = editor.getBoundingClientRect().height;
+    if (!Number.isFinite(floor) || editorHeight <= 0) return;
+
+    setBaseline(Math.ceil(el.getBoundingClientRect().height - editorHeight + floor));
+  }, [baseline, fullscreen]);
+  useLayoutEffect(() => {
+    if (baseline == null || layoutReadyRef.current) return;
+    layoutReadyRef.current = true;
+    onLayoutReady();
+  }, [baseline, onLayoutReady]);
   const toggleFullscreen = () => {
     // Keep the terminal at its current (baseline-excluded) size while the
     // fullscreen overlay is up — the spacer holds exactly the reserved slot.
