@@ -67,18 +67,25 @@ test.describe("Given 一个有活动会话的用户", () => {
     expect(initial).toBeLessThanOrEqual(60);
     expect(initial).toBeLessThan(0.2 * viewport.height); // 空态绝不占大块视口
 
-    // ② 自动生长：8 行草稿（> 3 行的地板）必须把编辑器撑高，而且终端仍然
-    //    完整露在上方（工具行可见、终端有实体高度、二者不重叠）。
+    // ② 自动生长：8 行草稿（> 3 行的地板）撑高编辑器。关键不变式：终端尺寸
+    //    【一行都不动】—— composer 悬浮向上盖住终端底部，不再 per-keystroke
+    //    reflow 终端（老设计正是在这里抖动/闪烁）。
+    const rowsBefore = await page.evaluate(() => window.__dalaTerm?.rows);
+    expect(rowsBefore).toBeGreaterThan(0);
     await page.keyboard.type(Array.from({ length: 8 }, (_, i) => `line ${i}`).join("\n"));
     const grown = await editorHeight();
     expect(grown).toBeGreaterThan(initial);
     expect(grown).toBeGreaterThan(initial + 40); // 至少多出好几行，不是抖动
 
     await expect(page.locator("#input-bar-send")).toBeVisible();
+    // 长高零 resize：终端行数保持不变（悬浮方案的核心保证）。
+    await expect
+      .poll(() => page.evaluate(() => window.__dalaTerm?.rows))
+      .toBe(rowsBefore);
     let term = await page.locator(".xterm").first().boundingBox();
     let bar = await page.locator("#input-bar").boundingBox();
-    expect(term.height).toBeGreaterThan(100);
-    expect(term.y + term.height).toBeLessThanOrEqual(bar.y + 1); // 终端没被盖住
+    expect(term.height).toBeGreaterThan(100); // 终端保持满高，未被挤矮
+    expect(bar.y).toBeLessThan(term.y + term.height); // composer 悬浮盖住终端底部
 
     // ③ 封顶：继续打到 40 行 —— 高度停在 min(40vh, --vvh*0.4)，编辑器内部
     //    滚动，光标所在的最后一行仍然可见。+2px 容差是边框/取整。

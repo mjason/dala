@@ -23,6 +23,7 @@ import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/sea
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
+import { findOnModF } from "./cm/findOnModF";
 
 type Props = {
   value: string;
@@ -98,8 +99,10 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
     const view = new EditorView({ state, parent: host });
     viewRef.current = view;
     view.focus();
+    const stopFind = findOnModF(view);
 
     return () => {
+      stopFind();
       viewRef.current = null;
       view.destroy();
     };

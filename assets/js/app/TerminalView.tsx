@@ -6,6 +6,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import type { IClipboardProvider, ClipboardSelectionType } from "@xterm/addon-clipboard";
+import { SearchAddon } from "@xterm/addon-search";
 import { getSocket } from "./socket";
 import {
   onTerminalChannelMessages,
@@ -151,6 +152,54 @@ export default function TerminalView({
   const escapeRef = useRef(onEscape);
   escapeRef.current = onEscape;
 
+  // Terminal find (Ctrl/Cmd+F): search the scrollback via SearchAddon. WebGL
+  // renders to a canvas with no DOM text, so the browser's native find is
+  // useless here — this box drives the addon and highlights matches instead.
+  const termRef = useRef<Terminal | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCount, setFindCount] = useState<{ index: number; count: number }>({
+    index: -1,
+    count: 0,
+  });
+  // Called from the imperative key handler (set up once) — kept in a ref so it
+  // always sees the latest React setters.
+  const openFindRef = useRef(() => {});
+  openFindRef.current = () => {
+    setFindOpen(true);
+    requestAnimationFrame(() => findInputRef.current?.select());
+  };
+  const runFind = (dir: 1 | -1, query: string, incremental = false) => {
+    const s = searchRef.current;
+    if (!s) return;
+    if (!query) {
+      s.clearDecorations();
+      setFindCount({ index: -1, count: 0 });
+      return;
+    }
+    const opts = {
+      decorations: {
+        matchBackground: "#facc1566",
+        matchBorder: "#facc1500",
+        matchOverviewRuler: "#facc15",
+        activeMatchBackground: "#2dd4bf",
+        activeMatchColorOverviewRuler: "#2dd4bf",
+      },
+      caseSensitive: false,
+      incremental,
+    };
+    if (dir === 1) s.findNext(query, opts);
+    else s.findPrevious(query, opts);
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    searchRef.current?.clearDecorations();
+    setFindCount({ index: -1, count: 0 });
+    termRef.current?.focus();
+  };
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -203,6 +252,14 @@ export default function TerminalView({
       // usual culprit when scrolling feels sluggish.
       document.documentElement.dataset.termRenderer = webgl ? "webgl" : "dom";
 
+      const searchAddon = new SearchAddon();
+      term.loadAddon(searchAddon);
+      searchRef.current = searchAddon;
+      termRef.current = term;
+      const searchResultsSub = searchAddon.onDidChangeResults((r) => {
+        setFindCount({ index: r.resultIndex, count: r.resultCount });
+      });
+
       fit.fit();
       term.focus();
 
@@ -214,6 +271,20 @@ export default function TerminalView({
       // through xterm's native copy-event path.
       let livePrefs = prefs;
       term.attachCustomKeyEventHandler((event) => {
+        // Ctrl/Cmd+F opens the terminal find box, not the browser's native find
+        // (blind to WebGL cells) or readline's forward-char. Shift/Alt+F is left
+        // to the shell.
+        if (
+          event.type === "keydown" &&
+          (isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
+          !event.shiftKey &&
+          !event.altKey &&
+          (event.key === "f" || event.key === "F")
+        ) {
+          event.preventDefault();
+          openFindRef.current();
+          return false;
+        }
         if (
           event.type === "keydown" &&
           event.key === "Escape" &&
@@ -258,7 +329,12 @@ export default function TerminalView({
         term.options.lineHeight = next.lineHeight;
         term.options.cursorStyle = next.cursorStyle;
         term.options.cursorBlink = next.cursorBlink;
-        term.options.smoothScrollDuration = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
+        // If a scroll restore is mid-flight it has forced smoothScrollDuration
+        // to 0 and writes savedSmooth back when it finishes — update THAT, or
+        // its cleanup would silently revert this preference change.
+        const smoothMs = next.smoothScroll ? SMOOTH_SCROLL_MS : 0;
+        if (restoreDepth > 0) savedSmooth = smoothMs;
+        else term.options.smoothScrollDuration = smoothMs;
         term.options.scrollSensitivity = next.scrollSensitivity;
         // Font metrics changed — refit/re-scale via the shared path.
         window.setTimeout(() => relayout(), 0);
@@ -523,37 +599,87 @@ export default function TerminalView({
       //    queues a `_sync()` on the next frame that force-writes scrollTop back
       //    to `ydisp*cellHeight`, so a scroll issued during/before it is undone.
       //    Defer past that frame and verify/retry until it sticks.
-      // The top line's TEXT is the one thing invariant across a re-wrap (line
-      // indices and marker positions churn; a count of logical lines picks up
-      // trailing blank rows). Capture it, then find it again after the reflow.
-      const captureTopText = (): string | null => {
+      // Anchor = the top logical line's TEXT, its position as a count of LOGICAL
+      // lines from the BOTTOM, and the wrapped-row OFFSET into that line. Text is
+      // what survives a re-wrap (indices churn, markers don't track reflow); the
+      // from-bottom count (trim-robust) DISAMBIGUATES a repeated line — TUI
+      // borders, `───` separators, prompts — so we re-anchor to the copy nearest
+      // where the viewport was, not the first (topmost) one; the offset keeps a
+      // viewport parked mid-way through a tall wrapped line from jumping up.
+      type ScrollAnchor = { text: string | null; fromBottom: number; offset: number };
+      // A logical line's text built WITHOUT per-row trimming (only the final
+      // padding is dropped): translateToString(true) trims each wrapped row, so
+      // an interior space landing on a moved wrap column would silently change
+      // the string across a re-wrap. translateToString(false) keeps every cell.
+      const logicalTextAt = (start: number): string => {
+        const buf = term.buffer.active;
+        let text = buf.getLine(start)?.translateToString(false) ?? "";
+        for (let i = start + 1; i < buf.length; i++) {
+          if (!buf.getLine(i)?.isWrapped) break;
+          text += buf.getLine(i)?.translateToString(false) ?? "";
+        }
+        return text.replace(/\s+$/, "");
+      };
+      // Rows a logical line occupies (its wrapped height) at the current width.
+      const lineRows = (start: number): number => {
+        const buf = term.buffer.active;
+        let end = start + 1;
+        while (end < buf.length && buf.getLine(end)?.isWrapped) end++;
+        return end - start;
+      };
+      const captureAnchor = (): ScrollAnchor | null => {
         const buf = term.buffer.active;
         if (buf.viewportY >= buf.baseY) return null; // at the bottom — xterm pins it
-        let row = buf.viewportY;
-        while (row > 0 && buf.getLine(row)?.isWrapped) row--;
-        let text = buf.getLine(row)?.translateToString(true) ?? "";
-        for (let i = row + 1; i < buf.length; i++) {
-          if (!buf.getLine(i)?.isWrapped) break;
-          text += buf.getLine(i)?.translateToString(true) ?? "";
+        let top = buf.viewportY;
+        while (top > 0 && buf.getLine(top)?.isWrapped) top--;
+        const offset = buf.viewportY - top; // which wrapped row within the line
+        let fromBottom = 0;
+        for (let i = top; i < buf.length; i++) {
+          if (!buf.getLine(i)?.isWrapped) fromBottom++;
         }
-        text = text.trimEnd();
-        return text.trim().length > 0 ? text : null;
+        const text = logicalTextAt(top);
+        return { text: text.trim().length > 0 ? text : null, fromBottom, offset };
       };
-      const rowOfText = (text: string): number => {
+      const rowAtFromBottom = (fromBottom: number): number => {
         const buf = term.buffer.active;
-        let startRow = -1;
-        let cur = "";
-        for (let i = 0; i < buf.length; i++) {
-          const line = buf.getLine(i);
-          if (line && !line.isWrapped) {
-            if (startRow >= 0 && cur.trimEnd() === text) return startRow;
-            startRow = i;
-            cur = line.translateToString(true);
-          } else {
-            cur += line?.translateToString(true) ?? "";
-          }
+        let count = 0;
+        for (let i = buf.length - 1; i >= 0; i--) {
+          if (buf.getLine(i)?.isWrapped) continue;
+          if (++count === fromBottom) return i;
         }
-        return startRow >= 0 && cur.trimEnd() === text ? startRow : -1;
+        return 0;
+      };
+      // Nearest logical line whose text matches the anchor is the target's start.
+      // Search is BOUNDED to a window around the position estimate: it keeps a
+      // 10k+ line scrollback from being fully rescanned, resolves repeats to the
+      // right region, and (because output appended during the deferred restore
+      // only shifts the estimate by a few lines) tolerates concurrent output.
+      const resolveTarget = (anchor: ScrollAnchor): number => {
+        const buf = term.buffer.active;
+        const estimate = rowAtFromBottom(anchor.fromBottom);
+        let logicalStart = estimate;
+        if (anchor.text != null) {
+          const WINDOW = 500; // rows either side of the estimate
+          const lo = Math.max(0, estimate - WINDOW);
+          const hi = Math.min(buf.length, estimate + WINDOW);
+          let best = -1;
+          let bestDist = Infinity;
+          for (let i = lo; i < hi; i++) {
+            const line = buf.getLine(i);
+            if (!line || line.isWrapped) continue; // logical starts only
+            if (logicalTextAt(i) === anchor.text) {
+              const dist = Math.abs(i - estimate);
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = i;
+              }
+            }
+          }
+          if (best >= 0) logicalStart = best;
+        }
+        // Re-add the intra-line offset, clamped to the line's new wrapped height.
+        const clamped = Math.min(anchor.offset, Math.max(0, lineRows(logicalStart) - 1));
+        return logicalStart + clamped;
       };
       // A single width change can fire maybeResize more than once, so restores
       // can overlap. Save the user's smooth-scroll setting on the FIRST active
@@ -561,11 +687,12 @@ export default function TerminalView({
       // nested restore's cleanup could leave it stuck at 0.
       let restoreDepth = 0;
       let savedSmooth = 0;
-      const restoreScroll = (text: string) => {
+      const restoreScroll = (anchor: ScrollAnchor) => {
         if (restoreDepth === 0) savedSmooth = term.options.smoothScrollDuration ?? 0;
         restoreDepth++;
         term.options.smoothScrollDuration = 0; // jump, don't animate the re-anchor
         let tries = 4;
+        let target = -1; // resolved ONCE (see below), reused across retries
         const done = () => {
           if (--restoreDepth === 0 && !disposed) {
             term.options.smoothScrollDuration = savedSmooth;
@@ -573,8 +700,11 @@ export default function TerminalView({
         };
         const attempt = () => {
           if (disposed) return done();
-          const target = rowOfText(text);
-          if (target < 0) return done(); // content trimmed out of scrollback — leave it
+          // Resolve on the first attempt only: the buffer is stable post-reflow
+          // and re-resolving each retry would CHASE any concurrent output (the
+          // target would keep moving and the verify never converge) and rescan
+          // the buffer needlessly.
+          if (target < 0) target = resolveTarget(anchor);
           term.scrollToLine(target);
           requestAnimationFrame(() => {
             if (disposed) return done();
@@ -591,7 +721,7 @@ export default function TerminalView({
       let lastSize = "";
       const maybeResize = () => {
         if (disposed) return;
-        const anchor = captureTopText();
+        const anchor = captureAnchor();
         resetPadding();
         fit.fit();
         clampOverflow();
@@ -652,6 +782,10 @@ export default function TerminalView({
         role = "driver";
         follower = false;
         if (term.element) term.element.style.transform = "";
+        // A promoted follower keeps its full scrollback, so it can be scrolled
+        // up — this fit() rewraps to our own width just like a panel toggle, so
+        // preserve the viewport across it (this path used to jump silently).
+        const anchor = captureAnchor();
         resetPadding();
         const prevCols = term.cols;
         fit.fit();
@@ -669,6 +803,7 @@ export default function TerminalView({
         // Repaint after the geometry settles (stale edge pixels otherwise).
         term.refresh(0, term.rows - 1);
         setSizeFollower(false);
+        if (anchor != null && term.cols !== prevCols) restoreScroll(anchor);
       };
       claimSizeRef.current = () => enterDriver("claim");
 
@@ -716,7 +851,7 @@ export default function TerminalView({
             scaleToFit();
           }
         } else {
-          const anchor = captureTopText();
+          const anchor = captureAnchor();
           resetPadding();
           fit.fit();
           clampOverflow();
@@ -1042,6 +1177,9 @@ export default function TerminalView({
         inputDisposable.dispose();
         typeahead.dispose();
         ackCounter.dispose();
+        searchResultsSub.dispose();
+        searchRef.current = null;
+        termRef.current = null;
         unsubscribeTerminalChannel(channel, refs);
         phxChannel.leave();
         term.dispose();
@@ -1061,6 +1199,68 @@ export default function TerminalView({
           terminal element's own padding — parent padding makes it overshoot
           by a row and TUI bottom bars get clipped. */}
       <div ref={containerRef} className="h-full w-full" />
+      {findOpen && (
+        <div
+          id="terminal-find"
+          className="absolute right-3 top-2 z-20 flex items-center gap-1 rounded-lg border border-line bg-bg1/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur-sm"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              closeFind();
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              runFind(e.shiftKey ? -1 : 1, findQuery);
+            }
+          }}
+        >
+          <input
+            ref={findInputRef}
+            id="terminal-find-input"
+            value={findQuery}
+            onChange={(e) => {
+              setFindQuery(e.target.value);
+              runFind(1, e.target.value, true);
+            }}
+            placeholder={t("findPlaceholder")}
+            autoFocus
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="w-36 min-w-0 bg-transparent font-mono text-[12px] text-fg outline-none placeholder:text-fg-muted/60"
+          />
+          <span className="shrink-0 whitespace-nowrap px-1 font-mono text-[10px] tabular-nums text-fg-muted/70">
+            {findQuery === ""
+              ? ""
+              : findCount.count === 0
+                ? t("findNoResults")
+                : `${findCount.index + 1}/${findCount.count}`}
+          </span>
+          <button
+            id="terminal-find-prev"
+            aria-label={t("findPrev")}
+            onClick={() => runFind(-1, findQuery)}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded font-mono text-[13px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+          >
+            ↑
+          </button>
+          <button
+            id="terminal-find-next"
+            aria-label={t("findNext")}
+            onClick={() => runFind(1, findQuery)}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded font-mono text-[13px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+          >
+            ↓
+          </button>
+          <button
+            id="terminal-find-close"
+            aria-label={t("close")}
+            onClick={closeFind}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded font-mono text-[13px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {reflowTip.seconds != null && !sizeFollower && (
         <div
           id="reflow-tip"

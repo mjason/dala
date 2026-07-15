@@ -94,8 +94,37 @@ export default function InputBar({
   // behind the overlay keeps its grid (no SIGWINCH round-trip for its TUI).
   const [spacerHeight, setSpacerHeight] = useState(0);
   const barRef = useRef<HTMLDivElement>(null);
+  // Baseline = the bar's resting (floor) height. In normal mode the bar floats
+  // at the bottom (absolute) and grows UPWARD as the editor auto-grows; the flow
+  // reserves only this baseline, so growth overlays the terminal's bottom rows
+  // instead of resizing/reflowing the terminal (which jittered it per keystroke).
+  const [baseline, setBaseline] = useState<number | null>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el || fullscreen) return;
+    const measure = () => {
+      const h = el.offsetHeight;
+      setBaseline((b) => {
+        // Empty draft ⇒ the bar sits at its floor: that IS the baseline.
+        if (valueRef.current.trim() === "") return h;
+        // Opened straight into a draft (never saw the floor) ⇒ reserve what we
+        // have; otherwise freeze on growth (overlay) but follow a shrink down.
+        if (b == null) return h;
+        return Math.min(b, h);
+      });
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fullscreen]);
   const toggleFullscreen = () => {
-    if (!fullscreen) setSpacerHeight(barRef.current?.offsetHeight ?? 0);
+    // Keep the terminal at its current (baseline-excluded) size while the
+    // fullscreen overlay is up — the spacer holds exactly the reserved slot.
+    if (!fullscreen) setSpacerHeight(baseline ?? barRef.current?.offsetHeight ?? 0);
     setFullscreen((v) => !v);
   };
 
@@ -350,8 +379,16 @@ export default function InputBar({
 
   return (
     <>
-      {fullscreen && (
+      {fullscreen ? (
         <div id="input-bar-spacer" className="shrink-0" style={{ height: spacerHeight }} />
+      ) : (
+        // Reserve only the resting height in the flow; the floating bar below
+        // overlays the terminal's bottom rows when the editor grows past it.
+        <div
+          id="composer-baseline-spacer"
+          className="shrink-0"
+          style={{ height: baseline ?? undefined }}
+        />
       )}
     <div
       ref={barRef}
@@ -359,7 +396,7 @@ export default function InputBar({
       data-fullscreen={fullscreen ? "true" : undefined}
       className={[
         "border-t border-line bg-bg1 px-3 pt-2 pb-1.5",
-        fullscreen ? "absolute inset-0 z-20 flex flex-col" : "relative shrink-0",
+        fullscreen ? "absolute inset-0 z-20 flex flex-col" : "absolute inset-x-0 bottom-0 z-20",
       ].join(" ")}
     >
       {slash !== null && slashMatches.length > 0 && !mention && (

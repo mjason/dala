@@ -144,6 +144,195 @@ test.describe("Given 一个打开 dala 的用户", () => {
     }
   });
 
+  test("满屏重复行（TUI 边框）时开关侧栏，视口不跳到顶部", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+      await page.click("#terminal-refit-button");
+      await page.waitForTimeout(300);
+
+      // 260 行「完全相同」的边框。纯文本锚会全命中→落到第一处（顶部）；联合锚
+      // 用位置估计消歧，落在原处附近。这正是 codex 这类 TUI 触发的场景。
+      await page.keyboard.type(`python3 -c "print(chr(10).join(['-'*180]*260))"`);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.buffer.active.baseY ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(120);
+      await page.waitForTimeout(400);
+
+      // 位置度量：顶部可见逻辑行「距 buffer 底部的逻辑行数」。内容全相同时读不出
+      // 唯一标记，只能用位置——恰好也是「跳到顶部」会暴露的量（会飙到≈总行数）。
+      const fromBottom = () =>
+        page.evaluate(() => {
+          const b = window.__dalaTerm.buffer.active;
+          let top = b.viewportY;
+          while (top > 0 && b.getLine(top)?.isWrapped) top--;
+          let n = 0;
+          for (let i = top; i < b.length; i++) if (!b.getLine(i)?.isWrapped) n++;
+          return n;
+        });
+      const cols = () => page.evaluate(() => window.__dalaTerm?.cols ?? 0);
+
+      await page.evaluate(() => {
+        window.__dalaTerm.options.smoothScrollDuration = 0;
+        window.__dalaTerm.scrollLines(-120);
+      });
+      let prev = -1;
+      await expect
+        .poll(
+          async () => {
+            const v = await fromBottom();
+            const ok = v > 0 && v === prev;
+            prev = v;
+            return ok;
+          },
+          { timeout: 3_000 },
+        )
+        .toBe(true);
+      const before = prev;
+      expect(before, "应滚到回滚中段").toBeGreaterThan(20);
+
+      // 开文件栏 → reflow。旧代码跳顶 → fromBottom 飙到≈总逻辑行数；联合锚守住
+      // 原位置（±6 给尾部空行随宽度变化的余量，与「跳顶」的百余行偏差天差地别）。
+      const wide = await cols();
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+      await expect.poll(cols, { timeout: 5_000 }).toBeLessThan(wide);
+      await expect
+        .poll(async () => Math.abs((await fromBottom()) - before), { timeout: 5_000 })
+        .toBeLessThanOrEqual(6);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("视口停在超长折行行的中段时开关侧栏，不跳回行首（保留行内偏移）", async ({
+    page,
+  }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+      await page.click("#terminal-refit-button");
+      await page.waitForTimeout(300);
+
+      // 20 行普通 + 一条 2400 字符的超长单行（折成很多行）+ 80 行普通。
+      await page.keyboard.type(
+        `python3 -c "print(chr(10).join('head%02d'%i for i in range(20))); print('X'*2400); print(chr(10).join('tail%02d'%i for i in range(80)))"`,
+      );
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.buffer.active.baseY ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(60);
+      await page.waitForTimeout(400);
+
+      // 滚到超长行的正中段（顶部行是折行续行，不是行首）。
+      const scrolled = await page.evaluate(() => {
+        const b = window.__dalaTerm.buffer.active;
+        window.__dalaTerm.options.smoothScrollDuration = 0;
+        let start = -1;
+        for (let i = 0; i < b.length; i++) {
+          const l = b.getLine(i);
+          if (l && !l.isWrapped && (l.translateToString(true) || "").startsWith("XXXX")) {
+            start = i;
+            break;
+          }
+        }
+        if (start < 0) return null;
+        let end = start + 1;
+        while (end < b.length && b.getLine(end)?.isWrapped) end++;
+        window.__dalaTerm.scrollToLine(start + Math.floor((end - start) / 2));
+        return { start, end };
+      });
+      expect(scrolled, "应找到超长行").not.toBeNull();
+
+      // 顶部行确实是折行续行（超长行中段）。
+      const topWrapped = () =>
+        page.evaluate(() => {
+          const b = window.__dalaTerm.buffer.active;
+          return b.getLine(b.viewportY)?.isWrapped ?? false;
+        });
+      await expect.poll(topWrapped, { timeout: 3_000 }).toBe(true);
+      const cols = () => page.evaluate(() => window.__dalaTerm?.cols ?? 0);
+      const wide = await cols();
+
+      // 开侧栏 → reflow。恢复后顶部行【仍是折行续行】（停在中段）；旧代码丢掉
+      // 行内偏移会跳回行首（isWrapped=false）。
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+      await expect.poll(cols, { timeout: 5_000 }).toBeLessThan(wide);
+      await expect.poll(topWrapped, { timeout: 5_000 }).toBe(true);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("终端 Ctrl+F 打开查找框，命中显示计数，未命中显示无结果，Esc 关闭并回焦终端", async ({
+    page,
+  }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+
+      // 打印可搜索内容（NEEDLEALPHA 会在命令行回显 + echo 输出里多次出现）。
+      await page.keyboard.type("echo NEEDLEALPHA NEEDLEBETA NEEDLEALPHA");
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const b = window.__dalaTerm?.buffer.active;
+            if (!b) return "";
+            let s = "";
+            for (let i = 0; i < b.length; i++) s += b.getLine(i)?.translateToString(true) ?? "";
+            return s;
+          }),
+        )
+        .toContain("NEEDLEBETA");
+
+      // Ctrl+F 打开查找框，焦点落在输入框（浏览器原生查找被拦截）。
+      await page.keyboard.press("Control+f");
+      await expect(page.locator("#terminal-find")).toBeVisible();
+      await expect(page.locator("#terminal-find-input")).toBeFocused();
+
+      // 命中词 → 出现 “x/y” 计数。
+      await page.locator("#terminal-find-input").fill("NEEDLEALPHA");
+      await expect
+        .poll(async () =>
+          /\d+\s*\/\s*\d+/.test(await page.locator("#terminal-find").innerText()) ? "yes" : "no",
+        )
+        .toBe("yes");
+
+      // 不存在的词 → 无结果提示。
+      await page.locator("#terminal-find-input").fill("ZZZ_NOPE_ZZZ");
+      await expect(page.locator("#terminal-find")).toContainText("No results");
+
+      // Esc 关闭，焦点回终端。
+      await page.locator("#terminal-find-input").press("Escape");
+      await expect(page.locator("#terminal-find")).toHaveCount(0);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.activeElement?.classList?.contains("xterm-helper-textarea") ?? false,
+          ),
+        )
+        .toBe(true);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("用户在全屏 TUI 里点重置后,终端当场重绘且焦点回到终端", async ({ page }) => {
     await h.gotoApp(page);
     const id = await h.createSession(page, cwd);

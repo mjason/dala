@@ -6,6 +6,7 @@ import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/sea
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
+import { findOnModF } from "./cm/findOnModF";
 
 type Props = {
   content: string;
@@ -51,8 +52,14 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
       parent: host,
     });
     viewRef.current = view;
+    // Focus so keyboard scroll and Ctrl/Cmd+F work the moment the preview opens
+    // (the editing CodeEditor already does this); findOnModF covers the case
+    // where focus later moves to a toolbar button.
+    view.focus();
+    const stopFind = findOnModF(view);
 
     return () => {
+      stopFind();
       viewRef.current = null;
       view.destroy();
     };

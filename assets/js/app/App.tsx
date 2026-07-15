@@ -912,9 +912,10 @@ export default function App() {
                 onFocusConsumed={(n) => (composerFocusConsumedRef.current = n)}
                 onSend={(text, submit) => void sendToForegroundApp(text, submit)}
                 onError={toast}
-                // Bounded auto-grow changed the editor's height (already
-                // debounced editor-side) — same refit path as open/close.
-                onResize={() => termActions.current?.refit()}
+                // Auto-grow no longer resizes the terminal: the composer floats
+                // and overlays its growth (see InputBar's baseline spacer), so
+                // there is nothing to refit. Open/close still refits (below).
+                onResize={() => {}}
                 onClose={() => {
                   setComposerOpen((m) => ({ ...m, [active.id]: false }));
                   termActions.current?.focus();
