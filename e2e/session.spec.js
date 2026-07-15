@@ -144,6 +144,63 @@ test.describe("Given 一个打开 dala 的用户", () => {
     }
   });
 
+  test("停在底部关闭文件栏时，SIGWINCH 后重绘的 TUI 仍跟随底部", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+      await page.click("#terminal-refit-button");
+
+      // Start narrow, then mimic an inline TUI that clears and redraws a long
+      // transcript whenever the PTY width changes. Codex does this after the
+      // resize itself, so xterm's built-in resize pinning alone is too early.
+      const wide = await page.evaluate(() => window.__dalaTerm?.cols ?? 0);
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.cols ?? 0), { timeout: 5_000 })
+        .toBeLessThan(wide);
+      const narrow = await page.evaluate(() => window.__dalaTerm?.cols ?? 0);
+      await page.evaluate(() => window.__dalaTerm.focus());
+      await page.keyboard.type(
+        `python3 -c "import signal,time,sys; d=chr(10).join('REDRAW-%03d-'%i+'x'*100 for i in range(180)); f=lambda *_:(sys.stdout.write(chr(27)+'[2J'+chr(27)+'[H'+d),sys.stdout.flush()); signal.signal(signal.SIGWINCH,f); f(); time.sleep(5)"`,
+      );
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.buffer.active.baseY ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(100);
+      await page.evaluate(() => window.__dalaTerm.scrollToBottom());
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const b = window.__dalaTerm.buffer.active;
+            return b.viewportY === b.baseY;
+          }),
+        )
+        .toBe(true);
+
+      // Closing widens the PTY and triggers the delayed redraw above. Wait
+      // past that output, then require the viewport to remain at the bottom.
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toHaveCount(0);
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.cols ?? 0), { timeout: 5_000 })
+        .toBeGreaterThan(narrow);
+      await page.waitForTimeout(500);
+      const position = await page.evaluate(() => {
+        const b = window.__dalaTerm.buffer.active;
+        return { viewportY: b.viewportY, baseY: b.baseY };
+      });
+      expect(position.viewportY).toBe(position.baseY);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("满屏重复行（TUI 边框）时开关侧栏，视口不跳到顶部", async ({ page }) => {
     await h.gotoApp(page);
     let id;

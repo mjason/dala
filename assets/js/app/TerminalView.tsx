@@ -486,10 +486,39 @@ export default function TerminalView({
         flowStats.acked += bytes;
         phxChannel.push("ack", { bytes, alt });
       });
+      // A width change can trigger several ResizeObserver passes, while an
+      // inline TUI may redraw only after handling SIGWINCH. If the viewport was
+      // at the bottom, keep that intent across both phases: otherwise a second
+      // pass can capture xterm's transient post-reflow position as if the user
+      // had scrolled there. The short window is refreshed by consecutive
+      // resizes and every parsed TUI redraw lands back at the bottom.
+      const BOTTOM_PIN_MS = 350;
+      let bottomPinUntil = 0;
+      let bottomPinTimer: number | undefined;
+      let bottomPinFrame: number | undefined;
+      const bottomPinActive = () => window.performance.now() < bottomPinUntil;
+      const scrollPinnedBottom = () => {
+        if (!disposed && bottomPinActive()) term.scrollToBottom();
+      };
+      const preserveBottomAfterResize = () => {
+        bottomPinUntil = window.performance.now() + BOTTOM_PIN_MS;
+        window.clearTimeout(bottomPinTimer);
+        if (bottomPinFrame != null) cancelAnimationFrame(bottomPinFrame);
+        term.scrollToBottom();
+        bottomPinFrame = requestAnimationFrame(() => {
+          scrollPinnedBottom();
+          bottomPinFrame = requestAnimationFrame(scrollPinnedBottom);
+        });
+        bottomPinTimer = window.setTimeout(() => {
+          if (!disposed) term.scrollToBottom();
+          bottomPinUntil = 0;
+        }, BOTTOM_PIN_MS);
+      };
       const writeCounted = (data: Uint8Array | string, done?: () => void) => {
         const size = typeof data === "string" ? data.length : data.byteLength;
         term.write(data, () => {
           ackCounter.consumed(size, term.buffer.active.type === "alternate");
+          scrollPinnedBottom();
           done?.();
         });
       };
@@ -629,7 +658,7 @@ export default function TerminalView({
       };
       const captureAnchor = (): ScrollAnchor | null => {
         const buf = term.buffer.active;
-        if (buf.viewportY >= buf.baseY) return null; // at the bottom — xterm pins it
+        if (buf.viewportY >= buf.baseY) return null; // bottom uses the short pin above
         let top = buf.viewportY;
         while (top > 0 && buf.getLine(top)?.isWrapped) top--;
         const offset = buf.viewportY - top; // which wrapped row within the line
@@ -721,7 +750,9 @@ export default function TerminalView({
       let lastSize = "";
       const maybeResize = () => {
         if (disposed) return;
-        const anchor = captureAnchor();
+        const buf = term.buffer.active;
+        const stayAtBottom = bottomPinActive() || buf.viewportY >= buf.baseY;
+        const anchor = stayAtBottom ? null : captureAnchor();
         resetPadding();
         fit.fit();
         clampOverflow();
@@ -730,6 +761,7 @@ export default function TerminalView({
         const key = term.rows + "x" + term.cols;
         if (key !== lastSize) {
           lastSize = key;
+          if (stayAtBottom) preserveBottomAfterResize();
           pushResize();
           if (anchor != null) restoreScroll(anchor);
         }
@@ -851,12 +883,15 @@ export default function TerminalView({
             scaleToFit();
           }
         } else {
-          const anchor = captureAnchor();
+          const buf = term.buffer.active;
+          const stayAtBottom = bottomPinActive() || buf.viewportY >= buf.baseY;
+          const anchor = stayAtBottom ? null : captureAnchor();
           resetPadding();
           fit.fit();
           clampOverflow();
           centerPadding();
           syncWebglCanvas();
+          if (stayAtBottom) preserveBottomAfterResize();
           pushResize();
           if (anchor != null) restoreScroll(anchor);
         }
@@ -1168,6 +1203,8 @@ export default function TerminalView({
         canvasObserver?.disconnect();
         window.clearTimeout(coverTimer);
         window.clearTimeout(resizeTimer);
+        window.clearTimeout(bottomPinTimer);
+        if (bottomPinFrame != null) cancelAnimationFrame(bottomPinFrame);
         window.clearInterval(idleTimer);
         window.removeEventListener("resize", onWindowChange);
         document.removeEventListener("visibilitychange", onWindowChange);
