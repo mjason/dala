@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { deleteTheme } from "../../ash_rpc";
+import { call } from "../rpc";
 import { FieldLabel, TextInput, ValueChip } from "../ui";
 import { useI18n } from "../i18n";
 import {
@@ -11,30 +13,103 @@ import {
   savePrefs,
 } from "../termPrefs";
 import type { CursorStyle, TermPrefs } from "../termPrefs";
-import { applyTheme, loadThemeSetting, saveThemeSetting } from "../theme";
-import type { ThemeSetting } from "../theme";
+import {
+  applyTheme,
+  cacheCustomTheme,
+  effectiveTheme,
+  loadThemeChoice,
+  saveThemeChoice,
+  type EffectiveTheme,
+  type ThemeSetting,
+} from "../theme";
+import { useThemeLibrary } from "../hooks/useThemeLibrary";
+import type { ThemeSummary } from "../themeLibrary";
+import { baseTokenValue } from "../themeBaseTokens";
+import ThemeEditor, { type ThemeDraft } from "./ThemeEditor";
 import ToggleRow from "./ToggleRow";
 
 /**
- * Terminal appearance (font, size, line height, cursor). Browser-local and
- * global across sessions; every change persists and applies to open
- * terminals immediately, so there is no save step.
+ * Terminal appearance (font, size, line height, cursor) plus the app-wide
+ * theme: the built-in light/dark/system triad and the custom-theme library
+ * (chips + the 39-colour editor). Browser-local and global across sessions;
+ * every change persists and applies immediately, so there is no save step.
  */
-export default function AppearanceSection() {
+export default function AppearanceSection({
+  onError,
+}: {
+  onError: (message: string) => void;
+}) {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState<TermPrefs>(loadPrefs);
 
   const apply = (patch: Partial<TermPrefs>) => setPrefs(savePrefs(patch));
 
-  // App-wide light/dark theme (shell + terminal). Browser-local, resolved
-  // against the OS in "system" mode. Saving broadcasts to the controller;
-  // applyTheme() re-resolves and writes <html data-theme> immediately.
-  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(loadThemeSetting);
+  // App-wide theme (shell + terminal). Browser-local; the built-in triad
+  // resolves against the OS in "system" mode, a custom choice pins its base.
+  const [choice, setChoice] = useState(loadThemeChoice);
+  const selectedCustomId = choice.setting === "custom" ? choice.customId : null;
+
+  const { themes, reload } = useThemeLibrary(onError);
+  const [editor, setEditor] = useState<ThemeDraft | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Built-in triad: clears any remembered customId so it leaves custom mode.
   const chooseTheme = (value: ThemeSetting) => {
-    saveThemeSetting(value);
+    saveThemeChoice(value, null);
     applyTheme();
-    setThemeSetting(value);
+    setChoice({ setting: value, customId: null });
+    setConfirmDeleteId(null);
   };
+
+  const selectCustom = (theme: ThemeSummary) => {
+    saveThemeChoice("custom", theme.id);
+    applyTheme();
+    setChoice({ setting: "custom", customId: theme.id });
+    setConfirmDeleteId(null);
+  };
+
+  const openNew = () =>
+    setEditor({ name: "", base: effectiveTheme(), tokens: {} });
+
+  const openEdit = (theme: ThemeSummary) =>
+    setEditor({ id: theme.id, name: theme.name, base: theme.base, tokens: { ...theme.tokens } });
+
+  const openFork = (theme: ThemeSummary) =>
+    setEditor({
+      name: `${theme.name}${t("themeCopySuffix")}`,
+      base: theme.base,
+      tokens: { ...theme.tokens },
+    });
+
+  const handleSaved = (id: string, base: EffectiveTheme, tokens: Record<string, string>) => {
+    // Prime the boot cache so selecting paints instantly (no fallback flash).
+    cacheCustomTheme(id, base, tokens);
+    saveThemeChoice("custom", id);
+    applyTheme();
+    setChoice({ setting: "custom", customId: id });
+    void reload();
+    setEditor(null);
+  };
+
+  const deleteThemeChip = async (theme: ThemeSummary) => {
+    if (confirmDeleteId !== theme.id) {
+      setConfirmDeleteId(theme.id);
+      return;
+    }
+    setConfirmDeleteId(null);
+    const result = await call<unknown>(deleteTheme, { identity: theme.id });
+    if (!result.ok) {
+      onError(result.error);
+      return;
+    }
+    // If we deleted the ACTIVE custom theme, actually repaint by reusing the
+    // built-in "system" path (persist + applyTheme, which clears the custom
+    // overrides and re-colours shell + terminal) — not just a local state flip,
+    // which would leave the app painted with the now-deleted theme until reload.
+    if (selectedCustomId === theme.id) chooseTheme("system");
+    void reload();
+  };
+
   const themeOptions: { value: ThemeSetting; label: string }[] = [
     { value: "system", label: t("themeSystem") },
     { value: "light", label: t("themeLight") },
@@ -46,6 +121,10 @@ export default function AppearanceSection() {
     { value: "block", label: t("cursorBlock") },
     { value: "underline", label: t("cursorUnderline") },
   ];
+
+  /** The swatch colour for a chip: its bg0 override, else the base default. */
+  const chipSwatch = (theme: ThemeSummary) =>
+    theme.tokens.bg0 ?? baseTokenValue(theme.base, "bg0");
 
   return (
     <div className="space-y-4">
@@ -73,23 +152,95 @@ export default function AppearanceSection() {
         <FieldLabel>{t("themeLabel")}</FieldLabel>
         <div
           id="theme-setting-control"
-          className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5"
+          className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5"
         >
           {themeOptions.map(({ value, label }) => (
             <button
               key={value}
               data-theme-setting={value}
-              aria-pressed={themeSetting === value}
+              aria-pressed={choice.setting === value}
               onClick={() => chooseTheme(value)}
               className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
-                themeSetting === value
-                  ? "bg-bg2 font-medium text-mint shadow-sm"
+                choice.setting === value
+                  ? "bg-bg0 font-medium text-mint shadow-sm"
                   : "text-fg-muted hover:text-fg"
               }`}
             >
               {label}
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <FieldLabel>{t("themeLibrary")}</FieldLabel>
+          <button
+            id="new-theme-button"
+            onClick={openNew}
+            className="rounded-md border border-mint/50 px-2.5 py-1 text-xs text-mint transition-colors hover:bg-mint/10"
+          >
+            {t("newTheme")}
+          </button>
+        </div>
+        <div id="theme-library" className="flex flex-wrap gap-1.5">
+          {themes.map((theme) => {
+            const selected = selectedCustomId === theme.id;
+            return (
+              <div
+                key={theme.id}
+                className={`inline-flex items-center gap-1 rounded-lg border p-0.5 transition-colors ${
+                  selected ? "border-mint/60 bg-mint/10" : "border-line bg-bg2"
+                }`}
+              >
+                <button
+                  data-custom-theme-id={theme.id}
+                  aria-pressed={selected}
+                  onClick={() => selectCustom(theme)}
+                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-fg transition-colors hover:text-mint"
+                >
+                  <span
+                    className="h-3 w-3 shrink-0 rounded-full border border-line"
+                    style={{ backgroundColor: chipSwatch(theme) }}
+                  />
+                  {theme.name}
+                </button>
+                {theme.builtin ? (
+                  <button
+                    data-fork-theme-id={theme.id}
+                    onClick={() => openFork(theme)}
+                    title={t("themeFork")}
+                    className="rounded px-1 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-mint"
+                  >
+                    {t("themeFork")}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      data-edit-theme-id={theme.id}
+                      onClick={() => openEdit(theme)}
+                      title={t("themeEdit")}
+                      className="rounded px-1 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-mint"
+                    >
+                      {t("themeEdit")}
+                    </button>
+                    <button
+                      data-delete-theme-id={theme.id}
+                      onClick={() => void deleteThemeChip(theme)}
+                      title={t("themeDelete")}
+                      className={`rounded px-1 py-0.5 text-[11px] transition-colors ${
+                        confirmDeleteId === theme.id
+                          ? "font-medium text-danger"
+                          : "text-fg-muted hover:text-danger"
+                      }`}
+                    >
+                      {confirmDeleteId === theme.id ? t("themeDeleteConfirm") : t("themeDelete")}
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -167,7 +318,7 @@ export default function AppearanceSection() {
 
       <div className="space-y-1.5">
         <FieldLabel>{t("cursorStyleLabel")}</FieldLabel>
-        <div className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5">
+        <div className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5">
           {cursorStyles.map(({ value, label }) => (
             <button
               key={value}
@@ -175,7 +326,7 @@ export default function AppearanceSection() {
               onClick={() => apply({ cursorStyle: value })}
               className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
                 prefs.cursorStyle === value
-                  ? "bg-bg2 font-medium text-mint shadow-sm"
+                  ? "bg-bg0 font-medium text-mint shadow-sm"
                   : "text-fg-muted hover:text-fg"
               }`}
             >
@@ -211,6 +362,15 @@ export default function AppearanceSection() {
           onChange={(v) => apply({ localEcho: v })}
         />
       </div>
+
+      {editor && (
+        <ThemeEditor
+          draft={editor}
+          onClose={() => setEditor(null)}
+          onSaved={handleSaved}
+          onError={onError}
+        />
+      )}
     </div>
   );
 }

@@ -26,8 +26,7 @@ import {
   touchScrollRoute,
 } from "./touchScroll";
 import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPrefs";
-import { effectiveTheme, onThemeChange } from "./theme";
-import { terminalTheme } from "./terminalTheme";
+import { currentTerminalTheme, onThemeChange } from "./theme";
 import { createTypeahead } from "./typeahead";
 import { useCountdown } from "./hooks/useCountdown";
 import { isMac } from "./shortcuts";
@@ -165,7 +164,7 @@ export default function TerminalView({
       if (disposed) return;
 
       const term = new Terminal({
-        theme: terminalTheme(effectiveTheme()),
+        theme: currentTerminalTheme(),
         fontFamily: fontStack(prefs),
         fontSize: prefs.fontSize,
         lineHeight: prefs.lineHeight,
@@ -271,8 +270,8 @@ export default function TerminalView({
       // the new colors; syncWebglCanvas keeps the backing store in step
       // (emulated-DPR contexts). The .xterm-viewport background is CSS
       // (var(--color-bg0)) and follows on its own.
-      const stopThemeSync = onThemeChange((next) => {
-        term.options.theme = terminalTheme(next);
+      const stopThemeSync = onThemeChange(() => {
+        term.options.theme = currentTerminalTheme();
         syncWebglCanvas();
         term.refresh(0, term.rows - 1);
       });

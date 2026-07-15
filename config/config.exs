@@ -8,7 +8,7 @@
 import Config
 
 config :ash_typescript,
-  typed_channels: [DalaWeb.TerminalChannel, DalaWeb.SessionsChannel],
+  typed_channels: [DalaWeb.TerminalChannel, DalaWeb.SessionsChannel, DalaWeb.SettingsChannel],
   typed_channels_output_file: "assets/js/ash_typed_channels.ts",
   output_file: "assets/js/ash_rpc.ts",
   run_endpoint: "/rpc/run",

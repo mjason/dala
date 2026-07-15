@@ -1,4 +1,4 @@
-import type { SessionsChannel, SessionsChannelEvents, SessionsChannelHandlers, SessionsChannelRefs, TerminalChannel, TerminalChannelEvents, TerminalChannelHandlers, TerminalChannelRefs } from "./ash_types";
+import type { SessionsChannel, SessionsChannelEvents, SessionsChannelHandlers, SessionsChannelRefs, SettingsChannel, SettingsChannelEvents, SettingsChannelHandlers, SettingsChannelRefs, TerminalChannel, TerminalChannelEvents, TerminalChannelHandlers, TerminalChannelRefs } from "./ash_types";
 export type * from "./ash_types";
 
 export function createSessionsChannel(
@@ -36,6 +36,48 @@ export function unsubscribeSessionsChannel(
 ): void {
   for (const event in refs) {
     const e = event as keyof SessionsChannelRefs;
+    const ref = refs[e];
+    if (ref !== undefined) {
+      channel.off(event, ref);
+    }
+  }
+}
+
+export function createSettingsChannel(
+  socket: { channel(topic: string, params?: object): unknown }
+): SettingsChannel {
+  return socket.channel("settings") as SettingsChannel;
+}
+
+export function onSettingsChannelMessage<E extends keyof SettingsChannelEvents>(
+  channel: SettingsChannel,
+  event: E,
+  handler: (payload: SettingsChannelEvents[E]) => void
+): number {
+  return channel.on(event, (payload: unknown) => handler(payload as SettingsChannelEvents[E]));
+}
+
+export function onSettingsChannelMessages(
+  channel: SettingsChannel,
+  handlers: SettingsChannelHandlers
+): SettingsChannelRefs {
+  const refs: SettingsChannelRefs = {};
+  for (const event in handlers) {
+    const e = event as keyof SettingsChannelEvents;
+    const handler = handlers[e];
+    if (handler) {
+      refs[e] = channel.on(event, (payload) => (handler as (p: unknown) => void)(payload));
+    }
+  }
+  return refs;
+}
+
+export function unsubscribeSettingsChannel(
+  channel: SettingsChannel,
+  refs: SettingsChannelRefs
+): void {
+  for (const event in refs) {
+    const e = event as keyof SettingsChannelRefs;
     const ref = refs[e];
     if (ref !== undefined) {
       channel.off(event, ref);

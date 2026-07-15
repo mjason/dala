@@ -18,7 +18,9 @@ defmodule Dala.Application do
       Dala.Lsp.Debug,
       {DynamicSupervisor, name: Dala.Terminal.ServerSupervisor, strategy: :one_for_one},
       DalaWeb.Endpoint,
-      # After the endpoint: Boot publishes session updates through it.
+      # After the endpoint: these publish through it (Boot session updates,
+      # ThemeSeeder theme_created events for the built-in presets).
+      Dala.Settings.ThemeSeeder,
       Dala.Terminal.Boot,
       Dala.Accounts.Seeder,
       {AshAuthentication.Supervisor, [otp_app: :dala]}

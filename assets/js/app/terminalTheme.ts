@@ -76,7 +76,16 @@ const light: ITheme = {
 
 export const TERMINAL_PALETTES: Record<EffectiveTheme, ITheme> = { dark, light };
 
-/** The xterm theme object for an effective app theme. */
-export function terminalTheme(theme: EffectiveTheme): ITheme {
-  return TERMINAL_PALETTES[theme];
+/**
+ * The xterm theme object for an effective app theme. Without `overrides` the
+ * shared palette object is returned by reference (callers may compare it to
+ * TERMINAL_PALETTES). With `overrides` — the sparse term/ANSI tokens of a
+ * custom theme — a fresh object is returned: the full base palette (every
+ * ANSI slot, scrollbar colors, …) with the present overrides layered on top,
+ * so omitted keys keep their base value.
+ */
+export function terminalTheme(theme: EffectiveTheme, overrides?: Partial<ITheme>): ITheme {
+  const base = TERMINAL_PALETTES[theme];
+  if (!overrides) return base;
+  return { ...base, ...overrides };
 }

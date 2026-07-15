@@ -18,9 +18,18 @@ defmodule Dala.Settings do
       rpc_action :speech_settings, :current
       rpc_action :set_speech_settings, :save
     end
+
+    resource Dala.Settings.Theme do
+      rpc_action :list_themes, :list
+      rpc_action :get_theme, :get, not_found_error?: false
+      rpc_action :create_theme, :create
+      rpc_action :update_theme, :update
+      rpc_action :delete_theme, :destroy
+    end
   end
 
   resources do
     resource Dala.Settings.Speech
+    resource Dala.Settings.Theme
   end
 end

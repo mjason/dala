@@ -388,7 +388,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             <SpeechSection root={session.cwd} />
           ) : (
             <>
-              <AppearanceSection />
+              <AppearanceSection onError={fail} />
               <NotificationsSection />
             </>
           )}

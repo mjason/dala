@@ -3,6 +3,7 @@ defmodule DalaWeb.UserSocket do
 
   channel "terminal:*", DalaWeb.TerminalChannel
   channel "sessions", DalaWeb.SessionsChannel
+  channel "settings", DalaWeb.SettingsChannel
 
   @impl true
   def connect(params, socket, _connect_info) do

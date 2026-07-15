@@ -6,27 +6,62 @@
     <meta name="csrf-token" content={get_csrf_token()} />
     <%!-- Apply the stored theme before first paint so a light-preferring OS
           never flashes the dark shell. Resolves "system" via matchMedia and
-          writes the EFFECTIVE theme to <html data-theme> — the same value
-          theme.ts maintains once the bundle boots. Kept inline (and tiny) on
-          purpose: an external module would load too late to beat paint.
-          phx-no-curly-interpolation so the JS braces are not read as HEEx. --%>
+          writes the EFFECTIVE base to <html data-theme> — the same value
+          theme.ts maintains once the bundle boots. For a "custom" setting with
+          a matching dala:theme:cache, paint the cached base + inline
+          --color-* overrides too, so the custom shell is on screen before the
+          bundle loads; a cache miss falls back to the base light/dark exactly
+          like a built-in theme (no wrong-color flash). Kept inline, tiny, and
+          dependency-free on purpose: an external module would load too late to
+          beat paint. phx-no-curly-interpolation so the JS braces are not read
+          as HEEx. --%>
     <script phx-no-curly-interpolation>
       (function () {
         try {
           var setting = "system";
+          var customId = null;
           var raw = localStorage.getItem("dala:theme");
           if (raw) {
             var parsed = JSON.parse(raw);
-            if (parsed && (parsed.setting === "light" || parsed.setting === "dark")) {
-              setting = parsed.setting;
+            if (parsed) {
+              if (
+                parsed.setting === "light" ||
+                parsed.setting === "dark" ||
+                parsed.setting === "custom"
+              ) {
+                setting = parsed.setting;
+              }
+              if (typeof parsed.customId === "string") customId = parsed.customId;
+            }
+          }
+          var root = document.documentElement;
+          if (setting === "custom" && customId) {
+            var cacheRaw = localStorage.getItem("dala:theme:cache");
+            if (cacheRaw) {
+              var cache = JSON.parse(cacheRaw);
+              if (
+                cache &&
+                cache.id === customId &&
+                (cache.base === "light" || cache.base === "dark") &&
+                cache.cssVars &&
+                typeof cache.cssVars === "object"
+              ) {
+                root.setAttribute("data-theme", cache.base);
+                for (var name in cache.cssVars) {
+                  if (Object.prototype.hasOwnProperty.call(cache.cssVars, name)) {
+                    root.style.setProperty(name, cache.cssVars[name]);
+                  }
+                }
+                return;
+              }
             }
           }
           var dark =
             setting === "dark" ||
-            (setting === "system" &&
+            ((setting === "system" || setting === "custom") &&
               (!window.matchMedia ||
                 window.matchMedia("(prefers-color-scheme: dark)").matches));
-          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+          root.setAttribute("data-theme", dark ? "dark" : "light");
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "dark");
         }

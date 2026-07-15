@@ -80,7 +80,7 @@ export function Toggle({
       <input id={id} type="checkbox" checked={checked} readOnly className="sr-only" />
       <span
         className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full transition-transform duration-150 ${
-          checked ? "translate-x-4 bg-black/80" : "bg-fg-muted"
+          checked ? "translate-x-4 bg-bg0" : "bg-fg-muted"
         }`}
       />
     </button>

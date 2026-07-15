@@ -28,6 +28,38 @@ export type SpeechSettingsAttributesOnlySchema = {
 };
 
 
+// CustomTheme Schema
+export type CustomThemeResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "ownerId" | "name" | "base" | "builtin" | "tokens" | "insertedAt" | "updatedAt" | "userId";
+  id: UUID;
+  ownerId: UUID;
+  name: string;
+  base: "dark" | "light";
+  builtin: boolean;
+  tokens: Record<string, any>;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+  userId: UUID | null;
+};
+
+
+
+export type CustomThemeAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "ownerId" | "name" | "base" | "builtin" | "tokens" | "insertedAt" | "updatedAt" | "userId";
+  id: UUID;
+  ownerId: UUID;
+  name: string;
+  base: "dark" | "light";
+  builtin: boolean;
+  tokens: Record<string, any>;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+  userId: UUID | null;
+};
+
+
 // FileSystem Schema
 export type FileSystemResourceSchema = {
   __type: "Resource";
@@ -141,6 +173,76 @@ export type SpeechSettingsFilterInput = {
     eq?: string;
     notEq?: string;
     in?: Array<string>;
+  };
+
+  userId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+    isNil?: boolean;
+  };
+
+
+
+};
+export type CustomThemeFilterInput = {
+  and?: Array<CustomThemeFilterInput>;
+  or?: Array<CustomThemeFilterInput>;
+  not?: Array<CustomThemeFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  ownerId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  name?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  base?: {
+    eq?: "dark" | "light";
+    notEq?: "dark" | "light";
+    in?: Array<"dark" | "light">;
+  };
+
+  builtin?: {
+    eq?: boolean;
+    notEq?: boolean;
+  };
+
+  tokens?: {
+    eq?: Record<string, any>;
+    notEq?: Record<string, any>;
+    in?: Array<Record<string, any>>;
+  };
+
+  insertedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+  };
+
+  updatedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
   };
 
   userId?: {
@@ -288,6 +390,9 @@ export type UpdaterFilterInput = {
 export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
 export type SpeechSettingsFilterField = (typeof speechSettingsFilterFields)[number];
 
+export const customThemeFilterFields = ["id", "ownerId", "name", "base", "builtin", "tokens", "insertedAt", "updatedAt", "userId", "user"] as const;
+export type CustomThemeFilterField = (typeof customThemeFilterFields)[number];
+
 
 
 export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
@@ -298,6 +403,9 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;
 export type SpeechSettingsSortField = (typeof speechSettingsSortFields)[number];
+
+export const customThemeSortFields = ["id", "ownerId", "name", "base", "builtin", "tokens", "insertedAt", "updatedAt", "userId"] as const;
+export type CustomThemeSortField = (typeof customThemeSortFields)[number];
 
 
 
@@ -741,6 +849,9 @@ export type ReplayPayload = {data: string, seq: number, done: boolean};
 export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
 export type SessionDeletedPayload = {id: UUID};
 export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
+export type ThemeCreatedPayload = {id: UUID, ownerId: UUID, name: string, base: "dark" | "light", builtin: boolean, tokens: Record<string, any>, insertedAt: UtcDateTimeUsec, updatedAt: UtcDateTimeUsec};
+export type ThemeDeletedPayload = {id: UUID, ownerId: UUID};
+export type ThemeUpdatedPayload = {id: UUID, ownerId: UUID, name: string, base: "dark" | "light", builtin: boolean, tokens: Record<string, any>, insertedAt: UtcDateTimeUsec, updatedAt: UtcDateTimeUsec};
 
 // Channel types for DalaWeb.SessionsChannel
 
@@ -763,6 +874,28 @@ export type SessionsChannelHandlers = {
 
 export type SessionsChannelRefs = {
   [E in keyof SessionsChannelEvents]?: number;
+};
+
+// Channel types for DalaWeb.SettingsChannel
+
+export type SettingsChannel = {
+  readonly __channelType: "SettingsChannel";
+  on(event: string, callback: (payload: unknown) => void): number;
+  off(event: string, ref: number): void;
+};
+
+export type SettingsChannelEvents = {
+  theme_created: ThemeCreatedPayload;
+  theme_deleted: ThemeDeletedPayload;
+  theme_updated: ThemeUpdatedPayload;
+};
+
+export type SettingsChannelHandlers = {
+  [E in keyof SettingsChannelEvents]?: (payload: SettingsChannelEvents[E]) => void;
+};
+
+export type SettingsChannelRefs = {
+  [E in keyof SettingsChannelEvents]?: number;
 };
 
 // Channel types for DalaWeb.TerminalChannel
