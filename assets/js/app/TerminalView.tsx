@@ -511,9 +511,87 @@ export default function TerminalView({
           clampRows = 0;
         }
       };
+      // Preserve the scroll position across a reflow. A width change (a side
+      // panel toggling) re-wraps the scrollback; xterm only keeps the viewport
+      // pinned when it sat at the BOTTOM, so a viewport parked mid-scrollback
+      // lands on a different line (the jump the user sees). There is no clean
+      // xterm API for this (even VS Code punts) — so we heuristically re-anchor:
+      //  * measure the top line as a count of LOGICAL lines from the BOTTOM
+      //    (survives scrollback trimming, unlike an absolute index or a marker,
+      //    which the reflow's direct array writes don't update);
+      //  * re-apply AFTER the reflow's own scroll-sync runs. xterm's Viewport
+      //    queues a `_sync()` on the next frame that force-writes scrollTop back
+      //    to `ydisp*cellHeight`, so a scroll issued during/before it is undone.
+      //    Defer past that frame and verify/retry until it sticks.
+      // The top line's TEXT is the one thing invariant across a re-wrap (line
+      // indices and marker positions churn; a count of logical lines picks up
+      // trailing blank rows). Capture it, then find it again after the reflow.
+      const captureTopText = (): string | null => {
+        const buf = term.buffer.active;
+        if (buf.viewportY >= buf.baseY) return null; // at the bottom — xterm pins it
+        let row = buf.viewportY;
+        while (row > 0 && buf.getLine(row)?.isWrapped) row--;
+        let text = buf.getLine(row)?.translateToString(true) ?? "";
+        for (let i = row + 1; i < buf.length; i++) {
+          if (!buf.getLine(i)?.isWrapped) break;
+          text += buf.getLine(i)?.translateToString(true) ?? "";
+        }
+        text = text.trimEnd();
+        return text.trim().length > 0 ? text : null;
+      };
+      const rowOfText = (text: string): number => {
+        const buf = term.buffer.active;
+        let startRow = -1;
+        let cur = "";
+        for (let i = 0; i < buf.length; i++) {
+          const line = buf.getLine(i);
+          if (line && !line.isWrapped) {
+            if (startRow >= 0 && cur.trimEnd() === text) return startRow;
+            startRow = i;
+            cur = line.translateToString(true);
+          } else {
+            cur += line?.translateToString(true) ?? "";
+          }
+        }
+        return startRow >= 0 && cur.trimEnd() === text ? startRow : -1;
+      };
+      // A single width change can fire maybeResize more than once, so restores
+      // can overlap. Save the user's smooth-scroll setting on the FIRST active
+      // restore and put it back only when the LAST one finishes — otherwise a
+      // nested restore's cleanup could leave it stuck at 0.
+      let restoreDepth = 0;
+      let savedSmooth = 0;
+      const restoreScroll = (text: string) => {
+        if (restoreDepth === 0) savedSmooth = term.options.smoothScrollDuration ?? 0;
+        restoreDepth++;
+        term.options.smoothScrollDuration = 0; // jump, don't animate the re-anchor
+        let tries = 4;
+        const done = () => {
+          if (--restoreDepth === 0 && !disposed) {
+            term.options.smoothScrollDuration = savedSmooth;
+          }
+        };
+        const attempt = () => {
+          if (disposed) return done();
+          const target = rowOfText(text);
+          if (target < 0) return done(); // content trimmed out of scrollback — leave it
+          term.scrollToLine(target);
+          requestAnimationFrame(() => {
+            if (disposed) return done();
+            // xterm's post-resize `_sync()` can force scrollTop back to the old
+            // ydisp; re-apply until the viewport actually lands on the anchor.
+            if (term.buffer.active.viewportY !== target && --tries > 0) attempt();
+            else done();
+          });
+        };
+        // First frame lets xterm's post-resize `_sync()` run, then we scroll.
+        requestAnimationFrame(attempt);
+      };
+
       let lastSize = "";
       const maybeResize = () => {
         if (disposed) return;
+        const anchor = captureTopText();
         resetPadding();
         fit.fit();
         clampOverflow();
@@ -523,6 +601,7 @@ export default function TerminalView({
         if (key !== lastSize) {
           lastSize = key;
           pushResize();
+          if (anchor != null) restoreScroll(anchor);
         }
       };
       // Timer/observer entry point that respects the current size role.
@@ -637,12 +716,14 @@ export default function TerminalView({
             scaleToFit();
           }
         } else {
+          const anchor = captureTopText();
           resetPadding();
           fit.fit();
           clampOverflow();
           centerPadding();
           syncWebglCanvas();
           pushResize();
+          if (anchor != null) restoreScroll(anchor);
         }
         // A shrunk/grown canvas can keep stale pixels of the previous frame
         // at its edges (the brownish sliver behind the composer strip) —

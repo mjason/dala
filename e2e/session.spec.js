@@ -61,6 +61,89 @@ test.describe("Given 一个打开 dala 的用户", () => {
     }
   });
 
+  test("滚到中间时开关右侧文件栏,视口守住(reflow 不再跳到别处)", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+
+      // 锁定 driver（size owner）。e2e 里偶发 soft-follower（缩放而非 reflow），
+      // 那样测不到 reflow 路径；接管刷新把角色钉成 driver 并把焦点还给终端。
+      await page.click("#terminal-refit-button");
+      await page.waitForTimeout(300);
+
+      // 200 行会随宽度重新折行的长行，每行带唯一标记 LINE-nnn-。
+      await page.keyboard.type(
+        `python3 -c "print(chr(10).join('LINE-%03d-'%i+'x'*200 for i in range(200)))"`,
+      );
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => page.evaluate(() => window.__dalaTerm?.buffer.active.baseY ?? 0), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(80);
+      // 让输出与提示符彻底 settle，避免后续 auto-scroll 把视口拉回底部。
+      await new Promise((r) => setTimeout(r, 400));
+
+      // 关平滑滚动，让 scrollLines 立即落定（否则读 before 会读到动画中途的
+      // 瞬时位置，和 reflow 时抓的锚点对不上）。
+      await page.evaluate(() => {
+        window.__dalaTerm.options.smoothScrollDuration = 0;
+        window.__dalaTerm.scrollLines(-80);
+      });
+      // 视口顶部所在逻辑行的标记编号（回到折行起点再读）。
+      const topLine = () =>
+        page.evaluate(() => {
+          const b = window.__dalaTerm.buffer.active;
+          let row = b.viewportY;
+          while (row > 0 && b.getLine(row)?.isWrapped) row--;
+          const m = (b.getLine(row)?.translateToString(true) ?? "").match(/LINE-(\d+)-/);
+          return m ? Number(m[1]) : -1;
+        });
+      const cols = () => page.evaluate(() => window.__dalaTerm?.cols ?? 0);
+      // 等 viewportY 稳定（scrollLines → DOM scrollTop → ydisp 回填要一帧）再读锚。
+      const stableTop = async () => {
+        let prev = -1;
+        await expect
+          .poll(
+            async () => {
+              const v = await topLine();
+              const ok = v >= 0 && v === prev;
+              prev = v;
+              return ok;
+            },
+            { timeout: 3_000 },
+          )
+          .toBe(true);
+        return prev;
+      };
+      const before = await stableTop();
+      expect(before, "应停在某条标记行上").toBeGreaterThanOrEqual(0);
+
+      // 开文件栏 → reflow。恢复按顶部逻辑行的文本精确找回、延迟+重试落定，
+      // 用 poll 等它稳。内容锚是精确的（旧 bug 是跳 40+ 行）。
+      const wide = await cols();
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+      await expect.poll(cols, { timeout: 5_000 }).toBeLessThan(wide);
+      await expect
+        .poll(async () => Math.abs((await topLine()) - before), { timeout: 5_000 })
+        .toBeLessThanOrEqual(1);
+
+      // 关文件栏 → 再次 reflow → 仍守住。
+      const narrow = await cols();
+      await page.click("#toggle-drawer-button");
+      await expect.poll(cols, { timeout: 5_000 }).toBeGreaterThan(narrow);
+      await expect
+        .poll(async () => Math.abs((await topLine()) - before), { timeout: 5_000 })
+        .toBeLessThanOrEqual(1);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("用户在全屏 TUI 里点重置后,终端当场重绘且焦点回到终端", async ({ page }) => {
     await h.gotoApp(page);
     const id = await h.createSession(page, cwd);
