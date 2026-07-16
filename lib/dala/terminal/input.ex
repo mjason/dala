@@ -73,6 +73,9 @@ defmodule Dala.Terminal.Input do
   defp key_sequence("HOME", true), do: {:ok, "\eOH"}
   defp key_sequence("END", true), do: {:ok, "\eOF"}
 
+  defp key_sequence(<<"CHAR:", byte>>, _application_cursor?) when byte in ?!..?~,
+    do: {:ok, <<byte>>}
+
   defp key_sequence(key, _application_cursor?) do
     case Map.fetch(@key_sequences, key) do
       {:ok, sequence} -> {:ok, sequence}

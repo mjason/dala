@@ -129,7 +129,8 @@ defmodule DalaWeb.McpController do
     %{
       protocolVersion: version,
       capabilities: %{tools: %{}},
-      serverInfo: %{name: "dala", version: to_string(Application.spec(:dala, :vsn))}
+      serverInfo: %{name: "dala", version: to_string(Application.spec(:dala, :vsn))},
+      instructions: Registry.instructions()
     }
   end
 

@@ -49,4 +49,14 @@ defmodule Dala.Terminal.InputTest do
     assert {:error, message} = Input.key_frames(["RAW_BYTES"])
     assert message =~ "unsupported terminal key"
   end
+
+  test "encodes explicit printable ASCII shortcuts as raw key bytes" do
+    assert {:ok, [{"y", 15}, {"A", 15}, {"1", 15}, {"\r", 0}]} =
+             Input.key_frames(["CHAR:y", "CHAR:A", "CHAR:1", "ENTER"])
+
+    for invalid <- ["y", "CHAR:", "CHAR:yy", "CHAR: ", "CHAR:中", "CHAR:\e"] do
+      assert {:error, message} = Input.key_frames([invalid])
+      assert message =~ "unsupported terminal key"
+    end
+  end
 end

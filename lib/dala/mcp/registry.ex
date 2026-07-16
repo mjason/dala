@@ -56,6 +56,21 @@ defmodule Dala.Mcp.Registry do
       Dala.Mcp.TerminalTools.tools(Dala.Settings.Mcp.terminal_access())
   end
 
+  @doc "Short server-level guidance returned during MCP initialization."
+  def instructions do
+    theme =
+      "For theme design, call theme_reference, iterate with preview_theme, and only then " <>
+        "create_theme or update_theme."
+
+    terminal =
+      Dala.Settings.Mcp.terminal_access()
+      |> Dala.Mcp.TerminalTools.instructions()
+
+    [theme, terminal]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+  end
+
   defp spec(resource, rpc_action) do
     action = Ash.Resource.Info.action(resource, rpc_action.action)
     kind = classify(action)

@@ -99,7 +99,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert is_list(read.highlightedRanges)
   end
 
-  test "TUI snapshots expose highlighted choices and key sequences use application cursor mode",
+  test "TUI snapshots expose choices and key sequences support cursor mode plus shortcuts",
        %{
          session: session
        } do
@@ -110,7 +110,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     command =
       "printf '\\033[?1049h\\033[?1h\\033[7;1mSelected option\\033[0m'; " <>
-        "IFS= read -rsN 3 key; printf '%s' \"$key\" | od -An -tx1 > #{result_path}; " <>
+        "IFS= read -rsN 4 key; printf '%s' \"$key\" | od -An -tx1 > #{result_path}; " <>
         "printf '\\033[?1049l'"
 
     Server.input(session.id, command <> "\r")
@@ -130,13 +130,15 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert {:ok, sent} =
              TerminalTools.call("send_terminal_keys", %{
                "session" => session.id,
-               "keys" => ["DOWN"]
+               "keys" => ["DOWN", "CHAR:y"]
              })
 
     assert sent.applicationCursor
-    assert sent.keyCount == 1
+    assert sent.keyCount == 2
     assert eventually(fn -> File.exists?(result_path) end)
-    assert File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() == "1b 4f 42"
+
+    assert File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() ==
+             "1b 4f 42 79"
   end
 
   test "upload stores a private regular file and returns a sendable path" do
@@ -171,6 +173,20 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     assert tool["description"] =~ "64 MB"
     assert tool["inputSchema"]["properties"]["content_base64"]["maxLength"] >= 89_478_488
+  end
+
+  test "terminal schemas explain TUI style fields and printable shortcut keys" do
+    tools = TerminalTools.tools(%{read: true, control: true})
+    read = Enum.find(tools, &(&1["name"] == "read_terminal"))
+    keys = Enum.find(tools, &(&1["name"] == "send_terminal_keys"))
+
+    assert read["description"] =~ "highlightedRanges"
+    assert read["description"] =~ "inputModes"
+    assert keys["description"] =~ "CHAR:y"
+
+    [named, character] = keys["inputSchema"]["properties"]["keys"]["items"]["oneOf"]
+    assert "DOWN" in named["enum"]
+    assert character["pattern"] == "^CHAR:[!-~]$"
   end
 
   test "duplicate names are rejected as ambiguous selectors", %{session: session} do

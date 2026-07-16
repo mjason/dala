@@ -84,6 +84,8 @@ defmodule DalaWeb.McpControllerTest do
 
   describe "protocol" do
     test "initialize echoes a supported protocolVersion and reports serverInfo" do
+      Dala.Settings.Mcp.set_terminal_access(true, true)
+
       body =
         json_response(mcp_post(rpc("initialize", 1, %{protocolVersion: "2025-06-18"})), 200)
 
@@ -92,6 +94,9 @@ defmodule DalaWeb.McpControllerTest do
       assert body["result"]["protocolVersion"] == "2025-06-18"
       assert body["result"]["serverInfo"]["name"] == "dala"
       assert is_map(body["result"]["capabilities"]["tools"])
+      assert body["result"]["instructions"] =~ "theme_reference"
+      assert body["result"]["instructions"] =~ "highlightedRanges"
+      assert body["result"]["instructions"] =~ "CHAR:<one printable ASCII character>"
     end
 
     test "initialize falls back to latest for an unknown protocolVersion" do
