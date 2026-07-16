@@ -63,7 +63,7 @@ defmodule Dala.Settings.Theme.Svg do
       <rect x="222" y="288" width="92" height="6" rx="3" fill="#{t["termForeground"]}"/>
       <rect x="323" y="284" width="2" height="14" fill="#{t["termCursor"]}"/>
 
-      <!-- file tree with six explicit Git status glyphs -->
+      <!-- file tree with seven explicit Git status glyphs -->
       <rect x="800" y="46" width="400" height="372" fill="#{t["bg1"]}"/>
       <path d="M800.5 46V418" stroke="#{t["line"]}"/>
       <rect x="820" y="66" width="92" height="7" rx="3.5" fill="#{t["fg"]}"/>
@@ -74,6 +74,7 @@ defmodule Dala.Settings.Theme.Svg do
       #{file_row(184, 28, 178, "R", t["gitRenamed"], t)}
       #{file_row(216, 28, 142, "U", t["gitUntracked"], t)}
       #{file_row(248, 14, 166, "!", t["gitConflict"], t)}
+      #{file_row(280, 14, 148, "I", t["gitIgnored"], t)}
 
       <!-- diff review -->
       <rect x="180" y="418" width="500" height="268" fill="#{t["bg0"]}"/>
@@ -155,4 +156,8 @@ defmodule Dala.Settings.Theme.Svg do
   defp status_glyph(x, y, "!", color),
     do:
       ~s(<path d="M#{x + 5} #{y}V#{y + 8}M#{x + 5} #{y + 11}V#{y + 12}" fill="none" stroke="#{color}" stroke-width="2.5"/>)
+
+  defp status_glyph(x, y, "I", color),
+    do:
+      ~s(<path d="M#{x + 2} #{y}H#{x + 8}M#{x + 5} #{y}V#{y + 12}M#{x + 2} #{y + 12}H#{x + 8}" fill="none" stroke="#{color}" stroke-width="2"/>)
 end

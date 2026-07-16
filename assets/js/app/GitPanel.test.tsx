@@ -50,7 +50,7 @@ class FakeSocket {
 const ok = (data: unknown) => ({ success: true, data });
 
 function statusData(files: object[], branch = "main") {
-  return { repo: true, root: "/proj", branch, files };
+  return { repo: true, root: "/proj", branch, files, ignored: [] };
 }
 
 function renderPanel(overrides: Partial<React.ComponentProps<typeof GitPanel>> = {}) {

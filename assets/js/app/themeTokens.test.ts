@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import { TOKEN_KEYS, TOKEN_TO_CSSVAR, TOKEN_TO_ITHEME } from "./themeTokens";
 
 describe("themeTokens contract", () => {
-  it("declares exactly 45 unique token keys", () => {
-    expect(TOKEN_KEYS).toHaveLength(45);
-    expect(new Set(TOKEN_KEYS).size).toBe(45);
+  it("declares exactly 46 unique token keys", () => {
+    expect(TOKEN_KEYS).toHaveLength(46);
+    expect(new Set(TOKEN_KEYS).size).toBe(46);
   });
 
   it("the two target maps have the documented sizes", () => {
-    expect(Object.keys(TOKEN_TO_CSSVAR)).toHaveLength(24);
+    expect(Object.keys(TOKEN_TO_CSSVAR)).toHaveLength(25);
     expect(Object.keys(TOKEN_TO_ITHEME)).toHaveLength(21);
   });
 
-  it("the two maps PARTITION all 45 keys — no overlap, no omission", () => {
+  it("the two maps PARTITION all 46 keys — no overlap, no omission", () => {
     const cssVarKeys = Object.keys(TOKEN_TO_CSSVAR);
     const iThemeKeys = Object.keys(TOKEN_TO_ITHEME);
 
@@ -22,7 +22,7 @@ describe("themeTokens contract", () => {
 
     // Together they cover every token key, and nothing extra.
     const union = new Set([...cssVarKeys, ...iThemeKeys]);
-    expect(union.size).toBe(45);
+    expect(union.size).toBe(46);
     for (const key of TOKEN_KEYS) {
       expect(union.has(key)).toBe(true);
     }

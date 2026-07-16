@@ -4,6 +4,7 @@ export type Status = {
   root: string | null;
   branch: string | null;
   files: GitFile[];
+  ignored: string[];
 };
 export type Commit = { hash: string; author: string; date: string; subject: string };
 export type BranchInfo = { name: string; current: boolean };

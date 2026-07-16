@@ -21,6 +21,7 @@ defmodule Dala.Terminal.Git do
                     repo: [type: :boolean, allow_nil?: false],
                     root: [type: :string],
                     branch: [type: :string],
+                    ignored: [type: {:array, :string}, allow_nil?: false],
                     files: [
                       type: {:array, :map},
                       allow_nil?: false,

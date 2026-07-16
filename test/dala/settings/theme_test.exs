@@ -315,9 +315,9 @@ defmodule Dala.Settings.ThemeTest do
       assert length(ids) == 6
     end
 
-    test "presets are global, non-builtin-editable, and each fills all 45 canonical tokens" do
+    test "presets are global, non-builtin-editable, and each fills all 46 canonical tokens" do
       keys = MapSet.new(Dala.Settings.Theme.Tokens.token_keys())
-      assert MapSet.size(keys) == 45
+      assert MapSet.size(keys) == 46
 
       for preset <- Dala.Settings.Theme.Presets.all() do
         assert MapSet.new(Map.keys(preset.tokens)) == keys, "#{preset.name}: token keys mismatch"

@@ -34,6 +34,7 @@ defmodule Dala.Mcp.Tools do
     "gitRenamed" => "Git renamed/copied-file labels and names.",
     "gitUntracked" => "Git untracked-file labels and names.",
     "gitConflict" => "Git merge-conflict labels and names.",
+    "gitIgnored" => "Subtle labels and names for files excluded by Git ignore rules.",
     "diffAddFg" => "Added-line marker and text emphasis.",
     "diffDelFg" => "Deleted-line marker and text emphasis.",
     "diffHunk" => "Diff hunk headers and location markers.",
@@ -244,7 +245,7 @@ defmodule Dala.Mcp.Tools do
   defp reference do
     keys = Tokens.token_keys()
     {ui, rest} = Enum.split(keys, 8)
-    {git, rest} = Enum.split(rest, 6)
+    {git, rest} = Enum.split(rest, 7)
     {diff, rest} = Enum.split(rest, 5)
     {codemirror, rest} = Enum.split(rest, 5)
     {terminal, ansi} = Enum.split(rest, 5)

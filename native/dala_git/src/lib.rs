@@ -24,6 +24,7 @@ struct StatusResult {
     root: Option<String>,
     branch: Option<String>,
     files: Vec<FileStatus>,
+    ignored: Vec<String>,
 }
 
 #[derive(NifMap)]
@@ -110,6 +111,7 @@ fn status(path: String) -> Result<StatusResult, String> {
                 root: None,
                 branch: None,
                 files: vec![],
+                ignored: vec![],
             })
         }
     };
@@ -125,15 +127,22 @@ fn status(path: String) -> Result<StatusResult, String> {
     };
 
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true)
+        // Return an ignored directory as one entry. Recursing through build
+        // output or dependency trees would make a status refresh unbounded.
+        .recurse_ignored_dirs(false);
 
     let statuses = repo.statuses(Some(&mut opts)).map_err(git_error)?;
     let mut files = Vec::new();
+    let mut ignored = Vec::new();
 
     for entry in statuses.iter() {
         let Some(path) = entry.path() else { continue };
         let s = entry.status();
         if s.is_ignored() {
+            ignored.push(path.trim_end_matches('/').to_string());
             continue;
         }
         let (code, staged, unstaged) = porcelain(s);
@@ -146,12 +155,15 @@ fn status(path: String) -> Result<StatusResult, String> {
     }
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    ignored.sort();
+    ignored.dedup();
 
     Ok(StatusResult {
         repo: true,
         root,
         branch,
         files,
+        ignored,
     })
 }
 
@@ -619,7 +631,9 @@ fn checkout(path: String, name: String) -> Result<bool, String> {
         let local_name = name.splitn(2, '/').nth(1).unwrap_or(&name).to_string();
 
         if repo.find_branch(&local_name, BranchType::Local).is_err() {
-            let mut b = repo.branch(&local_name, &commit, false).map_err(git_error)?;
+            let mut b = repo
+                .branch(&local_name, &commit, false)
+                .map_err(git_error)?;
             let _ = b.set_upstream(Some(&name));
         }
 

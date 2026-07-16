@@ -9,6 +9,7 @@ const DECORATION_CLASSES: Record<GitDecoration["tone"], string> = {
   renamed: "text-git-renamed",
   untracked: "text-git-untracked",
   conflict: "text-git-conflict",
+  ignored: "text-git-ignored",
 };
 
 const TOOLTIP_DELAY_MS = 350;

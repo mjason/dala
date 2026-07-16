@@ -54,7 +54,7 @@ defmodule Dala.Settings.ThemeColorTest do
         |> Map.merge(%{"bg1" => base["bg0"], "bg2" => base["bg0"], "fg" => "#101010"})
         |> then(fn tokens ->
           semantic =
-            ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict
+            ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict gitIgnored
                diffAddFg diffDelFg diffHunk ansiRed ansiGreen ansiYellow ansiBlue ansiMagenta ansiCyan)
 
           Enum.reduce(semantic, tokens, &Map.put(&2, &1, "#ff0000"))

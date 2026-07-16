@@ -5,22 +5,22 @@ defmodule Dala.Settings.ThemePreviewTest do
 
   @snapshots %{
     "10000000-0000-0000-0000-000000000001" =>
-      "0c9ba939822321b1f497d482790336c46bcb59b90eeb19a70eba1d7893a02ff7",
+      "8c1ce9c810a29e9215f1451424bdb078058e793496d61264aa4f425162096bfe",
     "10000000-0000-0000-0000-000000000002" =>
-      "e8624da4b4b8d28691e994a321bd02a429e2f5f06fe0274d392204828ea846f1",
+      "3d6f36213e274818a92a16df41a3c253ebe47aacc4a5d938d7f2f71b5fce1f4e",
     "10000000-0000-0000-0000-000000000003" =>
-      "79cd7315f611384567c20e3b8526f2fe110ce2f4fe5f50d8db17e3d906b0562c",
+      "cab5d59391da17d573d87563a8993d3c0356ff4ae06e82a25fbdbd9b27817100",
     "10000000-0000-0000-0000-000000000004" =>
-      "e6f544a816939bca53b7ed80f99c8e192d9dfd31016984fa02fd4d839d96511d",
+      "5bb07cd997b6bfd9e8ca9c55a2927e548ef709c8e34c5c78bdeb4757548d53b2",
     "10000000-0000-0000-0000-000000000005" =>
-      "992227c166dd6ca1a20436ea322c4066402404d44824ab0b5b22733141e1828c",
+      "f767b7d09b9b8b01512509e1c20f115c261356bee485741de204250b82b148fb",
     "10000000-0000-0000-0000-000000000006" =>
-      "9af18b0e1d4c3ecbb80b88876c8d7e5873382ec218241f04bb0475d873ae5e72"
+      "cf863c429f6ca647b89ed406f396bf34a24bc05dd2c5518925aa65bb64cc1c91"
   }
 
-  test "sparse themes resolve to all 45 tokens without changing the base" do
+  test "sparse themes resolve to all 46 tokens without changing the base" do
     assert {:ok, tokens} = Palette.resolve(:dark, %{"gitAdded" => "#abcdef"})
-    assert map_size(tokens) == 45
+    assert map_size(tokens) == 46
     assert tokens["gitAdded"] == "#abcdef"
     assert tokens["bg0"] == "#0b0c0e"
   end

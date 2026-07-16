@@ -188,7 +188,7 @@ npx -y mcp-remote http://127.0.0.1:4400/mcp --header "Authorization: Bearer <你
 
 | 工具 | 作用 |
 | --- | --- |
-| `theme_reference` | 完整能力参考：45 个 token 的用途、分组、亮/暗默认值，6 个内置预设、可执行操作和对比度规则。**定义主题前先调它一次。** |
+| `theme_reference` | 完整能力参考：46 个 token 的用途、分组、亮/暗默认值，6 个内置预设、可执行操作和对比度规则。**定义主题前先调它一次。** |
 | `preview_theme` | 不保存主题；接收 `theme_id`，或 `base` + 稀疏 `tokens`，返回完整 token、审查报告和标准 Dala 界面的 `image/png`。 |
 | `list_themes` | 列出可见主题（内置预设 + 全局库，内置优先）。 |
 | `get_theme` | 按 `id` 取单个主题（取不到返回 `null`，不是错误）。 |
@@ -208,10 +208,10 @@ npx -y mcp-remote http://127.0.0.1:4400/mcp --header "Authorization: Bearer <你
 `send_terminal_message` 只把路径按 Claude/Codex/OpenCode/Gemini 对应的粘贴策略发送。
 已有的服务器普通文件也可直接使用；目录和符号链接会被拒绝。
 
-主题 `tokens` 是一个稀疏的 `键 -> CSS 颜色` 映射，一共 45 个槽位（UI 8 / Git 6 /
+主题 `tokens` 是一个稀疏的 `键 -> CSS 颜色` 映射，一共 46 个槽位（UI 8 / Git 7 /
 diff 5 / CodeMirror 5 / 终端 5 / ANSI 16）。**只写你要覆盖的槽位**，其余回退到
-`base` 调色板。Git 六个状态槽位是 `gitAdded`、`gitModified`、`gitDeleted`、
-`gitRenamed`、`gitUntracked`、`gitConflict`。
+`base` 调色板。Git 七个状态槽位是 `gitAdded`、`gitModified`、`gitDeleted`、
+`gitRenamed`、`gitUntracked`、`gitConflict`、`gitIgnored`。
 颜色只接受纯 CSS 颜色（`#rrggbb`、`rgb()/rgba()/hsl()/hsla()`、`transparent`），
 `url(...)` 之类会在写入时被拒。追求可读对比度：正文 ≥ 4.5:1，UI 装饰 ≥ 3.0:1。
 `theme_reference.tokenDefinitions` 会逐项说明颜色落在哪个界面区域，并同时给出基础亮色和
@@ -284,7 +284,7 @@ read_terminal
 > **你：** 用 dala MCP 创建一个叫 “Midnight Ink” 的暗色主题。
 >
 > **助手：** 我先调 `theme_reference` 看看可用的 token 键和颜色规则……
-> 拿到 45 个键和规则了。我先用 `preview_theme` 检查 `base: "dark"`，`tokens` 里设了
+> 拿到 46 个键和规则了。我先用 `preview_theme` 检查 `base: "dark"`，`tokens` 里设了
 > `bg0: "#0a0a0f"`、`fg: "#e6e9f0"`、`mint: "#3dd7c0"`。PNG 中层级清晰，报告的
 > 硬性检查全部通过；现在再用同一组参数调用 `create_theme`。
 > ✅ 已创建，id 是 `c2b4…`。它是全局主题，你所有设备都能在主题列表里选到它。

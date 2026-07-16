@@ -81,7 +81,7 @@ describe("AppearanceSection theme library", () => {
     expect(container.querySelectorAll("[data-theme-palette]")).toHaveLength(2);
     expect(container.querySelectorAll("[data-theme-ansi-swatch]")).toHaveLength(16);
     expect(container.querySelectorAll("[data-theme-git-preview]")).toHaveLength(2);
-    expect(container.querySelectorAll("[data-theme-git-swatch]")).toHaveLength(12);
+    expect(container.querySelectorAll("[data-theme-git-swatch]")).toHaveLength(14);
     expect(q(container, "[data-theme-terminal-preview='c1']").textContent).toContain("dala status");
   });
 

@@ -14,7 +14,7 @@ import { Chevron, DownloadIcon, Row, UploadIcon } from "./fileDrawer/rows";
 import { useDirTree } from "./fileDrawer/useDirTree";
 import { useFileOps } from "./fileDrawer/useFileOps";
 import { useGitStatus } from "./hooks/useGitStatus";
-import { buildGitDecorations } from "./gitDecorations";
+import { buildGitDecorations, gitDecorationForPath } from "./gitDecorations";
 import UploadProgressView from "./UploadProgressView";
 
 export type { Entry } from "./fileDrawer/tree";
@@ -400,7 +400,7 @@ export default function FileDrawer({
               }
               name={row.entry.name}
               symlink={row.entry.symlink}
-              decoration={gitDecorations.get(row.path)}
+              decoration={gitDecorationForPath(gitDecorations, row.path)}
               detail={isDir ? undefined : humanBytes(row.entry.size)}
               loading={previewLoading === row.path}
               selected={selectedPath === row.path}

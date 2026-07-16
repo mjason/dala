@@ -27,11 +27,11 @@ defmodule Dala.Mcp.RegistryTest do
     end
   end
 
-  test "create_theme inputSchema inlines all 45 token keys and a light|dark base enum" do
+  test "create_theme inputSchema inlines all 46 token keys and a light|dark base enum" do
     schema = tool("create_theme")["inputSchema"]
 
     assert map_size(schema["properties"]["tokens"]["properties"]) == Tokens.count()
-    assert map_size(schema["properties"]["tokens"]["properties"]) == 45
+    assert map_size(schema["properties"]["tokens"]["properties"]) == 46
     assert schema["properties"]["tokens"]["additionalProperties"] == false
 
     for key <- Tokens.token_keys() do
@@ -66,7 +66,7 @@ defmodule Dala.Mcp.RegistryTest do
     schema = tool("preview_theme")["inputSchema"]
     assert schema["additionalProperties"] == false
     assert schema["properties"]["base"]["enum"] == ["light", "dark"]
-    assert map_size(schema["properties"]["tokens"]["properties"]) == 45
+    assert map_size(schema["properties"]["tokens"]["properties"]) == 46
     assert [by_id, inline] = schema["oneOf"]
     assert by_id["required"] == ["theme_id"]
     assert by_id["not"]["anyOf"] == [%{"required" => ["base"]}, %{"required" => ["tokens"]}]

@@ -192,7 +192,7 @@ defmodule DalaWeb.McpControllerTest do
       end
 
       create = Enum.find(body["result"]["tools"], &(&1["name"] == "create_theme"))
-      assert map_size(create["inputSchema"]["properties"]["tokens"]["properties"]) == 45
+      assert map_size(create["inputSchema"]["properties"]["tokens"]["properties"]) == 46
       assert create["inputSchema"]["properties"]["base"]["enum"] == ["light", "dark"]
     end
 
@@ -251,20 +251,22 @@ defmodule DalaWeb.McpControllerTest do
   end
 
   describe "theme_reference" do
-    test "returns the 45 grouped token keys and the built-in presets" do
+    test "returns the 46 grouped token keys and the built-in presets" do
       data = tool_content(call_tool("theme_reference", %{}))
 
       total = data["tokenKeys"] |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
-      assert total == 45
+      assert total == 46
       assert length(data["presets"]) == 6
       assert Enum.all?(data["presets"], &(&1["base"] in ["light", "dark"]))
-      assert map_size(data["tokenDefinitions"]) == 45
+      assert map_size(data["tokenDefinitions"]) == 46
 
       assert data["tokenDefinitions"]["gitAdded"] == %{
                "group" => "git",
                "description" => "Git added-file labels and names.",
                "defaults" => %{"dark" => "#5fbf87", "light" => "#116329"}
              }
+
+      assert data["tokenDefinitions"]["gitIgnored"]["group"] == "git"
 
       assert Enum.map(data["supportedOperations"], & &1["tool"]) ==
                ~w(list_themes get_theme preview_theme create_theme update_theme delete_theme)
@@ -293,7 +295,7 @@ defmodule DalaWeb.McpControllerTest do
       assert <<137, 80, 78, 71, 13, 10, 26, 10, _rest::binary>> = Base.decode64!(image["data"])
       assert report["saved"] == false
       assert report["source"] == %{"type" => "inline"}
-      assert map_size(report["tokens"]) == 45
+      assert map_size(report["tokens"]) == 46
       assert is_list(report["audit"]["errors"])
       assert report["preview"]["contains_user_content"] == false
     end

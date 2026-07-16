@@ -8,7 +8,7 @@ defmodule Dala.Settings.Theme.Audit do
 
   alias Dala.Settings.Theme.Color
 
-  @git_tokens ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict)
+  @git_tokens ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict gitIgnored)
   @ansi_tokens ~w(ansiBlack ansiRed ansiGreen ansiYellow ansiBlue ansiMagenta ansiCyan ansiWhite
                   ansiBrightBlack ansiBrightRed ansiBrightGreen ansiBrightYellow ansiBrightBlue
                   ansiBrightMagenta ansiBrightCyan ansiBrightWhite)
@@ -108,7 +108,7 @@ defmodule Dala.Settings.Theme.Audit do
 
   defp accent_warnings(tokens) do
     semantic =
-      ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict diffAddFg diffDelFg diffHunk)
+      ~w(gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict gitIgnored diffAddFg diffDelFg diffHunk)
 
     repeated = Enum.count(semantic, &(normalize(tokens[&1]) == normalize(tokens["mint"])))
 
@@ -174,7 +174,7 @@ defmodule Dala.Settings.Theme.Audit do
 
   defp hue_warnings(tokens) do
     palette =
-      ~w(mint danger gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict
+      ~w(mint danger gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict gitIgnored
          diffAddFg diffDelFg diffHunk ansiRed ansiGreen ansiYellow ansiBlue ansiMagenta ansiCyan)
 
     hues =

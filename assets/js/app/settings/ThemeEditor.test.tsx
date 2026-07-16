@@ -55,6 +55,7 @@ describe("ThemeEditor live preview", () => {
     expect(container.querySelector("[data-theme-group='git']")).not.toBeNull();
     expect(container.querySelector("#theme-hex-gitAdded")).not.toBeNull();
     expect(container.querySelector("#theme-hex-gitConflict")).not.toBeNull();
+    expect(container.querySelector("#theme-hex-gitIgnored")).not.toBeNull();
   });
 
   it("editing a colour previews the updated sparse token map", () => {

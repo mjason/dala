@@ -33,7 +33,7 @@ import ToggleRow from "./ToggleRow";
 /**
  * Terminal appearance (font, size, line height, cursor) plus the app-wide
  * theme: the built-in light/dark/system triad and the custom-theme library
- * (chips + the 45-colour editor). Browser-local and global across sessions;
+ * (chips + the 46-colour editor). Browser-local and global across sessions;
  * every change persists and applies immediately, so there is no save step.
  */
 export default function AppearanceSection({
@@ -144,6 +144,7 @@ export default function AppearanceSection({
     { label: "R", key: "gitRenamed" },
     { label: "U", key: "gitUntracked" },
     { label: "!", key: "gitConflict" },
+    { label: "I", key: "gitIgnored" },
   ];
 
   return (

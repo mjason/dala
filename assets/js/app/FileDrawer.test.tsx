@@ -81,7 +81,7 @@ beforeEach(() => {
   uploadMultipartFile.mockResolvedValue({ path: "/uploaded/file", size: 1 });
   gitStatus.mockResolvedValue({
     success: true,
-    data: { repo: false, root: null, branch: null, files: [] },
+    data: { repo: false, root: null, branch: null, files: [], ignored: [] },
   });
 });
 
@@ -100,7 +100,11 @@ describe("FileDrawer tree", () => {
 
   it("shows Git decorations without relying on native path tooltips", async () => {
     listDirectory.mockResolvedValueOnce(
-      listing("/proj", [entry("src", "directory"), entry("mix.exs", "file", 1234)]),
+      listing("/proj", [
+        entry("src", "directory"),
+        entry("cache", "directory"),
+        entry("mix.exs", "file", 1234),
+      ]),
     );
     gitStatus.mockResolvedValueOnce({
       success: true,
@@ -112,6 +116,7 @@ describe("FileDrawer tree", () => {
           { path: "mix.exs", status: " M", staged: false, unstaged: true },
           { path: "src/main.ex", status: "??", staged: false, unstaged: true },
         ],
+        ignored: ["cache"],
       },
     });
 
@@ -119,6 +124,7 @@ describe("FileDrawer tree", () => {
 
     const fileRow = (await screen.findByText("mix.exs")).closest("[data-path]")!;
     const folderRow = screen.getByText("src").closest("[data-path]")!;
+    const ignoredRow = screen.getByText("cache").closest("[data-path]")!;
     expect(fileRow).not.toHaveAttribute("title");
     const modified = fileRow.querySelector('[data-git-status="M"]');
     expect(modified).not.toBeNull();
@@ -126,6 +132,7 @@ describe("FileDrawer tree", () => {
     expect(modified).toHaveClass("text-git-modified");
     expect(folderRow).not.toHaveAttribute("title");
     expect(folderRow.querySelector('[data-git-status="•"]')).not.toBeNull();
+    expect(ignoredRow.querySelector('[data-git-status="I"]')).toHaveClass("text-git-ignored");
   });
 
   it("expands a directory in place and collapses it again", async () => {

@@ -54,7 +54,7 @@ defmodule Dala.Terminal.GitTest do
 
   describe "git_status" do
     test "clean repository reports branch and no files", %{dir: dir} do
-      assert %{repo: true, branch: "main", root: root, files: []} =
+      assert %{repo: true, branch: "main", root: root, files: [], ignored: []} =
                run!(:git_status, %{path: dir})
 
       assert Path.basename(root) == Path.basename(dir)
@@ -83,6 +83,18 @@ defmodule Dala.Terminal.GitTest do
                run!(:git_status, %{path: dir})
     end
 
+    test "reports ignored files and collapsed ignored directories separately", %{dir: dir} do
+      File.write!(Path.join(dir, ".gitignore"), "ignored.txt\nbuild/\n")
+      File.write!(Path.join(dir, "ignored.txt"), "ignored\n")
+      File.mkdir_p!(Path.join(dir, "build/nested"))
+      File.write!(Path.join(dir, "build/nested/output.bin"), "ignored\n")
+
+      assert %{files: files, ignored: ignored} = run!(:git_status, %{path: dir})
+      assert Enum.sort(ignored) == ["build", "ignored.txt"]
+      refute Enum.any?(files, &(&1.path in ignored))
+      refute Enum.any?(ignored, &String.starts_with?(&1, "build/"))
+    end
+
     test "works from a nested subdirectory of the repo", %{dir: dir} do
       sub = Path.join(dir, "nested/deep")
       File.mkdir_p!(sub)
@@ -97,7 +109,7 @@ defmodule Dala.Terminal.GitTest do
       File.mkdir_p!(outside)
       on_exit(fn -> File.rm_rf!(outside) end)
 
-      assert %{repo: false, root: nil, branch: nil, files: []} =
+      assert %{repo: false, root: nil, branch: nil, files: [], ignored: []} =
                run!(:git_status, %{path: outside})
     end
   end

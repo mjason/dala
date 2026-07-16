@@ -6,7 +6,7 @@ import { useI18n } from "../i18n";
 import type { Status } from "../gitPanel/types";
 import { useFileWatcher } from "./useFileWatcher";
 
-const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
+const STATUS_FIELDS = ["repo", "root", "branch", "files", "ignored"] as unknown as GitStatusFields;
 const DEFAULT_POLL_MS = 5000;
 
 type Options = {
@@ -20,6 +20,7 @@ function statusKey(status: Status): string {
     status.root,
     status.branch,
     status.files.map((file) => [file.path, file.status, file.staged, file.unstaged]),
+    status.ignored,
   ]);
 }
 

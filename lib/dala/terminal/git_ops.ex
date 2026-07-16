@@ -18,7 +18,7 @@ defmodule Dala.Terminal.GitOps do
   def status(path) do
     case Dala.Git.status(expand(path)) do
       {:ok, result} -> result
-      {:error, _reason} -> %{repo: false, root: nil, branch: nil, files: []}
+      {:error, _reason} -> %{repo: false, root: nil, branch: nil, files: [], ignored: []}
     end
   end
 

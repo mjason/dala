@@ -23,6 +23,7 @@ function outcome(path: string) {
       root: "/proj",
       branch: "main",
       files: [{ path, status: " M", staged: false, unstaged: true }],
+      ignored: [],
     },
   };
 }

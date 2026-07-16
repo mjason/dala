@@ -2189,11 +2189,11 @@ export type GitStatusInput = {
   path: string;
 };
 
-export type GitStatusFields = UnifiedFieldSelection<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}>[];
+export type GitStatusFields = UnifiedFieldSelection<{repo: boolean, root: string | null, branch: string | null, ignored: Array<string>, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch" | "ignored"}>[];
 
 export type InferGitStatusResult<
   Fields extends GitStatusFields | undefined,
-> = InferResult<{repo: boolean, root: string | null, branch: string | null, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch"}, Fields>;
+> = InferResult<{repo: boolean, root: string | null, branch: string | null, ignored: Array<string>, files: Array<{path: string, status: string, staged: boolean, unstaged: boolean, __type: "TypedMap", __primitiveFields: "path" | "status" | "staged" | "unstaged"}>, __type: "TypedMap", __primitiveFields: "repo" | "root" | "branch" | "ignored"}, Fields>;
 
 export type GitStatusResult<Fields extends GitStatusFields | undefined = undefined> = | { success: true; data: InferGitStatusResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

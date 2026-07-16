@@ -24,7 +24,7 @@ defmodule Dala.Terminal.GitOpsTest do
   end
 
   test "status reports branch and clean tree", %{dir: dir} do
-    assert %{repo: true, branch: "main", files: []} = GitOps.status(dir)
+    assert %{repo: true, branch: "main", files: [], ignored: []} = GitOps.status(dir)
   end
 
   test "status reports modified, staged and untracked files", %{dir: dir} do
@@ -51,7 +51,17 @@ defmodule Dala.Terminal.GitOpsTest do
   end
 
   test "status outside a repository", %{dir: _dir} do
-    assert %{repo: false, files: []} = GitOps.status(System.tmp_dir!())
+    assert %{repo: false, files: [], ignored: []} = GitOps.status(System.tmp_dir!())
+  end
+
+  test "status separates ignored paths without recursing ignored directories", %{dir: dir} do
+    File.write!(Path.join(dir, ".gitignore"), "cache/\nignored.log\n")
+    File.mkdir_p!(Path.join(dir, "cache/deep"))
+    File.write!(Path.join(dir, "cache/deep/value.bin"), "x")
+    File.write!(Path.join(dir, "ignored.log"), "x")
+
+    assert %{ignored: ["cache", "ignored.log"], files: files} = GitOps.status(dir)
+    refute Enum.any?(files, &(&1.path in ["cache", "ignored.log"]))
   end
 
   test "diff of a modified tracked file", %{dir: dir} do

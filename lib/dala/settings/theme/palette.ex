@@ -19,10 +19,11 @@ defmodule Dala.Settings.Theme.Palette do
     "danger" => "#f0716e",
     "gitAdded" => "#5fbf87",
     "gitModified" => "#d9a860",
-    "gitDeleted" => "#b4a7ad",
+    "gitDeleted" => "#d27d9f",
     "gitRenamed" => "#6d9fd6",
     "gitUntracked" => "#7fd0d0",
     "gitConflict" => "#c9a5dd",
+    "gitIgnored" => "#748493",
     "diffAddFg" => "#5fbf87",
     "diffDelFg" => "#e5716e",
     "diffHunk" => "#7fd0d0",
@@ -67,10 +68,11 @@ defmodule Dala.Settings.Theme.Palette do
     "danger" => "#c92f2c",
     "gitAdded" => "#116329",
     "gitModified" => "#7a4b00",
-    "gitDeleted" => "#705f66",
+    "gitDeleted" => "#8f3f5f",
     "gitRenamed" => "#0550ae",
     "gitUntracked" => "#1b6b72",
     "gitConflict" => "#6639ba",
+    "gitIgnored" => "#68727c",
     "diffAddFg" => "#116329",
     "diffDelFg" => "#b31d28",
     "diffHunk" => "#0969da",
@@ -112,7 +114,7 @@ defmodule Dala.Settings.Theme.Palette do
 
   def base_tokens(_base), do: nil
 
-  @doc "Validate a sparse override and resolve all 45 tokens."
+  @doc "Validate a sparse override and resolve all 46 tokens."
   def resolve(base, overrides \\ %{}) do
     with %{} = base_tokens <- base_tokens(base),
          {:ok, clean} <- Tokens.validate(overrides) do

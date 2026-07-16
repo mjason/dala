@@ -11,7 +11,7 @@ defmodule Dala.Mcp.Registry do
   update / destroy / generic), and derive a JSON-Schema `inputSchema` from the
   action's accepted attributes and arguments.
 
-  Two non-Ash theme helpers are appended: `theme_reference` exposes the 45-token
+  Two non-Ash theme helpers are appended: `theme_reference` exposes the 46-token
   vocabulary and `preview_theme` provides a deterministic PNG plus audit before
   an agent saves anything. Their execution lives in `Dala.Mcp.Tools`.
   """
@@ -200,7 +200,7 @@ defmodule Dala.Mcp.Registry do
 
   defp maybe_put_description(schema, _description), do: schema
 
-  # The `tokens` property gets the full 45-key contract inlined.
+  # The `tokens` property gets the full 46-key contract inlined.
   defp enrich_tokens(%{"tokens" => _} = props) do
     Map.put(props, "tokens", tokens_schema())
   end
@@ -236,7 +236,7 @@ defmodule Dala.Mcp.Registry do
     or transparent) — include only the slots you override. #{merge_note}Aim for readable
     contrast: body text >= 4.5:1 against its background, UI chrome >= 3.0:1. To
     fork a built-in, call list_themes, copy the preset's tokens, then tweak.
-    Call theme_reference for all 45 token keys and the preset ids, then use
+    Call theme_reference for all 46 token keys and the preset ids, then use
     preview_theme until its PNG and audit are ready before create/update.
     """
     |> String.trim()
@@ -246,7 +246,7 @@ defmodule Dala.Mcp.Registry do
     %{
       "name" => @reference_tool_name,
       "description" =>
-        "Reference vocabulary for defining themes: the 45 token keys grouped by " <>
+        "Reference vocabulary for defining themes: the 46 token keys grouped by " <>
           "area, the built-in preset names/ids/bases to fork, and the colour + " <>
           "contrast rules. Follow it with preview_theme before create_theme/update_theme.",
       "inputSchema" => %{"type" => "object", "properties" => %{}}

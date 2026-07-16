@@ -1,9 +1,9 @@
 /**
- * The single shared contract for custom themes: the 45 design tokens a
+ * The single shared contract for custom themes: the 46 design tokens a
  * CustomTheme may override, and how each token maps onto a render target.
  *
- * Two disjoint groups partition the 45 keys:
- *  - 24 UI / Git / diff / CodeMirror tokens → app.css `--color-*` custom properties,
+ * Two disjoint groups partition the 46 keys:
+ *  - 25 UI / Git / diff / CodeMirror tokens → app.css `--color-*` custom properties,
  *    applied as inline styles on <html> so a custom value beats the
  *    `[data-theme]` blocks (TOKEN_TO_CSSVAR).
  *  - 21 terminal tokens (5 base + 16 ANSI) → xterm ITheme fields
@@ -35,6 +35,7 @@ export const GIT_KEYS = [
   "gitRenamed",
   "gitUntracked",
   "gitConflict",
+  "gitIgnored",
 ] as const;
 
 /** Diff signal tokens → `--color-diff-*` (app.css :root). */
@@ -78,7 +79,7 @@ export const ANSI_KEYS = [
   "ansiBrightWhite",
 ] as const;
 
-/** All 45 token keys, in a stable group order. */
+/** All 46 token keys, in a stable group order. */
 export const TOKEN_KEYS = [
   ...UI_KEYS,
   ...GIT_KEYS,
@@ -107,7 +108,7 @@ export type IThemeTokenKey = (typeof TERM_BASE_KEYS)[number] | (typeof ANSI_KEYS
 export type ThemeTokens = Partial<Record<TokenKey, string>>;
 
 /**
- * The 24 UI / Git / diff / cm tokens → their EXACT app.css `--color-*` names.
+ * The 25 UI / Git / diff / cm tokens → their EXACT app.css `--color-*` names.
  * Verified against assets/css/app.css. Inline styles set from this map on
  * <html> beat the `[data-theme]` token blocks, so a custom value always wins.
  */
@@ -128,6 +129,7 @@ export const TOKEN_TO_CSSVAR: Record<CssVarTokenKey, `--color-${string}`> = {
   gitRenamed: "--color-git-renamed",
   gitUntracked: "--color-git-untracked",
   gitConflict: "--color-git-conflict",
+  gitIgnored: "--color-git-ignored",
   // diff signals (:root)
   diffAddFg: "--color-diff-add-fg",
   diffDelFg: "--color-diff-del-fg",

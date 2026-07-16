@@ -358,6 +358,9 @@ test.describe("Given 打开文件抽屉的用户", () => {
           { timeout: 15_000, intervals: [300] },
         )
         .toBe(true);
+      await expect(
+        page.locator(`[data-path="${marker}"] [data-git-status="I"]`),
+      ).toBeVisible();
       fs.rmSync(marker);
       await expect(page.locator(`[data-path="${marker}"]`)).toHaveCount(0, { timeout: 2000 });
 
