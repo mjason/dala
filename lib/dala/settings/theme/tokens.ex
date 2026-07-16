@@ -1,6 +1,6 @@
 defmodule Dala.Settings.Theme.Tokens do
   @moduledoc """
-  The canonical custom-theme token contract: the 39 colour slots a theme may
+  The canonical custom-theme token contract: the 45 colour slots a theme may
   override, and the whitelist validator applied on every write.
 
   A theme's `tokens` map is a sparse `string -> string` map keyed by the names
@@ -11,10 +11,12 @@ defmodule Dala.Settings.Theme.Tokens do
 
   CLIENT CONTRACT — the browser side (`assets/js/app/themeTokens.ts`, built in
   the next phase) MUST use this identical key list, in these identical
-  spellings. Adding or renaming a token means changing BOTH sides. The 39
+  spellings. Adding or renaming a token means changing BOTH sides. The 45
   keys, grouped:
 
     * UI shell (8):   bg0 bg1 bg2 line fg fgMuted mint danger
+    * Git states (6): gitAdded gitModified gitDeleted gitRenamed gitUntracked
+                      gitConflict
     * diff (5):       diffAddFg diffDelFg diffHunk diffAddBg diffDelBg
     * CodeMirror (5): cmGutterBg cmGutterFg cmActiveBg cmHunkBg cmSelection
     * term base (5):  termBackground termForeground termCursor termCursorAccent
@@ -28,6 +30,7 @@ defmodule Dala.Settings.Theme.Tokens do
 
   @token_keys ~w(
     bg0 bg1 bg2 line fg fgMuted mint danger
+    gitAdded gitModified gitDeleted gitRenamed gitUntracked gitConflict
     diffAddFg diffDelFg diffHunk diffAddBg diffDelBg
     cmGutterBg cmGutterFg cmActiveBg cmHunkBg cmSelection
     termBackground termForeground termCursor termCursorAccent termSelectionBackground
@@ -36,10 +39,10 @@ defmodule Dala.Settings.Theme.Tokens do
     ansiBrightMagenta ansiBrightCyan ansiBrightWhite
   )
 
-  @doc "The 39 canonical token keys (strings, camelCase)."
+  @doc "The 45 canonical token keys (strings, camelCase)."
   def token_keys, do: @token_keys
 
-  @doc "How many canonical tokens there are (39)."
+  @doc "How many canonical tokens there are (45)."
   def count, do: length(@token_keys)
 
   # A token value must be a plain CSS colour. This is a SECURITY boundary, not
@@ -65,7 +68,7 @@ defmodule Dala.Settings.Theme.Tokens do
   Validate and normalise a tokens map on write. Keys may arrive as atoms or
   strings; the result always has string keys.
 
-  Returns `{:ok, clean}` when every key is one of the 39 canonical tokens and
+  Returns `{:ok, clean}` when every key is one of the 45 canonical tokens and
   every value is a valid, length-bounded CSS colour, or `{:error, message}` on
   the first violation — unknown keys, non-string values, and anything that is
   not a plain colour (e.g. `url(...)`) are rejected, not silently dropped.

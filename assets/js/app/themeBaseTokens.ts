@@ -1,5 +1,5 @@
 /**
- * The built-in light/dark default value for every one of the 39 theme tokens.
+ * The built-in light/dark default value for every one of the 45 theme tokens.
  *
  * The theme editor shows these as the PLACEHOLDER for each colour row (the
  * value an omitted/未覆盖 token falls back to on the selected base) and as the
@@ -7,7 +7,7 @@
  * editor's base re-seeds the placeholders from the other palette, so a user
  * only ever overrides what they actually want to change.
  *
- * The 18 UI/diff/cm values are transcribed verbatim from app.css (`@theme`
+ * The 24 UI/Git/diff/cm values are transcribed verbatim from app.css (`@theme`
  * for dark, `:root[data-theme="light"]` for light — the same blocks
  * TOKEN_TO_CSSVAR maps onto). The 21 terminal values are derived from the
  * canonical xterm palettes (terminalTheme.ts) via TOKEN_TO_ITHEME, so they
@@ -34,6 +34,12 @@ const UI_BASE: Record<EffectiveTheme, Record<CssVarTokenKey, string>> = {
     fgMuted: "#8f96a0",
     mint: "#4cc38a",
     danger: "#f0716e",
+    gitAdded: "#5fbf87",
+    gitModified: "#d9a860",
+    gitDeleted: "#e5716e",
+    gitRenamed: "#6d9fd6",
+    gitUntracked: "#7fd0d0",
+    gitConflict: "#c9a5dd",
     diffAddFg: "#5fbf87",
     diffDelFg: "#e5716e",
     diffHunk: "#7fd0d0",
@@ -54,6 +60,12 @@ const UI_BASE: Record<EffectiveTheme, Record<CssVarTokenKey, string>> = {
     fgMuted: "#5f666e",
     mint: "#0c7a4f",
     danger: "#c92f2c",
+    gitAdded: "#116329",
+    gitModified: "#7a4b00",
+    gitDeleted: "#b31d28",
+    gitRenamed: "#0550ae",
+    gitUntracked: "#1b6b72",
+    gitConflict: "#6639ba",
     diffAddFg: "#116329",
     diffDelFg: "#b31d28",
     diffHunk: "#0969da",
@@ -79,7 +91,7 @@ export function baseTokenValue(base: EffectiveTheme, key: TokenKey): string {
   return (TERMINAL_PALETTES[base][field] as string | undefined) ?? "";
 }
 
-/** The full 39-token default palette for a base (every token filled). */
+/** The full 45-token default palette for a base (every token filled). */
 export function baseTokens(base: EffectiveTheme): Record<TokenKey, string> {
   const out = {} as Record<TokenKey, string>;
   for (const key of Object.keys(TOKEN_TO_CSSVAR) as CssVarTokenKey[]) {

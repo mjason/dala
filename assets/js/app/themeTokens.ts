@@ -1,9 +1,9 @@
 /**
- * The single shared contract for custom themes: the 39 design tokens a
+ * The single shared contract for custom themes: the 45 design tokens a
  * CustomTheme may override, and how each token maps onto a render target.
  *
- * Two disjoint groups partition the 39 keys:
- *  - 18 UI / diff / CodeMirror tokens → app.css `--color-*` custom properties,
+ * Two disjoint groups partition the 45 keys:
+ *  - 24 UI / Git / diff / CodeMirror tokens → app.css `--color-*` custom properties,
  *    applied as inline styles on <html> so a custom value beats the
  *    `[data-theme]` blocks (TOKEN_TO_CSSVAR).
  *  - 21 terminal tokens (5 base + 16 ANSI) → xterm ITheme fields
@@ -25,6 +25,16 @@ export const UI_KEYS = [
   "fgMuted",
   "mint",
   "danger",
+] as const;
+
+/** Git file-state tokens → `--color-git-*`. */
+export const GIT_KEYS = [
+  "gitAdded",
+  "gitModified",
+  "gitDeleted",
+  "gitRenamed",
+  "gitUntracked",
+  "gitConflict",
 ] as const;
 
 /** Diff signal tokens → `--color-diff-*` (app.css :root). */
@@ -68,9 +78,10 @@ export const ANSI_KEYS = [
   "ansiBrightWhite",
 ] as const;
 
-/** All 39 token keys, in a stable group order. */
+/** All 45 token keys, in a stable group order. */
 export const TOKEN_KEYS = [
   ...UI_KEYS,
+  ...GIT_KEYS,
   ...DIFF_KEYS,
   ...CM_KEYS,
   ...TERM_BASE_KEYS,
@@ -79,9 +90,10 @@ export const TOKEN_KEYS = [
 
 export type TokenKey = (typeof TOKEN_KEYS)[number];
 
-/** The 18 keys backed by a `--color-*` CSS variable (UI + diff + cm). */
+/** The 24 keys backed by a `--color-*` CSS variable (UI + Git + diff + cm). */
 export type CssVarTokenKey =
   | (typeof UI_KEYS)[number]
+  | (typeof GIT_KEYS)[number]
   | (typeof DIFF_KEYS)[number]
   | (typeof CM_KEYS)[number];
 
@@ -95,7 +107,7 @@ export type IThemeTokenKey = (typeof TERM_BASE_KEYS)[number] | (typeof ANSI_KEYS
 export type ThemeTokens = Partial<Record<TokenKey, string>>;
 
 /**
- * The 18 UI / diff / cm tokens → their EXACT app.css `--color-*` names.
+ * The 24 UI / Git / diff / cm tokens → their EXACT app.css `--color-*` names.
  * Verified against assets/css/app.css. Inline styles set from this map on
  * <html> beat the `[data-theme]` token blocks, so a custom value always wins.
  */
@@ -109,6 +121,13 @@ export const TOKEN_TO_CSSVAR: Record<CssVarTokenKey, `--color-${string}`> = {
   fgMuted: "--color-fg-muted",
   mint: "--color-mint",
   danger: "--color-danger",
+  // Git states
+  gitAdded: "--color-git-added",
+  gitModified: "--color-git-modified",
+  gitDeleted: "--color-git-deleted",
+  gitRenamed: "--color-git-renamed",
+  gitUntracked: "--color-git-untracked",
+  gitConflict: "--color-git-conflict",
   // diff signals (:root)
   diffAddFg: "--color-diff-add-fg",
   diffDelFg: "--color-diff-del-fg",

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React from "react";
 import { FileTypeIcon } from "../fileIcons";
 import type { GitFile } from "./types";
 
@@ -75,23 +75,22 @@ export function FileRow({
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const code = status === "??" ? "?" : status.trim().slice(0, 1) || "·";
-  const color = useMemo(() => {
-    switch (code) {
-      case "A":
-      case "?":
-        return "text-mint";
-      case "M":
-        return "text-[#d9a860]";
-      case "D":
-        return "text-danger";
-      case "R":
-      case "C":
-        return "text-[#6d9fd6]";
-      default:
-        return "text-fg-muted";
-    }
-  }, [code]);
+  const padded = status.padEnd(2, " ").slice(0, 2);
+  const conflict = ["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(padded);
+  const code = conflict ? "!" : status === "??" ? "U" : status.trim().slice(0, 1) || "·";
+  const color = conflict
+    ? "text-git-conflict"
+    : code === "A"
+      ? "text-git-added"
+      : code === "M"
+        ? "text-git-modified"
+        : code === "D"
+          ? "text-git-deleted"
+          : code === "R" || code === "C"
+            ? "text-git-renamed"
+            : code === "U"
+              ? "text-git-untracked"
+              : "text-fg-muted";
 
   return (
     <span className={`w-4 shrink-0 text-center font-mono text-xs font-semibold ${color}`}>{code}</span>

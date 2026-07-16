@@ -177,17 +177,17 @@ defmodule DalaWeb.McpControllerTest do
   end
 
   describe "tools/list" do
-    test "lists every settings tool plus theme_reference, with rich theme schema" do
+    test "lists every settings tool plus theme design helpers, with rich theme schema" do
       body = json_response(mcp_post(rpc("tools/list", 5)), 200)
       names = Enum.map(body["result"]["tools"], & &1["name"])
 
       for expected <- ~w(create_theme list_themes update_theme delete_theme get_theme
-                         speech_settings set_speech_settings theme_reference) do
+                         speech_settings set_speech_settings theme_reference preview_theme) do
         assert expected in names
       end
 
       create = Enum.find(body["result"]["tools"], &(&1["name"] == "create_theme"))
-      assert map_size(create["inputSchema"]["properties"]["tokens"]["properties"]) == 39
+      assert map_size(create["inputSchema"]["properties"]["tokens"]["properties"]) == 45
       assert create["inputSchema"]["properties"]["base"]["enum"] == ["light", "dark"]
     end
 
@@ -243,13 +243,78 @@ defmodule DalaWeb.McpControllerTest do
   end
 
   describe "theme_reference" do
-    test "returns the 39 grouped token keys and the built-in presets" do
+    test "returns the 45 grouped token keys and the built-in presets" do
       data = tool_content(call_tool("theme_reference", %{}))
 
       total = data["tokenKeys"] |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
-      assert total == 39
+      assert total == 45
       assert length(data["presets"]) == 6
       assert Enum.all?(data["presets"], &(&1["base"] in ["light", "dark"]))
+      assert data["previewWorkflow"] |> Enum.join(" ") =~ "preview_theme"
+      assert length(data["reviewRules"]["hard"]) == 4
+      assert length(data["reviewRules"]["warnings"]) == 5
+    end
+  end
+
+  describe "preview_theme" do
+    test "returns JSON feedback and an image/png block without saving" do
+      response =
+        call_tool("preview_theme", %{
+          base: "dark",
+          tokens: %{gitAdded: "#67d391", gitConflict: "#d8a4e8"}
+        })
+
+      assert response["result"]["isError"] == false
+      [text, image] = response["result"]["content"]
+      report = Jason.decode!(text["text"])
+
+      assert text["type"] == "text"
+      assert image["type"] == "image"
+      assert image["mimeType"] == "image/png"
+      assert <<137, 80, 78, 71, 13, 10, 26, 10, _rest::binary>> = Base.decode64!(image["data"])
+      assert report["saved"] == false
+      assert report["source"] == %{"type" => "inline"}
+      assert map_size(report["tokens"]) == 45
+      assert is_list(report["audit"]["errors"])
+      assert report["preview"]["contains_user_content"] == false
+    end
+
+    test "loads a visible theme_id and still does not modify it" do
+      name = "Preview source #{System.unique_integer([:positive])}"
+
+      created =
+        call_tool("create_theme", %{
+          name: name,
+          base: "light",
+          tokens: %{gitRenamed: "#0550ae"}
+        })
+
+      id = tool_content(created)["id"]
+      response = call_tool("preview_theme", %{theme_id: id})
+      [text, image] = response["result"]["content"]
+      report = Jason.decode!(text["text"])
+
+      assert image["mimeType"] == "image/png"
+      assert report["source"] == %{"type" => "theme_id", "theme_id" => id}
+      assert report["base"] == "light"
+      assert report["tokens"]["gitRenamed"] == "#0550ae"
+      assert tool_content(call_tool("get_theme", %{id: id}))["name"] == name
+
+      call_tool("delete_theme", %{id: id})
+    end
+
+    test "rejects invalid colours, ids, and mixed input modes with clear errors" do
+      invalid = call_tool("preview_theme", %{base: "dark", tokens: %{bg0: "url(evil)"}})
+      assert invalid["result"]["isError"] == true
+      assert hd(invalid["result"]["content"])["text"] =~ "not a valid CSS colour"
+
+      missing = call_tool("preview_theme", %{theme_id: "00000000-0000-0000-0000-0000000000ff"})
+      assert missing["result"]["isError"] == true
+      assert hd(missing["result"]["content"])["text"] =~ "not found"
+
+      mixed = call_tool("preview_theme", %{theme_id: "x", base: "dark", tokens: %{}})
+      assert mixed["result"]["isError"] == true
+      assert hd(mixed["result"]["content"])["text"] =~ "either theme_id or base/tokens"
     end
   end
 

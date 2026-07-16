@@ -34,6 +34,7 @@ jobs:
             _build
             native/dala_holder/target
             native/dala_git/target
+            native/dala_theme_renderer/target
           key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
@@ -82,17 +83,21 @@ jobs:
         working-directory: clients/desktop
 
   rust:
-    name: Rust holder（cargo test）
+    name: Rust holder + theme renderer（cargo test）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
-          path: native/dala_holder/target
-          key: rust-holder-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock') }}
+          path: |
+            native/dala_holder/target
+            native/dala_theme_renderer/target
+          key: rust-native-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock', 'native/dala_theme_renderer/Cargo.lock') }}
       - run: cargo test
         working-directory: native/dala_holder
+      - run: cargo test
+        working-directory: native/dala_theme_renderer
 
   e2e:
     name: BDD e2e（Playwright 8 场景）
@@ -114,6 +119,7 @@ jobs:
             _build
             native/dala_holder/target
             native/dala_git/target
+            native/dala_theme_renderer/target
           key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: mix setup

@@ -32,6 +32,12 @@ defmodule Dala.Mcp.Tools do
       name == Registry.reference_tool_name() ->
         {:ok, reference()}
 
+      name == Registry.preview_tool_name() ->
+        case Dala.Settings.Theme.Preview.run(normalize(arguments)) do
+          {:ok, report, png} -> {:ok, {:mcp_content, report, png}}
+          {:error, message} -> {:error, message}
+        end
+
       true ->
         case Map.fetch(index(), name) do
           {:ok, spec} -> execute(spec, normalize(arguments))
@@ -206,6 +212,7 @@ defmodule Dala.Mcp.Tools do
   defp reference do
     keys = Tokens.token_keys()
     {ui, rest} = Enum.split(keys, 8)
+    {git, rest} = Enum.split(rest, 6)
     {diff, rest} = Enum.split(rest, 5)
     {codemirror, rest} = Enum.split(rest, 5)
     {terminal, ansi} = Enum.split(rest, 5)
@@ -214,6 +221,7 @@ defmodule Dala.Mcp.Tools do
       "tokenCount" => Tokens.count(),
       "tokenKeys" => %{
         "ui" => ui,
+        "git" => git,
         "diff" => diff,
         "codemirror" => codemirror,
         "terminal" => terminal,
@@ -224,6 +232,29 @@ defmodule Dala.Mcp.Tools do
         Enum.map(Presets.all(), fn preset ->
           %{"id" => preset.id, "name" => preset.name, "base" => to_string(preset.base)}
         end),
+      "previewWorkflow" => [
+        "theme_reference",
+        "preview_theme",
+        "adjust tokens from the PNG and audit",
+        "preview_theme again",
+        "create_theme or update_theme"
+      ],
+      "reviewRules" => %{
+        "hard" => [
+          "body and important text contrast",
+          "primary and danger button text contrast",
+          "Git states against file/Git panel backgrounds",
+          "diff added/deleted text against row backgrounds"
+        ],
+        "warnings" => [
+          "three backgrounds are difficult to distinguish",
+          "primary accent is reused too broadly",
+          "Git status colours are too similar",
+          "many ANSI colours disappear into the terminal background",
+          "semantic palette is concentrated in one hue family"
+        ],
+        "scoring" => "No single beauty score; hard failures and heuristic warnings stay separate."
+      },
       "colorRules" =>
         "Token values must be plain CSS colours: hex (#rgb / #rrggbb / #rrggbbaa), " <>
           "rgb()/rgba()/hsl()/hsla(), or the keyword transparent; max 64 chars. " <>

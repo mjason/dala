@@ -7,6 +7,7 @@ describe("baseTokenValue", () => {
     expect(baseTokenValue("dark", "bg0")).toBe("#0b0c0e");
     expect(baseTokenValue("light", "bg0")).toBe("#fbfbfa");
     expect(baseTokenValue("dark", "diffAddBg")).toBe("rgba(95, 191, 135, 0.11)");
+    expect(baseTokenValue("light", "gitConflict")).toBe("#6639ba");
   });
 
   it("derives terminal/ANSI defaults from the canonical xterm palettes", () => {
@@ -17,7 +18,7 @@ describe("baseTokenValue", () => {
 });
 
 describe("baseTokens", () => {
-  it("fills every one of the 39 tokens for both bases", () => {
+  it("fills every one of the 45 tokens for both bases", () => {
     for (const base of ["light", "dark"] as const) {
       const map = baseTokens(base);
       for (const key of TOKEN_KEYS) {

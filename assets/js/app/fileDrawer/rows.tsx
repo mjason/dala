@@ -3,11 +3,12 @@ import { createPortal } from "react-dom";
 import type { GitDecoration } from "../gitDecorations";
 
 const DECORATION_CLASSES: Record<GitDecoration["tone"], string> = {
-  added: "text-mint",
-  modified: "text-[#d9a860]",
-  deleted: "text-danger",
-  renamed: "text-[#6d9fd6]",
-  conflict: "text-danger",
+  added: "text-git-added",
+  modified: "text-git-modified",
+  deleted: "text-git-deleted",
+  renamed: "text-git-renamed",
+  untracked: "text-git-untracked",
+  conflict: "text-git-conflict",
 };
 
 const TOOLTIP_DELAY_MS = 350;

@@ -9,6 +9,7 @@ import {
   ANSI_KEYS,
   CM_KEYS,
   DIFF_KEYS,
+  GIT_KEYS,
   TERM_BASE_KEYS,
   UI_KEYS,
   type ThemeTokens,
@@ -33,7 +34,11 @@ type Props = {
   onError: (message: string) => void;
 };
 
-type Group = { key: "interface" | "terminal" | "ansi"; label: string; keys: readonly TokenKey[] };
+type Group = {
+  key: "interface" | "git" | "terminal" | "ansi";
+  label: string;
+  keys: readonly TokenKey[];
+};
 
 const HEX6 = /^#[0-9a-fA-F]{6}$/;
 const HEX3 = /^#[0-9a-fA-F]{3}$/;
@@ -58,11 +63,12 @@ export default function ThemeEditor({ draft, onClose, onSaved, onError }: Props)
   const [base, setBase] = useState<EffectiveTheme>(draft.base);
   const [tokens, setTokens] = useState<ThemeTokens>(draft.tokens);
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState({ interface: true, terminal: true, ansi: false });
+  const [open, setOpen] = useState({ interface: true, git: true, terminal: true, ansi: false });
 
   const groups: Group[] = useMemo(
     () => [
       { key: "interface", label: t("themeGroupInterface"), keys: [...UI_KEYS, ...DIFF_KEYS, ...CM_KEYS] },
+      { key: "git", label: t("themeGroupGit"), keys: GIT_KEYS },
       { key: "terminal", label: t("themeGroupTerminal"), keys: TERM_BASE_KEYS },
       { key: "ansi", label: t("themeGroupAnsi"), keys: ANSI_KEYS },
     ],

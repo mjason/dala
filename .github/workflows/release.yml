@@ -42,6 +42,7 @@ jobs:
             ~/.cargo/git
             native/dala_git/target
             native/dala_holder/target
+            native/dala_theme_renderer/target
           key: linux-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
           restore-keys: linux-mix-
 
@@ -106,6 +107,7 @@ jobs:
             ~/.cargo/git
             native/dala_git/target
             native/dala_holder/target
+            native/dala_theme_renderer/target
           key: macos-arm64-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
           restore-keys: macos-arm64-mix-
 

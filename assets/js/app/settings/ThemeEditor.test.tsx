@@ -50,6 +50,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ThemeEditor live preview", () => {
+  it("shows Git state tokens in their own editor group", () => {
+    const { container } = renderEditor({ name: "Draft", base: "dark", tokens: {} });
+    expect(container.querySelector("[data-theme-group='git']")).not.toBeNull();
+    expect(container.querySelector("#theme-hex-gitAdded")).not.toBeNull();
+    expect(container.querySelector("#theme-hex-gitConflict")).not.toBeNull();
+  });
+
   it("editing a colour previews the updated sparse token map", () => {
     const { container } = renderEditor({ name: "Draft", base: "dark", tokens: {} });
     const hex = container.querySelector("#theme-hex-bg0") as HTMLInputElement;

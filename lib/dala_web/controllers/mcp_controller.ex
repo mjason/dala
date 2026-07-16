@@ -141,6 +141,12 @@ defmodule DalaWeb.McpController do
       {:error, :unknown_tool} ->
         error_object(id, -32602, "Unknown tool: #{inspect(name)}")
 
+      {:ok, {:mcp_content, report, png}} ->
+        result_object(id, %{
+          content: [text(Jason.encode!(report)), image(png, "image/png")],
+          isError: false
+        })
+
       {:ok, clean} ->
         result_object(id, %{content: [text(Jason.encode!(clean))], isError: false})
 
@@ -150,6 +156,9 @@ defmodule DalaWeb.McpController do
   end
 
   defp text(body), do: %{type: "text", text: body}
+
+  defp image(data, mime_type),
+    do: %{type: "image", data: Base.encode64(data), mimeType: mime_type}
 
   # --- JSON-RPC envelopes ---------------------------------------------------
 

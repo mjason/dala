@@ -638,7 +638,7 @@ export default function App() {
                     if (copied) toast(t("sessionIdCopied"));
                   })
                 }
-                className="shrink-0 font-mono text-[11px] text-fg-muted transition-colors hover:text-mint"
+                className="shrink-0 font-mono text-[11px] text-fg-muted transition-colors hover:text-mint pointer-coarse:min-h-10 pointer-coarse:px-1 pointer-coarse:text-xs"
               >
                 {sessionRef(active.id)}
               </button>

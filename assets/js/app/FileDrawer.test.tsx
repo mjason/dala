@@ -120,8 +120,10 @@ describe("FileDrawer tree", () => {
     const fileRow = (await screen.findByText("mix.exs")).closest("[data-path]")!;
     const folderRow = screen.getByText("src").closest("[data-path]")!;
     expect(fileRow).not.toHaveAttribute("title");
-    expect(fileRow.querySelector('[data-git-status="M"]')).not.toBeNull();
-    expect(fileRow.querySelector('[data-git-status="M"]')).not.toHaveAttribute("title");
+    const modified = fileRow.querySelector('[data-git-status="M"]');
+    expect(modified).not.toBeNull();
+    expect(modified).not.toHaveAttribute("title");
+    expect(modified).toHaveClass("text-git-modified");
     expect(folderRow).not.toHaveAttribute("title");
     expect(folderRow.querySelector('[data-git-status="•"]')).not.toBeNull();
   });

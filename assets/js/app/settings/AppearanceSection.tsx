@@ -33,7 +33,7 @@ import ToggleRow from "./ToggleRow";
 /**
  * Terminal appearance (font, size, line height, cursor) plus the app-wide
  * theme: the built-in light/dark/system triad and the custom-theme library
- * (chips + the 39-colour editor). Browser-local and global across sessions;
+ * (chips + the 45-colour editor). Browser-local and global across sessions;
  * every change persists and applies immediately, so there is no save step.
  */
 export default function AppearanceSection({
@@ -137,6 +137,14 @@ export default function AppearanceSection({
     "ansiWhite",
     "ansiBrightBlack",
   ];
+  const gitPreview: { label: string; key: TokenKey }[] = [
+    { label: "A", key: "gitAdded" },
+    { label: "M", key: "gitModified" },
+    { label: "D", key: "gitDeleted" },
+    { label: "R", key: "gitRenamed" },
+    { label: "U", key: "gitUntracked" },
+    { label: "!", key: "gitConflict" },
+  ];
 
   return (
     <div className="space-y-4">
@@ -235,6 +243,27 @@ export default function AppearanceSection({
                         <Check className="h-3 w-3" aria-hidden />
                       </span>
                     )}
+                  </span>
+
+                  <span
+                    data-theme-git-preview={theme.id}
+                    aria-hidden
+                    className="mt-2 flex h-6 items-center justify-between border px-2 font-mono text-[10px]"
+                    style={{ backgroundColor: bg0, borderColor: line }}
+                  >
+                    <span style={{ color: muted }}>src/app.ts</span>
+                    <span className="flex items-center gap-2">
+                      {gitPreview.map((item) => (
+                        <span
+                          key={item.key}
+                          data-theme-git-swatch={item.key}
+                          className="font-semibold"
+                          style={{ color: themeColor(theme, item.key) }}
+                        >
+                          {item.label}
+                        </span>
+                      ))}
+                    </span>
                   </span>
 
                   <span

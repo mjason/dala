@@ -165,6 +165,12 @@
   --color-fg-muted: #8f96a0;
   --color-mint: #4cc38a;
   --color-danger: #f0716e;
+  --color-git-added: #5fbf87;
+  --color-git-modified: #d9a860;
+  --color-git-deleted: #e5716e;
+  --color-git-renamed: #6d9fd6;
+  --color-git-untracked: #7fd0d0;
+  --color-git-conflict: #c9a5dd;
   --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -219,6 +225,12 @@
   --color-fg-muted: #5f666e;
   --color-mint: #0c7a4f;
   --color-danger: #c92f2c;
+  --color-git-added: #116329;
+  --color-git-modified: #7a4b00;
+  --color-git-deleted: #b31d28;
+  --color-git-renamed: #0550ae;
+  --color-git-untracked: #1b6b72;
+  --color-git-conflict: #6639ba;
 
   /* Diff signals, re-tinted for the light shell. The dark add/del/hunk hexes
      and rgba tints were invisible on #fbfbfa. Contrasts (computed):
@@ -263,6 +275,12 @@
     --color-fg-muted: #5f666e;
     --color-mint: #0c7a4f;
     --color-danger: #c92f2c;
+    --color-git-added: #116329;
+    --color-git-modified: #7a4b00;
+    --color-git-deleted: #b31d28;
+    --color-git-renamed: #0550ae;
+    --color-git-untracked: #1b6b72;
+    --color-git-conflict: #6639ba;
   }
 }
 

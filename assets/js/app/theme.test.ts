@@ -307,7 +307,7 @@ describe("applyCustomTokens / clearCustomTokens", () => {
 
   it("clearCustomTokens removes EVERY mapped var (iterating the canonical map)", async () => {
     const { applyCustomTokens, clearCustomTokens } = await freshTheme();
-    // Set all 18 UI/diff/cm vars.
+    // Set all UI/Git/diff/cm vars.
     const fullTokens = Object.fromEntries(
       Object.keys(TOKEN_TO_CSSVAR).map((k) => [k, "#0a0a0a"]),
     );

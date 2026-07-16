@@ -399,7 +399,7 @@ export default function GitPanel({
                     type="checkbox"
                     checked={amend}
                     onChange={(e) => setAmend(e.target.checked)}
-                    className="h-3 w-3 accent-[#4cc38a]"
+                    className="h-3 w-3 accent-mint"
                   />
                   {t("amend")}
                 </label>

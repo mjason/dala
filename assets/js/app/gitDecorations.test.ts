@@ -18,7 +18,7 @@ describe("buildGitDecorations", () => {
     expect(result.get("/repo/lib/dala/app.ex")).toMatchObject({ label: "M", tone: "modified" });
     expect(result.get("/repo/lib/dala")).toMatchObject({ label: "•", tone: "modified" });
     expect(result.get("/repo/lib")).toMatchObject({ label: "•", tone: "modified" });
-    expect(result.get("/repo/README.md")).toMatchObject({ label: "U", tone: "added" });
+    expect(result.get("/repo/README.md")).toMatchObject({ label: "U", tone: "untracked" });
   });
 
   it("uses the strongest descendant tone for a folder", () => {

@@ -1,0 +1,14 @@
+[package]
+name = "dala_theme_renderer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dala_theme_renderer"
+crate-type = ["cdylib"]
+
+[dependencies]
+resvg = { version = "0.45", default-features = false }
+rustler = "0.38"
+tiny-skia = "0.11"
+usvg = { version = "0.45", default-features = false }

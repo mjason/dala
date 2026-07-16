@@ -7,11 +7,11 @@ defmodule Dala.Mcp.RegistryTest do
 
   defp tool(name), do: Enum.find(Registry.tools(), &(&1["name"] == name))
 
-  test "auto-derives a tool per rpc_action plus the theme_reference helper" do
+  test "auto-derives tools plus both theme design helpers" do
     names = Enum.map(Registry.tools(), & &1["name"])
 
     for expected <- ~w(speech_settings set_speech_settings list_themes get_theme
-                       create_theme update_theme delete_theme theme_reference) do
+                       create_theme update_theme delete_theme theme_reference preview_theme) do
       assert expected in names, "expected #{expected} in #{inspect(names)}"
     end
   end
@@ -27,11 +27,11 @@ defmodule Dala.Mcp.RegistryTest do
     end
   end
 
-  test "create_theme inputSchema inlines all 39 token keys and a light|dark base enum" do
+  test "create_theme inputSchema inlines all 45 token keys and a light|dark base enum" do
     schema = tool("create_theme")["inputSchema"]
 
     assert map_size(schema["properties"]["tokens"]["properties"]) == Tokens.count()
-    assert map_size(schema["properties"]["tokens"]["properties"]) == 39
+    assert map_size(schema["properties"]["tokens"]["properties"]) == 45
     assert schema["properties"]["tokens"]["additionalProperties"] == false
 
     for key <- Tokens.token_keys() do
@@ -60,5 +60,16 @@ defmodule Dala.Mcp.RegistryTest do
 
   test "theme_reference is a no-input helper tool" do
     assert tool("theme_reference")["inputSchema"] == %{"type" => "object", "properties" => %{}}
+  end
+
+  test "preview_theme accepts theme_id or an unsaved base/tokens draft" do
+    schema = tool("preview_theme")["inputSchema"]
+    assert schema["additionalProperties"] == false
+    assert schema["properties"]["base"]["enum"] == ["light", "dark"]
+    assert map_size(schema["properties"]["tokens"]["properties"]) == 45
+    assert [by_id, inline] = schema["oneOf"]
+    assert by_id["required"] == ["theme_id"]
+    assert by_id["not"]["anyOf"] == [%{"required" => ["base"]}, %{"required" => ["tokens"]}]
+    assert inline == %{"required" => ["base"], "not" => %{"required" => ["theme_id"]}}
   end
 end

@@ -19,11 +19,16 @@ const cssVarBg0 = (page) =>
 const bodyBg = (page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 const termThemeBg = (page) =>
   page.evaluate(() => window.__dalaTerm?.options?.theme?.background ?? null);
+const cssVarGitAdded = (page) =>
+  page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--color-git-added").trim(),
+  );
 
 // 一个自定义主题的两处“可证明”覆盖：外壳 bg0 与终端背景（独立于 bg0）。
 const CUSTOM_BG0 = "#123456"; // → rgb(18, 52, 86)
 const CUSTOM_BG0_RGB = "rgb(18, 52, 86)";
 const CUSTOM_TERM = "#654321";
+const CUSTOM_GIT_ADDED = "#65d68f";
 
 async function createThemeRpc(page, input) {
   const r = await h.rpcRun(page, {
@@ -86,6 +91,7 @@ test.describe("Given 一个支持自定义主题的 dala 实例", () => {
     await expect(page.locator("[data-fork-theme-id]")).toHaveCount(6);
     expect(await previews.count()).toBeGreaterThanOrEqual(6);
     expect(await palettes.count()).toBeGreaterThanOrEqual(6);
+    await expect(page.locator("[data-theme-git-preview]")).toHaveCount(await previews.count());
 
     for (let index = 0; index < (await palettes.count()); index += 1) {
       await expect(palettes.nth(index).locator("[data-theme-ansi-swatch]")).toHaveCount(8);
@@ -115,6 +121,7 @@ test.describe("Given 一个支持自定义主题的 dala 实例", () => {
     await page.locator("#theme-name-input").fill(name);
     await page.locator('[data-theme-base="dark"]').click();
     await page.locator("#theme-hex-bg0").fill(CUSTOM_BG0);
+    await page.locator("#theme-hex-gitAdded").fill(CUSTOM_GIT_ADDED);
     await page.locator("#theme-hex-termBackground").fill(CUSTOM_TERM);
     await page.locator("#save-theme-button").click();
     await expect(page.locator("#theme-editor")).toHaveCount(0);
@@ -141,6 +148,7 @@ test.describe("Given 一个支持自定义主题的 dala 实例", () => {
       await expect.poll(() => cssVarBg0(other)).toBe(CUSTOM_BG0);
       await expect.poll(() => bodyBg(other)).toBe(CUSTOM_BG0_RGB);
       await expect.poll(() => termThemeBg(other)).toBe(CUSTOM_TERM);
+      await expect.poll(() => cssVarGitAdded(other)).toBe(CUSTOM_GIT_ADDED);
     } finally {
       await second.close();
     }

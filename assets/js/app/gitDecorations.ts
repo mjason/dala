@@ -3,12 +3,13 @@ import type { GitFile, Status } from "./gitPanel/types";
 export type GitDecoration = {
   label: string;
   title: string;
-  tone: "added" | "modified" | "deleted" | "renamed" | "conflict";
+  tone: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflict";
 };
 
 const TONE_PRIORITY: Record<GitDecoration["tone"], number> = {
   added: 1,
   renamed: 2,
+  untracked: 2,
   modified: 3,
   deleted: 4,
   conflict: 5,
@@ -36,13 +37,15 @@ function fileDecoration(file: GitFile): GitDecoration {
   const code = status === "??" ? "U" : status[1] !== " " ? status[1] : status[0];
   const tone: GitDecoration["tone"] = conflict
     ? "conflict"
-    : code === "D"
-      ? "deleted"
-      : code === "R" || code === "C"
-        ? "renamed"
-        : code === "A" || code === "?" || code === "U"
-          ? "added"
-          : "modified";
+    : status === "??"
+      ? "untracked"
+      : code === "D"
+        ? "deleted"
+        : code === "R" || code === "C"
+          ? "renamed"
+          : code === "A"
+            ? "added"
+            : "modified";
 
   return {
     label: conflict ? "!" : code || "M",

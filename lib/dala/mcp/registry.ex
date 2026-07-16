@@ -11,15 +11,16 @@ defmodule Dala.Mcp.Registry do
   update / destroy / generic), and derive a JSON-Schema `inputSchema` from the
   action's accepted attributes and arguments.
 
-  One extra, non-Ash helper tool — `theme_reference` — is appended so an agent
-  can fetch the whole theme vocabulary (the 39 token keys, the built-in presets,
-  the colour rules) in a single call. Its execution lives in `Dala.Mcp.Tools`.
+  Two non-Ash theme helpers are appended: `theme_reference` exposes the 45-token
+  vocabulary and `preview_theme` provides a deterministic PNG plus audit before
+  an agent saves anything. Their execution lives in `Dala.Mcp.Tools`.
   """
 
   alias Dala.Settings.Theme.Tokens
 
   @domain Dala.Settings
   @reference_tool_name "theme_reference"
+  @preview_tool_name "preview_theme"
 
   # SECURITY: resources that manage the MCP endpoint ITSELF must never become
   # MCP tools. `Dala.Settings.Mcp` is exposed over `typescript_rpc` for the
@@ -31,6 +32,9 @@ defmodule Dala.Mcp.Registry do
 
   @doc "The name of the non-Ash `theme_reference` helper tool."
   def reference_tool_name, do: @reference_tool_name
+
+  @doc "The name of the headless theme preview helper."
+  def preview_tool_name, do: @preview_tool_name
 
   @doc """
   Internal specs for every auto-derived tool: `%{name, resource, action, kind,
@@ -48,7 +52,7 @@ defmodule Dala.Mcp.Registry do
   @doc "The full tool list (JSON-Schema maps) for a `tools/list` response."
   def tools do
     Enum.map(specs(), &to_tool/1) ++
-      [reference_tool()] ++
+      [reference_tool(), preview_tool()] ++
       Dala.Mcp.TerminalTools.tools(Dala.Settings.Mcp.terminal_access())
   end
 
@@ -181,18 +185,9 @@ defmodule Dala.Mcp.Registry do
 
   defp maybe_put_description(schema, _description), do: schema
 
-  # The `tokens` property gets the full 39-key contract inlined.
+  # The `tokens` property gets the full 45-key contract inlined.
   defp enrich_tokens(%{"tokens" => _} = props) do
-    token_props = Map.new(Tokens.token_keys(), &{&1, %{"type" => "string"}})
-
-    Map.put(props, "tokens", %{
-      "type" => "object",
-      "additionalProperties" => false,
-      "properties" => token_props,
-      "description" =>
-        "sparse map, omit what you don't override; CSS colors only " <>
-          "(hex #rrggbb / rgb()/rgba()); omitted keys fall back to the base palette"
-    })
+    Map.put(props, "tokens", tokens_schema())
   end
 
   defp enrich_tokens(props), do: props
@@ -226,7 +221,8 @@ defmodule Dala.Mcp.Registry do
     or transparent) — include only the slots you override. #{merge_note}Aim for readable
     contrast: body text >= 4.5:1 against its background, UI chrome >= 3.0:1. To
     fork a built-in, call list_themes, copy the preset's tokens, then tweak.
-    Call theme_reference for all 39 token keys and the preset ids.
+    Call theme_reference for all 45 token keys and the preset ids, then use
+    preview_theme until its PNG and audit are ready before create/update.
     """
     |> String.trim()
   end
@@ -235,10 +231,47 @@ defmodule Dala.Mcp.Registry do
     %{
       "name" => @reference_tool_name,
       "description" =>
-        "Reference vocabulary for defining themes: the 39 token keys grouped by " <>
+        "Reference vocabulary for defining themes: the 45 token keys grouped by " <>
           "area, the built-in preset names/ids/bases to fork, and the colour + " <>
-          "contrast rules. Call this once before create_theme/update_theme.",
+          "contrast rules. Follow it with preview_theme before create_theme/update_theme.",
       "inputSchema" => %{"type" => "object", "properties" => %{}}
+    }
+  end
+
+  defp preview_tool do
+    %{
+      "name" => @preview_tool_name,
+      "description" =>
+        "Render and audit a theme without saving it. Pass either theme_id, or base plus a " <>
+          "sparse tokens map. Returns resolved tokens, explicit errors/warnings/suggestions, " <>
+          "and a deterministic image/png preview with fictional content only.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "properties" => %{
+          "theme_id" => %{"type" => "string"},
+          "base" => %{"type" => "string", "enum" => ["light", "dark"]},
+          "tokens" => tokens_schema()
+        },
+        "oneOf" => [
+          %{
+            "required" => ["theme_id"],
+            "not" => %{"anyOf" => [%{"required" => ["base"]}, %{"required" => ["tokens"]}]}
+          },
+          %{"required" => ["base"], "not" => %{"required" => ["theme_id"]}}
+        ]
+      }
+    }
+  end
+
+  defp tokens_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => Map.new(Tokens.token_keys(), &{&1, %{"type" => "string"}}),
+      "description" =>
+        "sparse map, omit what you don't override; CSS colors only " <>
+          "(hex #rrggbb / rgb()/rgba()/hsl()/hsla()); omitted keys inherit the base"
     }
   end
 end

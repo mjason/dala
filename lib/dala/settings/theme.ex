@@ -13,7 +13,7 @@ defmodule Dala.Settings.Theme do
   whole app runs `authorize? false`; isolation is manual scoping, not policy.
 
   `tokens` is the sparse colour map — see `Dala.Settings.Theme.Tokens` for the
-  39-key contract and the write-time whitelist. Six `builtin` presets ship as
+  45-key contract and the write-time whitelist. Six `builtin` presets ship as
   non-destructible global rows (`Dala.Settings.Theme.Presets`); users may fork
   them (copy tokens into a new owned row) but never edit or delete them.
   """
@@ -170,7 +170,7 @@ defmodule Dala.Settings.Theme do
     end
 
     attribute :tokens, :map do
-      description "Sparse colour overrides — see Dala.Settings.Theme.Tokens for the 39-key contract."
+      description "Sparse colour overrides — see Dala.Settings.Theme.Tokens for the 45-key contract."
       public? true
       allow_nil? false
     end
