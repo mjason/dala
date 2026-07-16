@@ -1,4 +1,176 @@
-import React from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { GitDecoration } from "../gitDecorations";
+
+const DECORATION_CLASSES: Record<GitDecoration["tone"], string> = {
+  added: "text-mint",
+  modified: "text-[#d9a860]",
+  deleted: "text-danger",
+  renamed: "text-[#6d9fd6]",
+  conflict: "text-danger",
+};
+
+const TOOLTIP_DELAY_MS = 350;
+const TOOLTIP_GAP_PX = 8;
+const TOOLTIP_MARGIN_PX = 8;
+
+type Rect = Pick<DOMRect, "top" | "right" | "bottom" | "left">;
+type Size = { width: number; height: number };
+type Viewport = { width: number; height: number };
+
+export type TooltipPosition = {
+  left: number;
+  top: number;
+  placement: "left" | "right" | "above" | "below";
+};
+
+function initial(directory: string): string {
+  const chars = Array.from(directory);
+  if (chars[0] === "." && chars[1]) return `.${chars[1]}`;
+  return chars[0] ?? directory;
+}
+
+/** Keep the leaf name intact while reducing long directory paths to useful landmarks. */
+export function compactPath(path: string, maxLength = 72): string {
+  if (Array.from(path).length <= maxLength) return path;
+
+  const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+  const hasLeadingSeparator = path.startsWith(separator);
+  const parts = path.split(separator).filter(Boolean);
+  if (parts.length < 2) return path;
+
+  const leaf = parts.at(-1)!;
+  const directories = parts.slice(0, -1);
+  const shortened = directories.map((directory, index) => {
+    const isLandmark = index === 0 || index === directories.length - 1;
+    return isLandmark || Array.from(directory).length <= 4 ? directory : initial(directory);
+  });
+  const prefix = hasLeadingSeparator ? separator : "";
+  const join = (items: string[]) => `${prefix}${[...items, leaf].join(separator)}`;
+
+  let compact = join(shortened);
+  if (Array.from(compact).length <= maxLength) return compact;
+
+  if (shortened.length > 2) compact = join([shortened[0], "...", shortened.at(-1)!]);
+  return compact;
+}
+
+/** Position beside the row when possible, then fall back above or below it. */
+export function placeTooltip(anchor: Rect, tooltip: Size, viewport: Viewport): TooltipPosition {
+  const fitsRight = anchor.right + TOOLTIP_GAP_PX + tooltip.width <= viewport.width - TOOLTIP_MARGIN_PX;
+  const fitsLeft = anchor.left - TOOLTIP_GAP_PX - tooltip.width >= TOOLTIP_MARGIN_PX;
+
+  let placement: TooltipPosition["placement"];
+  let left: number;
+  let top: number;
+
+  if (fitsRight) {
+    placement = "right";
+    left = anchor.right + TOOLTIP_GAP_PX;
+    top = anchor.top;
+  } else if (fitsLeft) {
+    placement = "left";
+    left = anchor.left - TOOLTIP_GAP_PX - tooltip.width;
+    top = anchor.top;
+  } else {
+    const fitsBelow = anchor.bottom + TOOLTIP_GAP_PX + tooltip.height <= viewport.height - TOOLTIP_MARGIN_PX;
+    placement = fitsBelow ? "below" : "above";
+    left = anchor.left;
+    top = fitsBelow
+      ? anchor.bottom + TOOLTIP_GAP_PX
+      : anchor.top - TOOLTIP_GAP_PX - tooltip.height;
+  }
+
+  return {
+    placement,
+    left: Math.max(
+      TOOLTIP_MARGIN_PX,
+      Math.min(left, viewport.width - tooltip.width - TOOLTIP_MARGIN_PX),
+    ),
+    top: Math.max(
+      TOOLTIP_MARGIN_PX,
+      Math.min(top, viewport.height - tooltip.height - TOOLTIP_MARGIN_PX),
+    ),
+  };
+}
+
+function PathTooltip({
+  anchor,
+  id,
+  name,
+  path,
+  onDismiss,
+}: {
+  anchor: React.RefObject<HTMLElement | null>;
+  id: string;
+  name: string;
+  path: string;
+  onDismiss: () => void;
+}) {
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+
+  const updatePosition = useCallback(() => {
+    const anchorElement = anchor.current;
+    const tooltipElement = tooltipRef.current;
+    if (!anchorElement || !tooltipElement) return;
+
+    setPosition(
+      placeTooltip(anchorElement.getBoundingClientRect(), tooltipElement.getBoundingClientRect(), {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }),
+    );
+  }, [anchor]);
+
+  useLayoutEffect(updatePosition, [updatePosition]);
+
+  useEffect(() => {
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDismiss();
+    };
+    window.addEventListener("scroll", onDismiss, true);
+    window.addEventListener("resize", onDismiss);
+    window.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      window.removeEventListener("scroll", onDismiss, true);
+      window.removeEventListener("resize", onDismiss);
+      window.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [onDismiss]);
+
+  return createPortal(
+    <div
+      ref={tooltipRef}
+      id={id}
+      role="tooltip"
+      data-file-path-tooltip
+      data-placement={position?.placement}
+      className="pointer-events-none fixed z-[100] w-max rounded-md border border-line bg-bg1 px-3 py-2 shadow-xl shadow-black/40"
+      style={{
+        left: position?.left ?? TOOLTIP_MARGIN_PX,
+        top: position?.top ?? TOOLTIP_MARGIN_PX,
+        maxWidth: "min(26rem, calc(100vw - 1rem))",
+        visibility: position ? "visible" : "hidden",
+      }}
+    >
+      <div
+        data-tooltip-name
+        className="break-all font-mono text-[12px] font-medium leading-[18px] text-fg"
+      >
+        {name}
+      </div>
+      <div
+        data-tooltip-path
+        aria-label={path}
+        className="mt-1 break-all font-mono text-[11px] leading-4 text-fg-muted"
+      >
+        {compactPath(path)}
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 export function Row({
   path,
@@ -12,6 +184,7 @@ export function Row({
   symlink,
   loading,
   selected,
+  decoration,
   onClick,
   actions,
 }: {
@@ -26,38 +199,101 @@ export function Row({
   symlink?: boolean;
   loading?: boolean;
   selected?: boolean;
+  decoration?: GitDecoration;
   onClick: () => void;
   actions?: React.ReactNode;
 }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const tooltipId = useId();
+  const timerRef = useRef<number | null>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+
+  const hideTooltip = useCallback(() => {
+    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    setTooltipOpen(false);
+  }, []);
+
+  const showTooltipSoon = useCallback(() => {
+    if (tooltipOpen || timerRef.current != null) return;
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setTooltipOpen(true);
+    }, TOOLTIP_DELAY_MS);
+  }, [tooltipOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
   return (
     <div
+      ref={rowRef}
       role="treeitem"
+      tabIndex={-1}
       aria-selected={selected}
+      aria-describedby={tooltipOpen ? tooltipId : undefined}
       data-path={path}
       data-dropdir={dropDir ?? undefined}
+      onMouseEnter={showTooltipSoon}
+      onMouseLeave={hideTooltip}
+      onFocusCapture={showTooltipSoon}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hideTooltip();
+      }}
       onClick={onClick}
-      className={`group flex w-full cursor-pointer items-center gap-1.5 px-3 py-[5px] text-left transition-colors ${
+      className={`group relative flex w-full cursor-pointer items-center gap-1.5 px-3 py-[5px] text-left transition-colors ${
         selected ? "bg-bg2 " : "hover:bg-bg2/70"
       } ${dropTarget ? "bg-mint/10" : ""}`}
       style={{ paddingLeft: 12 + depth * 14 }}
     >
       <span className="grid w-3.5 shrink-0 place-items-center text-fg-muted">{icon}</span>
       <span className="shrink-0 text-fg-muted">{extraIcon}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">
+      <span
+        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
+          decoration ? DECORATION_CLASSES[decoration.tone] : "text-fg"
+        }`}
+      >
         {name}
         {symlink && <span className="text-fg-muted"> ⇢</span>}
       </span>
-      {actions && (
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">{actions}</span>
+      {(decoration || loading || detail) && (
+        <span
+          className={`flex shrink-0 items-center gap-1.5 transition-opacity ${
+            actions ? "group-hover:opacity-0" : ""
+          }`}
+        >
+          {decoration && (
+            <span
+              data-git-status={decoration.label}
+              aria-label={decoration.title}
+              className={`w-3.5 text-center font-mono text-[11px] font-semibold ${DECORATION_CLASSES[decoration.tone]}`}
+            >
+              {decoration.label}
+            </span>
+          )}
+          {loading ? (
+            <span className="font-mono text-[11px] text-mint">…</span>
+          ) : (
+            detail && <span className="font-mono text-[11px] text-fg-muted">{detail}</span>
+          )}
+        </span>
       )}
-      {loading ? (
-        <span className="shrink-0 font-mono text-[11px] text-mint">…</span>
-      ) : (
-        detail && (
-          <span className="shrink-0 font-mono text-[11px] text-fg-muted group-hover:hidden">
-            {detail}
-          </span>
-        )
+      {actions && (
+        <span className="pointer-events-none absolute right-2 flex items-center gap-0.5 bg-bg2 pl-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+          {actions}
+        </span>
+      )}
+      {tooltipOpen && typeof document !== "undefined" && (
+        <PathTooltip
+          anchor={rowRef}
+          id={tooltipId}
+          name={name}
+          path={path}
+          onDismiss={hideTooltip}
+        />
       )}
     </div>
   );

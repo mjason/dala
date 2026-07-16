@@ -118,6 +118,16 @@ defmodule Dala.Mcp.TerminalToolsTest do
     on_exit(fn -> File.rm_rf(Path.dirname(uploaded.path)) end)
   end
 
+  test "upload tool advertises the 64 MB decoded attachment limit" do
+    tool =
+      %{read: true, control: true}
+      |> TerminalTools.tools()
+      |> Enum.find(&(&1["name"] == "terminal_upload_attachment"))
+
+    assert tool["description"] =~ "64 MB"
+    assert tool["inputSchema"]["properties"]["content_base64"]["maxLength"] >= 89_478_488
+  end
+
   test "duplicate names are rejected as ambiguous selectors", %{session: session} do
     other =
       Dala.Terminal.create_session!(%{

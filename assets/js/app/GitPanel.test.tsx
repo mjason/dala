@@ -1,6 +1,6 @@
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 
 const gitStatus = vi.fn();
@@ -29,6 +29,23 @@ vi.mock("../ash_rpc", () => ({
 }));
 
 import GitPanel from "./GitPanel";
+
+class FakeSocket {
+  static OPEN = 1;
+  static last: FakeSocket | null = null;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  readyState = FakeSocket.OPEN;
+
+  constructor() {
+    FakeSocket.last = this;
+  }
+  send() {}
+  close() {
+    this.readyState = 3;
+  }
+}
 
 const ok = (data: unknown) => ({ success: true, data });
 
@@ -61,6 +78,15 @@ beforeEach(() => {
     gitCheckout,
   ].forEach((m) => m.mockReset());
   vi.spyOn(window, "confirm").mockReturnValue(true);
+  FakeSocket.last = null;
+  vi.stubGlobal("WebSocket", FakeSocket as unknown as typeof WebSocket);
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+    setTimeout(() => cb(0), 0),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("GitPanel changes tab", () => {
@@ -79,6 +105,27 @@ describe("GitPanel changes tab", () => {
     expect(await screen.findByText("main")).toBeInTheDocument();
     expect(screen.getByText("staged.ex")).toBeInTheDocument();
     expect(screen.getByText("work.ex")).toBeInTheDocument();
+  });
+
+  it("reloads status automatically when the repository watcher reports a change", async () => {
+    gitStatus
+      .mockResolvedValueOnce(
+        ok(statusData([{ path: "work.ex", status: " M", staged: false, unstaged: true }])),
+      )
+      .mockResolvedValueOnce(ok(statusData([])));
+
+    renderPanel();
+    await screen.findByText("work.ex");
+    await waitFor(() => expect(FakeSocket.last).not.toBeNull());
+
+    await act(async () => {
+      FakeSocket.last!.onmessage?.({ data: JSON.stringify({ changed: "/proj" }) });
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+
+    await waitFor(() => expect(gitStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("work.ex")).not.toBeInTheDocument();
+    expect(screen.getByText("Working tree clean")).toBeInTheDocument();
   });
 
   it("stages a file and reloads status", async () => {

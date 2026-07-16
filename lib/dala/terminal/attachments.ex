@@ -1,21 +1,25 @@
 defmodule Dala.Terminal.Attachments do
   @moduledoc """
-  Bounded storage for files sent through terminal MCP tools. Binary content is
-  never written to a PTY; callers receive an absolute path which is pasted into
-  the foreground CLI application.
+  Bounded storage for files sent through terminal MCP tools or uploaded from
+  the browser terminal/composer. Binary content is never written to a PTY;
+  callers receive an absolute path which can be pasted into a CLI application.
   """
 
   use GenServer
 
-  @max_file_bytes 5 * 1024 * 1024
-  @max_managed_bytes 250 * 1024 * 1024
   @max_uploads_per_minute 20
   @ttl_seconds 24 * 60 * 60
+  @cleanup_interval_ms 60 * 60 * 1_000
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   def upload(name, mime_type, content_base64) do
-    GenServer.call(__MODULE__, {:upload, name, mime_type, content_base64}, 15_000)
+    GenServer.call(__MODULE__, {:upload, name, mime_type, content_base64}, 60_000)
+  end
+
+  @doc "Store a browser multipart upload without loading its bytes into the BEAM."
+  def store_upload(%Plug.Upload{} = upload) do
+    GenServer.call(__MODULE__, {:store_upload, upload}, :infinity)
   end
 
   @doc "Accept only existing regular files, never directories or symlinks."
@@ -38,7 +42,8 @@ defmodule Dala.Terminal.Attachments do
   def init(:ok) do
     root = root()
     _ = ensure_root(root)
-    cleanup(root)
+    cleanup_expired(root)
+    schedule_cleanup()
     {:ok, %{uploads: []}}
   end
 
@@ -57,12 +62,24 @@ defmodule Dala.Terminal.Attachments do
     end
   end
 
+  def handle_call({:store_upload, upload}, _from, state) do
+    {:reply, persist_upload(upload), state}
+  end
+
+  @impl true
+  def handle_info(:cleanup, state) do
+    cleanup_expired(root())
+    schedule_cleanup()
+    {:noreply, state}
+  end
+
   defp persist(name, mime_type, content_base64)
        when is_binary(name) and is_binary(content_base64) do
-    with {:ok, content} <- decode(content_base64),
+    with :ok <- check_encoded_size(content_base64),
+         {:ok, content} <- decode(content_base64),
          :ok <- check_size(content) do
       root = root()
-      cleanup(root)
+      cleanup_expired(root)
 
       if ensure_root(root) != :ok do
         {:error, "cannot create terminal attachment storage"}
@@ -74,29 +91,67 @@ defmodule Dala.Terminal.Attachments do
 
   defp persist(_name, _mime_type, _content), do: {:error, "name and content_base64 are required"}
 
+  defp persist_upload(%Plug.Upload{path: source, filename: name, content_type: mime_type}) do
+    with {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(source),
+         :ok <- check_browser_size(size) do
+      root = root()
+      cleanup_expired(root)
+
+      if ensure_root(root) != :ok do
+        {:error, "cannot create terminal attachment storage"}
+      else
+        persist_file(root, name, mime_type, size, fn destination ->
+          File.cp(source, destination)
+        end)
+      end
+    else
+      {:ok, _stat} ->
+        {:error, "uploaded attachment is not a regular file"}
+
+      {:error, message} when is_binary(message) ->
+        {:error, message}
+
+      {:error, reason} ->
+        {:error, "cannot access uploaded attachment: #{:file.format_error(reason)}"}
+    end
+  end
+
   defp persist_content(root, name, mime_type, content) do
-    if managed_size(root) + byte_size(content) > @max_managed_bytes do
-      {:error, "terminal attachment storage limit exceeded"}
+    persist_file(root, name, mime_type, byte_size(content), fn path ->
+      File.write(path, content, [:binary])
+    end)
+  end
+
+  defp persist_file(root, name, mime_type, size, writer) do
+    limit = Dala.FileLimits.managed_attachment_bytes()
+
+    if managed_size(root) + size > limit do
+      {:error,
+       "terminal attachment storage limit exceeded (max #{Dala.FileLimits.format(limit)})"}
     else
       dir = Path.join(root, Ecto.UUID.generate())
       path = Path.join(dir, safe_filename(name, mime_type))
 
-      with :ok <- File.mkdir_p(dir),
-           :ok <- File.chmod(dir, 0o700),
-           :ok <- File.write(path, content, [:binary]),
-           :ok <- File.chmod(path, 0o600) do
-        {:ok,
-         %{
-           path: path,
-           name: Path.basename(path),
-           mime_type: normalize_mime(mime_type),
-           size: byte_size(content),
-           expires_in_seconds: @ttl_seconds
-         }}
-      else
-        {:error, reason} ->
-          {:error, "cannot store terminal attachment: #{:file.format_error(reason)}"}
-      end
+      result =
+        with :ok <- File.mkdir_p(dir),
+             :ok <- File.chmod(dir, 0o700),
+             :ok <- writer.(path),
+             :ok <- File.chmod(path, 0o600) do
+          {:ok,
+           %{
+             path: path,
+             name: Path.basename(path),
+             mime_type: normalize_mime(mime_type),
+             size: size,
+             expires_in_seconds: @ttl_seconds
+           }}
+        else
+          {:error, reason} ->
+            {:error, "cannot store terminal attachment: #{:file.format_error(reason)}"}
+        end
+
+      if match?({:error, _}, result), do: File.rm_rf(dir)
+      result
     end
   end
 
@@ -107,8 +162,32 @@ defmodule Dala.Terminal.Attachments do
     end
   end
 
-  defp check_size(content) when byte_size(content) <= @max_file_bytes, do: :ok
-  defp check_size(_content), do: {:error, "terminal attachment is too large (max 5 MB)"}
+  defp check_encoded_size(content) do
+    max_encoded = div(Dala.FileLimits.mcp_attachment_bytes() + 2, 3) * 4
+    if byte_size(content) <= max_encoded, do: :ok, else: too_large(:mcp)
+  end
+
+  defp check_size(content) do
+    if byte_size(content) <= Dala.FileLimits.mcp_attachment_bytes(),
+      do: :ok,
+      else: too_large(:mcp)
+  end
+
+  defp check_browser_size(size) do
+    if size <= Dala.FileLimits.browser_attachment_bytes(),
+      do: :ok,
+      else: too_large(:browser)
+  end
+
+  defp too_large(:mcp) do
+    {:error,
+     "terminal attachment is too large (max #{Dala.FileLimits.format(Dala.FileLimits.mcp_attachment_bytes())})"}
+  end
+
+  defp too_large(:browser) do
+    {:error,
+     "terminal attachment is too large (max #{Dala.FileLimits.format(Dala.FileLimits.browser_attachment_bytes())})"}
+  end
 
   defp root do
     :dala
@@ -121,15 +200,16 @@ defmodule Dala.Terminal.Attachments do
     with :ok <- File.mkdir_p(root), :ok <- File.chmod(root, 0o700), do: :ok
   end
 
-  defp cleanup(root) do
-    cutoff = System.os_time(:second) - @ttl_seconds
+  @doc false
+  def cleanup_expired(root, now_seconds \\ System.os_time(:second)) do
+    cutoff = now_seconds - @ttl_seconds
 
     case File.ls(root) do
       {:ok, entries} ->
         Enum.each(entries, fn entry ->
           path = Path.join(root, entry)
 
-          case File.stat(path, time: :posix) do
+          case File.lstat(path, time: :posix) do
             {:ok, %File.Stat{type: :directory, mtime: mtime}} when mtime < cutoff ->
               File.rm_rf(path)
 
@@ -145,6 +225,8 @@ defmodule Dala.Terminal.Attachments do
         :ok
     end
   end
+
+  defp schedule_cleanup, do: Process.send_after(self(), :cleanup, @cleanup_interval_ms)
 
   defp managed_size(root) do
     case File.ls(root) do

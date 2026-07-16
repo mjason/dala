@@ -1,6 +1,10 @@
-import { savePastedFile } from "../ash_rpc";
-import { call } from "./rpc";
-import { fileToBase64, pasteName } from "./pasteFiles";
+import {
+  batchProgress,
+  isUploadAbort,
+  loadUploadLimits,
+  uploadMultipartFile,
+  type UploadProgress,
+} from "./fileUpload";
 
 /**
  * Pasting or dropping files (screenshots for Claude Code & co): upload each
@@ -10,21 +14,25 @@ import { fileToBase64, pasteName } from "./pasteFiles";
 export async function uploadPastedFiles(
   files: File[],
   onError: (message: string) => void,
+  opts: { signal?: AbortSignal; onProgress?: (progress: UploadProgress) => void } = {},
 ): Promise<string[]> {
   const paths: string[] = [];
-  for (const file of files) {
+  const { browserAttachment } = await loadUploadLimits();
+  for (const [index, file] of files.entries()) {
+    if (opts.signal?.aborted) break;
     try {
-      const contentBase64 = await fileToBase64(file);
-      const result = await call<{ path: string }>(savePastedFile, {
-        input: { name: pasteName(file), contentBase64 },
-        fields: ["path"],
+      const result = await uploadMultipartFile({
+        url: "/files/attachment",
+        file,
+        maxBytes: browserAttachment.maxBytes,
+        maxLabel: browserAttachment.maxLabel,
+        signal: opts.signal,
+        onProgress: (loaded, total) =>
+          opts.onProgress?.(batchProgress(file, index + 1, files.length, loaded, total)),
       });
-      if (result.ok) {
-        paths.push(result.data.path);
-      } else {
-        onError(result.error || "could not upload pasted file");
-      }
+      paths.push(result.path);
     } catch (error) {
+      if (isUploadAbort(error)) break;
       onError(error instanceof Error ? error.message : "could not read file");
     }
   }

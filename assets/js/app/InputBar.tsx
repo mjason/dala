@@ -1,14 +1,16 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { agentCommands, listFiles, savePastedFile, speechSettings, transcribe } from "../ash_rpc";
+import { agentCommands, listFiles, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
 import { blobToBase64, startRecording, type Recorder } from "./speech";
 import { rankFiles } from "./fuzzy";
-import { fileToBase64, pasteName } from "./pasteFiles";
 import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 import { isTopWindow, Kbd, modShiftCombo, popWindow, pushWindow } from "./shortcuts";
 import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "./keybindings";
 import ComposerEditor from "./ComposerEditor";
+import { uploadPastedFiles } from "./pastedFileUpload";
+import type { UploadProgress } from "./fileUpload";
+import UploadProgressView from "./UploadProgressView";
 
 type Props = {
   sessionId: string;
@@ -87,8 +89,20 @@ export default function InputBar({
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
+  const attachAbortRef = useRef<AbortController | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const mountedRef = useRef(true);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const [bindings, setBindings] = useState(loadBindings);
   useEffect(() => onBindingsChange(setBindings), []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attachAbortRef.current?.abort();
+    };
+  }, []);
 
   // Fullscreen: the bar leaves the flow and overlays the whole session area.
   // Per-mount on purpose — reopening the composer starts back in normal mode.
@@ -349,24 +363,27 @@ export default function InputBar({
     setMention(null);
   };
 
-  const attach = async (list: FileList | null) => {
-    if (!list || list.length === 0) return;
-    for (const file of Array.from(list)) {
-      try {
-        const contentBase64 = await fileToBase64(file);
-        const result = await call<{ path: string }>(savePastedFile, {
-          input: { name: pasteName(file), contentBase64 },
-          fields: ["path"],
-        });
-        if (result.ok) {
-          const path = result.data.path;
-          setValue(value && !value.endsWith(" ") ? `${value} ${path} ` : `${value}${path} `);
-        } else {
-          onError(result.error || t("uploadFailed"));
-        }
-      } catch {
-        onError(t("uploadFailed"));
+  const attach = async (files: File[] | FileList | null) => {
+    const batch = Array.from(files ?? []);
+    if (batch.length === 0 || attachAbortRef.current) return;
+
+    const controller = new AbortController();
+    attachAbortRef.current = controller;
+    try {
+      const paths = await uploadPastedFiles(batch, onError, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (mountedRef.current) setUploadProgress(progress);
+        },
+      });
+      if (paths.length > 0 && mountedRef.current) {
+        const current = valueRef.current;
+        const prefix = current !== "" && !current.endsWith(" ") ? `${current} ` : current;
+        setValue(`${prefix}${paths.join(" ")} `);
       }
+    } finally {
+      if (attachAbortRef.current === controller) attachAbortRef.current = null;
+      if (mountedRef.current) setUploadProgress(null);
     }
   };
 
@@ -509,17 +526,22 @@ export default function InputBar({
           setSlash(slashAt(text, pos));
           setMentionIndex(0);
         }}
-        onFiles={(files) => {
-          const list = new DataTransfer();
-          for (const f of files) list.items.add(f);
-          void attach(list.files);
-        }}
+        onFiles={(files) => void attach(files)}
         sendKey={comboToCodeMirror(bindings.composerSend)}
         focusConsumed={focusConsumed}
         onFocusConsumed={onFocusConsumed}
         fullscreen={fullscreen}
         onResize={onResize}
       />
+
+      {uploadProgress && (
+        <UploadProgressView
+          progress={uploadProgress}
+          onCancel={() => attachAbortRef.current?.abort()}
+          cancelLabel={t("cancel")}
+          className="mt-2 rounded-md border border-line bg-bg0/40 px-2.5 py-2"
+        />
+      )}
 
       <div className="mt-1 flex items-center gap-2">
         <button
@@ -546,7 +568,8 @@ export default function InputBar({
         <button
           id="input-bar-attach"
           onClick={() => attachRef.current?.click()}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint pointer-coarse:h-10 pointer-coarse:w-10"
+          disabled={uploadProgress != null}
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-fg-muted transition-colors hover:border-mint/60 hover:text-mint disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
           title={`${t("composerAttach")} · ${formatCombo(bindings.composerAttach)}`}
         >
           <svg viewBox="0 0 16 16" className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -559,7 +582,7 @@ export default function InputBar({
           multiple
           className="hidden"
           onChange={(e) => {
-            void attach(e.target.files);
+            void attach(Array.from(e.target.files ?? []));
             e.target.value = "";
           }}
         />

@@ -6,7 +6,7 @@ defmodule DalaWeb.Router do
   import AshAuthentication.Plug.Helpers
 
   pipeline :browser do
-    plug :accepts, ["html"]
+    plug :accepts, ["html", "json"]
     plug :fetch_session
     plug :fetch_live_flash
     plug :put_root_layout, html: {DalaWeb.Layouts, :root}
@@ -56,9 +56,11 @@ defmodule DalaWeb.Router do
   scope "/", DalaWeb do
     pipe_through [:browser, :rpc]
 
+    get "/files/limits", FileController, :limits
     post "/rpc/run", AshTypescriptRpcController, :run
     post "/rpc/validate", AshTypescriptRpcController, :validate
     post "/files/upload", FileController, :upload
+    post "/files/attachment", FileController, :attachment
   end
 
   # AI-driven server settings over MCP (JSON-RPC 2.0, Streamable HTTP). Gated by

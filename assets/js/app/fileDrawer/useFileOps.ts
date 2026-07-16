@@ -1,7 +1,14 @@
-import { useState } from "react";
-import { buildCSRFHeaders, deleteEntry } from "../../ash_rpc";
+import { useEffect, useRef, useState } from "react";
+import { deleteEntry } from "../../ash_rpc";
 import { call } from "../rpc";
 import { useI18n } from "../i18n";
+import {
+  batchProgress,
+  isUploadAbort,
+  loadUploadLimits,
+  uploadMultipartFile,
+  type UploadProgress,
+} from "../fileUpload";
 import type { DeleteTarget } from "./tree";
 
 /**
@@ -18,41 +25,61 @@ export function useFileOps(opts: {
   const { onError, refreshDir, expandDir, onDeleted } = opts;
   const { t } = useI18n();
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      uploadAbortRef.current?.abort();
+    };
+  }, []);
 
   const uploadTo = async (dir: string, files: File[]) => {
     if (files.length === 0) return;
+    if (uploadAbortRef.current) return;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     setUploading(true);
+    const { drawerUpload } = await loadUploadLimits();
 
-    for (const file of files) {
-      const form = new FormData();
-      form.append("dir", dir);
-      form.append("file", file);
-
+    for (const [index, file] of files.entries()) {
+      if (controller.signal.aborted) break;
+      if (mountedRef.current) {
+        setUploadProgress(batchProgress(file, index + 1, files.length, 0, file.size));
+      }
       try {
-        const response = await fetch("/files/upload", {
-          method: "POST",
-          headers: buildCSRFHeaders(),
-          body: form,
+        await uploadMultipartFile({
+          url: "/files/upload",
+          file,
+          fields: { dir },
+          maxBytes: drawerUpload.maxBytes,
+          maxLabel: drawerUpload.maxLabel,
+          signal: controller.signal,
+          onProgress: (loaded, total) => {
+            if (mountedRef.current) {
+              setUploadProgress(batchProgress(file, index + 1, files.length, loaded, total));
+            }
+          },
         });
-        if (!response.ok) {
-          let message = t("uploadFailed");
-          try {
-            message = (await response.json()).error ?? message;
-          } catch {
-            // Non-JSON error body: keep the generic message.
-          }
-          onError(message);
-        }
-      } catch {
-        onError(t("uploadFailed"));
+      } catch (error) {
+        if (isUploadAbort(error)) break;
+        onError(error instanceof Error ? error.message : t("uploadFailed"));
       }
     }
 
+    uploadAbortRef.current = null;
+    if (!mountedRef.current) return;
+    setUploadProgress(null);
     setUploading(false);
     await refreshDir(dir);
     // Make the destination visible so the new files show up immediately.
     expandDir(dir);
   };
+
+  const cancelUpload = () => uploadAbortRef.current?.abort();
 
   const deleteEntryAt = async (target: DeleteTarget) => {
     const result = await call<unknown>(deleteEntry, {
@@ -68,5 +95,5 @@ export function useFileOps(opts: {
     await refreshDir(target.parentDir);
   };
 
-  return { uploading, uploadTo, deleteEntryAt };
+  return { uploading, uploadProgress, cancelUpload, uploadTo, deleteEntryAt };
 }

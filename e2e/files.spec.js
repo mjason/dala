@@ -4,6 +4,7 @@ const { test, expect } = require("@playwright/test");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const h = require("./helpers");
 
 test.describe("Given 打开文件抽屉的用户", () => {
@@ -74,6 +75,20 @@ test.describe("Given 打开文件抽屉的用户", () => {
       }
       const full = path.join(cwd, deep);
       await page.hover(`[data-path="${full}"]`);
+
+      const tooltip = page.locator("[data-file-path-tooltip]");
+      const filename = path.basename(full);
+      await expect(tooltip).toBeVisible();
+      await expect(tooltip.locator("[data-tooltip-name]")).toHaveText(filename);
+      const shownPath = await tooltip.locator("[data-tooltip-path]").textContent();
+      expect(shownPath).not.toBe(full); // long directory segments are compacted
+      expect(shownPath.endsWith(filename)).toBe(true); // the leaf is never shortened
+      expect(await tooltip.evaluate((element) => element.parentElement === document.body)).toBe(true);
+      const tooltipBox = await tooltip.boundingBox();
+      const viewport = page.viewportSize();
+      expect(tooltipBox.x).toBeGreaterThanOrEqual(0);
+      expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(viewport.width);
+
       await page.click(`[data-delete="${full}"]`);
 
       const shown = page.locator("#delete-target-path");
@@ -130,6 +145,132 @@ test.describe("Given 打开文件抽屉的用户", () => {
     }
   });
 
+  test("multipart 上传进入文件树和私有附件目录，下载支持 Range 续传", async ({ page }) => {
+    const rangePath = path.join(cwd, "range.bin");
+    fs.writeFileSync(rangePath, "0123456789");
+
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    let managedPath;
+
+    try {
+      await h.selectSession(page, id);
+      await page.click("#toggle-drawer-button");
+
+      const drawerUpload = await page.evaluate(async (dir) => {
+        const form = new FormData();
+        form.append(
+          "file",
+          new File(["streamed multipart"], "uploaded-from-browser.txt", { type: "text/plain" }),
+        );
+        form.append("dir", dir);
+        const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
+        const response = await fetch("/files/upload", {
+          method: "POST",
+          headers: { Accept: "application/json", "X-CSRF-Token": csrf },
+          body: form,
+        });
+        return { status: response.status, body: await response.text() };
+      }, cwd);
+      expect(drawerUpload.status).toBe(200);
+      const uploadedPath = path.join(cwd, "uploaded-from-browser.txt");
+      await page.click("#drawer-refresh-button");
+      await expect(page.locator(`[data-path="${uploadedPath}"]`)).toBeVisible();
+      expect(fs.readFileSync(uploadedPath, "utf8")).toBe("streamed multipart");
+
+      const attachmentResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" && response.url().endsWith("/files/attachment"),
+      );
+      await page.locator(".xterm").first().evaluate((terminal) => {
+        const transfer = new DataTransfer();
+        transfer.items.add(
+          new File(["attachment bytes"], "agent note.txt", { type: "text/plain" }),
+        );
+        terminal.dispatchEvent(
+          new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+        );
+      });
+      const managed = await attachmentResponse;
+      expect(managed.status()).toBe(200);
+      const managedBody = await managed.json();
+      managedPath = managedBody.path;
+      expect(path.basename(managedPath)).toBe("agent_note.txt");
+      expect(fs.readFileSync(managedPath, "utf8")).toBe("attachment bytes");
+
+      const range = await page.evaluate(async (filePath) => {
+        const query = new URLSearchParams({ path: filePath, download: "1" });
+        const response = await fetch(`/files/raw?${query}`, { headers: { Range: "bytes=3-6" } });
+        return {
+          status: response.status,
+          contentRange: response.headers.get("content-range"),
+          acceptRanges: response.headers.get("accept-ranges"),
+          body: await response.text(),
+        };
+      }, rangePath);
+      expect(range).toEqual({
+        status: 206,
+        contentRange: "bytes 3-6/10",
+        acceptRanges: "bytes",
+        body: "3456",
+      });
+    } finally {
+      if (managedPath) fs.rmSync(path.dirname(managedPath), { recursive: true, force: true });
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("终端附件慢上传显示完整进度并可取消", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    await expect(page.locator(".xterm").first()).toBeVisible();
+
+    let releaseRoute;
+    const routeHeld = new Promise((resolve) => {
+      releaseRoute = resolve;
+    });
+    await page.route("**/files/attachment", async (route) => {
+      await routeHeld;
+      await route.abort("failed").catch(() => {});
+    });
+
+    try {
+      await page.locator(".xterm").first().evaluate((terminal) => {
+        const transfer = new DataTransfer();
+        transfer.items.add(
+          new File([new Uint8Array(1024 * 1024)], "complete-long-upload-filename-for-agent.bin", {
+            type: "application/octet-stream",
+          }),
+        );
+        terminal.dispatchEvent(
+          new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+        );
+      });
+
+      const progress = page.locator("[data-upload-progress]");
+      await expect(progress).toBeVisible();
+      await expect(progress).toContainText("complete-long-upload-filename-for-agent.bin");
+      await expect(progress).toContainText("0 B / 1.0 MB");
+      await expect(progress.locator('[role="progressbar"]')).toHaveAttribute("aria-valuenow", "0");
+      const mobileBox = await progress.boundingBox();
+      expect(mobileBox.x).toBeGreaterThanOrEqual(0);
+      expect(mobileBox.x + mobileBox.width).toBeLessThanOrEqual(390);
+      await page.screenshot({ path: "/tmp/dala-upload-progress-mobile.png" });
+
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await page.screenshot({ path: "/tmp/dala-upload-progress.png" });
+
+      await progress.locator("[data-cancel-upload]").click();
+      releaseRoute();
+      await expect(progress).toHaveCount(0);
+    } finally {
+      releaseRoute?.();
+      await page.unroute("**/files/attachment");
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("外部建删文件时抽屉自动跟上（含嵌套目录），可见目录 ≤1s", async ({ page }) => {
     fs.writeFileSync(path.join(cwd, "seed.txt"), "seed");
     fs.mkdirSync(path.join(cwd, "nested"));
@@ -173,6 +314,55 @@ test.describe("Given 打开文件抽屉的用户", () => {
       await expect(page.locator(`[data-path="${cwd}/nested/inner.txt"]`)).toBeVisible({
         timeout: 2000,
       });
+    } finally {
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("文件树显示 Git 状态和路径浮层，Git 面板自动跟随外部修改", async ({ page }) => {
+    const tracked = path.join(cwd, "tracked.txt");
+    fs.writeFileSync(tracked, "original\n");
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+    execFileSync("git", ["config", "user.email", "e2e@dala.dev"], { cwd });
+    execFileSync("git", ["config", "user.name", "Dala E2E"], { cwd });
+    execFileSync("git", ["add", "tracked.txt"], { cwd });
+    execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd });
+
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    try {
+      await h.selectSession(page, id);
+      await page.click("#toggle-drawer-button");
+      const treeRow = page.locator(`[data-path="${tracked}"]`);
+      await expect(treeRow).toBeVisible();
+      await expect(treeRow).not.toHaveAttribute("title");
+      await treeRow.hover();
+      await expect(page.locator("[data-file-path-tooltip] [data-tooltip-name]")).toHaveText(
+        "tracked.txt",
+      );
+      await expect(page.locator("[data-file-path-tooltip] [data-tooltip-path]")).toHaveText(
+        tracked,
+      );
+
+      fs.writeFileSync(tracked, "changed once\n");
+      await expect(treeRow.locator('[data-git-status="M"]')).toBeVisible({ timeout: 5000 });
+
+      // Switching tools closes the file drawer and opens Git. Reverting and
+      // changing again happen outside the UI: both states must arrive through
+      // the watcher without touching the refresh button.
+      await page.click("#toggle-git-button");
+      await expect(page.locator("#git-panel")).toContainText("tracked.txt");
+      execFileSync("git", ["checkout", "--", "tracked.txt"], { cwd });
+      await expect(page.locator("#git-panel")).toContainText("Working tree clean", {
+        timeout: 5000,
+      });
+
+      fs.writeFileSync(tracked, "changed twice\n");
+      await expect(page.locator("#git-panel")).toContainText("tracked.txt", { timeout: 5000 });
+      await expect(page.locator("#stage-all-button")).toBeVisible();
+
+      execFileSync("git", ["add", "tracked.txt"], { cwd });
+      await expect(page.locator("#unstage-all-button")).toBeVisible({ timeout: 5000 });
     } finally {
       await h.deleteSession(page, id).catch(() => {});
     }

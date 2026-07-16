@@ -22,6 +22,8 @@ const listDirectory = vi.fn();
 const readFile = vi.fn();
 const writeFile = vi.fn();
 const deleteEntry = vi.fn();
+const gitStatus = vi.fn();
+const uploadMultipartFile = vi.fn();
 
 vi.mock("../ash_rpc", () => ({
   buildCSRFHeaders: () => ({}),
@@ -29,6 +31,12 @@ vi.mock("../ash_rpc", () => ({
   readFile: (...args: unknown[]) => readFile(...args),
   writeFile: (...args: unknown[]) => writeFile(...args),
   deleteEntry: (...args: unknown[]) => deleteEntry(...args),
+  gitStatus: (...args: unknown[]) => gitStatus(...args),
+}));
+
+vi.mock("./fileUpload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./fileUpload")>()),
+  uploadMultipartFile: (...args: unknown[]) => uploadMultipartFile(...args),
 }));
 
 import FileDrawer from "./FileDrawer";
@@ -68,6 +76,13 @@ beforeEach(() => {
   readFile.mockReset();
   writeFile.mockReset();
   deleteEntry.mockReset();
+  gitStatus.mockReset();
+  uploadMultipartFile.mockReset();
+  uploadMultipartFile.mockResolvedValue({ path: "/uploaded/file", size: 1 });
+  gitStatus.mockResolvedValue({
+    success: true,
+    data: { repo: false, root: null, branch: null, files: [] },
+  });
 });
 
 describe("FileDrawer tree", () => {
@@ -81,6 +96,34 @@ describe("FileDrawer tree", () => {
     expect(await screen.findByText("src")).toBeInTheDocument();
     expect(screen.getByText("mix.exs")).toBeInTheDocument();
     expect(screen.getByText("1.2 KB")).toBeInTheDocument();
+  });
+
+  it("shows Git decorations without relying on native path tooltips", async () => {
+    listDirectory.mockResolvedValueOnce(
+      listing("/proj", [entry("src", "directory"), entry("mix.exs", "file", 1234)]),
+    );
+    gitStatus.mockResolvedValueOnce({
+      success: true,
+      data: {
+        repo: true,
+        root: "/proj",
+        branch: "main",
+        files: [
+          { path: "mix.exs", status: " M", staged: false, unstaged: true },
+          { path: "src/main.ex", status: "??", staged: false, unstaged: true },
+        ],
+      },
+    });
+
+    renderDrawer();
+
+    const fileRow = (await screen.findByText("mix.exs")).closest("[data-path]")!;
+    const folderRow = screen.getByText("src").closest("[data-path]")!;
+    expect(fileRow).not.toHaveAttribute("title");
+    expect(fileRow.querySelector('[data-git-status="M"]')).not.toBeNull();
+    expect(fileRow.querySelector('[data-git-status="M"]')).not.toHaveAttribute("title");
+    expect(folderRow).not.toHaveAttribute("title");
+    expect(folderRow.querySelector('[data-git-status="•"]')).not.toBeNull();
   });
 
   it("expands a directory in place and collapses it again", async () => {
@@ -398,11 +441,9 @@ describe("FileDrawer upload targeting", () => {
     listDirectory.mockResolvedValue(
       listing("/proj", [entry("src", "directory"), entry("a.txt", "file")]),
     );
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    vi.stubGlobal("fetch", fetchMock);
     renderDrawer();
     await screen.findByText("a.txt");
-    return fetchMock;
+    return uploadMultipartFile;
   };
 
   const pasteFile = () => {
@@ -415,7 +456,7 @@ describe("FileDrawer upload targeting", () => {
   };
 
   it("pastes OS-copied files into the selected directory", async () => {
-    const fetchMock = await setup();
+    const uploadMock = await setup();
 
     // Select the "src" directory (up-row first, then src).
     const tree = document.getElementById("file-tree")!;
@@ -426,24 +467,20 @@ describe("FileDrawer upload targeting", () => {
     );
 
     pasteFile();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const form = fetchMock.mock.calls[0][1].body as FormData;
-    expect(form.get("dir")).toBe("/proj/src");
-    vi.unstubAllGlobals();
+    await waitFor(() => expect(uploadMock).toHaveBeenCalled());
+    expect(uploadMock.mock.calls[0][0]).toMatchObject({ fields: { dir: "/proj/src" } });
   });
 
   it("pastes into the root when nothing is selected", async () => {
-    const fetchMock = await setup();
+    const uploadMock = await setup();
 
     pasteFile();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const form = fetchMock.mock.calls[0][1].body as FormData;
-    expect(form.get("dir")).toBe("/proj");
-    vi.unstubAllGlobals();
+    await waitFor(() => expect(uploadMock).toHaveBeenCalled());
+    expect(uploadMock.mock.calls[0][0]).toMatchObject({ fields: { dir: "/proj" } });
   });
 
   it("a selected file targets its parent directory", async () => {
-    const fetchMock = await setup();
+    const uploadMock = await setup();
 
     readFile.mockResolvedValueOnce({
       success: true,
@@ -452,10 +489,27 @@ describe("FileDrawer upload targeting", () => {
     fireEvent.click(document.querySelector('[data-path="/proj/a.txt"]')!);
 
     pasteFile();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const form = fetchMock.mock.calls[0][1].body as FormData;
-    expect(form.get("dir")).toBe("/proj");
-    vi.unstubAllGlobals();
+    await waitFor(() => expect(uploadMock).toHaveBeenCalled());
+    expect(uploadMock.mock.calls[0][0]).toMatchObject({ fields: { dir: "/proj" } });
+  });
+
+  it("shows filename, byte progress and cancels the active upload", async () => {
+    await setup();
+    uploadMultipartFile.mockImplementationOnce(
+      ({ onProgress, signal }: { onProgress: (loaded: number, total: number) => void; signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          onProgress(5, 10);
+          signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")));
+        }),
+    );
+
+    pasteFile();
+    await waitFor(() => expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50"));
+    expect(document.querySelector("[data-upload-progress]")).toHaveTextContent("pasted.txt");
+    expect(document.querySelector("[data-upload-progress]")).toHaveTextContent("5 B / 10 B");
+
+    fireEvent.click(document.querySelector("[data-cancel-upload]")!);
+    await waitFor(() => expect(document.querySelector("[data-upload-progress]")).toBeNull());
   });
 });
 
@@ -464,8 +518,6 @@ describe("FileDrawer deselection", () => {
     listDirectory.mockResolvedValue(
       listing("/proj", [entry("src", "directory"), entry("a.txt", "file")]),
     );
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    vi.stubGlobal("fetch", fetchMock);
     renderDrawer();
     await screen.findByText("a.txt");
     const tree = document.getElementById("file-tree")!;
@@ -478,8 +530,8 @@ describe("FileDrawer deselection", () => {
     fireEvent.paste(tree, {
       clipboardData: { items: [{ kind: "file", getAsFile: () => file }], files: [file] },
     });
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect((fetchMock.mock.calls[0][1].body as FormData).get("dir")).toBe("/proj");
+    await waitFor(() => expect(uploadMultipartFile).toHaveBeenCalled());
+    expect(uploadMultipartFile.mock.calls[0][0]).toMatchObject({ fields: { dir: "/proj" } });
 
     // Re-select, then click the empty area -> selection cleared.
     fireEvent.keyDown(tree, { key: "ArrowDown" });
@@ -487,6 +539,5 @@ describe("FileDrawer deselection", () => {
     expect(document.querySelector('[aria-selected="true"]')).not.toBeNull();
     fireEvent.click(tree);
     expect(document.querySelector('[aria-selected="true"]')).toBeNull();
-    vi.unstubAllGlobals();
   });
 });

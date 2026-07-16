@@ -317,6 +317,12 @@ shells) alive across service restarts.
 | `PHX_CHECK_ORIGIN` | `false` | WebSocket origin check — enable behind a reverse proxy with a fixed host |
 | `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite location |
 | `DALA_DATA_DIR` | `~/.local/share/dala` | Session store & scrollback |
+| `DALA_DRAWER_UPLOAD_MAX_MB` | `2048` | File drawer upload limit per file |
+| `DALA_BROWSER_ATTACHMENT_MAX_MB` | `512` | Terminal/composer paste and drop limit per file |
+| `DALA_MCP_ATTACHMENT_MAX_MB` | `64` | MCP attachment limit after Base64 decoding |
+| `DALA_ATTACHMENT_STORAGE_MAX_MB` | `5120` | Shared 24-hour managed attachment storage quota |
+| `DALA_TEXT_SAVE_MAX_MB` | `50` | Text editor save limit |
+| `DALA_TEXT_PREVIEW_DEFAULT_MB` / `DALA_TEXT_PREVIEW_MAX_MB` | `1` / `16` | Default and maximum text preview size |
 | `DALA_RELEASE_ROOT` | set by install.sh | Enables the in-app updater |
 | `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / platform default | Updater source repo / systemd unit or launchd label |
 | `SECRET_KEY_BASE` / `TOKEN_SIGNING_SECRET` | generated | Session/token secrets — keep private |

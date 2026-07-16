@@ -351,13 +351,16 @@ defmodule Dala.Mcp.TerminalTools do
   end
 
   defp upload_tool do
+    max_bytes = Dala.FileLimits.mcp_attachment_bytes()
+    max_base64_length = div(max_bytes + 2, 3) * 4
+
     tool(
       "terminal_upload_attachment",
-      "Upload one file or image into dala's private 24-hour attachment store. Use the returned absolute path in send_terminal_message.attachments. Maximum decoded size: 5 MB.",
+      "Upload one file or image into dala's private 24-hour attachment store. Use the returned absolute path in send_terminal_message.attachments. Maximum decoded size: #{Dala.FileLimits.format(max_bytes)}.",
       %{
         "name" => %{"type" => "string", "minLength" => 1, "maxLength" => 255},
         "mime_type" => %{"type" => "string", "maxLength" => 255},
-        "content_base64" => %{"type" => "string", "maxLength" => 7_100_000}
+        "content_base64" => %{"type" => "string", "maxLength" => max_base64_length}
       },
       ["name", "content_base64"]
     )

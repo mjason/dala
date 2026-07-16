@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const savePastedFile = vi.fn();
-vi.mock("../ash_rpc", () => ({
-  buildCSRFHeaders: () => ({}),
-  savePastedFile: (...args: unknown[]) => savePastedFile(...args),
+const uploadMultipartFile = vi.fn();
+vi.mock("./fileUpload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./fileUpload")>()),
+  uploadMultipartFile: (...args: unknown[]) => uploadMultipartFile(...args),
 }));
 
 import { pastedPathsText, uploadPastedFiles } from "./pastedFileUpload";
@@ -16,15 +16,20 @@ describe("pastedPathsText", () => {
 });
 
 describe("uploadPastedFiles", () => {
-  beforeEach(() => {
-    savePastedFile.mockReset();
-  });
+  beforeEach(() => uploadMultipartFile.mockReset());
 
-  it("uploads each file and collects the returned paths", async () => {
-    savePastedFile
-      .mockResolvedValueOnce({ success: true, data: { path: "/tmp/dala-paste/paste-1.png" } })
-      .mockResolvedValueOnce({ success: true, data: { path: "/tmp/dala-paste/paste-2.txt" } });
+  it("uploads sequentially through multipart and reports per-file progress", async () => {
+    uploadMultipartFile
+      .mockImplementationOnce(async (opts) => {
+        opts.onProgress(1, 1);
+        return { path: "/tmp/attachments/1/shot.png", size: 1 };
+      })
+      .mockImplementationOnce(async (opts) => {
+        opts.onProgress(1, 1);
+        return { path: "/tmp/attachments/2/note.txt", size: 1 };
+      });
     const onError = vi.fn();
+    const onProgress = vi.fn();
 
     const paths = await uploadPastedFiles(
       [
@@ -32,18 +37,32 @@ describe("uploadPastedFiles", () => {
         new File(["y"], "note.txt", { type: "text/plain" }),
       ],
       onError,
+      { onProgress },
     );
 
-    expect(paths).toEqual(["/tmp/dala-paste/paste-1.png", "/tmp/dala-paste/paste-2.txt"]);
+    expect(paths).toEqual(["/tmp/attachments/1/shot.png", "/tmp/attachments/2/note.txt"]);
     expect(onError).not.toHaveBeenCalled();
-    expect(savePastedFile).toHaveBeenCalledTimes(2);
-    expect(savePastedFile.mock.calls[0][0]).toMatchObject({ fields: ["path"] });
+    expect(uploadMultipartFile).toHaveBeenCalledTimes(2);
+    expect(uploadMultipartFile.mock.calls[0][0]).toMatchObject({
+      url: "/files/attachment",
+      maxLabel: "512 MB",
+    });
+    expect(onProgress.mock.calls[0][0]).toMatchObject({
+      fileName: "shot.png",
+      fileIndex: 1,
+      fileCount: 2,
+      percent: 100,
+    });
+    expect(onProgress.mock.calls[1][0]).toMatchObject({
+      fileName: "note.txt",
+      fileIndex: 2,
+    });
   });
 
   it("reports failed uploads and keeps the successful ones", async () => {
-    savePastedFile
-      .mockResolvedValueOnce({ success: false, errors: [{ message: "disk full" }] })
-      .mockResolvedValueOnce({ success: true, data: { path: "/tmp/ok.txt" } });
+    uploadMultipartFile
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce({ path: "/tmp/ok.txt", size: 1 });
     const onError = vi.fn();
 
     const paths = await uploadPastedFiles(
@@ -53,5 +72,24 @@ describe("uploadPastedFiles", () => {
 
     expect(paths).toEqual(["/tmp/ok.txt"]);
     expect(onError).toHaveBeenCalledWith("disk full");
+  });
+
+  it("stops the sequential batch after cancellation without showing an error", async () => {
+    const controller = new AbortController();
+    uploadMultipartFile.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new DOMException("Upload cancelled", "AbortError");
+    });
+    const onError = vi.fn();
+
+    const paths = await uploadPastedFiles(
+      [new File(["x"], "a.png"), new File(["y"], "b.png")],
+      onError,
+      { signal: controller.signal },
+    );
+
+    expect(paths).toEqual([]);
+    expect(uploadMultipartFile).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
   });
 });

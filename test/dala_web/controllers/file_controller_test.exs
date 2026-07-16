@@ -16,8 +16,34 @@ defmodule DalaWeb.FileControllerTest do
 
     assert response(conn, 200) == "<h1>hello</h1>"
     assert response_content_type(conn, :html) =~ "text/html"
+    assert get_resp_header(conn, "accept-ranges") == ["bytes"]
     assert [disposition] = get_resp_header(conn, "content-disposition")
     assert disposition =~ "inline"
+  end
+
+  test "serves byte ranges for resumable downloads", %{conn: conn, dir: dir} do
+    path = Path.join(dir, "range.bin")
+    File.write!(path, "0123456789")
+
+    partial = conn |> put_req_header("range", "bytes=2-5") |> get(~p"/files/raw?#{[path: path]}")
+    assert response(partial, 206) == "2345"
+    assert get_resp_header(partial, "content-range") == ["bytes 2-5/10"]
+    assert get_resp_header(partial, "content-length") == ["4"]
+
+    suffix =
+      build_conn()
+      |> put_req_header("range", "bytes=-3")
+      |> get(~p"/files/raw?#{[path: path]}")
+
+    assert response(suffix, 206) == "789"
+
+    invalid =
+      build_conn()
+      |> put_req_header("range", "bytes=20-30")
+      |> get(~p"/files/raw?#{[path: path]}")
+
+    assert response(invalid, 416) == ""
+    assert get_resp_header(invalid, "content-range") == ["bytes */10"]
   end
 
   test "serves a download with attachment disposition", %{conn: conn, dir: dir} do
@@ -71,6 +97,58 @@ defmodule DalaWeb.FileControllerTest do
              build_conn() |> upload_conn(dir, "", "x") |> json_response(400)
   end
 
+  test "upload enforces the configured per-file quota with a clear 413", %{dir: dir} do
+    previous = Application.get_env(:dala, :file_limits, %{})
+    Application.put_env(:dala, :file_limits, %{drawer_upload_bytes: 1})
+    on_exit(fn -> Application.put_env(:dala, :file_limits, previous) end)
+
+    source = Path.join(dir, "source.bin")
+    File.write!(source, "xx")
+
+    upload = %Plug.Upload{
+      path: source,
+      filename: "large.bin",
+      content_type: "application/octet-stream"
+    }
+
+    conn = DalaWeb.FileController.upload(build_conn(), %{"dir" => dir, "file" => upload})
+    assert %{"error" => message} = json_response(conn, 413)
+    assert message =~ "max 1 bytes"
+    refute File.exists?(Path.join(dir, "large.bin"))
+  end
+
+  test "reports the effective browser upload limits", %{conn: conn} do
+    previous = Application.get_env(:dala, :file_limits, %{})
+
+    Application.put_env(:dala, :file_limits, %{
+      drawer_upload_bytes: 3 * 1024 * 1024,
+      browser_attachment_bytes: 7 * 1024 * 1024
+    })
+
+    on_exit(fn -> Application.put_env(:dala, :file_limits, previous) end)
+
+    assert %{
+             "drawer_upload" => %{"max_bytes" => 3_145_728, "max_label" => "3 MB"},
+             "browser_attachment" => %{"max_bytes" => 7_340_032, "max_label" => "7 MB"}
+           } =
+             conn |> get(~p"/files/limits") |> json_response(200)
+  end
+
+  test "terminal attachment multipart upload lands in private managed storage", %{
+    conn: conn,
+    dir: dir
+  } do
+    conn = upload_conn_to(conn, "/files/attachment", dir, "screen shot.png", <<1, 2, 3>>)
+
+    assert %{"path" => path, "name" => "screen_shot.png", "size" => 3} =
+             json_response(conn, 200)
+
+    assert File.read!(path) == <<1, 2, 3>>
+    assert {:ok, %File.Stat{mode: mode, type: :regular}} = File.lstat(path)
+    assert Bitwise.band(mode, 0o077) == 0
+    on_exit(fn -> File.rm_rf(Path.dirname(path)) end)
+  end
+
   test "requires auth when enabled", %{conn: conn, dir: dir} do
     Application.put_env(:dala, :auth_enabled, true)
     on_exit(fn -> Application.put_env(:dala, :auth_enabled, false) end)
@@ -80,5 +158,12 @@ defmodule DalaWeb.FileControllerTest do
 
     conn = get(conn, ~p"/files/raw?#{[path: path]}")
     assert redirected_to(conn) == "/sign-in"
+  end
+
+  defp upload_conn_to(conn, route, dir, filename, content) do
+    tmp = Path.join(dir, "attachment-source-#{System.unique_integer([:positive])}")
+    File.write!(tmp, content)
+    upload = %Plug.Upload{path: tmp, filename: filename, content_type: "image/png"}
+    post(conn, route, %{"file" => upload})
   end
 end

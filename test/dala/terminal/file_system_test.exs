@@ -57,11 +57,25 @@ defmodule Dala.Terminal.FileSystemTest do
 
   test "rejects content over the size cap", %{dir: dir} do
     path = Path.join(dir, "big.txt")
-    huge = String.duplicate("a", 10 * 1024 * 1024 + 1)
+    huge = String.duplicate("a", 50 * 1024 * 1024 + 1)
 
     assert {:error, error} = write_file(path, huge)
     assert Exception.message(error) =~ "too large"
     refute File.exists?(path)
+  end
+
+  test "text previews default to 1 MB and allow an explicit 16 MB maximum", %{dir: dir} do
+    path = Path.join(dir, "large.txt")
+    content = String.duplicate("a", 2 * 1024 * 1024)
+    File.write!(path, content)
+
+    assert {:ok, %{content: preview, truncated: true}} = read_file(path)
+    assert byte_size(preview) == 1024 * 1024
+
+    assert {:ok, %{content: ^content, truncated: false}} =
+             Dala.Terminal.FileSystem
+             |> Ash.ActionInput.for_action(:read_file, %{path: path, max_bytes: 16 * 1024 * 1024})
+             |> Ash.run_action()
   end
 
   defp save_pasted_file(name, content_base64) do

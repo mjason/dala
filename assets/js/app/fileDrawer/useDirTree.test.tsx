@@ -13,6 +13,7 @@ vi.mock("../../ash_rpc", () => ({
 /** A WebSocket stand-in whose frames the test drives by hand. */
 class FakeSocket {
   static last: FakeSocket | null = null;
+  static OPEN = 1;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;

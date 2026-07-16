@@ -9,10 +9,9 @@ defmodule Dala.Terminal.FileSystem do
     domain: Dala.Terminal,
     extensions: [AshTypescript.Resource]
 
-  @preview_default_max_bytes 262_144
-  @write_max_bytes 10 * 1024 * 1024
   # Base64 inflates by 4/3 and the whole payload must fit the RPC body limit
-  # (Plug.Parsers defaults to 8 MB), so cap pasted files at 5 MB.
+  # This legacy RPC action is kept for older clients; current browser uploads
+  # use streaming multipart instead.
   @paste_max_bytes 5 * 1024 * 1024
 
   typescript do
@@ -110,15 +109,18 @@ defmodule Dala.Terminal.FileSystem do
       argument :path, :string, allow_nil?: false
 
       argument :max_bytes, :integer do
-        default @preview_default_max_bytes
-        constraints min: 1, max: 2_097_152
+        allow_nil? true
+        constraints min: 1
       end
 
       run fn input, _context ->
         path = expand(input.arguments.path)
-        max_bytes = input.arguments.max_bytes
 
-        with {:ok, %File.Stat{type: :regular, size: size}} <- File.stat(path),
+        max_bytes =
+          Map.get(input.arguments, :max_bytes) || Dala.FileLimits.preview_default_bytes()
+
+        with :ok <- check_preview_size(max_bytes),
+             {:ok, %File.Stat{type: :regular, size: size}} <- File.stat(path),
              {:ok, data} <- read_head(path, max_bytes) do
           case to_text(data) do
             {:ok, text} ->
@@ -136,6 +138,7 @@ defmodule Dala.Terminal.FileSystem do
           end
         else
           {:ok, %File.Stat{}} -> {:error, "#{path} is not a regular file"}
+          {:error, message} when is_binary(message) -> {:error, message}
           {:error, reason} -> {:error, "cannot read #{path}: #{:file.format_error(reason)}"}
         end
       end
@@ -163,8 +166,9 @@ defmodule Dala.Terminal.FileSystem do
         content = input.arguments.content
 
         cond do
-          byte_size(content) > @write_max_bytes ->
-            {:error, "file too large to save (max #{div(@write_max_bytes, 1_048_576)} MB)"}
+          byte_size(content) > Dala.FileLimits.text_write_bytes() ->
+            {:error,
+             "file too large to save (max #{Dala.FileLimits.format(Dala.FileLimits.text_write_bytes())})"}
 
           File.dir?(path) ->
             {:error, "#{path} is a directory"}
@@ -321,6 +325,14 @@ defmodule Dala.Terminal.FileSystem do
     else
       :ok
     end
+  end
+
+  defp check_preview_size(max_bytes) do
+    limit = Dala.FileLimits.preview_max_bytes()
+
+    if max_bytes <= limit,
+      do: :ok,
+      else: {:error, "preview is too large (max #{Dala.FileLimits.format(limit)})"}
   end
 
   # "screenshot.png" -> "png", "image/png" -> "png"; anything else -> "png".

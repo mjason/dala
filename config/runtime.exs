@@ -34,6 +34,31 @@ if data_dir = System.get_env("DALA_DATA_DIR") do
   config :dala, data_dir: data_dir
 end
 
+megabytes = fn name, default ->
+  case Integer.parse(System.get_env(name, Integer.to_string(default))) do
+    {value, ""} when value > 0 -> value * 1024 * 1024
+    _ -> raise "invalid #{name} (expected a positive integer in MB)"
+  end
+end
+
+preview_default_bytes = megabytes.("DALA_TEXT_PREVIEW_DEFAULT_MB", 1)
+preview_max_bytes = megabytes.("DALA_TEXT_PREVIEW_MAX_MB", 16)
+
+if preview_default_bytes > preview_max_bytes do
+  raise "DALA_TEXT_PREVIEW_DEFAULT_MB cannot exceed DALA_TEXT_PREVIEW_MAX_MB"
+end
+
+config :dala,
+  file_limits: %{
+    drawer_upload_bytes: megabytes.("DALA_DRAWER_UPLOAD_MAX_MB", 2048),
+    browser_attachment_bytes: megabytes.("DALA_BROWSER_ATTACHMENT_MAX_MB", 512),
+    mcp_attachment_bytes: megabytes.("DALA_MCP_ATTACHMENT_MAX_MB", 64),
+    managed_attachment_bytes: megabytes.("DALA_ATTACHMENT_STORAGE_MAX_MB", 5120),
+    text_write_bytes: megabytes.("DALA_TEXT_SAVE_MAX_MB", 50),
+    preview_default_bytes: preview_default_bytes,
+    preview_max_bytes: preview_max_bytes
+  }
+
 # Set by install.sh: the root of the versioned install tree
 # (<root>/versions/<tag> + <root>/current). Its presence enables the in-app
 # updater; running from source (mix) leaves it off.

@@ -19,8 +19,9 @@
 //! skipped at REGISTRATION time, so they consume zero inotify descriptors
 //! instead of merely being muted. Directories that appear later (mkdir,
 //! whole trees renamed in) are registered dynamically from their create
-//! events. `.git` is special-cased: the `.git` dir itself and refs/ stay
-//! watched so HEAD/branch switches surface, object/pack churn does not.
+//! events. `.git` is special-cased: the `.git` dir itself, index, and refs/
+//! stay watched so staging and HEAD/branch switches surface; object/pack
+//! churn does not.
 //!
 //! Exclusion matches path components RELATIVE to the root — a project that
 //! itself lives under some `target/` or `node_modules/` still reports.
@@ -71,7 +72,7 @@ const EXCLUDED_DIRS: &[&str] = &[
 ];
 
 /// Whether a path — RELATIVE to the watch root — is ignored. Any excluded
-/// component mutes it; under `.git`, only HEAD and refs/ stay audible.
+/// component mutes it; under `.git`, only HEAD, index and refs/ stay audible.
 /// Matching on the relative path keeps a root that itself lives inside an
 /// excluded-name dir (a drawer rooted in node_modules) fully audible.
 pub fn excluded(rel: &Path) -> bool {
@@ -89,7 +90,8 @@ pub fn excluded(rel: &Path) -> bool {
         }
         if *comp == ".git" {
             let rest = &comps[i + 1..];
-            let audible = rest.is_empty() || rest[0] == "HEAD" || rest[0] == "refs";
+            let audible =
+                rest.is_empty() || rest[0] == "HEAD" || rest[0] == "index" || rest[0] == "refs";
             if !audible {
                 return true;
             }
@@ -438,12 +440,12 @@ mod excluded_tests {
     }
 
     #[test]
-    fn git_head_and_refs_are_audible_object_churn_is_not() {
+    fn git_head_index_and_refs_are_audible_object_churn_is_not() {
         assert!(!excluded(Path::new(".git")));
         assert!(!excluded(Path::new(".git/HEAD")));
         assert!(!excluded(Path::new(".git/refs/heads/main")));
         assert!(excluded(Path::new(".git/objects/ab/cdef")));
-        assert!(excluded(Path::new(".git/index")));
+        assert!(!excluded(Path::new(".git/index")));
         assert!(excluded(Path::new(".git/logs/HEAD")));
     }
 

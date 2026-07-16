@@ -13,6 +13,9 @@ import type { DeleteTarget, SelectableRow, TreeRow } from "./fileDrawer/tree";
 import { Chevron, DownloadIcon, Row, UploadIcon } from "./fileDrawer/rows";
 import { useDirTree } from "./fileDrawer/useDirTree";
 import { useFileOps } from "./fileDrawer/useFileOps";
+import { useGitStatus } from "./hooks/useGitStatus";
+import { buildGitDecorations } from "./gitDecorations";
+import UploadProgressView from "./UploadProgressView";
 
 export type { Entry } from "./fileDrawer/tree";
 
@@ -41,8 +44,13 @@ export default function FileDrawer({
   onResetWidth,
 }: Props) {
   const { t } = useI18n();
+  const {
+    status: gitStatus,
+    loadStatus: refreshGitStatus,
+    refreshSoon: refreshGitStatusSoon,
+  } = useGitStatus(path, onError, { watch: false });
   const { root, children, expanded, loadingDirs, refreshDir, refreshAll, toggleDir, expandDir } =
-    useDirTree(path, onError);
+    useDirTree(path, onError, refreshGitStatusSoon);
   const [showHidden, setShowHidden] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [editOnOpen, setEditOnOpen] = useState(false);
@@ -59,7 +67,7 @@ export default function FileDrawer({
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
-  const { uploading, uploadTo, deleteEntryAt } = useFileOps({
+  const { uploading, uploadProgress, cancelUpload, uploadTo, deleteEntryAt } = useFileOps({
     onError,
     refreshDir,
     expandDir,
@@ -190,6 +198,7 @@ export default function FileDrawer({
   };
 
   const segments = root ? crumbs(root.path) : [];
+  const gitDecorations = useMemo(() => buildGitDecorations(gitStatus), [gitStatus]);
 
   return (
     <section
@@ -231,7 +240,10 @@ export default function FileDrawer({
         />
         <button
           id="drawer-refresh-button"
-          onClick={refreshAll}
+          onClick={() => {
+            refreshAll();
+            void refreshGitStatus(true);
+          }}
           className="grid h-6 w-6 place-items-center rounded border border-line text-fg-muted transition-colors hover:border-mint/50 hover:text-mint"
           title={t("refresh")}
         >
@@ -281,6 +293,15 @@ export default function FileDrawer({
           </React.Fragment>
         ))}
       </div>
+
+      {uploadProgress && (
+        <UploadProgressView
+          progress={uploadProgress}
+          onCancel={cancelUpload}
+          cancelLabel={t("cancel")}
+          className="border-b border-line bg-bg0/40 px-3 py-2"
+        />
+      )}
 
       <div
         id="file-tree"
@@ -379,6 +400,7 @@ export default function FileDrawer({
               }
               name={row.entry.name}
               symlink={row.entry.symlink}
+              decoration={gitDecorations.get(row.path)}
               detail={isDir ? undefined : humanBytes(row.entry.size)}
               loading={previewLoading === row.path}
               selected={selectedPath === row.path}

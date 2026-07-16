@@ -8,7 +8,6 @@ import {
   gitLog,
   gitShow,
   gitStage,
-  gitStatus,
   gitUnstage,
 } from "../ash_rpc";
 import type {
@@ -16,7 +15,6 @@ import type {
   GitDiffFields,
   GitLogFields,
   GitShowFields,
-  GitStatusFields,
 } from "../ash_rpc";
 import { call, type RpcOutcome } from "./rpc";
 import { TextArea } from "./ui";
@@ -25,13 +23,13 @@ import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { hasOpenWindows, inTextInput, Tooltip } from "./shortcuts";
 import ResizeHandle from "./ResizeHandle";
-import type { BranchInfo, Commit, DiffContext, DiffTarget, GitFile, Status } from "./gitPanel/types";
+import type { BranchInfo, Commit, DiffContext, DiffTarget, GitFile } from "./gitPanel/types";
 import BranchControls from "./gitPanel/BranchControls";
 import HistoryView from "./gitPanel/HistoryView";
 import DiffModal from "./gitPanel/DiffModal";
 import { FileRow, GroupLabel } from "./gitPanel/fileRows";
+import { useGitStatus } from "./hooks/useGitStatus";
 
-const STATUS_FIELDS = ["repo", "root", "branch", "files"] as unknown as GitStatusFields;
 const LOG_FIELDS = ["commits"] as unknown as GitLogFields;
 const DIFF_FIELDS: GitDiffFields = ["diff", "binary", "truncated"];
 const SHOW_FIELDS: GitShowFields = ["text", "truncated"];
@@ -56,13 +54,12 @@ export default function GitPanel({
 }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<"changes" | "history">("changes");
-  const [status, setStatus] = useState<Status | null>(null);
   const [commits, setCommits] = useState<Commit[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [target, setTarget] = useState<DiffTarget | null>(null);
+  const { status, loading, externalVersion, loadStatus } = useGitStatus(path, onError);
 
   const root = status?.root ?? null;
 
@@ -80,14 +77,6 @@ export default function GitPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadStatus = useCallback(async () => {
-    setLoading(true);
-    const result = await call<Status>(gitStatus, { input: { path }, fields: STATUS_FIELDS });
-    setLoading(false);
-    if (result.ok) setStatus(result.data);
-    else onError(result.error || t("couldNotLoadGit"));
-  }, [path, onError, t]);
-
   const loadLog = useCallback(async () => {
     const result = await call<{ commits: Commit[] }>(gitLog, { input: { path }, fields: LOG_FIELDS });
     if (result.ok) setCommits(result.data.commits);
@@ -95,12 +84,20 @@ export default function GitPanel({
   }, [path, onError, t]);
 
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
-
-  useEffect(() => {
     if (tab === "history" && commits === null) void loadLog();
   }, [tab, commits, loadLog]);
+
+  // A commit/checkout performed in the terminal changes refs without a Git
+  // panel action. Invalidate history on watcher events; the visible tab then
+  // reloads it through the effect above.
+  useEffect(() => {
+    if (externalVersion > 0) setCommits(null);
+  }, [externalVersion]);
+
+  useEffect(() => {
+    setCommits(null);
+    setTarget(null);
+  }, [path]);
 
   const refresh = () => {
     void loadStatus();

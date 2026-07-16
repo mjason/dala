@@ -139,16 +139,21 @@ defmodule DalaWeb.McpControllerTest do
 
   describe "request body size" do
     test "unauthenticated bodies stay at 1 MB while authenticated bodies allow attachments" do
+      previous = Application.get_env(:dala, :file_limits, %{})
+      Application.put_env(:dala, :file_limits, %{mcp_attachment_bytes: 1_048_576})
+      on_exit(fn -> Application.put_env(:dala, :file_limits, previous) end)
+
       assert_error_sent(413, fn ->
         mcp_post(String.duplicate("x", 1_100_000), auth: :none)
       end)
 
-      # A valid token may carry a 5 MB attachment as base64, but remains hard
-      # capped at 8 MB before JSON decoding.
+      # A valid token gets a larger, Base64-aware budget.
       assert json_response(mcp_post(String.duplicate("x", 1_100_000)), 200)["error"]["code"] ==
                -32700
 
-      assert_error_sent(413, fn -> mcp_post(String.duplicate("x", 8_100_000)) end)
+      cap = Dala.FileLimits.json_request_bytes("/mcp")
+      assert cap > 1_100_000
+      assert_error_sent(413, fn -> mcp_post(String.duplicate("x", cap + 1)) end)
     end
   end
 

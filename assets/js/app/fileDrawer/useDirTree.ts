@@ -3,6 +3,7 @@ import { listDirectory } from "../../ash_rpc";
 import type { ListDirectoryFields } from "../../ash_rpc";
 import { call } from "../rpc";
 import { useI18n } from "../i18n";
+import { useFileWatcher } from "../hooks/useFileWatcher";
 import { routeChanged } from "./tree";
 import type { Entry, Listing } from "./tree";
 
@@ -15,7 +16,11 @@ const DIR_FIELDS = ["path", "parent", "entries"] as unknown as ListDirectoryFiel
  * expansion state, and the /files/watch socket keeping everything fresh
  * when terminal commands or agents touch the filesystem.
  */
-export function useDirTree(path: string, onError: (message: string) => void) {
+export function useDirTree(
+  path: string,
+  onError: (message: string) => void,
+  onExternalChange?: () => void,
+) {
   const { t } = useI18n();
   // Held in a ref so an inline callback from the caller cannot change
   // fetchDir's identity — that would re-run the root-load effect on every
@@ -125,33 +130,11 @@ export function useDirTree(path: string, onError: (message: string) => void) {
   expandedRef.current = expanded;
   const childrenRef = useRef(children);
   childrenRef.current = children;
-  const rootPathRef = useRef<string | null>(null);
-  rootPathRef.current = root?.path ?? null;
-  const watchRef = useRef<WebSocket | null>(null);
+  const externalChangeRef = useRef(onExternalChange);
+  externalChangeRef.current = onExternalChange;
 
-  const sendWatchList = useCallback((socket: WebSocket | null) => {
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({ watch: [...expandedRef.current], root: rootPathRef.current }),
-      );
-    }
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let socket: WebSocket | null = null;
-    let retry: number | undefined;
-    let reconnecting = false;
-
-    // Change storms (builds, npm install, git checkout) arrive as many
-    // {"changed"} frames in a burst. Collect them until the next animation
-    // frame and route THEN, deduped by target — a hundred frames that all
-    // route to one expanded ancestor cost one listDirectory, not a hundred.
-    let storm: Set<string> | null = null;
-    const flushStorm = () => {
-      const changed = storm;
-      storm = null;
-      if (!changed || disposed) return;
+  const handleChanged = useCallback(
+    (changed: readonly string[]) => {
       const refresh = new Set<string>();
       const invalidate = new Set<string>();
       for (const dir of changed) {
@@ -171,57 +154,17 @@ export function useDirTree(path: string, onError: (message: string) => void) {
           return next;
         });
       }
-    };
+      externalChangeRef.current?.();
+    },
+    [refreshSilent],
+  );
 
-    const connect = () => {
-      if (disposed) return;
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const s = new WebSocket(`${proto}://${window.location.host}/files/watch`);
-      socket = s;
-      watchRef.current = s;
-      s.onopen = () => {
-        sendWatchList(s);
-        if (reconnecting) {
-          for (const dir of expandedRef.current) void refreshSilent(dir);
-        }
-        reconnecting = true;
-      };
-      s.onmessage = (event) => {
-        try {
-          const body = JSON.parse(String(event.data)) as { changed?: string };
-          if (!body.changed) return;
-          if (storm) {
-            storm.add(body.changed);
-            return;
-          }
-          storm = new Set([body.changed]);
-          requestAnimationFrame(flushStorm);
-        } catch {
-          // ignore malformed frames
-        }
-      };
-      s.onclose = () => {
-        // Strict-mode double-mount (and reconnects) interleave sockets: the
-        // doomed first socket's close event fires *after* the replacement is
-        // registered — only clear the ref if it is still ours, or the live
-        // socket becomes unreachable and watch-list updates silently stop.
-        if (watchRef.current === s) watchRef.current = null;
-        if (!disposed) retry = window.setTimeout(connect, 3000);
-      };
-    };
-    connect();
+  const refreshExpanded = useCallback(() => {
+    for (const dir of expandedRef.current) void refreshSilent(dir);
+    externalChangeRef.current?.();
+  }, [refreshSilent]);
 
-    return () => {
-      disposed = true;
-      window.clearTimeout(retry);
-      socket?.close();
-    };
-  }, [refreshSilent, sendWatchList]);
-
-  // Keep the server's watch list (and root) in sync with the screen.
-  useEffect(() => {
-    sendWatchList(watchRef.current);
-  }, [expanded, root, sendWatchList]);
+  useFileWatcher(root?.path ?? null, [...expanded], handleChanged, refreshExpanded);
 
   // Manual refresh: refetch everything visible right now.
   const refreshAll = useCallback(() => {

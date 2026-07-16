@@ -18,6 +18,8 @@ import { createStreamGate } from "./streamGate";
 import { createAckCounter } from "./flowControl";
 import { collectTransferFiles } from "./pasteFiles";
 import { pastedPathsText, uploadPastedFiles } from "./pastedFileUpload";
+import type { UploadProgress } from "./fileUpload";
+import UploadProgressView from "./UploadProgressView";
 import { resolveSendMode, sendComposedText, type SendStrategy } from "./terminalSend";
 import {
   createLineAccumulator,
@@ -149,6 +151,8 @@ export default function TerminalView({
   cwdChangeRef.current = onCwdChange;
   const errorRef = useRef(onError);
   errorRef.current = onError;
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const escapeRef = useRef(onEscape);
   escapeRef.current = onEscape;
 
@@ -337,7 +341,7 @@ export default function TerminalView({
         else term.options.smoothScrollDuration = smoothMs;
         term.options.scrollSensitivity = next.scrollSensitivity;
         // Font metrics changed — refit/re-scale via the shared path.
-        window.setTimeout(() => relayout(), 0);
+        window.setTimeout(() => relayout(true), 0);
       });
 
       // App theme (light/dark) flips apply to every open terminal live:
@@ -748,6 +752,9 @@ export default function TerminalView({
       };
 
       let lastSize = "";
+      let lastLayoutBox = "";
+      const currentLayoutBox = () =>
+        `${container.clientWidth}x${container.clientHeight}@${window.devicePixelRatio}`;
       const maybeResize = () => {
         if (disposed) return;
         const buf = term.buffer.active;
@@ -767,8 +774,11 @@ export default function TerminalView({
         }
       };
       // Timer/observer entry point that respects the current size role.
-      const relayout = () => {
+      const relayout = (force = false) => {
         if (disposed) return;
+        const layoutBox = currentLayoutBox();
+        if (!force && layoutBox === lastLayoutBox) return;
+        lastLayoutBox = layoutBox;
         if (follower) {
           syncWebglCanvas();
           scaleToFit();
@@ -867,6 +877,7 @@ export default function TerminalView({
       // Header-button actions so the user can recover a wedged terminal or
       // recompute width without remembering a shortcut.
       const refit = (takeover = false) => {
+        lastLayoutBox = currentLayoutBox();
         if (follower) {
           if (takeover) {
             // The explicit Refit action means "fit to MY screen" — for a
@@ -976,8 +987,8 @@ export default function TerminalView({
               // Layout/fonts may still be settling right after join/refresh;
               // re-fit on the next ticks so early output is not at a stale
               // size.
-              window.setTimeout(relayout, 120);
-              window.setTimeout(relayout, 600);
+              window.setTimeout(() => relayout(true), 120);
+              window.setTimeout(() => relayout(true), 600);
             }
           },
         )
@@ -1019,12 +1030,28 @@ export default function TerminalView({
       // dropping a file onto a native terminal. Text-only pastes fall through
       // to xterm's own handler.
       const uploadFiles = async (files: File[]) => {
-        const paths = await uploadPastedFiles(files, (message) =>
-          errorRef.current?.(message),
-        );
-        if (paths.length > 0 && !disposed) {
-          term.paste(pastedPathsText(paths));
-          term.focus();
+        if (uploadAbortRef.current) return;
+        const controller = new AbortController();
+        uploadAbortRef.current = controller;
+
+        try {
+          const paths = await uploadPastedFiles(
+            files,
+            (message) => errorRef.current?.(message),
+            {
+              signal: controller.signal,
+              onProgress: (progress) => {
+                if (!disposed) setUploadProgress(progress);
+              },
+            },
+          );
+          if (paths.length > 0 && !disposed) {
+            term.paste(pastedPathsText(paths));
+            term.focus();
+          }
+        } finally {
+          if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+          if (!disposed) setUploadProgress(null);
         }
       };
 
@@ -1172,15 +1199,19 @@ export default function TerminalView({
       });
       observer.observe(container);
 
-      // Idle self-heal: if the size ever drifts (zoom change, layout race, a
-      // missed resize event) re-fit periodically and push only on change.
+      // Idle self-heal: compare the layout fingerprint periodically. The old
+      // unconditional fit repainted the WebGL canvas every 2.5s even when
+      // nothing moved, which caused rare full-terminal flashes.
       const idleTimer = window.setInterval(relayout, 2500);
 
       // Extra triggers a ResizeObserver can miss: window resize, browser zoom
       // (via window resize on most browsers), and the tab becoming visible.
-      const onWindowChange = () => relayout();
-      window.addEventListener("resize", onWindowChange);
-      document.addEventListener("visibilitychange", onWindowChange);
+      const onWindowResize = () => relayout();
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "visible") relayout(true);
+      };
+      window.addEventListener("resize", onWindowResize);
+      document.addEventListener("visibilitychange", onVisibilityChange);
 
       cleanup = () => {
         if (actionsRef) actionsRef.current = null;
@@ -1206,8 +1237,8 @@ export default function TerminalView({
         window.clearTimeout(bottomPinTimer);
         if (bottomPinFrame != null) cancelAnimationFrame(bottomPinFrame);
         window.clearInterval(idleTimer);
-        window.removeEventListener("resize", onWindowChange);
-        document.removeEventListener("visibilitychange", onWindowChange);
+        window.removeEventListener("resize", onWindowResize);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
         container.removeEventListener("mouseup", onMouseUp);
         stopPrefsSync();
         stopThemeSync();
@@ -1225,17 +1256,27 @@ export default function TerminalView({
 
     return () => {
       disposed = true;
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
       cleanup?.();
     };
   }, [sessionId]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full [contain:layout_paint]">
       {/* Padding lives on .xterm (app.css), NOT here: the fit addon takes
           the parent's computed border-box height and only subtracts the
           terminal element's own padding — parent padding makes it overshoot
           by a row and TUI bottom bars get clipped. */}
       <div ref={containerRef} className="h-full w-full" />
+      {uploadProgress && (
+        <UploadProgressView
+          progress={uploadProgress}
+          onCancel={() => uploadAbortRef.current?.abort()}
+          cancelLabel={t("cancel")}
+          className="absolute bottom-3 left-1/2 z-30 w-[min(28rem,calc(100%_-_1.5rem))] -translate-x-1/2 rounded-md border border-line bg-bg1/95 px-3 py-2 shadow-xl shadow-black/40 backdrop-blur-sm"
+        />
+      )}
       {findOpen && (
         <div
           id="terminal-find"

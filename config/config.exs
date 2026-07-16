@@ -76,6 +76,7 @@ config :dala,
   generators: [timestamp_type: :utc_datetime],
   data_dir: "priv/data",
   auth_enabled: false,
+  file_limits: %{},
   # MCP server: enabled/disabled at runtime from the web Settings panel, with a
   # server-generated token — both stored in `Dala.Settings.Mcp` (no env var).
   ash_domains: [Dala.Accounts, Dala.Settings, Dala.Terminal],

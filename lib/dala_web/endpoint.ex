@@ -55,7 +55,7 @@ defmodule DalaWeb.Endpoint do
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,
-    parsers: [:urlencoded, {:multipart, length: 512_000_000}, :json],
+    parsers: [:urlencoded, DalaWeb.UploadMultipart, :json],
     pass: ["*/*"],
     # POST /mcp keeps its own raw body (see DalaWeb.McpBodyReader) so the MCP
     # controller can return a JSON-RPC -32700 on malformed JSON; every other
