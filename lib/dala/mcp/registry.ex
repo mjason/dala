@@ -51,22 +51,23 @@ defmodule Dala.Mcp.Registry do
 
   @doc "The full tool list (JSON-Schema maps) for a `tools/list` response."
   def tools do
+    access = Dala.Settings.Mcp.terminal_access()
+
     Enum.map(specs(), &to_tool/1) ++
       [reference_tool(), preview_tool()] ++
-      Dala.Mcp.TerminalTools.tools(Dala.Settings.Mcp.terminal_access())
+      Dala.Mcp.TerminalTools.tools(access) ++
+      Dala.Mcp.FileTools.tools(access)
   end
 
   @doc "Short server-level guidance returned during MCP initialization."
   def instructions do
+    access = Dala.Settings.Mcp.terminal_access()
+
     theme =
       "For theme design, call theme_reference, iterate with preview_theme, and only then " <>
         "create_theme or update_theme."
 
-    terminal =
-      Dala.Settings.Mcp.terminal_access()
-      |> Dala.Mcp.TerminalTools.instructions()
-
-    [theme, terminal]
+    [theme, Dala.Mcp.TerminalTools.instructions(access), Dala.Mcp.FileTools.instructions(access)]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
   end

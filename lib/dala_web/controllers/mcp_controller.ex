@@ -24,40 +24,41 @@ defmodule DalaWeb.McpController do
 
   def handle(conn, _params) do
     raw = Map.get(conn.private, :mcp_raw_body, "")
+    ctx = %{base_url: base_url(conn)}
 
     case Jason.decode(raw) do
-      {:ok, decoded} -> dispatch(conn, decoded)
+      {:ok, decoded} -> dispatch(conn, decoded, ctx)
       {:error, _reason} -> reply(conn, error_object(nil, -32700, "Parse error"))
     end
   end
 
   # A JSON-RPC batch (array of calls).
-  defp dispatch(conn, batch) when is_list(batch) do
+  defp dispatch(conn, batch, ctx) when is_list(batch) do
     case batch do
       [] ->
         reply(conn, error_object(nil, -32600, "Invalid Request"))
 
       items ->
-        responses = Enum.flat_map(items, &responses_for/1)
+        responses = Enum.flat_map(items, &responses_for(&1, ctx))
         if responses == [], do: accepted(conn), else: reply(conn, responses)
     end
   end
 
   # A single JSON-RPC call.
-  defp dispatch(conn, %{} = item) do
-    case responses_for(item) do
+  defp dispatch(conn, %{} = item, ctx) do
+    case responses_for(item, ctx) do
       [] -> accepted(conn)
       [response] -> reply(conn, response)
     end
   end
 
   # Anything else (bare string/number/bool/null) is not a valid request.
-  defp dispatch(conn, _other), do: reply(conn, error_object(nil, -32600, "Invalid Request"))
+  defp dispatch(conn, _other, _ctx), do: reply(conn, error_object(nil, -32600, "Invalid Request"))
 
   # Returns `[]` for notifications (no response element) or `[response]` for
   # requests. Wrapped so a bug in one item never takes down a whole batch.
-  defp responses_for(item) do
-    handle_item(item)
+  defp responses_for(item, ctx) do
+    handle_item(item, ctx)
   rescue
     error ->
       Logger.error("MCP internal error: #{Exception.message(error)}")
@@ -65,7 +66,7 @@ defmodule DalaWeb.McpController do
       [error_object(id, -32603, "Internal error")]
   end
 
-  defp handle_item(item) when is_map(item) do
+  defp handle_item(item, ctx) when is_map(item) do
     cond do
       item["jsonrpc"] != "2.0" ->
         respond(item, error_object(item["id"], -32600, "Invalid Request"))
@@ -74,13 +75,13 @@ defmodule DalaWeb.McpController do
         respond(item, error_object(item["id"], -32600, "Invalid Request"))
 
       true ->
-        route(item)
+        route(item, ctx)
     end
   end
 
-  defp handle_item(_item), do: [error_object(nil, -32600, "Invalid Request")]
+  defp handle_item(_item, _ctx), do: [error_object(nil, -32600, "Invalid Request")]
 
-  defp route(%{"method" => "notifications/" <> _} = item) do
+  defp route(%{"method" => "notifications/" <> _} = item, _ctx) do
     # MCP notifications never carry an `id`. If a client mislabels one as a
     # request (id present), answer -32601 rather than leave it hanging with no
     # response element.
@@ -91,10 +92,10 @@ defmodule DalaWeb.McpController do
     end
   end
 
-  defp route(item) do
+  defp route(item, ctx) do
     # A JSON-RPC notification omits `id` entirely and never gets a response.
     if Map.has_key?(item, "id") do
-      respond(item, method_result(item["method"], item["id"], params(item)))
+      respond(item, method_result(item["method"], item["id"], params(item), ctx))
     else
       []
     end
@@ -112,11 +113,14 @@ defmodule DalaWeb.McpController do
 
   # --- methods --------------------------------------------------------------
 
-  defp method_result("initialize", id, params), do: result_object(id, initialize(params))
-  defp method_result("ping", id, _params), do: result_object(id, %{})
-  defp method_result("tools/list", id, _params), do: result_object(id, %{tools: Registry.tools()})
-  defp method_result("tools/call", id, params), do: tools_call(id, params)
-  defp method_result(_method, id, _params), do: error_object(id, -32601, "Method not found")
+  defp method_result("initialize", id, params, _ctx), do: result_object(id, initialize(params))
+  defp method_result("ping", id, _params, _ctx), do: result_object(id, %{})
+
+  defp method_result("tools/list", id, _params, _ctx),
+    do: result_object(id, %{tools: Registry.tools()})
+
+  defp method_result("tools/call", id, params, ctx), do: tools_call(id, params, ctx)
+  defp method_result(_method, id, _params, _ctx), do: error_object(id, -32601, "Method not found")
 
   defp initialize(params) do
     requested = params["protocolVersion"]
@@ -134,11 +138,11 @@ defmodule DalaWeb.McpController do
     }
   end
 
-  defp tools_call(id, params) do
+  defp tools_call(id, params, ctx) do
     name = params["name"]
     arguments = params["arguments"] || %{}
 
-    case Tools.call(name, arguments) do
+    case Tools.call(name, arguments, ctx) do
       {:error, :unknown_tool} ->
         error_object(id, -32602, "Unknown tool: #{inspect(name)}")
 
@@ -173,4 +177,17 @@ defmodule DalaWeb.McpController do
   defp reply(conn, payload), do: json(conn, payload)
 
   defp accepted(conn), do: send_resp(conn, 202, "")
+
+  # The origin THIS request arrived on, so a download URL points back at the
+  # same host the agent already reached (not a possibly-different configured
+  # endpoint host). Default ports are elided.
+  defp base_url(conn) do
+    scheme = to_string(conn.scheme)
+
+    default_port? =
+      (scheme == "https" and conn.port == 443) or (scheme == "http" and conn.port == 80)
+
+    host = if default_port?, do: conn.host, else: "#{conn.host}:#{conn.port}"
+    "#{scheme}://#{host}"
+  end
 end

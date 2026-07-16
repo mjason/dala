@@ -216,6 +216,71 @@ defmodule DalaWeb.FileControllerTest do
     assert redirected_to(conn) == "/sign-in"
   end
 
+  describe "download token (auth enabled, no session)" do
+    setup do
+      Application.put_env(:dala, :auth_enabled, true)
+      # Token serving is tied to the live MCP read capability.
+      Dala.Settings.Mcp.current()
+      Dala.Settings.Mcp.set_terminal_access(true, false)
+
+      on_exit(fn ->
+        Application.put_env(:dala, :auth_enabled, false)
+        Dala.Settings.Mcp.set_terminal_access(false, false)
+      end)
+
+      :ok
+    end
+
+    test "a valid path-scoped token downloads the file without a session", %{dir: dir} do
+      path = Path.join(dir, "report.csv")
+      File.write!(path, "a,b,c")
+      token = DalaWeb.FileDownloadToken.sign(path)
+
+      conn =
+        build_conn()
+        |> get(~p"/files/raw?#{[path: path, download: "1", token: token]}")
+
+      assert response(conn, 200) == "a,b,c"
+      assert [disposition] = get_resp_header(conn, "content-disposition")
+      assert disposition =~ "attachment"
+    end
+
+    test "turning MCP read access OFF revokes an already-minted token", %{dir: dir} do
+      path = Path.join(dir, "secret.env")
+      File.write!(path, "KEY=1")
+      token = DalaWeb.FileDownloadToken.sign(path)
+
+      # Works while read is on…
+      assert build_conn()
+             |> get(~p"/files/raw?#{[path: path, token: token]}")
+             |> response(200) == "KEY=1"
+
+      # …and stops the instant read access is revoked.
+      Dala.Settings.Mcp.set_terminal_access(false, false)
+      conn = build_conn() |> get(~p"/files/raw?#{[path: path, token: token]}")
+      assert response(conn, 401) =~ "token"
+    end
+
+    test "a token for a DIFFERENT path is rejected with 401", %{dir: dir} do
+      allowed = Path.join(dir, "allowed.txt")
+      other = Path.join(dir, "other.txt")
+      File.write!(allowed, "ok")
+      File.write!(other, "SECRET")
+      token = DalaWeb.FileDownloadToken.sign(allowed)
+
+      # The token names `allowed` but the request asks for `other`.
+      conn = build_conn() |> get(~p"/files/raw?#{[path: other, token: token]}")
+      assert response(conn, 401) =~ "token"
+    end
+
+    test "a tampered/garbage token is rejected with 401", %{dir: dir} do
+      path = Path.join(dir, "x.txt")
+      File.write!(path, "x")
+      conn = build_conn() |> get(~p"/files/raw?#{[path: path, token: "not-a-real-token"]}")
+      assert response(conn, 401) =~ "token"
+    end
+  end
+
   defp upload_conn_to(conn, route, dir, filename, content) do
     tmp = Path.join(dir, "attachment-source-#{System.unique_integer([:positive])}")
     File.write!(tmp, content)

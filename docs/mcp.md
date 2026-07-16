@@ -203,6 +203,14 @@ npx -y mcp-remote http://127.0.0.1:4400/mcp --header "Authorization: Bearer <你
 | `send_terminal_message` | 按 UUID、短引用或唯一名称发送正文、附件路径、Enter 或控制键；同会话请求串行，返回基线 `seq`。 |
 | `send_terminal_keys` | 向 TUI 顺序发送最多 100 个安全按键；支持方向键、Home/End、PageUp/PageDown、Space、Tab/Shift-Tab、Enter/Esc、有限控制键，以及 `CHAR:y`、`CHAR:a` 形式的单字符快捷键。 |
 | `terminal_upload_attachment` | 上传单个文件/图片到私有的 24 小时受管目录，返回绝对路径；解码后默认上限 64 MB。 |
+| `get_download_url` | 为一个服务器文件返回带 token 的短期 HTTP 下载地址（无需登录即可下载，token 只解锁该路径、1 小时过期），并附带文件大小与 content-type。需要**读取**权限。 |
+
+`get_download_url` 属于**读取**权限（与终端读取同一开关）：给绝对路径，返回
+`/files/raw?path=…&download=1&token=…` 的完整 URL。该 token 由 `Phoenix.Token`
+用端点密钥对**绝对路径**签名，改路径/篡改/过期都验不过，且只授予该文件的**读取**、
+永不写入。下载端点在放行 token 前会**复查实时的读取开关**——在设置里关掉读取权限会
+**立即使所有已签发的下载链接失效**（不必等 1 小时过期）。`DALA_AUTH_ENABLED` 关闭时
+下载本就无需鉴权，token 冗余但无害。
 
 附件二进制不会进入 PTY：先由 `terminal_upload_attachment` 落盘，随后
 `send_terminal_message` 只把路径按 Claude/Codex/OpenCode/Gemini 对应的粘贴策略发送。

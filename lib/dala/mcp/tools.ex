@@ -57,10 +57,15 @@ defmodule Dala.Mcp.Tools do
   `get` miss), `{:error, message}` for a validation/execution failure, or
   `{:error, :unknown_tool}` when no tool has that name.
   """
-  def call(name, arguments) when is_binary(name) do
+  def call(name, arguments, ctx \\ %{})
+
+  def call(name, arguments, ctx) when is_binary(name) do
     cond do
       name in Dala.Mcp.TerminalTools.tool_names() ->
         Dala.Mcp.TerminalTools.call(name, arguments)
+
+      name in Dala.Mcp.FileTools.tool_names() ->
+        Dala.Mcp.FileTools.call(name, arguments, ctx)
 
       name == Registry.reference_tool_name() ->
         {:ok, reference()}
@@ -79,7 +84,7 @@ defmodule Dala.Mcp.Tools do
     end
   end
 
-  def call(_name, _arguments), do: {:error, :unknown_tool}
+  def call(_name, _arguments, _ctx), do: {:error, :unknown_tool}
 
   defp index, do: Map.new(Registry.specs(), &{&1.name, &1})
 

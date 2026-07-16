@@ -213,6 +213,8 @@ defmodule DalaWeb.McpControllerTest do
       refute "list_terminal_sessions" in names
       refute "send_terminal_message" in names
       refute "send_terminal_keys" in names
+      # File download is a read-class capability, gated by the same flag.
+      refute "get_download_url" in names
 
       Dala.Settings.Mcp.set_terminal_access(true, false)
       readable = json_response(mcp_post(rpc("tools/list", 62)), 200)
@@ -220,6 +222,7 @@ defmodule DalaWeb.McpControllerTest do
       assert "list_terminal_sessions" in names
       assert "read_terminal" in names
       assert "wait_terminal" in names
+      assert "get_download_url" in names
       refute "send_terminal_message" in names
       refute "send_terminal_keys" in names
 
@@ -229,6 +232,32 @@ defmodule DalaWeb.McpControllerTest do
       assert "send_terminal_message" in names
       assert "send_terminal_keys" in names
       assert "terminal_upload_attachment" in names
+    end
+  end
+
+  describe "get_download_url" do
+    test "returns an absolute link on the request's host with a working token" do
+      Dala.Settings.Mcp.set_terminal_access(true, false)
+      dir = Path.join(System.tmp_dir!(), "dala-mcp-dl-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      path = Path.join(dir, "out.csv")
+      File.write!(path, "a,b")
+
+      result = tool_content(call_tool("get_download_url", %{"path" => path}))
+
+      # base_url is derived from THIS request's host (ConnTest default).
+      assert String.starts_with?(result["url"], "http://www.example.com/files/raw?")
+      params = URI.parse(result["url"]).query |> URI.decode_query()
+      assert params["path"] == path
+      assert DalaWeb.FileDownloadToken.valid_for?(params["token"], path)
+      assert result["bytes"] == 3
+    end
+
+    test "is refused when read access is off" do
+      Dala.Settings.Mcp.set_terminal_access(false, false)
+      response = call_tool("get_download_url", %{"path" => "/etc/hosts"})
+      assert response["result"]["isError"] == true
     end
   end
 

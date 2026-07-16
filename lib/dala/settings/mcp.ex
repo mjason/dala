@@ -155,7 +155,7 @@ defmodule Dala.Settings.Mcp do
     end
 
     attribute :terminal_read, :boolean do
-      description "Whether MCP clients may list sessions and read/wait for terminal output."
+      description "Read access: list sessions, read/wait for terminal output, and mint file download links (get_download_url)."
       public? true
       allow_nil? false
       default false

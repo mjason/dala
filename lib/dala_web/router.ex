@@ -32,13 +32,30 @@ defmodule DalaWeb.Router do
     plug DalaWeb.Plugs.RequireMcp
   end
 
+  # Raw file bytes: served to a signed-in session OR a path-scoped
+  # DalaWeb.FileDownloadToken (the MCP get_download_url link), so an agent can
+  # download one file over plain HTTP without the app cookie. No :accepts
+  # (arbitrary content types) and no CSRF (GET); the controller sets the
+  # content-type itself.
+  pipeline :file_raw do
+    plug :fetch_session
+    plug :load_from_session
+    plug :put_secure_browser_headers
+    plug DalaWeb.Plugs.RequireFileAccess
+  end
+
   scope "/", DalaWeb do
     pipe_through [:browser, :spa]
 
     get "/", PageController, :index
-    get "/files/raw", FileController, :raw
     get "/lsp/ws", LspController, :ws
     get "/files/watch", FileController, :watch
+  end
+
+  scope "/", DalaWeb do
+    pipe_through :file_raw
+
+    get "/files/raw", FileController, :raw
   end
 
   scope "/", DalaWeb do
