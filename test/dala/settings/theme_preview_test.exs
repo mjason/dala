@@ -5,17 +5,17 @@ defmodule Dala.Settings.ThemePreviewTest do
 
   @snapshots %{
     "10000000-0000-0000-0000-000000000001" =>
-      "9d15290f00c858b0cd02720de3997ef6fe77d1edb1166f30f56ad6ecda87409c",
+      "0c9ba939822321b1f497d482790336c46bcb59b90eeb19a70eba1d7893a02ff7",
     "10000000-0000-0000-0000-000000000002" =>
-      "7a976655f9f74c06015441937985abc4b1b09ff8c9c70108dbdfc47f465ac7a7",
+      "e8624da4b4b8d28691e994a321bd02a429e2f5f06fe0274d392204828ea846f1",
     "10000000-0000-0000-0000-000000000003" =>
-      "b672519539dc912af7a1d585dd03c82d18fd21a69a402d5936b8563d9b542f8d",
+      "79cd7315f611384567c20e3b8526f2fe110ce2f4fe5f50d8db17e3d906b0562c",
     "10000000-0000-0000-0000-000000000004" =>
-      "e74771bd43f3f12f0148a1b9c10fa5b8d61d8d294a2f058df590c4e7b0fa8088",
+      "e6f544a816939bca53b7ed80f99c8e192d9dfd31016984fa02fd4d839d96511d",
     "10000000-0000-0000-0000-000000000005" =>
-      "950855388e97383415246fa674e4c24f883484f9b61bff022d70ea18a1935161",
+      "992227c166dd6ca1a20436ea322c4066402404d44824ab0b5b22733141e1828c",
     "10000000-0000-0000-0000-000000000006" =>
-      "dcdac99d9f8098f901bc4b4d132958bd06854204516a905c6a3303c894ce5e00"
+      "9af18b0e1d4c3ecbb80b88876c8d7e5873382ec218241f04bb0475d873ae5e72"
   }
 
   test "sparse themes resolve to all 45 tokens without changing the base" do
@@ -51,6 +51,9 @@ defmodule Dala.Settings.ThemePreviewTest do
     for preset <- Presets.all() do
       report = Audit.run(preset.tokens)
       assert report.passed, "#{preset.name}: #{inspect(report.errors)}"
+
+      refute preset.tokens["gitDeleted"] == preset.tokens["danger"],
+             "#{preset.name}: deleted files must not look like destructive actions"
 
       svg = Svg.render(preset.tokens)
       assert {:ok, png} = Dala.ThemeRenderer.render_png(svg, Svg.width(), Svg.height())

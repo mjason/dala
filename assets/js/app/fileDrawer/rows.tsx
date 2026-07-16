@@ -95,7 +95,7 @@ export function placeTooltip(anchor: Rect, tooltip: Size, viewport: Viewport): T
   };
 }
 
-function PathTooltip({
+export function PathTooltip({
   anchor,
   id,
   name,
@@ -173,6 +173,35 @@ function PathTooltip({
   );
 }
 
+export function usePathTooltip() {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const tooltipId = useId();
+  const timerRef = useRef<number | null>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+
+  const hideTooltip = useCallback(() => {
+    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    setTooltipOpen(false);
+  }, []);
+
+  const showTooltipSoon = useCallback(() => {
+    if (tooltipOpen || timerRef.current != null) return;
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setTooltipOpen(true);
+    }, TOOLTIP_DELAY_MS);
+  }, [tooltipOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  return { anchorRef, tooltipId, tooltipOpen, hideTooltip, showTooltipSoon };
+}
+
 export function Row({
   path,
   dropDir,
@@ -204,30 +233,13 @@ export function Row({
   onClick: () => void;
   actions?: React.ReactNode;
 }) {
-  const rowRef = useRef<HTMLDivElement>(null);
-  const tooltipId = useId();
-  const timerRef = useRef<number | null>(null);
-  const [tooltipOpen, setTooltipOpen] = useState(false);
-
-  const hideTooltip = useCallback(() => {
-    if (timerRef.current != null) window.clearTimeout(timerRef.current);
-    timerRef.current = null;
-    setTooltipOpen(false);
-  }, []);
-
-  const showTooltipSoon = useCallback(() => {
-    if (tooltipOpen || timerRef.current != null) return;
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      setTooltipOpen(true);
-    }, TOOLTIP_DELAY_MS);
-  }, [tooltipOpen]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current != null) window.clearTimeout(timerRef.current);
-    };
-  }, []);
+  const {
+    anchorRef: rowRef,
+    tooltipId,
+    tooltipOpen,
+    hideTooltip,
+    showTooltipSoon,
+  } = usePathTooltip();
 
   return (
     <div

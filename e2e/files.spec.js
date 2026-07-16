@@ -325,7 +325,8 @@ test.describe("Given 打开文件抽屉的用户", () => {
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
     execFileSync("git", ["config", "user.email", "e2e@dala.dev"], { cwd });
     execFileSync("git", ["config", "user.name", "Dala E2E"], { cwd });
-    execFileSync("git", ["add", "tracked.txt"], { cwd });
+    fs.writeFileSync(path.join(cwd, ".gitignore"), "watch-ready.tmp\n");
+    execFileSync("git", ["add", "tracked.txt", ".gitignore"], { cwd });
     execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd });
 
     await h.gotoApp(page);
@@ -343,6 +344,22 @@ test.describe("Given 打开文件抽屉的用户", () => {
       await expect(page.locator("[data-file-path-tooltip] [data-tooltip-path]")).toHaveText(
         tracked,
       );
+
+      // The drawer and watcher channel connect concurrently. Prove the
+      // watcher is live with a Git-ignored marker before asserting Git
+      // decorations from an external write.
+      const marker = path.join(cwd, "watch-ready.tmp");
+      await expect
+        .poll(
+          async () => {
+            fs.writeFileSync(marker, String(Date.now()));
+            return page.locator(`[data-path="${marker}"]`).isVisible();
+          },
+          { timeout: 15_000, intervals: [300] },
+        )
+        .toBe(true);
+      fs.rmSync(marker);
+      await expect(page.locator(`[data-path="${marker}"]`)).toHaveCount(0, { timeout: 2000 });
 
       fs.writeFileSync(tracked, "changed once\n");
       await expect(treeRow.locator('[data-git-status="M"]')).toBeVisible({ timeout: 5000 });

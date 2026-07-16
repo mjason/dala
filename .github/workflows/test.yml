@@ -35,7 +35,10 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+          # v2 invalidates an older partial cache that had BEAM files but no
+          # Rustler NIFs. Native source changes must invalidate both `_build`
+          # and Cargo targets together.
+          key: elixir-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
       - run: mix deps.get
@@ -120,7 +123,7 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          key: elixir-${{ runner.os }}-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
+          key: elixir-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: mix setup
       - run: npm ci

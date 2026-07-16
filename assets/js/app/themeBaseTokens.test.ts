@@ -15,6 +15,12 @@ describe("baseTokenValue", () => {
     expect(baseTokenValue("dark", "ansiRed")).toBe("#e5716e");
     expect(baseTokenValue("light", "ansiRed")).toBe("#cf222e");
   });
+
+  it("keeps deleted-file status visually separate from destructive actions", () => {
+    for (const base of ["light", "dark"] as const) {
+      expect(baseTokenValue(base, "gitDeleted")).not.toBe(baseTokenValue(base, "danger"));
+    }
+  });
 });
 
 describe("baseTokens", () => {

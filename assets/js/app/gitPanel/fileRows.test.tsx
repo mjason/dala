@@ -1,5 +1,5 @@
 import React from "react";
-import { render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { FileRow } from "./fileRows";
 
@@ -34,5 +34,37 @@ describe("GitPanel status theme tokens", () => {
       expect(badges[index]).toHaveTextContent(label);
       expect(badges[index]).toHaveClass(className);
     });
+  });
+
+  it("shows the full file name and absolute path on hover", () => {
+    vi.useFakeTimers();
+    const file = {
+      path: "lib/dala_web/components/very_long_terminal_component.ex",
+      status: " M",
+      staged: false,
+      unstaged: true,
+    };
+    const { container } = render(
+      <FileRow
+        file={file}
+        root="/home/mj/dev/elixir/dala"
+        busy={null}
+        onOpen={vi.fn()}
+        actions={[]}
+      />,
+    );
+
+    fireEvent.mouseEnter(container.firstElementChild!);
+    act(() => vi.advanceTimersByTime(350));
+
+    const tooltip = document.querySelector("[data-file-path-tooltip]")!;
+    expect(tooltip.querySelector("[data-tooltip-name]")).toHaveTextContent(
+      "very_long_terminal_component.ex",
+    );
+    expect(tooltip.querySelector("[data-tooltip-path]")).toHaveAttribute(
+      "aria-label",
+      "/home/mj/dev/elixir/dala/lib/dala_web/components/very_long_terminal_component.ex",
+    );
+    vi.useRealTimers();
   });
 });

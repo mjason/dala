@@ -33,6 +33,7 @@ import { useI18n } from "./i18n";
 import { onReconnect } from "./socket";
 import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
+import { extractAgentAttachments } from "./agentAttachments";
 
 type Toast = { id: number; message: string };
 
@@ -430,10 +431,10 @@ export default function App() {
     // follow it). So attachment paths each go out as their own bracketed
     // paste first, then the remaining message, then the submit.
     const isAgent = ["claude", "opencode", "gemini", "codex", "copilot"].includes(app);
-    const pathPattern = /\S*dala-paste\/paste-[^\s]+/g;
-    const paths = isAgent ? (text.match(pathPattern) ?? []) : [];
+    const { paths, rest } = isAgent
+      ? extractAgentAttachments(text)
+      : { paths: [], rest: text };
     if (paths.length > 0) {
-      const rest = text.replace(pathPattern, "").replace(/[ \t]{2,}/g, " ").trim();
       const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       const image = /\.(png|jpe?g|gif|webp|bmp|svg|tiff?)$/i;
       for (const path of paths) {

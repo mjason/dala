@@ -314,6 +314,7 @@ export default function GitPanel({
                   <FileRow
                     key={`staged:${file.path}`}
                     file={file}
+                    root={root ?? undefined}
                     busy={busy}
                     onOpen={() => void openFileDiff(file, "staged")}
                     actions={[
@@ -353,6 +354,7 @@ export default function GitPanel({
                   <FileRow
                     key={`unstaged:${file.path}`}
                     file={file}
+                    root={root ?? undefined}
                     busy={busy}
                     onOpen={() => void openFileDiff(file, "unstaged")}
                     actions={[

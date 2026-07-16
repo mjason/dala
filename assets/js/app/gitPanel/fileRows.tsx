@@ -1,5 +1,6 @@
 import React from "react";
 import { FileTypeIcon } from "../fileIcons";
+import { PathTooltip, usePathTooltip } from "../fileDrawer/rows";
 import type { GitFile } from "./types";
 
 export function GroupLabel({
@@ -39,14 +40,38 @@ export function FileRow({
   busy,
   onOpen,
   actions,
+  root,
 }: {
   file: GitFile;
   busy: string | null;
   onOpen: () => void;
   actions: RowAction[];
+  root?: string;
 }) {
+  const {
+    anchorRef: rowRef,
+    tooltipId,
+    tooltipOpen,
+    hideTooltip,
+    showTooltipSoon,
+  } = usePathTooltip();
+  const name = file.path.replaceAll("\\", "/").split("/").at(-1) ?? file.path;
+  const fullPath = root
+    ? `${root.replace(/[\\/]$/, "")}/${file.path.replace(/^[/\\]/, "")}`
+    : file.path;
+
   return (
-    <div className="group flex items-center gap-2 px-3 py-[5px] transition-colors hover:bg-bg2/70">
+    <div
+      ref={rowRef}
+      aria-describedby={tooltipOpen ? tooltipId : undefined}
+      onMouseEnter={showTooltipSoon}
+      onMouseLeave={hideTooltip}
+      onFocusCapture={showTooltipSoon}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hideTooltip();
+      }}
+      className="group flex items-center gap-2 px-3 py-[5px] transition-colors hover:bg-bg2/70"
+    >
       <StatusBadge status={file.status} />
       <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
         <FileTypeIcon name={file.path} />
@@ -70,6 +95,15 @@ export function FileRow({
           </button>
         ))}
       </div>
+      {tooltipOpen && typeof document !== "undefined" && (
+        <PathTooltip
+          anchor={rowRef}
+          id={tooltipId}
+          name={name}
+          path={fullPath}
+          onDismiss={hideTooltip}
+        />
+      )}
     </div>
   );
 }
