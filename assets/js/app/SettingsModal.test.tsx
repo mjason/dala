@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 
 // jsdom ships no scroll engine; the modal resets its body scroll on tab change.
@@ -63,6 +63,21 @@ function renderModal() {
 afterEach(cleanup);
 
 describe("SettingsModal tabs", () => {
+  it("shows the short reference and copies the canonical session id", async () => {
+    const clipboard = vi.fn().mockResolvedValue(undefined);
+    (window as typeof window & { __DALA_CLIPBOARD__?: (text: string) => Promise<void> })
+      .__DALA_CLIPBOARD__ = clipboard;
+
+    const { container } = renderModal();
+    const button = container.querySelector("#session-reference-copy") as HTMLElement;
+    expect(button.textContent).toContain("#111111");
+    expect(button.textContent).toContain(session.id);
+
+    fireEvent.click(button);
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith(session.id));
+    delete (window as typeof window & { __DALA_CLIPBOARD__?: unknown }).__DALA_CLIPBOARD__;
+  });
+
   it("always shows the MCP tab (enablement is a runtime toggle inside it)", () => {
     const { container } = renderModal();
     expect(container.querySelector('[data-settings-tab="mcp"]')).not.toBeNull();

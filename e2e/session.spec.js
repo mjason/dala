@@ -56,6 +56,22 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await expect(h.sessionEntry(page, id)).toBeVisible();
       // 唯一会话自动成为 active —— 终端视图挂载即就绪。
       await expect(page.locator(".xterm").first()).toBeVisible();
+
+      const ref = `#${id.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+      await expect(page.locator("#active-session-reference")).toHaveText(ref);
+      await page.evaluate(() => {
+        window.__DALA_CLIPBOARD__ = async (text) => {
+          window.__dalaCopiedSessionId = text;
+        };
+      });
+      await page.locator("#active-session-reference").click();
+      await expect.poll(() => page.evaluate(() => window.__dalaCopiedSessionId)).toBe(id);
+
+      await h.openSettings(page);
+      await expect(page.locator("#session-reference-copy")).toContainText(ref);
+      await expect(page.locator("#session-reference-copy")).toContainText(id);
+      await page.locator("#session-reference-copy").click();
+      await expect.poll(() => page.evaluate(() => window.__dalaCopiedSessionId)).toBe(id);
     } finally {
       if (id) await h.deleteSession(page, id).catch(() => {});
     }

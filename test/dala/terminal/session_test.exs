@@ -12,6 +12,7 @@ defmodule Dala.Terminal.SessionTest do
       Server.shutdown_and_wait(session.id)
       File.rm(Holder.exit_path(to_string(session.id)))
       File.rm(Holder.final_path(to_string(session.id)))
+      File.rm(Holder.text_final_path(to_string(session.id)))
     end)
 
     session
@@ -47,10 +48,22 @@ defmodule Dala.Terminal.SessionTest do
     session = create_session!()
 
     assert session.status == :running
-    assert session.name == "bash"
+    assert session.name == "Terminal"
     assert session.cwd != nil
     assert session.scrollback_limit == 10_000
     assert Server.alive?(session.id)
+  end
+
+  test "default names come from cwd and receive a readable duplicate suffix" do
+    dir = Path.join(System.tmp_dir!(), "dala-name-project")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    first = create_session!(%{cwd: dir})
+    second = create_session!(%{cwd: dir})
+
+    assert first.name == "dala-name-project"
+    assert second.name == "dala-name-project 2"
   end
 
   test "create with cwd spawns the shell in that directory (quick shell)" do
@@ -147,6 +160,97 @@ defmodule Dala.Terminal.SessionTest do
     eventually(fn -> repaint_text(session.id) =~ "dala-42" end)
   end
 
+  test "plain-text snapshot joins wrapped rows and excludes ANSI" do
+    session = create_session!()
+    marker = String.duplicate("snapshot-text-", 12)
+    Server.input(session.id, "printf '\\033[31m#{marker}\\033[0m\\n'\r")
+
+    eventually(fn ->
+      case Server.snapshot(session.id, lines: 20) do
+        {:ok, snapshot} ->
+          output = Enum.join(snapshot["lines"], "\n")
+          String.contains?(output, marker) and not String.contains?(output, "\e[")
+
+        _ ->
+          false
+      end
+    end)
+
+    assert {:ok, snapshot} = Server.snapshot(session.id, lines: 20)
+    assert snapshot["mode"] == "normal"
+    assert is_integer(snapshot["seq"])
+    assert snapshot["cachedLineCount"] >= length(snapshot["lines"])
+  end
+
+  test "wait wakes on output after the atomic baseline" do
+    session = create_session!()
+    assert {:ok, baseline} = Server.current_seq(session.id)
+
+    waiter = Task.async(fn -> Server.wait(session.id, baseline, timeout: 3_000) end)
+    Process.sleep(50)
+    Server.input(session.id, "echo wait-output-marker\r")
+
+    assert {:ok, %{reason: "output", seq: seq}} = Task.await(waiter, 4_000)
+    assert seq > baseline
+  end
+
+  test "wait can match plain text without polling the holder per output chunk" do
+    session = create_session!()
+    assert {:ok, baseline} = Server.current_seq(session.id)
+
+    waiter =
+      Task.async(fn ->
+        Server.wait(session.id, baseline, timeout: 4_000, match: "needle-4242")
+      end)
+
+    Server.input(session.id, "printf '\\033[32mneedle-4242\\033[0m\\n'\r")
+
+    assert {:ok, %{reason: "match", match: "needle-4242", seq: seq}} =
+             Task.await(waiter, 5_000)
+
+    assert seq > baseline
+  end
+
+  test "wait wakes on a selected structured agent event" do
+    session = create_session!()
+    assert {:ok, baseline} = Server.current_seq(session.id)
+
+    waiter =
+      Task.async(fn ->
+        Server.wait(session.id, baseline, timeout: 4_000, events: ["permission"])
+      end)
+
+    json = ~s({"agent":"claude","event":"permission_request","summary":"approve edit"})
+    Server.input(session.id, "printf '\\e]777;notify;warp://cli-agent;#{json}\\a'\r")
+
+    assert {:ok,
+            %{
+              reason: "agent",
+              event: "permission_request",
+              agent: "claude",
+              summary: "approve edit",
+              seq: seq
+            }} = Task.await(waiter, 5_000)
+
+    assert seq > baseline
+  end
+
+  test "queued rich-input jobs never interleave between callers" do
+    session = create_session!()
+    path = Path.join(System.tmp_dir!(), "dala-input-queue-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm(path) end)
+
+    first = [
+      {"printf A > #{path};", 150},
+      {"printf B >> #{path}\r", 0}
+    ]
+
+    assert {:ok, _baseline} = Server.send_sequence(session.id, first)
+    assert {:ok, _baseline} = Server.send_sequence(session.id, [{"printf C >> #{path}\r", 0}])
+
+    eventually(fn -> File.read(path) == {:ok, "ABC"} end)
+  end
+
   test "repaint restores modes a TUI enabled" do
     session = create_session!()
 
@@ -197,6 +301,8 @@ defmodule Dala.Terminal.SessionTest do
 
     # And a disconnected client opening the session later sees the last screen.
     assert Holder.read_final(to_string(session.id)) =~ "last-words"
+    assert {:ok, final_snapshot} = Holder.read_final_text(to_string(session.id))
+    assert Enum.join(final_snapshot["lines"], "\n") =~ "last-words"
   end
 
   defp assert_received_mode_reset do

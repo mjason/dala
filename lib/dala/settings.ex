@@ -34,6 +34,7 @@ defmodule Dala.Settings do
     resource Dala.Settings.Mcp do
       rpc_action :mcp_settings, :current
       rpc_action :set_mcp_enabled, :set_enabled
+      rpc_action :set_mcp_terminal_access, :set_terminal_access
       rpc_action :regenerate_mcp_token, :regenerate_token
     end
   end

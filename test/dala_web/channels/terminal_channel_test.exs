@@ -10,6 +10,7 @@ defmodule DalaWeb.TerminalChannelTest do
       Server.shutdown_and_wait(session.id)
       File.rm(Holder.exit_path(to_string(session.id)))
       File.rm(Holder.final_path(to_string(session.id)))
+      File.rm(Holder.text_final_path(to_string(session.id)))
     end)
 
     session

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import {
   closeSession,
   deleteSession,
@@ -11,7 +12,7 @@ import { call, type RpcOutcome } from "./rpc";
 import { FieldLabel, TextInput } from "./ui";
 import type { Session } from "./Sidebar";
 import { useI18n } from "./i18n";
-import { historyLines as normalizeHistoryLines } from "./util";
+import { historyLines as normalizeHistoryLines, sessionRef, writeClipboard } from "./util";
 import { isTopWindow, Kbd, modCombo, popWindow, pushWindow } from "./shortcuts";
 import AppearanceSection from "./settings/AppearanceSection";
 import NotificationsSection from "./settings/NotificationsSection";
@@ -40,6 +41,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   );
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
 
   // Each tab starts at the top: the scroll position of the (long) Shortcuts
   // tab must not carry over into the next one.
@@ -254,6 +256,40 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                   className="text-[15px]"
                 />
               </label>
+
+              <div className="space-y-1.5">
+                <FieldLabel>{t("sessionReference")}</FieldLabel>
+                <button
+                  id="session-reference-copy"
+                  type="button"
+                  title={t("copySessionId")}
+                  onClick={() =>
+                    void writeClipboard(session.id).then((copied) => {
+                      if (!copied) return;
+                      setIdCopied(true);
+                      window.setTimeout(() => setIdCopied(false), 1500);
+                    })
+                  }
+                  className={`flex w-full items-center gap-3 rounded-md border bg-bg0 px-2.5 py-2 text-left transition-colors ${
+                    idCopied
+                      ? "border-mint/60 text-mint"
+                      : "border-line text-fg hover:border-mint/60"
+                  }`}
+                >
+                  <span className="shrink-0 font-mono text-[13px] font-medium">
+                    {sessionRef(session.id)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-muted">
+                    {session.id}
+                  </span>
+                  {idCopied ? (
+                    <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5 shrink-0 text-fg-muted" aria-hidden />
+                  )}
+                  <span className="sr-only">{t("copySessionId")}</span>
+                </button>
+              </div>
 
               <div className="space-y-1.5">
                 <FieldLabel>{t("scrollbackCache")}</FieldLabel>

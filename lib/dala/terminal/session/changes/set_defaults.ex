@@ -10,7 +10,7 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
         "/bin/bash"
 
     cwd = argument_or_nil(changeset, :cwd) || System.user_home() || "/"
-    name = argument_or_nil(changeset, :name) || Path.basename(shell)
+    name = argument_or_nil(changeset, :name) || default_name(cwd)
 
     changeset
     |> Ash.Changeset.force_change_attribute(:shell, shell)
@@ -23,5 +23,30 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
       value when value in [nil, ""] -> nil
       value -> String.trim(value)
     end
+  end
+
+  defp default_name(cwd) do
+    base =
+      if Path.expand(cwd) == Path.expand(System.user_home() || "") do
+        "Terminal"
+      else
+        case Path.basename(Path.expand(cwd)) do
+          value when value in ["", "/", "."] -> "Terminal"
+          value -> value
+        end
+      end
+
+    base = String.slice(base, 0, 180)
+    names = Dala.Terminal.list_sessions!() |> Enum.map(& &1.name) |> MapSet.new()
+
+    if MapSet.member?(names, base) do
+      Stream.iterate(2, &(&1 + 1))
+      |> Enum.find(fn suffix -> not MapSet.member?(names, "#{base} #{suffix}") end)
+      |> then(&"#{base} #{&1}")
+    else
+      base
+    end
+  rescue
+    _error -> "Terminal"
   end
 end

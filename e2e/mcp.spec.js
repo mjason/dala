@@ -30,7 +30,9 @@ test.describe("Given 一个支持 MCP 的 dala（设置里可开关 MCP、显示
     await h.openSettings(page);
     await h.openSettingsTab(page, "mcp");
 
-    const toggle = page.getByRole("switch"); // the only switch on the MCP tab
+    const toggle = page.locator("#mcp-enabled-toggle").locator("..");
+    const readToggle = page.locator("#mcp-terminal-read-toggle").locator("..");
+    const controlToggle = page.locator("#mcp-terminal-control-toggle").locator("..");
     const url = page.locator("#mcp-endpoint-url");
     const tokenEl = page.locator("#mcp-token");
     const claudeBlock = page.locator('[data-mcp-client="claude-code"]');
@@ -44,6 +46,16 @@ test.describe("Given 一个支持 MCP 的 dala（设置里可开关 MCP、显示
     await expect(url).toBeVisible();
     await expect(url).toContainText("/mcp");
 
+    // Terminal access is separately opt-in. Enabling control atomically turns
+    // read on too; disabling read later turns both back off.
+    if ((await readToggle.getAttribute("aria-checked")) === "true") {
+      await readToggle.click();
+      await expect(readToggle).toHaveAttribute("aria-checked", "false");
+    }
+    await controlToggle.click();
+    await expect(controlToggle).toHaveAttribute("aria-checked", "true");
+    await expect(readToggle).toHaveAttribute("aria-checked", "true");
+
     // The real token shows, and it is baked into the copy-ready snippet.
     await expect(tokenEl).toBeVisible();
     const token1 = (await tokenEl.innerText()).trim();
@@ -56,6 +68,10 @@ test.describe("Given 一个支持 MCP 的 dala（设置里可开关 MCP、显示
     const token2 = (await tokenEl.innerText()).trim();
     expect(token2).not.toBe(token1);
     await expect(claudeBlock).toContainText(`Bearer ${token2}`);
+
+    await readToggle.click();
+    await expect(readToggle).toHaveAttribute("aria-checked", "false");
+    await expect(controlToggle).toHaveAttribute("aria-checked", "false");
 
     // Turning it off hides the endpoint/token/snippets (nothing to connect to).
     await toggle.click();

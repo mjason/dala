@@ -13,10 +13,12 @@ defmodule Dala.Terminal.Holder do
   @type_repaint 0x04
   @type_cwd 0x05
   @type_agent 0x06
+  @type_text_snapshot 0x07
   @type_input 0x11
   @type_resize 0x12
   @type_kill 0x13
   @type_repaint_req 0x14
+  @type_text_snapshot_req 0x15
 
   @connect_attempts 40
   @connect_delay_ms 25
@@ -27,6 +29,7 @@ defmodule Dala.Terminal.Holder do
   def type_repaint, do: @type_repaint
   def type_cwd, do: @type_cwd
   def type_agent, do: @type_agent
+  def type_text_snapshot, do: @type_text_snapshot
 
   def dir do
     base = System.get_env("XDG_RUNTIME_DIR") || System.tmp_dir!()
@@ -36,6 +39,7 @@ defmodule Dala.Terminal.Holder do
   def socket_path(id), do: Path.join(dir(), id <> ".sock")
   def exit_path(id), do: socket_path(id) <> ".exit"
   def final_path(id), do: socket_path(id) <> ".final"
+  def text_final_path(id), do: socket_path(id) <> ".text"
 
   @doc "Whether a holder (a live shell) exists for this session."
   def exists?(id), do: File.exists?(socket_path(id))
@@ -73,6 +77,14 @@ defmodule Dala.Terminal.Holder do
     end
   end
 
+  @doc "The holder's final machine-readable plain-text snapshot JSON."
+  def read_final_text(id) do
+    case File.read(text_final_path(id)) do
+      {:ok, contents} -> Jason.decode(contents)
+      {:error, _reason} -> {:error, :enoent}
+    end
+  end
+
   @doc """
   Connects to the session's holder, spawning one (a fresh shell) if none is
   alive. Returns `{:ok, socket, reattached?}`.
@@ -88,6 +100,7 @@ defmodule Dala.Terminal.Holder do
         _ = File.rm(socket_path(id))
         _ = File.rm(exit_path(id))
         _ = File.rm(final_path(id))
+        _ = File.rm(text_final_path(id))
 
         with :ok <- spawn_holder(id, opts),
              {:ok, socket} <- connect_with_retry(id, @connect_attempts) do
@@ -124,6 +137,10 @@ defmodule Dala.Terminal.Holder do
   """
   def send_repaint_req(socket, cols),
     do: :gen_tcp.send(socket, <<@type_repaint_req, cols::16>>)
+
+  @doc "Ask the holder for a bounded plain-text JSON snapshot."
+  def send_text_snapshot_req(socket, lines, max_bytes),
+    do: :gen_tcp.send(socket, <<@type_text_snapshot_req, lines::32, max_bytes::32>>)
 
   defp spawn_holder(id, opts) do
     binary = binary_path()

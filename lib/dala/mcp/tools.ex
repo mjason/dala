@@ -26,6 +26,9 @@ defmodule Dala.Mcp.Tools do
   """
   def call(name, arguments) when is_binary(name) do
     cond do
+      name in Dala.Mcp.TerminalTools.tool_names() ->
+        Dala.Mcp.TerminalTools.call(name, arguments)
+
       name == Registry.reference_tool_name() ->
         {:ok, reference()}
 

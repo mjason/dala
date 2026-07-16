@@ -33,6 +33,12 @@ defmodule Dala.Terminal.Server do
   # Output micro-batching window: chunks landing within it after the first
   # are coalesced into one broadcast (see buffer_output/2).
   @out_batch_ms 5
+  # MCP wraps this text in JSON and then in an MCP text content string, so a
+  # 64 KiB UTF-8 payload keeps the final wire response bounded after escaping.
+  @snapshot_max_bytes 64 * 1024
+  @wait_timeout_max_ms 25_000
+  @waiters_per_session 8
+  @match_buffer_bytes 128 * 1024
 
   # Host-terminal identity leaked from the parent process would make shell
   # integrations and TUIs (opencode, …) negotiate protocols the web terminal
@@ -71,6 +77,20 @@ defmodule Dala.Terminal.Server do
 
   @doc "Write keyboard input (raw bytes) to the PTY."
   def input(id, data), do: cast_if_alive(id, {:input, data})
+
+  @doc """
+  Enqueue one complete rich-input delivery. Frames from separate callers are
+  never interleaved; the returned sequence is captured immediately before the
+  first frame reaches the holder.
+  """
+  def send_sequence(id, frames) when is_list(frames) do
+    case whereis(id) do
+      nil -> {:error, "session is not running"}
+      pid -> GenServer.call(pid, {:send_sequence, frames}, 30_000)
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, "terminal input queue timed out"}
+  end
 
   @doc """
   Reports a connected client's viewport size.
@@ -171,6 +191,65 @@ defmodule Dala.Terminal.Server do
   def request_repaint(id, client) when is_pid(client),
     do: cast_if_alive(id, {:request_repaint, client})
 
+  @doc "A bounded machine-readable plain-text snapshot of the terminal."
+  def snapshot(id, opts \\ []) do
+    lines = Keyword.get(opts, :lines, 200)
+    lines = if lines == 0, do: 0, else: lines |> max(1) |> min(50_000)
+
+    max_bytes =
+      Keyword.get(opts, :max_bytes, @snapshot_max_bytes)
+      |> max(1)
+      |> min(@snapshot_max_bytes)
+
+    case whereis(id) do
+      nil ->
+        with {:ok, snapshot} <- Holder.read_final_text(to_string(id)) do
+          {:ok, Map.put(snapshot, "seq", 0)}
+        else
+          _ -> {:error, "plain-text snapshot is unavailable"}
+        end
+
+      pid ->
+        GenServer.call(pid, {:text_snapshot, lines, max_bytes}, 6_000)
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, "terminal snapshot timed out"}
+  end
+
+  @doc "The current terminal event sequence, or an error if it is not running."
+  def current_seq(id) do
+    case whereis(id) do
+      nil -> {:error, "session is not running"}
+      pid -> GenServer.call(pid, :current_seq)
+    end
+  end
+
+  @doc "Wait atomically for terminal output, an agent event, exit, or timeout."
+  def wait(id, after_seq, opts \\ []) when is_integer(after_seq) and after_seq >= 0 do
+    timeout =
+      Keyword.get(opts, :timeout, @wait_timeout_max_ms)
+      |> max(1)
+      |> min(@wait_timeout_max_ms)
+
+    events =
+      Keyword.get(opts, :events, ~w(output idle question permission stop exit))
+      |> MapSet.new()
+
+    case whereis(id) do
+      nil ->
+        {:ok, %{reason: "exit", seq: after_seq}}
+
+      pid ->
+        GenServer.call(
+          pid,
+          {:wait, after_seq, timeout, events, Keyword.get(opts, :match)},
+          timeout + 2_000
+        )
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, "terminal wait timed out"}
+  end
+
   @doc "Kill the shell. The session is marked exited once the holder reports it."
   def stop(id), do: cast_if_alive(id, :shutdown)
 
@@ -254,6 +333,8 @@ defmodule Dala.Terminal.Server do
 
     case Holder.attach_or_spawn(id, opts) do
       {:ok, socket, reattached?} ->
+        initial_seq = System.system_time(:millisecond)
+
         state = %{
           id: id,
           session: session,
@@ -263,10 +344,25 @@ defmodule Dala.Terminal.Server do
           cwd: session.cwd,
           # Monotonic across restarts so a rejoining client's dedup window
           # never sees the counter move backwards.
-          seq: System.system_time(:millisecond),
+          seq: initial_seq,
+          last_output_seq: initial_seq,
           # Channels waiting for a holder repaint, in request order (the
           # holder answers over the same FIFO socket).
           pending_repaints: :queue.new(),
+          # Machine snapshots use the holder's FIFO response queue.
+          pending_text_snapshots: :queue.new(),
+          holder_proto: nil,
+          # Bounded long polls used by MCP. Waiters hold GenServer.from values
+          # and are released by output, agent events, exit, timeout or caller
+          # death without blocking this process.
+          waiters: %{},
+          recent_agent_events: [],
+          # Bounded raw chunks cover the read -> wait registration race for
+          # substring matching without rebuilding the emulator on each chunk.
+          recent_output: [],
+          match_filter_state: :text,
+          input_jobs: :queue.new(),
+          input_active: nil,
           # Monitored client channel pids -> their public client_ref.
           clients: %{},
           # The LIVE size owner as {pid, client_ref}, or nil. Only the
@@ -314,6 +410,49 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_call(:size_info, _from, state) do
     {:reply, ownership_snapshot(state), state}
+  end
+
+  def handle_call(:current_seq, _from, state), do: {:reply, {:ok, state.seq}, state}
+
+  def handle_call({:text_snapshot, _lines, _max_bytes}, _from, %{holder_proto: proto} = state)
+      when is_integer(proto) and proto < 3 do
+    {:reply, {:error, "restart this session to enable plain-text terminal snapshots"}, state}
+  end
+
+  def handle_call({:text_snapshot, lines, max_bytes}, from, state) do
+    case Holder.send_text_snapshot_req(state.socket, lines, max_bytes) do
+      :ok ->
+        pending = :queue.in({:caller, from}, state.pending_text_snapshots)
+        {:noreply, %{state | pending_text_snapshots: pending}}
+
+      {:error, _reason} ->
+        {:reply, {:error, "terminal holder is unavailable"}, state}
+    end
+  end
+
+  def handle_call({:wait, after_seq, timeout, events, match}, from, state) do
+    cond do
+      immediate_agent = matching_agent_event(state.recent_agent_events, after_seq, events) ->
+        {:reply, {:ok, waiter_agent_result(immediate_agent)}, state}
+
+      state.last_output_seq > after_seq and MapSet.member?(events, "output") and is_nil(match) ->
+        {:reply, {:ok, %{reason: "output", seq: state.seq}}, state}
+
+      is_binary(match) and MapSet.member?(events, "output") and
+          recent_output_matches?(state, after_seq, match) ->
+        {:reply, {:ok, %{reason: "match", seq: state.seq, match: match}}, state}
+
+      map_size(state.waiters) >= @waiters_per_session ->
+        {:reply, {:error, "too many terminal waiters for this session"}, state}
+
+      true ->
+        register_waiter(state, from, after_seq, timeout, events, match)
+    end
+  end
+
+  def handle_call({:send_sequence, frames}, from, state) do
+    jobs = :queue.in({from, frames}, state.input_jobs)
+    {:noreply, start_next_input_job(%{state | input_jobs: jobs})}
   end
 
   @impl true
@@ -391,6 +530,7 @@ defmodule Dala.Terminal.Server do
     # BEAM shutdowns and code reloads is the point of the holder split.
     # Explicit kills go through handle_cast(:shutdown) instead.
     if state.socket, do: :gen_tcp.close(state.socket)
+    Enum.each(state.waiters, fn _entry -> Dala.Terminal.WaiterLimiter.release(self()) end)
     :ok
   rescue
     _error -> :ok
@@ -486,6 +626,17 @@ defmodule Dala.Terminal.Server do
     end
   end
 
+  def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
+    case Enum.find(state.waiters, fn {_ref, waiter} -> waiter.monitor == monitor end) do
+      nil ->
+        {:noreply, state}
+
+      {ref, waiter} ->
+        release_waiter(waiter, demonitor?: false)
+        {:noreply, %{state | waiters: Map.delete(state.waiters, ref)}}
+    end
+  end
+
   def handle_info(:force_stop, state) do
     # The holder did not report an exit within the timeout after kill.
     case Dala.Terminal.mark_exited(state.session, %{exit_code: nil}) do
@@ -499,6 +650,24 @@ defmodule Dala.Terminal.Server do
   def handle_info(:flush_output, state) do
     {:noreply, flush_buffer(%{state | out_timer: nil})}
   end
+
+  def handle_info({:wait_timeout, ref}, state) do
+    case Map.pop(state.waiters, ref) do
+      {nil, _waiters} ->
+        {:noreply, state}
+
+      {waiter, waiters} ->
+        GenServer.reply(waiter.from, {:ok, %{reason: "timeout", seq: state.seq}})
+        release_waiter(waiter)
+        {:noreply, %{state | waiters: waiters}}
+    end
+  end
+
+  def handle_info({:input_frame, ref}, %{input_active: %{ref: ref} = active} = state) do
+    {:noreply, continue_input_job(%{state | input_active: active})}
+  end
+
+  def handle_info({:input_frame, _stale_ref}, state), do: {:noreply, state}
 
   def handle_info(:poll_cwd, state) do
     {state, cwd} = poll_cwd_once(state)
@@ -563,8 +732,7 @@ defmodule Dala.Terminal.Server do
         end
 
       frame_type == Holder.type_agent() ->
-        broadcast_agent_event(state, payload)
-        {:noreply, state}
+        {:noreply, broadcast_agent_event(state, payload)}
 
       frame_type == Holder.type_repaint() ->
         state = flush_now(state)
@@ -589,17 +757,41 @@ defmodule Dala.Terminal.Server do
             {:noreply, state}
         end
 
+      frame_type == Holder.type_text_snapshot() ->
+        state = flush_now(state)
+
+        case :queue.out(state.pending_text_snapshots) do
+          {{:value, {:caller, from}}, rest} ->
+            reply = decode_text_snapshot(payload, state.seq)
+            GenServer.reply(from, reply)
+            {:noreply, %{state | pending_text_snapshots: rest}}
+
+          {:empty, _queue} ->
+            {:noreply, state}
+        end
+
       frame_type == Holder.type_hello() ->
-        shell_pid =
+        {shell_pid, holder_proto} =
           case Jason.decode(payload) do
-            {:ok, %{"pid" => pid}} when is_integer(pid) and pid > 0 -> pid
-            _other -> nil
+            {:ok, %{"pid" => pid, "proto" => proto}}
+            when is_integer(pid) and pid > 0 and is_integer(proto) ->
+              {pid, proto}
+
+            {:ok, %{"pid" => pid}} when is_integer(pid) and pid > 0 ->
+              {pid, 1}
+
+            _other ->
+              {nil, nil}
           end
 
         # The holder sized the PTY at spawn time; make sure a reattached one
         # matches the size this server last applied.
         {rows, cols} = state.size
-        {:noreply, apply_size(%{state | shell_pid: shell_pid}, rows, cols, force: true)}
+
+        {:noreply,
+         apply_size(%{state | shell_pid: shell_pid, holder_proto: holder_proto}, rows, cols,
+           force: true
+         )}
 
       frame_type == Holder.type_exit() ->
         <<status::32>> = payload
@@ -612,6 +804,7 @@ defmodule Dala.Terminal.Server do
 
   defp exit_with_status(status, state) do
     state = flush_now(state)
+    state = wake_waiters(state, "exit", %{reason: "exit", seq: state.seq + 1, exit_code: status})
     # Whatever was running is gone; make sure connected clients drop its
     # mouse/paste/alt-screen modes.
     _ = emit(state, @mode_reset)
@@ -755,9 +948,20 @@ defmodule Dala.Terminal.Server do
           "agent event unparsed (#{state.id}): #{inspect(payload, printable_limit: 200)}"
         )
 
+        state
+
       event ->
+        seq = state.seq + 1
+        event = Map.put(event, :seq, seq)
         Logger.debug("agent event (#{state.id}): #{event.agent}/#{event.event}")
         DalaWeb.Endpoint.broadcast("sessions", "agent_event", Map.put(event, :id, state.id))
+
+        %{
+          state
+          | seq: seq,
+            recent_agent_events: [event | Enum.take(state.recent_agent_events, 31)]
+        }
+        |> wake_agent_waiters(event)
     end
   end
 
@@ -784,12 +988,215 @@ defmodule Dala.Terminal.Server do
 
   defp emit(state, data) do
     seq = state.seq + 1
+    {plain, match_filter_state} = Dala.Terminal.AnsiText.filter(data, state.match_filter_state)
 
     DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "output", %{
       data: Base.encode64(data),
       seq: seq
     })
 
-    %{state | seq: seq}
+    %{
+      state
+      | seq: seq,
+        last_output_seq: seq,
+        recent_output: retain_recent_output(state.recent_output, seq, plain),
+        match_filter_state: match_filter_state
+    }
+    |> wake_output_waiters(plain)
+  end
+
+  defp start_next_input_job(%{input_active: active} = state) when not is_nil(active), do: state
+
+  defp start_next_input_job(state) do
+    case :queue.out(state.input_jobs) do
+      {:empty, _queue} ->
+        state
+
+      {{:value, {from, frames}}, jobs} ->
+        GenServer.reply(from, {:ok, state.seq})
+
+        state
+        |> Map.put(:input_jobs, jobs)
+        |> Map.put(:input_active, %{ref: make_ref(), frames: frames})
+        |> continue_input_job()
+    end
+  end
+
+  defp continue_input_job(%{input_active: %{frames: []}} = state) do
+    state |> Map.put(:input_active, nil) |> start_next_input_job()
+  end
+
+  defp continue_input_job(%{input_active: active} = state) do
+    [{data, delay} | rest] = active.frames
+    _ = Holder.send_input(state.socket, data)
+    active = %{active | frames: rest}
+    state = %{state | input_active: active}
+
+    cond do
+      rest == [] ->
+        state |> Map.put(:input_active, nil) |> start_next_input_job()
+
+      delay > 0 ->
+        Process.send_after(self(), {:input_frame, active.ref}, delay)
+        state
+
+      true ->
+        continue_input_job(state)
+    end
+  end
+
+  defp register_waiter(state, from, after_seq, timeout, events, match) do
+    case Dala.Terminal.WaiterLimiter.acquire(self()) do
+      :ok ->
+        ref = make_ref()
+        {caller, _tag} = from
+
+        waiter = %{
+          from: from,
+          after_seq: after_seq,
+          events: events,
+          match: match,
+          match_buffer: recent_output_since(state, after_seq),
+          timer: Process.send_after(self(), {:wait_timeout, ref}, timeout),
+          monitor: Process.monitor(caller)
+        }
+
+        {:noreply, %{state | waiters: Map.put(state.waiters, ref, waiter)}}
+
+      {:error, :limit} ->
+        {:reply, {:error, "too many terminal waiters"}, state}
+    end
+  end
+
+  defp wake_output_waiters(state, data) do
+    waiters =
+      Enum.reduce(state.waiters, %{}, fn {ref, waiter}, kept ->
+        cond do
+          state.last_output_seq <= waiter.after_seq or
+              not MapSet.member?(waiter.events, "output") ->
+            Map.put(kept, ref, waiter)
+
+          is_binary(waiter.match) ->
+            buffer = tail_bytes(waiter.match_buffer <> data, @match_buffer_bytes)
+
+            if :binary.match(buffer, waiter.match) == :nomatch do
+              Map.put(kept, ref, %{waiter | match_buffer: buffer})
+            else
+              reply_waiter(
+                waiter,
+                {:ok, %{reason: "match", seq: state.seq, match: waiter.match}}
+              )
+
+              kept
+            end
+
+          true ->
+            reply_waiter(waiter, {:ok, %{reason: "output", seq: state.seq}})
+            kept
+        end
+      end)
+
+    %{state | waiters: waiters}
+  end
+
+  defp wake_agent_waiters(state, event) do
+    kind = agent_wait_kind(event.event)
+
+    {waiters, _replied} =
+      Enum.reduce(state.waiters, {%{}, 0}, fn {ref, waiter}, {kept, replied} ->
+        accepted? =
+          MapSet.member?(waiter.events, kind) or MapSet.member?(waiter.events, event.event)
+
+        if event.seq > waiter.after_seq and accepted? do
+          reply_waiter(waiter, {:ok, waiter_agent_result(event)})
+          {kept, replied + 1}
+        else
+          {Map.put(kept, ref, waiter), replied}
+        end
+      end)
+
+    %{state | waiters: waiters}
+  end
+
+  defp wake_waiters(state, _kind, result) do
+    Enum.each(state.waiters, fn {_ref, waiter} -> reply_waiter(waiter, {:ok, result}) end)
+    %{state | waiters: %{}}
+  end
+
+  defp matching_agent_event(events_since, after_seq, accepted_events) do
+    Enum.find(events_since, fn event ->
+      kind = agent_wait_kind(event.event)
+
+      event.seq > after_seq and
+        (MapSet.member?(accepted_events, kind) or
+           MapSet.member?(accepted_events, event.event))
+    end)
+  end
+
+  defp retain_recent_output(recent, seq, data) do
+    [{seq, data} | recent]
+    |> take_recent_output(@match_buffer_bytes, [])
+    |> Enum.reverse()
+  end
+
+  defp take_recent_output(_entries, remaining, acc) when remaining <= 0, do: acc
+  defp take_recent_output([], _remaining, acc), do: acc
+
+  defp take_recent_output([{seq, data} | rest], remaining, acc) do
+    kept = tail_bytes(data, remaining)
+    take_recent_output(rest, remaining - byte_size(kept), [{seq, kept} | acc])
+  end
+
+  defp recent_output_since(state, after_seq) do
+    state.recent_output
+    |> Enum.filter(fn {seq, _data} -> seq > after_seq end)
+    |> Enum.reverse()
+    |> Enum.map_join(fn {_seq, data} -> data end)
+  end
+
+  defp recent_output_matches?(state, after_seq, match) do
+    :binary.match(recent_output_since(state, after_seq), match) != :nomatch
+  end
+
+  defp tail_bytes(data, limit) when byte_size(data) <= limit, do: data
+  defp tail_bytes(data, limit), do: binary_part(data, byte_size(data) - limit, limit)
+
+  defp agent_wait_kind("idle_prompt"), do: "idle"
+  defp agent_wait_kind("question_asked"), do: "question"
+  defp agent_wait_kind("permission_request"), do: "permission"
+  defp agent_wait_kind("stop"), do: "stop"
+  defp agent_wait_kind("notify"), do: "stop"
+  defp agent_wait_kind(other), do: other
+
+  defp waiter_agent_result(event) do
+    %{
+      reason: "agent",
+      seq: event.seq,
+      event: event.event,
+      agent: event.agent,
+      summary: event.summary,
+      query: event.query
+    }
+  end
+
+  defp reply_waiter(waiter, reply) do
+    GenServer.reply(waiter.from, reply)
+    release_waiter(waiter)
+  end
+
+  defp release_waiter(waiter, opts \\ []) do
+    Process.cancel_timer(waiter.timer)
+    if Keyword.get(opts, :demonitor?, true), do: Process.demonitor(waiter.monitor, [:flush])
+    Dala.Terminal.WaiterLimiter.release(self())
+  end
+
+  defp decode_text_snapshot(payload, seq) do
+    case Jason.decode(payload) do
+      {:ok, %{"lines" => lines} = snapshot} when is_list(lines) ->
+        {:ok, Map.put(snapshot, "seq", seq)}
+
+      _ ->
+        {:error, "terminal holder returned an invalid text snapshot"}
+    end
   end
 end

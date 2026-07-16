@@ -47,7 +47,9 @@ defmodule Dala.Mcp.Registry do
 
   @doc "The full tool list (JSON-Schema maps) for a `tools/list` response."
   def tools do
-    Enum.map(specs(), &to_tool/1) ++ [reference_tool()]
+    Enum.map(specs(), &to_tool/1) ++
+      [reference_tool()] ++
+      Dala.Mcp.TerminalTools.tools(Dala.Settings.Mcp.terminal_access())
   end
 
   defp spec(resource, rpc_action) do

@@ -201,11 +201,11 @@ export async function executeValidationRpcRequest<T>(
 
 
 
-export type McpSettingsFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}>[];
+export type McpSettingsFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}>[];
 
 export type InferMcpSettingsResult<
   Fields extends McpSettingsFields | undefined,
-> = InferResult<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}, Fields>;
+> = InferResult<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}, Fields>;
 
 export type McpSettingsResult<Fields extends McpSettingsFields | undefined = undefined> = | { success: true; data: InferMcpSettingsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -333,11 +333,11 @@ export type SetMcpEnabledInput = {
   enabled: boolean;
 };
 
-export type SetMcpEnabledFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}>[];
+export type SetMcpEnabledFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}>[];
 
 export type InferSetMcpEnabledResult<
   Fields extends SetMcpEnabledFields | undefined,
-> = InferResult<{enabled: boolean | null, token: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "token"}, Fields>;
+> = InferResult<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}, Fields>;
 
 export type SetMcpEnabledResult<Fields extends SetMcpEnabledFields | undefined = undefined> = | { success: true; data: InferSetMcpEnabledResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -390,6 +390,79 @@ export async function validateSetMcpEnabled(
 ): Promise<ValidationResult> {
   const payload = {
     action: "set_mcp_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SetMcpTerminalAccessInput = {
+  terminalRead: boolean;
+  terminalControl: boolean;
+};
+
+export type SetMcpTerminalAccessFields = UnifiedFieldSelection<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}>[];
+
+export type InferSetMcpTerminalAccessResult<
+  Fields extends SetMcpTerminalAccessFields | undefined,
+> = InferResult<{enabled: boolean | null, token: string | null, terminalRead: boolean | null, terminalControl: boolean | null, __type: "TypedMap", __primitiveFields: "enabled" | "token" | "terminalRead" | "terminalControl"}, Fields>;
+
+export type SetMcpTerminalAccessResult<Fields extends SetMcpTerminalAccessFields | undefined = undefined> = | { success: true; data: InferSetMcpTerminalAccessResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ */
+export async function setMcpTerminalAccess<Fields extends SetMcpTerminalAccessFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetMcpTerminalAccessInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetMcpTerminalAccessResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_mcp_terminal_access",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetMcpTerminalAccessResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Mcp
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSetMcpTerminalAccess(
+  config: {
+  tenant?: string;
+  input: SetMcpTerminalAccessInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "set_mcp_terminal_access",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input
   };

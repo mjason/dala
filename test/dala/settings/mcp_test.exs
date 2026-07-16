@@ -20,6 +20,8 @@ defmodule Dala.Settings.McpTest do
       result = current()
 
       assert result.enabled == false
+      assert result.terminal_read == false
+      assert result.terminal_control == false
       assert is_binary(result.token)
       # 24 random bytes -> 32 url-safe base64 chars.
       assert String.length(result.token) >= 32
@@ -39,11 +41,40 @@ defmodule Dala.Settings.McpTest do
     test "toggles enabled without touching the token" do
       %{token: token} = current()
 
-      assert set_enabled(true) == %{enabled: true, token: token}
-      assert current() == %{enabled: true, token: token}
+      assert set_enabled(true) == %{
+               enabled: true,
+               token: token,
+               terminal_read: false,
+               terminal_control: false
+             }
 
-      assert set_enabled(false) == %{enabled: false, token: token}
+      assert current().token == token
+      assert current().enabled == true
+
+      assert set_enabled(false) == %{
+               enabled: false,
+               token: token,
+               terminal_read: false,
+               terminal_control: false
+             }
+
       assert current().enabled == false
+    end
+  end
+
+  describe ":set_terminal_access" do
+    test "control requires read and disabling read also disables control" do
+      current()
+
+      enabled = Mcp.set_terminal_access(true, true)
+      assert enabled.terminal_read
+      assert enabled.terminal_control
+      assert Mcp.terminal_access() == %{read: true, control: true}
+
+      disabled = Mcp.set_terminal_access(false, true)
+      refute disabled.terminal_read
+      refute disabled.terminal_control
+      assert Mcp.terminal_access() == %{read: false, control: false}
     end
   end
 

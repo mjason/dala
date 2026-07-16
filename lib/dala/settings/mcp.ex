@@ -20,9 +20,9 @@ defmodule Dala.Settings.Mcp do
 
   SECURITY: this resource is deliberately EXCLUDED from the MCP tool registry
   (see `Dala.Mcp.Registry`). An AI talking to `/mcp` must never get tools to
-  toggle MCP, read, or rotate its own bearer token. Its three rpc actions
-  (`:current`/`:set_enabled`/`:regenerate_token`) are for the auth-gated web UI
-  via `/rpc/run` only.
+  toggle MCP, change terminal access, read, or rotate its own bearer token. Its
+  four rpc actions (`:current`/`:set_enabled`/`:set_terminal_access`/
+  `:regenerate_token`) are for the auth-gated web UI via `/rpc/run` only.
   """
 
   use Ash.Resource,
@@ -56,7 +56,7 @@ defmodule Dala.Settings.Mcp do
     # below and MUST NEVER be added to `typescript_rpc` in `Dala.Settings`.
     # Exposing them would let a client plant an arbitrary token or flip
     # `enabled` while bypassing the intended `:set_enabled`/`:regenerate_token`
-    # surface. Only the three generic actions are safe to expose.
+    # surface. Only the four generic actions are safe to expose to the web UI.
     defaults [:read]
 
     # Idempotent create of the singleton. `upsert?` on the primary key makes a
@@ -64,13 +64,13 @@ defmodule Dala.Settings.Mcp do
     # `updated_at` instead of raising, and the pre-existing token is preserved
     # (it is NOT in `upsert_fields`, so a race never clobbers a live token).
     create :provision do
-      accept [:id, :enabled, :token]
+      accept [:id, :enabled, :token, :terminal_read, :terminal_control]
       upsert? true
       upsert_fields [:updated_at]
     end
 
     update :write do
-      accept [:enabled, :token]
+      accept [:enabled, :token, :terminal_read, :terminal_control]
     end
 
     action :current, :map do
@@ -78,7 +78,9 @@ defmodule Dala.Settings.Mcp do
 
       constraints fields: [
                     enabled: [type: :boolean],
-                    token: [type: :string]
+                    token: [type: :string],
+                    terminal_read: [type: :boolean],
+                    terminal_control: [type: :boolean]
                   ]
 
       run fn _input, _context -> {:ok, current()} end
@@ -91,10 +93,34 @@ defmodule Dala.Settings.Mcp do
 
       constraints fields: [
                     enabled: [type: :boolean],
-                    token: [type: :string]
+                    token: [type: :string],
+                    terminal_read: [type: :boolean],
+                    terminal_control: [type: :boolean]
                   ]
 
       run fn input, _context -> {:ok, set_enabled(input.arguments.enabled)} end
+    end
+
+    action :set_terminal_access, :map do
+      description "Set MCP terminal read/control permissions. Control always implies read access."
+
+      argument :terminal_read, :boolean, allow_nil?: false
+      argument :terminal_control, :boolean, allow_nil?: false
+
+      constraints fields: [
+                    enabled: [type: :boolean],
+                    token: [type: :string],
+                    terminal_read: [type: :boolean],
+                    terminal_control: [type: :boolean]
+                  ]
+
+      run fn input, _context ->
+        {:ok,
+         set_terminal_access(
+           input.arguments.terminal_read,
+           input.arguments.terminal_control
+         )}
+      end
     end
 
     action :regenerate_token, :map do
@@ -128,6 +154,20 @@ defmodule Dala.Settings.Mcp do
       constraints allow_empty?: true
     end
 
+    attribute :terminal_read, :boolean do
+      description "Whether MCP clients may list sessions and read/wait for terminal output."
+      public? true
+      allow_nil? false
+      default false
+    end
+
+    attribute :terminal_control, :boolean do
+      description "Whether MCP clients may upload attachments and send terminal input."
+      public? true
+      allow_nil? false
+      default false
+    end
+
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
@@ -156,8 +196,7 @@ defmodule Dala.Settings.Mcp do
 
   @doc "The `{enabled, token}` config as a map, for the `:current` rpc action."
   def current do
-    {enabled, token} = config()
-    %{enabled: enabled, token: token}
+    ensure() |> config_map()
   end
 
   @doc "Set `enabled` instance-wide; returns the resulting `%{enabled, token}`."
@@ -167,7 +206,36 @@ defmodule Dala.Settings.Mcp do
       |> Ash.Changeset.for_update(:write, %{enabled: enabled}, authorize?: false)
       |> Ash.update!(authorize?: false)
 
-    %{enabled: saved.enabled, token: saved.token}
+    config_map(saved)
+  end
+
+  @doc "Read terminal permissions without provisioning the singleton."
+  def terminal_access do
+    case read() do
+      nil -> %{read: false, control: false}
+      row -> %{read: row.terminal_read, control: row.terminal_control}
+    end
+  rescue
+    # Tool discovery can run while the repo is unavailable (startup, shutdown,
+    # or a failed DB checkout). Terminal access must fail closed without taking
+    # the unrelated settings tools down with it.
+    _error -> %{read: false, control: false}
+  end
+
+  @doc "Set terminal permissions; disabling read also disables control."
+  def set_terminal_access(read?, control?) when is_boolean(read?) and is_boolean(control?) do
+    control? = control? and read?
+
+    saved =
+      ensure()
+      |> Ash.Changeset.for_update(
+        :write,
+        %{terminal_read: read?, terminal_control: control?},
+        authorize?: false
+      )
+      |> Ash.update!(authorize?: false)
+
+    config_map(saved)
   end
 
   @doc """
@@ -210,5 +278,14 @@ defmodule Dala.Settings.Mcp do
     @token_bytes
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp config_map(row) do
+    %{
+      enabled: row.enabled,
+      token: row.token,
+      terminal_read: row.terminal_read,
+      terminal_control: row.terminal_control
+    }
   end
 end

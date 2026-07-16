@@ -13,11 +13,13 @@ vi.mock("../util", () => ({
 // `result.success`/`result.data`, so each mock returns that shape.
 const mcpSettings = vi.fn();
 const setMcpEnabled = vi.fn();
+const setMcpTerminalAccess = vi.fn();
 const regenerateMcpToken = vi.fn();
 vi.mock("../../ash_rpc", () => ({
   buildCSRFHeaders: () => ({}),
   mcpSettings: (...a: unknown[]) => mcpSettings(...a),
   setMcpEnabled: (...a: unknown[]) => setMcpEnabled(...a),
+  setMcpTerminalAccess: (...a: unknown[]) => setMcpTerminalAccess(...a),
   regenerateMcpToken: (...a: unknown[]) => regenerateMcpToken(...a),
 }));
 
@@ -47,9 +49,20 @@ beforeEach(() => {
   writeClipboard.mockClear();
   mcpSettings.mockReset();
   setMcpEnabled.mockReset();
+  setMcpTerminalAccess.mockReset();
   regenerateMcpToken.mockReset();
-  mcpSettings.mockResolvedValue({ success: true, data: { enabled: true, token: TOKEN } });
-  setMcpEnabled.mockResolvedValue({ success: true, data: { enabled: true, token: TOKEN } });
+  mcpSettings.mockResolvedValue({
+    success: true,
+    data: { enabled: true, token: TOKEN, terminalRead: false, terminalControl: false },
+  });
+  setMcpEnabled.mockResolvedValue({
+    success: true,
+    data: { enabled: true, token: TOKEN, terminalRead: false, terminalControl: false },
+  });
+  setMcpTerminalAccess.mockResolvedValue({
+    success: true,
+    data: { enabled: true, token: TOKEN, terminalRead: true, terminalControl: true },
+  });
   regenerateMcpToken.mockResolvedValue({ success: true, data: { token: TOKEN } });
 });
 afterEach(cleanup);
@@ -67,6 +80,25 @@ describe("McpSection live control", () => {
     await waitFor(() => expect(q(container, "#mcp-endpoint-url")).not.toBeNull());
     expect(q(container, "#mcp-endpoint-url").textContent).toBe(ENDPOINT);
     expect(q(container, "#mcp-token").textContent).toBe(TOKEN);
+  });
+
+  it("keeps terminal read/control as explicit opt-in permissions", async () => {
+    const { container } = renderSection();
+    await waitFor(() => expect(q(container, "#mcp-terminal-control-toggle")).not.toBeNull());
+
+    expect((q(container, "#mcp-terminal-read-toggle") as HTMLInputElement).checked).toBe(false);
+    expect((q(container, "#mcp-terminal-control-toggle") as HTMLInputElement).checked).toBe(false);
+
+    const control = q(container, "#mcp-terminal-control-toggle").closest(
+      '[role="switch"]',
+    ) as HTMLElement;
+    fireEvent.click(control);
+
+    await waitFor(() => expect(setMcpTerminalAccess).toHaveBeenCalledTimes(1));
+    expect(setMcpTerminalAccess.mock.calls[0][0].input).toEqual({
+      terminalRead: true,
+      terminalControl: true,
+    });
   });
 
   it("bakes the real token (not a placeholder) into every client snippet", async () => {

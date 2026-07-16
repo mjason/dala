@@ -51,6 +51,12 @@ defmodule DalaWeb.Plugs.RequireMcp do
     end
   end
 
+  @doc "Read-only pre-parser check used solely to select the authenticated body-size limit."
+  def authenticated?(conn) do
+    {enabled, token} = Dala.Settings.Mcp.config_or_default()
+    enabled and not blank?(token) and authorized?(conn, token)
+  end
+
   defp blank?(nil), do: true
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(_), do: true

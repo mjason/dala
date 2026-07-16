@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { base64ToBytes, humanBytes, shortPath, timeAgo } from "./util";
+import { base64ToBytes, humanBytes, sessionRef, shortPath, timeAgo } from "./util";
 
 describe("base64ToBytes", () => {
   it("decodes to raw bytes", () => {
@@ -31,6 +31,12 @@ describe("shortPath", () => {
   it("shortens long paths to their tail", () => {
     const long = "/home/mj/dev/elixir/dala/lib/dala_web/components";
     expect(shortPath(long, 20)).toBe("…/components");
+  });
+});
+
+describe("sessionRef", () => {
+  it("derives the same stable six-character reference used by MCP", () => {
+    expect(sessionRef("a1b2c3d4-1111-2222-3333-444455556666")).toBe("#A1B2C3");
   });
 });
 

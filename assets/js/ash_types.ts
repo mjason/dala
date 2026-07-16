@@ -9,20 +9,24 @@ export type UtcDateTimeUsec = string;
 // McpConfig Schema
 export type McpConfigResourceSchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "enabled" | "token";
+  __primitiveFields: "id" | "enabled" | "token" | "terminalRead" | "terminalControl";
   id: UUID;
   enabled: boolean;
   token: string;
+  terminalRead: boolean;
+  terminalControl: boolean;
 };
 
 
 
 export type McpConfigAttributesOnlySchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "enabled" | "token";
+  __primitiveFields: "id" | "enabled" | "token" | "terminalRead" | "terminalControl";
   id: UUID;
   enabled: boolean;
   token: string;
+  terminalRead: boolean;
+  terminalControl: boolean;
 };
 
 
@@ -192,6 +196,16 @@ export type McpConfigFilterInput = {
     eq?: string;
     notEq?: string;
     in?: Array<string>;
+  };
+
+  terminalRead?: {
+    eq?: boolean;
+    notEq?: boolean;
+  };
+
+  terminalControl?: {
+    eq?: boolean;
+    notEq?: boolean;
   };
 
 
@@ -432,7 +446,7 @@ export type UpdaterFilterInput = {
 };
 
 
-export const mcpConfigFilterFields = ["id", "enabled", "token"] as const;
+export const mcpConfigFilterFields = ["id", "enabled", "token", "terminalRead", "terminalControl"] as const;
 export type McpConfigFilterField = (typeof mcpConfigFilterFields)[number];
 
 export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
@@ -449,7 +463,7 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
 
-export const mcpConfigSortFields = ["id", "enabled", "token"] as const;
+export const mcpConfigSortFields = ["id", "enabled", "token", "terminalRead", "terminalControl"] as const;
 export type McpConfigSortField = (typeof mcpConfigSortFields)[number];
 
 export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;

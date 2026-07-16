@@ -138,10 +138,17 @@ defmodule DalaWeb.McpControllerTest do
   end
 
   describe "request body size" do
-    test "an oversized body is rejected (413) before it can OOM the server" do
-      # The cap sits in the Plug.Parsers body reader, ahead of the auth gate,
-      # so this must reject regardless of credentials.
-      assert_error_sent(413, fn -> mcp_post(String.duplicate("x", 1_100_000)) end)
+    test "unauthenticated bodies stay at 1 MB while authenticated bodies allow attachments" do
+      assert_error_sent(413, fn ->
+        mcp_post(String.duplicate("x", 1_100_000), auth: :none)
+      end)
+
+      # A valid token may carry a 5 MB attachment as base64, but remains hard
+      # capped at 8 MB before JSON decoding.
+      assert json_response(mcp_post(String.duplicate("x", 1_100_000)), 200)["error"]["code"] ==
+               -32700
+
+      assert_error_sent(413, fn -> mcp_post(String.duplicate("x", 8_100_000)) end)
     end
   end
 
@@ -183,10 +190,50 @@ defmodule DalaWeb.McpControllerTest do
       body = json_response(mcp_post(rpc("tools/list", 6)), 200)
       names = Enum.map(body["result"]["tools"], & &1["name"])
 
-      for forbidden <- ~w(mcp_settings set_mcp_enabled regenerate_mcp_token) do
+      for forbidden <-
+            ~w(mcp_settings set_mcp_enabled set_mcp_terminal_access regenerate_mcp_token) do
         refute forbidden in names,
                "#{forbidden} must never be an MCP tool (privilege escalation)"
       end
+    end
+
+    test "terminal tools appear only for the permissions granted in Settings" do
+      disabled = json_response(mcp_post(rpc("tools/list", 61)), 200)
+      names = Enum.map(disabled["result"]["tools"], & &1["name"])
+      refute "list_terminal_sessions" in names
+      refute "send_terminal_message" in names
+
+      Dala.Settings.Mcp.set_terminal_access(true, false)
+      readable = json_response(mcp_post(rpc("tools/list", 62)), 200)
+      names = Enum.map(readable["result"]["tools"], & &1["name"])
+      assert "list_terminal_sessions" in names
+      assert "read_terminal" in names
+      assert "wait_terminal" in names
+      refute "send_terminal_message" in names
+
+      Dala.Settings.Mcp.set_terminal_access(true, true)
+      controlled = json_response(mcp_post(rpc("tools/list", 63)), 200)
+      names = Enum.map(controlled["result"]["tools"], & &1["name"])
+      assert "send_terminal_message" in names
+      assert "terminal_upload_attachment" in names
+    end
+  end
+
+  describe "terminal attachments" do
+    test "an authenticated control-enabled call uploads one file" do
+      Dala.Settings.Mcp.set_terminal_access(true, true)
+
+      response =
+        call_tool("terminal_upload_attachment", %{
+          name: "evidence.txt",
+          mime_type: "text/plain",
+          content_base64: Base.encode64("evidence")
+        })
+
+      assert response["result"]["isError"] == false
+      uploaded = tool_content(response)
+      assert File.read!(uploaded["path"]) == "evidence"
+      on_exit(fn -> File.rm_rf(Path.dirname(uploaded["path"])) end)
     end
   end
 

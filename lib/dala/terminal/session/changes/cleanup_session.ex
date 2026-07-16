@@ -16,6 +16,7 @@ defmodule Dala.Terminal.Session.Changes.CleanupSession do
         id = to_string(changeset.data.id)
         _ = File.rm(Dala.Terminal.Holder.exit_path(id))
         _ = File.rm(Dala.Terminal.Holder.final_path(id))
+        _ = File.rm(Dala.Terminal.Holder.text_final_path(id))
         {:ok, result}
 
       _changeset, error ->

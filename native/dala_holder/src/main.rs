@@ -10,10 +10,13 @@
 //!                      0x03 EXIT    <u32 be status>
 //!                      0x04 REPAINT <synthesized screen bytes>
 //!                      0x05 CWD     <utf8 path (from OSC 7)>
+//!                      0x06 AGENT   <title 0x1f body>
+//!                      0x07 TEXT_SNAPSHOT <json plain-text grid snapshot>
 //!   client -> holder:  0x11 INPUT   <raw bytes>
 //!                      0x12 RESIZE  <u16 be rows> <u16 be cols>
 //!                      0x13 KILL
 //!                      0x14 REPAINT_REQ
+//!                      0x15 TEXT_SNAPSHOT_REQ <u32 lines> <u32 max bytes>
 //!
 //! The holder embeds a headless terminal emulator (alacritty_terminal): all
 //! PTY output feeds a server-side grid + scrollback. REPAINT_REQ answers
@@ -65,10 +68,12 @@ const T_EXIT: u8 = 0x03;
 const T_REPAINT: u8 = 0x04;
 const T_CWD: u8 = 0x05;
 const T_AGENT: u8 = 0x06;
+const T_TEXT_SNAPSHOT: u8 = 0x07;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
 const T_REPAINT_REQ: u8 = 0x14;
+const T_TEXT_SNAPSHOT_REQ: u8 = 0x15;
 
 /// Transit-queue cap between the PTY reader and the socket writer. The
 /// emulator is the durable history; this only smooths bursts to an attached
@@ -111,6 +116,9 @@ struct Shared {
     /// Repaints requested by the client (each with the requester's column
     /// count, 0 = unknown), served once the ring is drained.
     repaint_pending: VecDeque<u16>,
+    /// Machine-readable snapshots requested by the BEAM, each carrying
+    /// {logical line limit, UTF-8 byte limit}.
+    text_snapshot_pending: VecDeque<(usize, usize)>,
     /// Latest OSC 7 working directory, pending delivery to the client.
     /// Multiplexers (zellij/tmux) pass the inner shell's OSC 7 through, so
     /// this sees the cwd that /proc/<shell>/cwd cannot (their shells live
@@ -210,6 +218,7 @@ fn main() {
             exit_status: None,
             screen: Screen::new(config.rows, config.cols, config.history_lines),
             repaint_pending: VecDeque::new(),
+            text_snapshot_pending: VecDeque::new(),
             cwd_report: None,
             agent_reports: VecDeque::new(),
             osc_tail: Vec::new(),
@@ -269,9 +278,10 @@ fn main() {
             enum Job {
                 Output(Vec<u8>),
                 Repaint(Vec<u8>),
+                TextSnapshot(Vec<u8>),
                 Cwd(String),
                 Agent(Vec<u8>),
-                Exit(u32, Vec<u8>),
+                Exit(u32, Vec<u8>, Vec<u8>),
             }
 
             loop {
@@ -282,10 +292,13 @@ fn main() {
                         let drainable = attached && !shared.ring.is_empty();
                         let repaint =
                             attached && shared.ring.is_empty() && !shared.repaint_pending.is_empty();
+                        let text_snapshot = attached
+                            && shared.ring.is_empty()
+                            && !shared.text_snapshot_pending.is_empty();
                         let cwd = attached && shared.cwd_report.is_some();
                         let agent = attached && !shared.agent_reports.is_empty();
                         let done = shared.exit_status.is_some() && shared.ring.is_empty();
-                        if drainable || repaint || cwd || agent || done {
+                        if drainable || repaint || text_snapshot || cwd || agent || done {
                             break;
                         }
                         shared = state.cond.wait(shared).unwrap();
@@ -308,9 +321,16 @@ fn main() {
                         // line breaks so the layout cannot shear.
                         let soft = cols as usize == shared.screen.columns();
                         (Job::Repaint(shared.screen.repaint(soft)), stream, gen)
+                    } else if shared.client.is_some() && !shared.text_snapshot_pending.is_empty() {
+                        let (lines, bytes) = shared.text_snapshot_pending.pop_front().unwrap();
+                        let snapshot = shared.screen.text_snapshot(lines, bytes);
+                        let encoded = serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                        (Job::TextSnapshot(encoded), stream, gen)
                     } else {
                         let status = shared.exit_status.unwrap_or(0);
-                        (Job::Exit(status, shared.screen.repaint(false)), stream, gen)
+                        let snapshot = shared.screen.text_snapshot(0, 64 * 1024);
+                        let encoded = serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                        (Job::Exit(status, shared.screen.repaint(false), encoded), stream, gen)
                     }
                 };
 
@@ -322,11 +342,15 @@ fn main() {
                     Job::Cwd(cwd) => send_or_drop(&state, stream, gen, T_CWD, cwd.as_bytes()),
                     Job::Agent(payload) => send_or_drop(&state, stream, gen, T_AGENT, &payload),
                     Job::Repaint(repaint) => send_or_drop(&state, stream, gen, T_REPAINT, &repaint),
-                    Job::Exit(status, final_screen) => {
+                    Job::TextSnapshot(snapshot) => {
+                        send_or_drop(&state, stream, gen, T_TEXT_SNAPSHOT, &snapshot)
+                    }
+                    Job::Exit(status, final_screen, final_text) => {
                         // Durable first: a dala that is down right now finds the
                         // status and the last screen on reattach.
                         let _ = std::fs::write(exit_path(&socket_path), status.to_string());
                         let _ = std::fs::write(final_path(&socket_path), &final_screen);
+                        let _ = std::fs::write(text_final_path(&socket_path), &final_text);
                         if let Some(mut stream) = stream {
                             let _ = write_frame(&mut stream, T_EXIT, &status.to_be_bytes());
                         }
@@ -343,7 +367,7 @@ fn main() {
         let Ok(mut stream) = stream else { continue };
 
         let hello = format!(
-            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":2}}",
+            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":3}}",
             shell_pid, config.rows, config.cols
         );
         if write_frame(&mut stream, T_HELLO, hello.as_bytes()).is_err() {
@@ -359,6 +383,7 @@ fn main() {
             // emulator; the new client starts from a repaint it requests.
             shared.ring.clear();
             shared.repaint_pending.clear();
+            shared.text_snapshot_pending.clear();
             shared.client = stream.try_clone().ok();
             shared.client_gen += 1;
             state.cond.notify_all();
@@ -399,6 +424,15 @@ fn main() {
                         };
                         let mut shared = state.shared.lock().unwrap();
                         shared.repaint_pending.push_back(cols);
+                        state.cond.notify_all();
+                    }
+                    Ok((T_TEXT_SNAPSHOT_REQ, data)) if data.len() == 8 => {
+                        let lines = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
+                        let bytes = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+                        let lines = lines.min(50_000);
+                        let bytes = bytes.clamp(1, 128 * 1024);
+                        let mut shared = state.shared.lock().unwrap();
+                        shared.text_snapshot_pending.push_back((lines, bytes));
                         state.cond.notify_all();
                     }
                     Ok((T_KILL, _)) => {
@@ -528,6 +562,12 @@ fn usage() -> ! {
 fn final_path(socket_path: &std::path::Path) -> PathBuf {
     let mut p = socket_path.as_os_str().to_owned();
     p.push(".final");
+    PathBuf::from(p)
+}
+
+fn text_final_path(socket_path: &std::path::Path) -> PathBuf {
+    let mut p = socket_path.as_os_str().to_owned();
+    p.push(".text");
     PathBuf::from(p)
 }
 
@@ -671,7 +711,7 @@ mod frame_tests {
     fn round_trips_every_frame_type_byte_exact() {
         let types = [
             T_HELLO, T_OUTPUT, T_EXIT, T_REPAINT, T_CWD, T_AGENT, T_INPUT, T_RESIZE, T_KILL,
-            T_REPAINT_REQ,
+            T_TEXT_SNAPSHOT, T_REPAINT_REQ, T_TEXT_SNAPSHOT_REQ,
         ];
         for &ty in &types {
             // Payload exercises all byte values including 0x00 and 0xff.

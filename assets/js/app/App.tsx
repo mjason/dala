@@ -28,7 +28,7 @@ import { useSessions, SESSION_FIELDS } from "./hooks/useSessions";
 import { usePanelLayout, clampWidth, PANEL_W } from "./hooks/usePanelLayout";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useNotifications, agentStateFor } from "./hooks/useNotifications";
-import { historyLines, shortPath } from "./util";
+import { historyLines, sessionRef, shortPath, writeClipboard } from "./util";
 import { useI18n } from "./i18n";
 import { onReconnect } from "./socket";
 import { serverVersion } from "./meta";
@@ -629,6 +629,19 @@ export default function App() {
             <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3 sm:gap-3 sm:px-4">
               {hamburger}
               <span className="truncate font-mono text-sm text-fg">{active.name}</span>
+              <button
+                id="active-session-reference"
+                type="button"
+                title={t("copySessionId")}
+                onClick={() =>
+                  void writeClipboard(active.id).then((copied) => {
+                    if (copied) toast(t("sessionIdCopied"));
+                  })
+                }
+                className="shrink-0 font-mono text-[11px] text-fg-muted transition-colors hover:text-mint"
+              >
+                {sessionRef(active.id)}
+              </button>
               <span
                 className="hidden truncate font-mono text-xs text-fg-muted sm:block"
                 title={active.cwd}

@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { mcpSettings, regenerateMcpToken, setMcpEnabled } from "../../ash_rpc";
+import {
+  mcpSettings,
+  regenerateMcpToken,
+  setMcpEnabled,
+  setMcpTerminalAccess,
+} from "../../ash_rpc";
 import { call } from "../rpc";
 import { FieldLabel, Toggle } from "../ui";
 import { useI18n } from "../i18n";
@@ -7,12 +12,13 @@ import { writeClipboard } from "../util";
 
 /**
  * MCP live control. dala ships an MCP server (POST /mcp) that lets an AI
- * assistant read and write the user's server-side settings (chiefly defining
- * themes). Enablement and the bearer token now live in the DB
+ * assistant manage server-side settings and, with separate opt-in permissions,
+ * read or control terminal sessions. Enablement and the bearer token live in the DB
  * (Dala.Settings.Mcp, a global singleton) and are driven from HERE at runtime:
  *
  *   - `mcpSettings`       → load { enabled, token } (auto-provisions a token).
  *   - `setMcpEnabled`     → flip the runtime gate; /mcp 404s the moment it's off.
+ *   - `setMcpTerminalAccess` → grant terminal read/control independently.
  *   - `regenerateMcpToken`→ mint a fresh token; the old one dies server-side.
  *
  * When enabled, the panel shows the LIVE endpoint (window.location.origin +
@@ -22,7 +28,12 @@ import { writeClipboard } from "../util";
  * only labels, notes and prompts are localized.
  */
 
-type McpConfig = { enabled: boolean; token: string };
+type McpConfig = {
+  enabled: boolean;
+  token: string;
+  terminalRead: boolean;
+  terminalControl: boolean;
+};
 
 /** Copy button with a transient "copied" state. writeClipboard degrades
  * gracefully when navigator.clipboard is unavailable (plain-http LAN origins
@@ -84,15 +95,24 @@ export default function McpSection({ onError }: { onError: (message: string) => 
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
-  const normalize = (data: { enabled?: boolean | null; token?: string | null }): McpConfig => ({
+  const normalize = (data: {
+    enabled?: boolean | null;
+    token?: string | null;
+    terminalRead?: boolean | null;
+    terminalControl?: boolean | null;
+  }): McpConfig => ({
     enabled: data.enabled === true,
     token: data.token ?? "",
+    terminalRead: data.terminalRead === true,
+    terminalControl: data.terminalControl === true,
   });
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await call<McpConfig>(mcpSettings, { fields: ["enabled", "token"] });
+      const result = await call<McpConfig>(mcpSettings, {
+        fields: ["enabled", "token", "terminalRead", "terminalControl"],
+      });
       if (cancelled) return;
       if (result.ok) setConfig(normalize(result.data));
       else onErrorRef.current(result.error);
@@ -106,7 +126,19 @@ export default function McpSection({ onError }: { onError: (message: string) => 
     setBusy(true);
     const result = await call<McpConfig>(setMcpEnabled, {
       input: { enabled },
-      fields: ["enabled", "token"],
+      fields: ["enabled", "token", "terminalRead", "terminalControl"],
+    });
+    setBusy(false);
+    if (result.ok) setConfig(normalize(result.data));
+    else onErrorRef.current(result.error);
+  };
+
+  const setTerminalAccess = async (terminalRead: boolean, terminalControl: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    const result = await call<McpConfig>(setMcpTerminalAccess, {
+      input: { terminalRead, terminalControl },
+      fields: ["enabled", "token", "terminalRead", "terminalControl"],
     });
     setBusy(false);
     if (result.ok) setConfig(normalize(result.data));
@@ -189,6 +221,43 @@ export default function McpSection({ onError }: { onError: (message: string) => 
               />
             </div>
             <p className="text-[12px] leading-relaxed text-fg-muted">{t("mcpEnableHint")}</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <FieldLabel>{t("mcpTerminalAccessLabel")}</FieldLabel>
+            <div className="divide-y divide-line/70 rounded-md border border-line/70">
+              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[13px] text-fg">{t("mcpTerminalReadLabel")}</div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                    {t("mcpTerminalReadHint")}
+                  </p>
+                </div>
+                <Toggle
+                  id="mcp-terminal-read-toggle"
+                  checked={config.terminalRead}
+                  onChange={(value) =>
+                    void setTerminalAccess(value, value ? config.terminalControl : false)
+                  }
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[13px] text-fg">{t("mcpTerminalControlLabel")}</div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                    {t("mcpTerminalControlHint")}
+                  </p>
+                </div>
+                <Toggle
+                  id="mcp-terminal-control-toggle"
+                  checked={config.terminalControl}
+                  onChange={(value) => void setTerminalAccess(value || config.terminalRead, value)}
+                />
+              </div>
+            </div>
+            <p className="text-[12px] leading-relaxed text-danger/90">
+              {t("mcpTerminalSecurityNote")}
+            </p>
           </div>
 
           {config.enabled ? (

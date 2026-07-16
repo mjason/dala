@@ -26,6 +26,11 @@ export function shortPath(path: string, max = 34): string {
   return `…/${tail}`;
 }
 
+/** Stable human-sized terminal reference derived from the canonical UUID. */
+export function sessionRef(id: string): string {
+  return `#${id.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+}
+
 export function timeAgo(iso: string | null): string {
   if (!iso) return "";
   const then = new Date(iso).getTime();

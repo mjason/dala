@@ -12,6 +12,27 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor};
+use serde::Serialize;
+use std::collections::VecDeque;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSnapshot {
+    pub mode: &'static str,
+    pub lines: Vec<String>,
+    pub cached_line_count: usize,
+    pub truncated: bool,
+    pub rows: usize,
+    pub columns: usize,
+    pub cursor: TextCursor,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextCursor {
+    pub row: i32,
+    pub column: usize,
+}
 
 #[derive(Clone)]
 struct Quiet;
@@ -125,6 +146,155 @@ impl Screen {
         render_modes(&mut out, term, &mode);
         out
     }
+
+    /// Plain-text view of the emulator grid for machine consumers. Normal
+    /// buffer scrollback is included oldest-first; WRAPLINE rows are joined
+    /// into logical lines. Alternate-screen programs return their current
+    /// screen only. The retained tail is bounded by both logical lines and
+    /// UTF-8 bytes so one pathological terminal line cannot create an
+    /// unbounded protocol response.
+    pub fn text_snapshot(&self, max_lines: usize, max_bytes: usize) -> TextSnapshot {
+        let term = &self.term;
+        let grid = term.grid();
+        let alt = term.mode().contains(TermMode::ALT_SCREEN);
+        let history = if alt { 0 } else { grid.history_size() };
+        let start = -(history as i32);
+        let cursor = grid.cursor.point;
+        let mut end = cursor.line.0.max(0);
+
+        for i in start..grid.screen_lines() as i32 {
+            if row_has_text(grid, Line(i), grid.columns()) {
+                end = end.max(i);
+            }
+        }
+
+        let mut retained = VecDeque::new();
+        let mut retained_bytes = 0usize;
+        let mut cached_line_count = 0usize;
+        let mut truncated = false;
+        let mut logical = String::new();
+        let line_limit = if max_lines == 0 { usize::MAX } else { max_lines };
+        let byte_limit = max_bytes.max(1);
+
+        for i in start..=end {
+            let line = Line(i);
+            logical.push_str(&plain_row(grid, line, grid.columns()));
+            if row_wraps(grid, line, grid.columns()) {
+                continue;
+            }
+
+            cached_line_count += 1;
+            retained_bytes += logical.len();
+            retained.push_back(std::mem::take(&mut logical));
+
+            while retained.len() > line_limit || (retained_bytes > byte_limit && retained.len() > 1)
+            {
+                if let Some(dropped) = retained.pop_front() {
+                    retained_bytes = retained_bytes.saturating_sub(dropped.len());
+                    truncated = true;
+                }
+            }
+
+            if retained_bytes > byte_limit {
+                let line = retained.front_mut().expect("one retained line");
+                let remove = retained_bytes - byte_limit;
+                let split = next_char_boundary(line, remove);
+                line.drain(..split);
+                retained_bytes = line.len();
+                truncated = true;
+            }
+        }
+
+        if !logical.is_empty() {
+            cached_line_count += 1;
+            retained_bytes += logical.len();
+            retained.push_back(logical);
+            while retained.len() > line_limit || (retained_bytes > byte_limit && retained.len() > 1)
+            {
+                if let Some(dropped) = retained.pop_front() {
+                    retained_bytes = retained_bytes.saturating_sub(dropped.len());
+                    truncated = true;
+                }
+            }
+
+            if retained_bytes > byte_limit {
+                let line = retained.front_mut().expect("one retained line");
+                let remove = retained_bytes - byte_limit;
+                let split = next_char_boundary(line, remove);
+                line.drain(..split);
+                truncated = true;
+            }
+        }
+
+        TextSnapshot {
+            mode: if alt { "alternate" } else { "normal" },
+            lines: retained.into_iter().collect(),
+            cached_line_count,
+            truncated,
+            rows: grid.screen_lines(),
+            columns: grid.columns(),
+            cursor: TextCursor {
+                row: cursor.line.0,
+                column: cursor.column.0,
+            },
+        }
+    }
+}
+
+fn row_wraps(
+    grid: &alacritty_terminal::grid::Grid<Cell>,
+    line: Line,
+    columns: usize,
+) -> bool {
+    columns > 0 && grid[line][Column(columns - 1)].flags.contains(Flags::WRAPLINE)
+}
+
+fn row_has_text(
+    grid: &alacritty_terminal::grid::Grid<Cell>,
+    line: Line,
+    columns: usize,
+) -> bool {
+    row_wraps(grid, line, columns)
+        || (0..columns).any(|i| {
+            let cell = &grid[line][Column(i)];
+            cell.c != ' '
+                && !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        })
+}
+
+fn plain_row(
+    grid: &alacritty_terminal::grid::Grid<Cell>,
+    line: Line,
+    columns: usize,
+) -> String {
+    let row = &grid[line];
+    let mut out = String::new();
+
+    for i in 0..columns {
+        let cell = &row[Column(i)];
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
+            continue;
+        }
+        out.push(cell.c);
+        if let Some(extra) = cell.zerowidth() {
+            out.extend(extra);
+        }
+    }
+
+    out.trim_end_matches(' ').to_owned()
+}
+
+fn next_char_boundary(value: &str, at_least: usize) -> usize {
+    let mut index = at_least.min(value.len());
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn render_modes(out: &mut Vec<u8>, term: &Term<Quiet>, mode: &TermMode) {
@@ -427,6 +597,55 @@ mod tests {
         screen.advance(b"after resize");
         let out = text(&screen.repaint(true));
         assert!(out.contains("after resize"));
+    }
+
+    #[test]
+    fn text_snapshot_joins_wraps_and_excludes_ansi() {
+        let mut screen = Screen::new(5, 10, 50);
+        screen.advance(b"\x1b[31mABCDEFGHIJKLMNOPQRSTUVWXY\x1b[0m\r\nready");
+        let snapshot = screen.text_snapshot(20, 128 * 1024);
+
+        assert_eq!(snapshot.mode, "normal");
+        assert!(snapshot.lines.iter().any(|line| line == "ABCDEFGHIJKLMNOPQRSTUVWXY"));
+        assert!(snapshot.lines.iter().any(|line| line == "ready"));
+        assert!(!snapshot.lines.join("\n").contains('\x1b'));
+    }
+
+    #[test]
+    fn text_snapshot_returns_requested_tail_and_reports_truncation() {
+        let mut screen = Screen::new(3, 20, 50);
+        for i in 0..12 {
+            screen.advance(format!("line-{i}\r\n").as_bytes());
+        }
+        let snapshot = screen.text_snapshot(3, 128 * 1024);
+
+        assert_eq!(snapshot.lines.len(), 3);
+        assert!(snapshot.lines.join("\n").contains("line-11"));
+        assert!(snapshot.cached_line_count > snapshot.lines.len());
+        assert!(snapshot.truncated);
+    }
+
+    #[test]
+    fn text_snapshot_reports_alternate_screen() {
+        let mut screen = Screen::new(4, 20, 50);
+        screen.advance(b"old\r\n\x1b[?1049hTUI screen");
+        let snapshot = screen.text_snapshot(20, 128 * 1024);
+
+        assert_eq!(snapshot.mode, "alternate");
+        assert!(snapshot.lines.join("\n").contains("TUI screen"));
+        assert!(!snapshot.lines.join("\n").contains("old"));
+    }
+
+    #[test]
+    fn text_snapshot_caps_a_single_very_long_logical_line() {
+        let mut screen = Screen::new(3, 20, 100);
+        screen.advance("界".repeat(2_000).as_bytes());
+        let snapshot = screen.text_snapshot(0, 257);
+        let bytes: usize = snapshot.lines.iter().map(String::len).sum();
+
+        assert!(bytes <= 257);
+        assert!(snapshot.truncated);
+        assert!(snapshot.lines.join("").chars().all(|ch| ch == '界'));
     }
 }
 
