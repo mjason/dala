@@ -2,7 +2,7 @@ defmodule Dala.Mcp.TerminalTools do
   @moduledoc false
 
   @read_tools ~w(list_terminal_sessions read_terminal wait_terminal)
-  @control_tools ~w(send_terminal_message terminal_upload_attachment)
+  @control_tools ~w(send_terminal_message send_terminal_keys terminal_upload_attachment)
   @all_tools @read_tools ++ @control_tools
 
   def tool_names, do: @all_tools
@@ -13,6 +13,7 @@ defmodule Dala.Mcp.TerminalTools do
     |> maybe_add(read?, read_tool())
     |> maybe_add(read?, wait_tool())
     |> maybe_add(control?, send_tool())
+    |> maybe_add(control?, send_keys_tool())
     |> maybe_add(control?, upload_tool())
   end
 
@@ -65,13 +66,15 @@ defmodule Dala.Mcp.TerminalTools do
          {:ok, %{app: app}} <- Dala.Terminal.Server.foreground_app(session.id),
          :ok <- validate_text(arguments["text"]),
          {:ok, submit} <- validate_submit(Map.get(arguments, "submit", true)),
+         key_opts = terminal_key_options(session.id, arguments["key"]),
          {:ok, frames} <-
            Dala.Terminal.Input.frames(
              app,
              arguments["text"] || "",
              arguments["attachments"] || [],
              submit,
-             arguments["key"]
+             arguments["key"],
+             key_opts
            ),
          {:ok, seq} <- Dala.Terminal.Server.send_sequence(session.id, frames) do
       {:ok,
@@ -82,6 +85,24 @@ defmodule Dala.Mcp.TerminalTools do
          app: app,
          seq: seq,
          queued: true
+       }}
+    end
+  end
+
+  defp execute("send_terminal_keys", arguments) do
+    with {:ok, session} <- resolve_session(arguments["session"]),
+         key_opts = terminal_key_options(session.id, :keys),
+         {:ok, frames} <- Dala.Terminal.Input.key_frames(arguments["keys"], key_opts),
+         {:ok, seq} <- Dala.Terminal.Server.send_sequence(session.id, frames) do
+      {:ok,
+       %{
+         sessionId: to_string(session.id),
+         ref: reference(session.id),
+         name: session.name,
+         seq: seq,
+         queued: true,
+         keyCount: length(arguments["keys"]),
+         applicationCursor: Keyword.get(key_opts, :application_cursor, false)
        }}
     end
   end
@@ -167,8 +188,25 @@ defmodule Dala.Mcp.TerminalTools do
       truncated: snapshot["truncated"] == true,
       rows: snapshot["rows"],
       columns: snapshot["columns"],
-      cursor: snapshot["cursor"]
+      cursor: snapshot["cursor"],
+      inputModes: snapshot["inputModes"] || %{},
+      highlightedRanges: snapshot["highlightedRanges"] || [],
+      highlightsTruncated: snapshot["highlightsTruncated"] == true,
+      styleAware: Map.has_key?(snapshot, "highlightedRanges")
     })
+  end
+
+  defp terminal_key_options(_session_id, nil), do: []
+
+  defp terminal_key_options(session_id, _key_or_keys) do
+    case Dala.Terminal.Server.snapshot(session_id, lines: 1, max_bytes: 1_024) do
+      {:ok, %{"inputModes" => %{"applicationCursor" => enabled}}}
+      when is_boolean(enabled) ->
+        [application_cursor: enabled]
+
+      _ ->
+        []
+    end
   end
 
   defp resolve_session(selector) when is_binary(selector) do
@@ -343,10 +381,30 @@ defmodule Dala.Mcp.TerminalTools do
         "submit" => %{"type" => "boolean", "default" => true},
         "key" => %{
           "type" => "string",
-          "enum" => ~w(ENTER ESC TAB UP DOWN LEFT RIGHT CTRL_C CTRL_D CTRL_Z)
+          "enum" => Dala.Terminal.Input.supported_keys(),
+          "description" =>
+            "One safe key. For TUI navigation prefer send_terminal_keys with an ordered sequence."
         }
       },
       ["session"]
+    )
+  end
+
+  defp send_keys_tool do
+    tool(
+      "send_terminal_keys",
+      "Navigate a TUI with an ordered sequence of safe keys. Dala reads the holder's current application-cursor mode before encoding arrows. Use read_terminal.highlightedRanges and cursor to identify the active choice, send keys, then wait_terminal/read_terminal to verify the new state.",
+      %{
+        "session" => selector_schema(),
+        "keys" => %{
+          "type" => "array",
+          "items" => %{"type" => "string", "enum" => Dala.Terminal.Input.supported_keys()},
+          "minItems" => 1,
+          "maxItems" => 100,
+          "description" => "Ordered keys such as [\"DOWN\", \"DOWN\", \"SPACE\", \"ENTER\"]."
+        }
+      },
+      ["session", "keys"]
     )
   end
 

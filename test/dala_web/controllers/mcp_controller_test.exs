@@ -207,6 +207,7 @@ defmodule DalaWeb.McpControllerTest do
       names = Enum.map(disabled["result"]["tools"], & &1["name"])
       refute "list_terminal_sessions" in names
       refute "send_terminal_message" in names
+      refute "send_terminal_keys" in names
 
       Dala.Settings.Mcp.set_terminal_access(true, false)
       readable = json_response(mcp_post(rpc("tools/list", 62)), 200)
@@ -215,11 +216,13 @@ defmodule DalaWeb.McpControllerTest do
       assert "read_terminal" in names
       assert "wait_terminal" in names
       refute "send_terminal_message" in names
+      refute "send_terminal_keys" in names
 
       Dala.Settings.Mcp.set_terminal_access(true, true)
       controlled = json_response(mcp_post(rpc("tools/list", 63)), 200)
       names = Enum.map(controlled["result"]["tools"], & &1["name"])
       assert "send_terminal_message" in names
+      assert "send_terminal_keys" in names
       assert "terminal_upload_attachment" in names
     end
   end
@@ -250,6 +253,17 @@ defmodule DalaWeb.McpControllerTest do
       assert total == 45
       assert length(data["presets"]) == 6
       assert Enum.all?(data["presets"], &(&1["base"] in ["light", "dark"]))
+      assert map_size(data["tokenDefinitions"]) == 45
+
+      assert data["tokenDefinitions"]["gitAdded"] == %{
+               "group" => "git",
+               "description" => "Git added-file labels and names.",
+               "defaults" => %{"dark" => "#5fbf87", "light" => "#116329"}
+             }
+
+      assert Enum.map(data["supportedOperations"], & &1["tool"]) ==
+               ~w(list_themes get_theme preview_theme create_theme update_theme delete_theme)
+
       assert data["previewWorkflow"] |> Enum.join(" ") =~ "preview_theme"
       assert length(data["reviewRules"]["hard"]) == 4
       assert length(data["reviewRules"]["warnings"]) == 5

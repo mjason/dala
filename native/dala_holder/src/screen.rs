@@ -25,6 +25,9 @@ pub struct TextSnapshot {
     pub rows: usize,
     pub columns: usize,
     pub cursor: TextCursor,
+    pub input_modes: InputModes,
+    pub highlighted_ranges: Vec<HighlightedRange>,
+    pub highlights_truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -33,6 +36,34 @@ pub struct TextCursor {
     pub row: i32,
     pub column: usize,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputModes {
+    pub application_cursor: bool,
+    pub application_keypad: bool,
+    pub bracketed_paste: bool,
+    pub mouse_tracking: bool,
+    pub cursor_visible: bool,
+}
+
+/// A visible run using inverse video or a non-default background. TUIs use
+/// these attributes for selected rows, active buttons and focused controls.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HighlightedRange {
+    pub row: usize,
+    pub start_column: usize,
+    pub end_column: usize,
+    pub text: String,
+    pub foreground: String,
+    pub background: String,
+    pub inverse: bool,
+    pub bold: bool,
+    pub dim: bool,
+}
+
+const MAX_HIGHLIGHT_RANGES: usize = 256;
 
 #[derive(Clone)]
 struct Quiet;
@@ -173,7 +204,11 @@ impl Screen {
         let mut cached_line_count = 0usize;
         let mut truncated = false;
         let mut logical = String::new();
-        let line_limit = if max_lines == 0 { usize::MAX } else { max_lines };
+        let line_limit = if max_lines == 0 {
+            usize::MAX
+        } else {
+            max_lines
+        };
         let byte_limit = max_bytes.max(1);
 
         for i in start..=end {
@@ -226,6 +261,12 @@ impl Screen {
             }
         }
 
+        let (highlighted_ranges, highlights_truncated) = if alt {
+            highlighted_ranges(grid)
+        } else {
+            (Vec::new(), false)
+        };
+
         TextSnapshot {
             mode: if alt { "alternate" } else { "normal" },
             lines: retained.into_iter().collect(),
@@ -237,23 +278,125 @@ impl Screen {
                 row: cursor.line.0,
                 column: cursor.column.0,
             },
+            input_modes: input_modes(term.mode()),
+            highlighted_ranges,
+            highlights_truncated,
         }
     }
 }
 
-fn row_wraps(
-    grid: &alacritty_terminal::grid::Grid<Cell>,
-    line: Line,
-    columns: usize,
-) -> bool {
-    columns > 0 && grid[line][Column(columns - 1)].flags.contains(Flags::WRAPLINE)
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HighlightStyle {
+    foreground: Color,
+    background: Color,
+    inverse: bool,
+    bold: bool,
+    dim: bool,
 }
 
-fn row_has_text(
+fn input_modes(mode: &TermMode) -> InputModes {
+    InputModes {
+        application_cursor: mode.contains(TermMode::APP_CURSOR),
+        application_keypad: mode.contains(TermMode::APP_KEYPAD),
+        bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+        mouse_tracking: mode.intersects(
+            TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
+        ),
+        cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
+    }
+}
+
+fn highlight_style(cell: &Cell) -> Option<HighlightStyle> {
+    let inverse = cell.flags.contains(Flags::INVERSE);
+    if !inverse && cell.bg == Color::Named(NamedColor::Background) {
+        return None;
+    }
+
+    Some(HighlightStyle {
+        foreground: cell.fg,
+        background: cell.bg,
+        inverse,
+        bold: cell.flags.contains(Flags::BOLD),
+        dim: cell.flags.contains(Flags::DIM),
+    })
+}
+
+fn highlighted_ranges(
     grid: &alacritty_terminal::grid::Grid<Cell>,
-    line: Line,
-    columns: usize,
-) -> bool {
+) -> (Vec<HighlightedRange>, bool) {
+    let mut ranges = Vec::new();
+    let columns = grid.columns();
+
+    for row_index in 0..grid.screen_lines() {
+        let row = &grid[Line(row_index as i32)];
+        let mut column = 0;
+
+        while column < columns {
+            let Some(style) = highlight_style(&row[Column(column)]) else {
+                column += 1;
+                continue;
+            };
+            let start = column;
+            column += 1;
+            while column < columns && highlight_style(&row[Column(column)]) == Some(style) {
+                column += 1;
+            }
+
+            if ranges.len() >= MAX_HIGHLIGHT_RANGES {
+                return (ranges, true);
+            }
+
+            ranges.push(HighlightedRange {
+                row: row_index,
+                start_column: start,
+                end_column: column,
+                text: plain_range(row, start, column).trim().to_owned(),
+                foreground: color_label(style.foreground),
+                background: color_label(style.background),
+                inverse: style.inverse,
+                bold: style.bold,
+                dim: style.dim,
+            });
+        }
+    }
+
+    (ranges, false)
+}
+
+fn plain_range(row: &alacritty_terminal::grid::Row<Cell>, start: usize, end: usize) -> String {
+    let mut out = String::new();
+    for i in start..end {
+        let cell = &row[Column(i)];
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
+            continue;
+        }
+        out.push(cell.c);
+        if let Some(extra) = cell.zerowidth() {
+            out.extend(extra);
+        }
+    }
+    out
+}
+
+fn color_label(color: Color) -> String {
+    match color {
+        Color::Named(named) => format!("{named:?}"),
+        Color::Spec(rgb) => format!("#{:02x}{:02x}{:02x}", rgb.r, rgb.g, rgb.b),
+        Color::Indexed(index) => format!("indexed:{index}"),
+    }
+}
+
+fn row_wraps(grid: &alacritty_terminal::grid::Grid<Cell>, line: Line, columns: usize) -> bool {
+    columns > 0
+        && grid[line][Column(columns - 1)]
+            .flags
+            .contains(Flags::WRAPLINE)
+}
+
+fn row_has_text(grid: &alacritty_terminal::grid::Grid<Cell>, line: Line, columns: usize) -> bool {
     row_wraps(grid, line, columns)
         || (0..columns).any(|i| {
             let cell = &grid[line][Column(i)];
@@ -264,11 +407,7 @@ fn row_has_text(
         })
 }
 
-fn plain_row(
-    grid: &alacritty_terminal::grid::Grid<Cell>,
-    line: Line,
-    columns: usize,
-) -> String {
+fn plain_row(grid: &alacritty_terminal::grid::Grid<Cell>, line: Line, columns: usize) -> String {
     let row = &grid[line];
     let mut out = String::new();
 
@@ -488,7 +627,11 @@ fn push_color(sgr: &mut String, color: &Color, background: bool) {
             }
         }
         Color::Indexed(index) => {
-            sgr.push_str(&format!(";{};5;{}", if background { 48 } else { 38 }, index));
+            sgr.push_str(&format!(
+                ";{};5;{}",
+                if background { 48 } else { 38 },
+                index
+            ));
         }
         Color::Spec(rgb) => {
             sgr.push_str(&format!(
@@ -587,7 +730,10 @@ mod tests {
         screen.advance(b"ABCDEFGHIJKLMNOPQRSTUVWXY");
         let out = text(&screen.repaint(false));
         let a = out.find("ABCDEFGHIJ").expect("first segment");
-        assert!(out[a..].contains("\r\n"), "hard-break mode must keep row newlines");
+        assert!(
+            out[a..].contains("\r\n"),
+            "hard-break mode must keep row newlines"
+        );
     }
 
     #[test]
@@ -606,7 +752,10 @@ mod tests {
         let snapshot = screen.text_snapshot(20, 128 * 1024);
 
         assert_eq!(snapshot.mode, "normal");
-        assert!(snapshot.lines.iter().any(|line| line == "ABCDEFGHIJKLMNOPQRSTUVWXY"));
+        assert!(snapshot
+            .lines
+            .iter()
+            .any(|line| line == "ABCDEFGHIJKLMNOPQRSTUVWXY"));
         assert!(snapshot.lines.iter().any(|line| line == "ready"));
         assert!(!snapshot.lines.join("\n").contains('\x1b'));
     }
@@ -628,12 +777,25 @@ mod tests {
     #[test]
     fn text_snapshot_reports_alternate_screen() {
         let mut screen = Screen::new(4, 20, 50);
-        screen.advance(b"old\r\n\x1b[?1049hTUI screen");
+        screen.advance(
+            b"old\r\n\x1b[?1049h\x1b[?1h\x1b[?2004h\x1b[48;5;236mTUI screen\x1b[0m\r\n\x1b[7;1mSelected option   \x1b[0m",
+        );
         let snapshot = screen.text_snapshot(20, 128 * 1024);
 
         assert_eq!(snapshot.mode, "alternate");
         assert!(snapshot.lines.join("\n").contains("TUI screen"));
         assert!(!snapshot.lines.join("\n").contains("old"));
+        assert!(snapshot.input_modes.application_cursor);
+        assert!(snapshot.input_modes.bracketed_paste);
+        assert!(!snapshot.highlights_truncated);
+        assert!(snapshot
+            .highlighted_ranges
+            .iter()
+            .any(|range| { range.text == "TUI screen" && range.background == "indexed:236" }));
+        assert!(snapshot
+            .highlighted_ranges
+            .iter()
+            .any(|range| { range.text == "Selected option" && range.inverse && range.bold }));
     }
 
     #[test]
@@ -695,7 +857,10 @@ mod takeover_reflow_tests {
         );
         // Hard-wrapped filler lines keep their breaks.
         assert!(out.contains("filler-0"));
-        assert!(!out.contains("filler-0filler-1"), "hard newlines must survive");
+        assert!(
+            !out.contains("filler-0filler-1"),
+            "hard newlines must survive"
+        );
     }
 
     /// Wide→narrow (desktop→phone takeover): a desktop-width line re-wraps
@@ -751,7 +916,11 @@ mod takeover_reflow_tests {
             "CJK line must rejoin contiguously after widening: {out:?}"
         );
         for ch in ['前', '后'] {
-            assert_eq!(out.matches(ch).count(), 1, "codepoint {ch} must appear exactly once");
+            assert_eq!(
+                out.matches(ch).count(),
+                1,
+                "codepoint {ch} must appear exactly once"
+            );
         }
     }
 
@@ -765,7 +934,11 @@ mod takeover_reflow_tests {
         screen.resize(8, 41);
         let out = text(&screen.repaint(true));
         for ch in ['前', '后'] {
-            assert_eq!(out.matches(ch).count(), 1, "codepoint {ch} must appear exactly once");
+            assert_eq!(
+                out.matches(ch).count(),
+                1,
+                "codepoint {ch} must appear exactly once"
+            );
         }
         // Soft segments carry no \r\n between them (spacer cells at the
         // wrap boundary are skipped, not rendered), so the whole logical

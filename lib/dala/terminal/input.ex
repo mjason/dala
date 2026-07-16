@@ -7,26 +7,76 @@ defmodule Dala.Terminal.Input do
     "ENTER" => "\r",
     "ESC" => "\e",
     "TAB" => "\t",
-    "UP" => "\e[A",
-    "DOWN" => "\e[B",
-    "LEFT" => "\e[D",
-    "RIGHT" => "\e[C",
+    "BACKTAB" => "\e[Z",
+    "SPACE" => " ",
+    "HOME" => "\e[H",
+    "END" => "\e[F",
+    "PAGE_UP" => "\e[5~",
+    "PAGE_DOWN" => "\e[6~",
     "CTRL_C" => <<3>>,
     "CTRL_D" => <<4>>,
     "CTRL_Z" => <<26>>
   }
+  @cursor_keys ~w(UP DOWN LEFT RIGHT)
+  @supported_keys ~w(ENTER ESC TAB BACKTAB SPACE UP DOWN LEFT RIGHT HOME END PAGE_UP PAGE_DOWN CTRL_C CTRL_D CTRL_Z)
+
+  def supported_keys, do: @supported_keys
 
   @doc "Build serialized PTY frames as `{bytes, delay_after_ms}` tuples."
-  def frames(app, text, attachments, submit, key \\ nil) do
+  def frames(app, text, attachments, submit, key \\ nil, opts \\ []) do
     cond do
       is_binary(key) ->
-        case Map.fetch(@key_sequences, key) do
-          {:ok, sequence} -> {:ok, [{sequence, 0}]}
-          :error -> {:error, "unsupported terminal key: #{key}"}
-        end
+        key_frames([key], opts)
 
       true ->
         build_message(app, text || "", attachments, submit)
+    end
+  end
+
+  @doc "Build a bounded, paced sequence of safe terminal key frames."
+  def key_frames(keys, opts \\ [])
+
+  def key_frames(keys, opts) when is_list(keys) and keys != [] and length(keys) <= 100 do
+    application_cursor? = Keyword.get(opts, :application_cursor, false)
+
+    with {:ok, sequences} <- key_sequences(keys, application_cursor?) do
+      last = length(sequences) - 1
+
+      {:ok,
+       sequences
+       |> Enum.with_index()
+       |> Enum.map(fn {sequence, index} -> {sequence, if(index == last, do: 0, else: 15)} end)}
+    end
+  end
+
+  def key_frames(_keys, _opts),
+    do: {:error, "keys must contain between 1 and 100 supported terminal keys"}
+
+  defp key_sequences(keys, application_cursor?) do
+    Enum.reduce_while(keys, {:ok, []}, fn key, {:ok, sequences} ->
+      case key_sequence(key, application_cursor?) do
+        {:ok, sequence} -> {:cont, {:ok, [sequence | sequences]}}
+        {:error, message} -> {:halt, {:error, message}}
+      end
+    end)
+    |> case do
+      {:ok, sequences} -> {:ok, Enum.reverse(sequences)}
+      error -> error
+    end
+  end
+
+  defp key_sequence(key, application_cursor?) when key in @cursor_keys do
+    final = %{"UP" => "A", "DOWN" => "B", "RIGHT" => "C", "LEFT" => "D"}[key]
+    {:ok, if(application_cursor?, do: "\eO#{final}", else: "\e[#{final}")}
+  end
+
+  defp key_sequence("HOME", true), do: {:ok, "\eOH"}
+  defp key_sequence("END", true), do: {:ok, "\eOF"}
+
+  defp key_sequence(key, _application_cursor?) do
+    case Map.fetch(@key_sequences, key) do
+      {:ok, sequence} -> {:ok, sequence}
+      :error -> {:error, "unsupported terminal key: #{inspect(key)}"}
     end
   end
 

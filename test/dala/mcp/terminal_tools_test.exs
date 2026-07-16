@@ -33,6 +33,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
     names = Registry.tools() |> Enum.map(& &1["name"])
     refute "list_terminal_sessions" in names
     refute "send_terminal_message" in names
+    refute "send_terminal_keys" in names
 
     assert {:error, message} = TerminalTools.call("read_terminal", %{"session" => session.id})
     assert message =~ "read access is disabled"
@@ -43,6 +44,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert "read_terminal" in names
     assert "wait_terminal" in names
     refute "send_terminal_message" in names
+    refute "send_terminal_keys" in names
     refute "terminal_upload_attachment" in names
 
     assert {:error, message} =
@@ -92,6 +94,49 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert read.sessionId == to_string(session.id)
     assert read.output =~ "mcp-terminal-roundtrip"
     refute read.output =~ "\e["
+    assert read.styleAware
+    assert is_map(read.inputModes)
+    assert is_list(read.highlightedRanges)
+  end
+
+  test "TUI snapshots expose highlighted choices and key sequences use application cursor mode",
+       %{
+         session: session
+       } do
+    result_path =
+      Path.join(System.tmp_dir!(), "dala-tui-key-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(result_path) end)
+
+    command =
+      "printf '\\033[?1049h\\033[?1h\\033[7;1mSelected option\\033[0m'; " <>
+        "IFS= read -rsN 3 key; printf '%s' \"$key\" | od -An -tx1 > #{result_path}; " <>
+        "printf '\\033[?1049l'"
+
+    Server.input(session.id, command <> "\r")
+
+    assert eventually(fn ->
+             case TerminalTools.call("read_terminal", %{"session" => session.id, "lines" => 20}) do
+               {:ok, snapshot} ->
+                 snapshot.mode == "alternate" and
+                   snapshot.inputModes["applicationCursor"] == true and
+                   Enum.any?(snapshot.highlightedRanges, &(&1["text"] == "Selected option"))
+
+               _ ->
+                 false
+             end
+           end)
+
+    assert {:ok, sent} =
+             TerminalTools.call("send_terminal_keys", %{
+               "session" => session.id,
+               "keys" => ["DOWN"]
+             })
+
+    assert sent.applicationCursor
+    assert sent.keyCount == 1
+    assert eventually(fn -> File.exists?(result_path) end)
+    assert File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() == "1b 4f 42"
   end
 
   test "upload stores a private regular file and returns a sendable path" do
@@ -148,5 +193,19 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert message =~ "ambiguous"
     assert message =~ TerminalTools.reference(session.id)
     assert message =~ TerminalTools.reference(other.id)
+  end
+
+  defp eventually(fun, attempts \\ 80) do
+    cond do
+      fun.() ->
+        true
+
+      attempts <= 0 ->
+        false
+
+      true ->
+        Process.sleep(50)
+        eventually(fun, attempts - 1)
+    end
   end
 end

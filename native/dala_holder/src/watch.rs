@@ -111,7 +111,9 @@ fn affected_dir(path: &Path, root: &Path) -> PathBuf {
     if path == root {
         root.to_path_buf()
     } else {
-        path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.to_path_buf())
     }
 }
 
@@ -202,11 +204,10 @@ pub fn run() -> ! {
         }
 
         let (raw_tx, raw_rx) = mpsc::channel::<Result<notify::Event, notify::Error>>();
-        let built = notify::recommended_watcher(
-            move |result: Result<notify::Event, notify::Error>| {
+        let built =
+            notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
                 let _ = raw_tx.send(result);
-            },
-        );
+            });
         let watcher = match built {
             Ok(w) => Arc::new(Mutex::new(w)),
             Err(error) => {
@@ -289,9 +290,7 @@ fn manage_root(
                         match register_tree(&watcher, &root, path, &mut registered, budget) {
                             Ok(()) => {}
                             Err(Register::Budget) => {
-                                emit_sentinel(&format!(
-                                    "!fallback dir budget exceeded ({budget})"
-                                ));
+                                emit_sentinel(&format!("!fallback dir budget exceeded ({budget})"));
                                 return;
                             }
                             Err(Register::Fatal(reason)) => {
@@ -336,7 +335,10 @@ fn register_tree(
         let Some(strong) = watcher.upgrade() else {
             return Err(Register::Gone);
         };
-        let outcome = strong.lock().unwrap().watch(&dir, RecursiveMode::NonRecursive);
+        let outcome = strong
+            .lock()
+            .unwrap()
+            .watch(&dir, RecursiveMode::NonRecursive);
         drop(strong);
         match outcome {
             Ok(()) => *registered += 1,
@@ -360,7 +362,9 @@ fn register_tree(
                 continue;
             }
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             // file_type() does not follow symlinks: symlinked trees can
             // neither loop the walk nor multiply watches.
@@ -392,7 +396,10 @@ fn spawns_dirs(kind: &notify::EventKind) -> bool {
     use notify::event::{EventKind, ModifyKind};
     matches!(
         kind,
-        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)) | EventKind::Any | EventKind::Other
+        EventKind::Create(_)
+            | EventKind::Modify(ModifyKind::Name(_))
+            | EventKind::Any
+            | EventKind::Other
     )
 }
 
@@ -464,7 +471,10 @@ mod excluded_tests {
     #[test]
     fn affected_dir_is_the_parent_except_for_the_root_itself() {
         let root = Path::new("/p");
-        assert_eq!(affected_dir(Path::new("/p/a/b.txt"), root), Path::new("/p/a"));
+        assert_eq!(
+            affected_dir(Path::new("/p/a/b.txt"), root),
+            Path::new("/p/a")
+        );
         assert_eq!(affected_dir(Path::new("/p/a"), root), Path::new("/p"));
         assert_eq!(affected_dir(root, root), Path::new("/p"));
     }

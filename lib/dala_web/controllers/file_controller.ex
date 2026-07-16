@@ -8,6 +8,9 @@ defmodule DalaWeb.FileController do
 
   use DalaWeb, :controller
 
+  @gzip_min_bytes 1_024
+  @gzip_chunk_bytes 64 * 1_024
+
   def raw(conn, %{"path" => path} = params) do
     path = expand(path)
 
@@ -15,14 +18,22 @@ defmodule DalaWeb.FileController do
       {:ok, %File.Stat{type: :regular, size: size}} ->
         disposition = if params["download"] == "1", do: "attachment", else: "inline"
         filename = path |> Path.basename() |> String.replace(~s("), "")
+        content_type = MIME.from_path(path)
+        compressible? = size >= @gzip_min_bytes and compressible_content_type?(content_type)
 
         conn =
           conn
-          |> put_resp_content_type(MIME.from_path(path), nil)
+          |> put_resp_content_type(content_type, nil)
           |> put_resp_header("content-disposition", ~s(#{disposition}; filename="#{filename}"))
           |> put_resp_header("accept-ranges", "bytes")
+          |> maybe_vary_accept_encoding(compressible?)
 
         case requested_range(conn, size) do
+          :full when compressible? ->
+            if accepts_gzip?(conn),
+              do: send_gzip_file(conn, path),
+              else: send_file(conn, 200, path)
+
           :full ->
             send_file(conn, 200, path)
 
@@ -176,6 +187,121 @@ defmodule DalaWeb.FileController do
     else
       _ -> :invalid
     end
+  end
+
+  defp compressible_content_type?(content_type) do
+    String.starts_with?(content_type, "text/") or
+      String.ends_with?(content_type, "+json") or
+      String.ends_with?(content_type, "+xml") or
+      content_type in ~w(application/json application/javascript application/xml image/svg+xml)
+  end
+
+  defp maybe_vary_accept_encoding(conn, true),
+    do: put_resp_header(conn, "vary", "accept-encoding")
+
+  defp maybe_vary_accept_encoding(conn, false), do: conn
+
+  defp accepts_gzip?(conn) do
+    codings =
+      conn
+      |> get_req_header("accept-encoding")
+      |> Enum.flat_map(&String.split(&1, ",", trim: true))
+      |> Enum.map(&parse_content_coding/1)
+
+    explicit =
+      Enum.find_value(codings, fn
+        {coding, quality} when coding in ["gzip", "x-gzip"] -> {:found, quality}
+        _ -> nil
+      end)
+
+    quality =
+      case explicit do
+        {:found, value} ->
+          value
+
+        nil ->
+          Enum.find_value(codings, 0.0, fn {coding, value} -> if coding == "*", do: value end)
+      end
+
+    quality > 0
+  end
+
+  defp parse_content_coding(value) do
+    [coding | params] = String.split(value, ";", trim: true)
+
+    quality =
+      Enum.find_value(params, 1.0, fn param ->
+        case String.split(String.trim(param), "=", parts: 2) do
+          [name, raw] ->
+            if String.downcase(String.trim(name)) == "q", do: parse_quality(raw)
+
+          _ ->
+            nil
+        end
+      end)
+
+    {coding |> String.trim() |> String.downcase(), quality}
+  end
+
+  defp parse_quality(raw) do
+    case Float.parse(String.trim(raw)) do
+      {quality, ""} -> quality |> max(0.0) |> min(1.0)
+      _ -> 0.0
+    end
+  end
+
+  # send_file/5 deliberately bypasses Bandit's response compressor. Stream a
+  # gzip representation ourselves so multi-GB text files stay O(chunk) memory.
+  defp send_gzip_file(conn, path) do
+    case File.open(path, [:read, :binary, :raw]) do
+      {:ok, io} ->
+        zlib = :zlib.open()
+
+        try do
+          :ok = :zlib.deflateInit(zlib, :default, :deflated, 31, 8, :default)
+
+          conn =
+            conn
+            |> put_resp_header("content-encoding", "gzip")
+            |> delete_resp_header("content-length")
+            |> send_chunked(200)
+
+          gzip_chunks(io, zlib, conn)
+        after
+          File.close(io)
+          :zlib.close(zlib)
+        end
+
+      {:error, _reason} ->
+        send_resp(conn, 404, "not found")
+    end
+  end
+
+  defp gzip_chunks(io, zlib, conn) do
+    case IO.binread(io, @gzip_chunk_bytes) do
+      :eof ->
+        finish_gzip(zlib, conn)
+
+      {:error, _reason} ->
+        conn
+
+      data ->
+        case chunk(conn, :zlib.deflate(zlib, data)) do
+          {:ok, conn} -> gzip_chunks(io, zlib, conn)
+          {:error, _reason} -> conn
+        end
+    end
+  end
+
+  defp finish_gzip(zlib, conn) do
+    result =
+      case chunk(conn, :zlib.deflate(zlib, <<>>, :finish)) do
+        {:ok, conn} -> conn
+        {:error, _reason} -> conn
+      end
+
+    :ok = :zlib.deflateEnd(zlib)
+    result
   end
 
   defp upload_size(%Plug.Upload{path: path}) do

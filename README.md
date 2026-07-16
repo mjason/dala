@@ -16,7 +16,7 @@
 
 - **Persistent shells** — every session lives in its own PTY holder daemon (dtach model, written in Rust). Restarting or upgrading dala leaves your shells running: tmux durability, browser UI.
 - **Git review** — hunk-level *and* line-level stage/unstage/discard, working-tree/index dual perspectives, branch switching, per-file commit browsing, amend. All through a libgit2 NIF, no shelling out.
-- **Files** — VS Code-style drawer: upload/download/delete, drag & drop, paste files from the OS clipboard, `Ctrl/⌘+P` fuzzy quick-open.
+- **Files** — VS Code-style drawer: upload/download/delete, drag & drop, paste files from the OS clipboard, `Ctrl/⌘+P` fuzzy quick-open. Large text/HTML downloads stream with HTTP gzip while byte ranges remain resumable.
 - **Editing & preview** — CodeMirror 6 syntax-highlighted editor, character-level merge diffs, Markdown/CSV preview.
 - **Screenshots for AI CLIs** — paste an image into the terminal; dala saves it to disk and types the file path for claude code / codex / opencode.
 - **Self-upgrade** — one click in the sidebar updates to the latest GitHub release. Shells stay alive through the restart.

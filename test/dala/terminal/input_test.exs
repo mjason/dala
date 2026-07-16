@@ -37,7 +37,16 @@ defmodule Dala.Terminal.InputTest do
 
   test "supports bounded control keys and rejects non-path attachments" do
     assert {:ok, [{<<3>>, 0}]} = Input.frames("shell", "", [], false, "CTRL_C")
-    assert {:error, _message} = Input.frames("shell", "", [], false, "HOME")
+    assert {:ok, [{"\e[H", 0}]} = Input.frames("shell", "", [], false, "HOME")
     assert {:error, _message} = Input.frames("shell", "", [123], false)
+  end
+
+  test "paces TUI key sequences and respects application cursor mode" do
+    assert {:ok, [{"\eOB", 15}, {"\eOB", 15}, {" ", 15}, {"\e[6~", 15}, {"\r", 0}]} =
+             Input.key_frames(~w(DOWN DOWN SPACE PAGE_DOWN ENTER), application_cursor: true)
+
+    assert {:ok, [{"\e[A", 15}, {"\e[B", 0}]} = Input.key_frames(~w(UP DOWN))
+    assert {:error, message} = Input.key_frames(["RAW_BYTES"])
+    assert message =~ "unsupported terminal key"
   end
 end

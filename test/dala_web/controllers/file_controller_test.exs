@@ -29,6 +29,7 @@ defmodule DalaWeb.FileControllerTest do
     assert response(partial, 206) == "2345"
     assert get_resp_header(partial, "content-range") == ["bytes 2-5/10"]
     assert get_resp_header(partial, "content-length") == ["4"]
+    assert get_resp_header(partial, "content-encoding") == []
 
     suffix =
       build_conn()
@@ -44,6 +45,61 @@ defmodule DalaWeb.FileControllerTest do
 
     assert response(invalid, 416) == ""
     assert get_resp_header(invalid, "content-range") == ["bytes */10"]
+  end
+
+  test "streams large text files as gzip when the client accepts it", %{conn: conn, dir: dir} do
+    path = Path.join(dir, "large.html")
+    content = String.duplicate("<section>highly compressible backtest data</section>\n", 4_000)
+    File.write!(path, content)
+
+    conn =
+      conn
+      |> put_req_header("accept-encoding", "br, gzip, deflate")
+      |> get(~p"/files/raw?#{[path: path, download: "1"]}")
+
+    assert get_resp_header(conn, "content-encoding") == ["gzip"]
+    assert get_resp_header(conn, "vary") == ["accept-encoding"]
+    assert :zlib.gunzip(response(conn, 200)) == content
+    assert byte_size(response(conn, 200)) < div(byte_size(content), 10)
+  end
+
+  test "does not compress ranges, binary files or an explicitly rejected gzip encoding", %{
+    conn: conn,
+    dir: dir
+  } do
+    html = Path.join(dir, "range.html")
+    content = String.duplicate("abcdefghij", 500)
+    File.write!(html, content)
+
+    ranged =
+      conn
+      |> put_req_header("accept-encoding", "gzip")
+      |> put_req_header("range", "bytes=10-19")
+      |> get(~p"/files/raw?#{[path: html]}")
+
+    assert response(ranged, 206) == "abcdefghij"
+    assert get_resp_header(ranged, "content-encoding") == []
+    assert get_resp_header(ranged, "vary") == ["accept-encoding"]
+
+    rejected =
+      build_conn()
+      |> put_req_header("accept-encoding", "gzip;q=0, *;q=1")
+      |> get(~p"/files/raw?#{[path: html]}")
+
+    assert response(rejected, 200) == content
+    assert get_resp_header(rejected, "content-encoding") == []
+
+    binary = Path.join(dir, "large.bin")
+    bytes = :crypto.strong_rand_bytes(4_096)
+    File.write!(binary, bytes)
+
+    binary_conn =
+      build_conn()
+      |> put_req_header("accept-encoding", "gzip")
+      |> get(~p"/files/raw?#{[path: binary]}")
+
+    assert response(binary_conn, 200) == bytes
+    assert get_resp_header(binary_conn, "content-encoding") == []
   end
 
   test "serves a download with attachment disposition", %{conn: conn, dir: dir} do

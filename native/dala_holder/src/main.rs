@@ -11,7 +11,7 @@
 //!                      0x04 REPAINT <synthesized screen bytes>
 //!                      0x05 CWD     <utf8 path (from OSC 7)>
 //!                      0x06 AGENT   <title 0x1f body>
-//!                      0x07 TEXT_SNAPSHOT <json plain-text grid snapshot>
+//!                      0x07 TEXT_SNAPSHOT <json text + TUI style snapshot>
 //!   client -> holder:  0x11 INPUT   <raw bytes>
 //!                      0x12 RESIZE  <u16 be rows> <u16 be cols>
 //!                      0x13 KILL
@@ -59,7 +59,10 @@ const MIN_COLS: u16 = 2;
 const MAX_COLS: u16 = 1000;
 
 fn clamp_dims(rows: u16, cols: u16) -> (u16, u16) {
-    (rows.clamp(MIN_ROWS, MAX_ROWS), cols.clamp(MIN_COLS, MAX_COLS))
+    (
+        rows.clamp(MIN_ROWS, MAX_ROWS),
+        cols.clamp(MIN_COLS, MAX_COLS),
+    )
 }
 
 const T_HELLO: u8 = 0x01;
@@ -290,8 +293,9 @@ fn main() {
                     loop {
                         let attached = shared.client.is_some();
                         let drainable = attached && !shared.ring.is_empty();
-                        let repaint =
-                            attached && shared.ring.is_empty() && !shared.repaint_pending.is_empty();
+                        let repaint = attached
+                            && shared.ring.is_empty()
+                            && !shared.repaint_pending.is_empty();
                         let text_snapshot = attached
                             && shared.ring.is_empty()
                             && !shared.text_snapshot_pending.is_empty();
@@ -313,7 +317,11 @@ fn main() {
                     } else if shared.client.is_some() && shared.cwd_report.is_some() {
                         (Job::Cwd(shared.cwd_report.take().unwrap()), stream, gen)
                     } else if shared.client.is_some() && !shared.agent_reports.is_empty() {
-                        (Job::Agent(shared.agent_reports.pop_front().unwrap()), stream, gen)
+                        (
+                            Job::Agent(shared.agent_reports.pop_front().unwrap()),
+                            stream,
+                            gen,
+                        )
                     } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
                         let cols = shared.repaint_pending.pop_front().unwrap_or(0);
                         // Soft wraps are only correct when the requester's
@@ -324,13 +332,19 @@ fn main() {
                     } else if shared.client.is_some() && !shared.text_snapshot_pending.is_empty() {
                         let (lines, bytes) = shared.text_snapshot_pending.pop_front().unwrap();
                         let snapshot = shared.screen.text_snapshot(lines, bytes);
-                        let encoded = serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                        let encoded =
+                            serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
                         (Job::TextSnapshot(encoded), stream, gen)
                     } else {
                         let status = shared.exit_status.unwrap_or(0);
                         let snapshot = shared.screen.text_snapshot(0, 64 * 1024);
-                        let encoded = serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
-                        (Job::Exit(status, shared.screen.repaint(false), encoded), stream, gen)
+                        let encoded =
+                            serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                        (
+                            Job::Exit(status, shared.screen.repaint(false), encoded),
+                            stream,
+                            gen,
+                        )
                     }
                 };
 
@@ -367,7 +381,7 @@ fn main() {
         let Ok(mut stream) = stream else { continue };
 
         let hello = format!(
-            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":3}}",
+            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":4}}",
             shell_pid, config.rows, config.cols
         );
         if write_frame(&mut stream, T_HELLO, hello.as_bytes()).is_err() {
@@ -400,7 +414,11 @@ fn main() {
                 match read_frame(&mut stream) {
                     Ok((T_INPUT, data)) => {
                         let mut writer = pty_writer.lock().unwrap();
-                        if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
+                        if writer
+                            .write_all(&data)
+                            .and_then(|_| writer.flush())
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -637,7 +655,13 @@ fn daemonize(socket_path: &std::path::Path) {
 /// Writes one frame to the (possibly already replaced) client; on failure,
 /// detaches the client — but only if it is still the same connection
 /// generation, so a newer client is never clobbered by a stale write.
-fn send_or_drop(state: &State, stream: Option<UnixStream>, gen: u64, frame_type: u8, payload: &[u8]) {
+fn send_or_drop(
+    state: &State,
+    stream: Option<UnixStream>,
+    gen: u64,
+    frame_type: u8,
+    payload: &[u8],
+) {
     if let Some(mut stream) = stream {
         if write_frame(&mut stream, frame_type, payload).is_err() {
             let mut shared = state.shared.lock().unwrap();
@@ -661,7 +685,10 @@ fn read_frame(stream: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     stream.read_exact(&mut header)?;
     let len = u32::from_be_bytes(header) as usize;
     if len == 0 || len > 16 * 1024 * 1024 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad frame"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bad frame",
+        ));
     }
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload)?;
@@ -669,7 +696,6 @@ fn read_frame(stream: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     payload.remove(0);
     Ok((frame_type, payload))
 }
-
 
 #[cfg(test)]
 mod frame_tests {
@@ -710,8 +736,18 @@ mod frame_tests {
     #[test]
     fn round_trips_every_frame_type_byte_exact() {
         let types = [
-            T_HELLO, T_OUTPUT, T_EXIT, T_REPAINT, T_CWD, T_AGENT, T_INPUT, T_RESIZE, T_KILL,
-            T_TEXT_SNAPSHOT, T_REPAINT_REQ, T_TEXT_SNAPSHOT_REQ,
+            T_HELLO,
+            T_OUTPUT,
+            T_EXIT,
+            T_REPAINT,
+            T_CWD,
+            T_AGENT,
+            T_INPUT,
+            T_RESIZE,
+            T_KILL,
+            T_TEXT_SNAPSHOT,
+            T_REPAINT_REQ,
+            T_TEXT_SNAPSHOT_REQ,
         ];
         for &ty in &types {
             // Payload exercises all byte values including 0x00 and 0xff.
@@ -842,10 +878,7 @@ mod percent_decode_tests {
 
     #[test]
     fn decodes_mixed_case_hex_and_spaces() {
-        assert_eq!(
-            percent_decode("/a%20b/%C3%A9").as_deref(),
-            Some("/a b/é")
-        );
+        assert_eq!(percent_decode("/a%20b/%C3%A9").as_deref(), Some("/a b/é"));
     }
 
     #[test]

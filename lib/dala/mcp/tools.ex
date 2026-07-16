@@ -17,7 +17,39 @@ defmodule Dala.Mcp.Tools do
   """
 
   alias Dala.Mcp.Registry
-  alias Dala.Settings.Theme.{Presets, Tokens}
+  alias Dala.Settings.Theme.{Palette, Presets, Tokens}
+
+  @theme_token_descriptions %{
+    "bg0" => "Primary app and editor background.",
+    "bg1" => "Secondary surfaces such as sidebars, panels and the composer.",
+    "bg2" => "Raised, selected and hover surfaces.",
+    "line" => "Borders, dividers and subtle outlines.",
+    "fg" => "Primary UI and editor text.",
+    "fgMuted" => "Secondary labels, metadata and placeholders.",
+    "mint" => "Primary action, focus and active-state accent.",
+    "danger" => "Destructive actions and error emphasis.",
+    "gitAdded" => "Git added-file labels and names.",
+    "gitModified" => "Git modified-file labels, names and commit hashes.",
+    "gitDeleted" => "Git deleted-file labels and names.",
+    "gitRenamed" => "Git renamed/copied-file labels and names.",
+    "gitUntracked" => "Git untracked-file labels and names.",
+    "gitConflict" => "Git merge-conflict labels and names.",
+    "diffAddFg" => "Added-line marker and text emphasis.",
+    "diffDelFg" => "Deleted-line marker and text emphasis.",
+    "diffHunk" => "Diff hunk headers and location markers.",
+    "diffAddBg" => "Added-line background tint.",
+    "diffDelBg" => "Deleted-line background tint.",
+    "cmGutterBg" => "CodeMirror gutter background.",
+    "cmGutterFg" => "CodeMirror line numbers and gutter text.",
+    "cmActiveBg" => "CodeMirror active-line background.",
+    "cmHunkBg" => "CodeMirror changed-hunk background.",
+    "cmSelection" => "CodeMirror selection background.",
+    "termBackground" => "Terminal canvas background.",
+    "termForeground" => "Terminal default text.",
+    "termCursor" => "Terminal cursor colour.",
+    "termCursorAccent" => "Glyph colour underneath a block cursor.",
+    "termSelectionBackground" => "Terminal selection background."
+  }
 
   @doc """
   Run the named tool. Returns `{:ok, clean_result}` (result may be `nil` for a
@@ -217,17 +249,31 @@ defmodule Dala.Mcp.Tools do
     {codemirror, rest} = Enum.split(rest, 5)
     {terminal, ansi} = Enum.split(rest, 5)
 
+    groups = %{
+      "ui" => ui,
+      "git" => git,
+      "diff" => diff,
+      "codemirror" => codemirror,
+      "terminal" => terminal,
+      "ansi" => ansi
+    }
+
+    dark = Palette.base_tokens(:dark)
+    light = Palette.base_tokens(:light)
+
     %{
       "tokenCount" => Tokens.count(),
-      "tokenKeys" => %{
-        "ui" => ui,
-        "git" => git,
-        "diff" => diff,
-        "codemirror" => codemirror,
-        "terminal" => terminal,
-        "ansi" => ansi
-      },
+      "tokenKeys" => groups,
+      "tokenDefinitions" => token_definitions(groups, dark, light),
       "bases" => ["light", "dark"],
+      "supportedOperations" => [
+        %{"tool" => "list_themes", "effect" => "read visible built-in and custom themes"},
+        %{"tool" => "get_theme", "effect" => "read one theme and its sparse overrides"},
+        %{"tool" => "preview_theme", "effect" => "resolve, audit and render without saving"},
+        %{"tool" => "create_theme", "effect" => "save a new shared custom theme"},
+        %{"tool" => "update_theme", "effect" => "merge sparse changes into a custom theme"},
+        %{"tool" => "delete_theme", "effect" => "delete a custom theme; built-ins are protected"}
+      ],
       "presets" =>
         Enum.map(Presets.all(), fn preset ->
           %{"id" => preset.id, "name" => preset.name, "base" => to_string(preset.base)}
@@ -263,4 +309,23 @@ defmodule Dala.Mcp.Tools do
           "against its background, UI chrome >= 3.0:1."
     }
   end
+
+  defp token_definitions(groups, dark, light) do
+    for {group, keys} <- groups, key <- keys, into: %{} do
+      {key,
+       %{
+         "group" => group,
+         "description" => token_description(key),
+         "defaults" => %{"dark" => dark[key], "light" => light[key]}
+       }}
+    end
+  end
+
+  defp token_description("ansiBright" <> colour),
+    do: "Bright ANSI #{String.downcase(colour)} used by terminal programs."
+
+  defp token_description("ansi" <> colour),
+    do: "ANSI #{String.downcase(colour)} used by terminal programs."
+
+  defp token_description(key), do: Map.fetch!(@theme_token_descriptions, key)
 end

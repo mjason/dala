@@ -43,7 +43,11 @@ impl WatchProc {
                 }
             }
         });
-        WatchProc { child, stdin: Some(stdin), lines: rx }
+        WatchProc {
+            child,
+            stdin: Some(stdin),
+            lines: rx,
+        }
     }
 
     fn watch_root(&mut self, root: &Path) {
@@ -181,7 +185,11 @@ fn emits_containing_dir_for_nested_changes() {
     std::fs::write(deep.join("hello.txt"), "hi").unwrap();
     proc.expect_dir(&deep, Duration::from_secs(2));
     // Debounce is ~200ms; the whole path must stay well under a second.
-    assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "took {:?}",
+        t0.elapsed()
+    );
 
     // Deletes are reported too.
     std::fs::remove_file(deep.join("hello.txt")).unwrap();
@@ -291,7 +299,10 @@ fn exits_within_a_second_of_stdin_eof() {
     // The BEAM dying (even SIGKILL) closes the port pipe — modeled here by
     // dropping stdin. The watcher must exit on its own: no orphans, ever.
     drop(proc.stdin.take());
-    assert!(proc.wait_exit(Duration::from_secs(1)), "watcher outlived stdin");
+    assert!(
+        proc.wait_exit(Duration::from_secs(1)),
+        "watcher outlived stdin"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -302,12 +313,20 @@ fn exits_within_a_second_of_stdin_eof() {
 fn inotify_watch_count(pid: u32) -> usize {
     let fd_dir = format!("/proc/{pid}/fd");
     let mut total = 0;
-    for entry in std::fs::read_dir(&fd_dir).expect("read /proc fd dir").flatten() {
-        let Ok(target) = std::fs::read_link(entry.path()) else { continue };
+    for entry in std::fs::read_dir(&fd_dir)
+        .expect("read /proc fd dir")
+        .flatten()
+    {
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
         if target.to_string_lossy().contains("inotify") {
             let fdinfo = format!("/proc/{pid}/fdinfo/{}", entry.file_name().to_string_lossy());
             if let Ok(info) = std::fs::read_to_string(&fdinfo) {
-                total += info.lines().filter(|l| l.starts_with("inotify wd:")).count();
+                total += info
+                    .lines()
+                    .filter(|l| l.starts_with("inotify wd:"))
+                    .count();
             }
         }
     }
