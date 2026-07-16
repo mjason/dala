@@ -11,6 +11,7 @@ npm install          # 只需一次；不要 npx playwright install（用系统 
 npx playwright test  # 全量
 npx playwright test session.spec.js          # 单个文件
 npx playwright test -g "删除会话"             # 按名称过滤
+npx playwright test theme.spec.js --update-snapshots # 审核后更新主题视觉基线
 ```
 
 Playwright 会通过 `start-server.sh` 自动拉起一个 **完全隔离** 的 dala

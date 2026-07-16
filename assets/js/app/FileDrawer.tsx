@@ -516,7 +516,7 @@ export default function FileDrawer({
                   }}
                   className={`block w-full px-3 py-1.5 text-left font-mono text-xs transition-colors ${
                     danger
-                      ? "text-fg-muted hover:bg-[#e5716e]/10 hover:text-[#e5716e]"
+                      ? "text-fg-muted hover:bg-danger/10 hover:text-danger"
                       : "text-fg-muted hover:bg-bg2 hover:text-fg"
                   }`}
                 >

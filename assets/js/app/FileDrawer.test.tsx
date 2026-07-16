@@ -430,6 +430,19 @@ describe("FileDrawer keyboard and delete", () => {
     expect(document.getElementById("delete-target-path")).toHaveTextContent("/proj/a.txt");
   });
 
+  it("uses the theme danger token for the context-menu delete action", async () => {
+    await renderWithFiles();
+
+    fireEvent.contextMenu(document.querySelector('[data-path="/proj/a.txt"]')!, {
+      clientX: 24,
+      clientY: 32,
+    });
+
+    const deleteItem = document.querySelector('[data-ctx-item="delete"]')!;
+    expect(deleteItem).toHaveClass("hover:bg-danger/10", "hover:text-danger");
+    expect(deleteItem.className).not.toContain("#e5716e");
+  });
+
   it("download links point at the raw endpoint", async () => {
     await renderWithFiles();
     const link = document.querySelector('[data-download="/proj/a.txt"]') as HTMLAnchorElement;

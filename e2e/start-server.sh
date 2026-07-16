@@ -3,9 +3,9 @@
 # FULLY isolated from the developer's real dala instance:
 #
 # - sqlite: sessions live in dala_dev.db (DALA_DATA_DIR does NOT move the
-#   database). We copy the dev DB into the workdir (schema included) and
-#   purge terminal_sessions IN THE COPY, so the e2e server never sees —
-#   or worse, reattaches to — the user's real sessions.
+#   database). We copy the dev DB into the workdir (schema included), purge
+#   terminal_sessions and user-created themes IN THE COPY, so the e2e server
+#   never sees real sessions and visual theme snapshots have fixed inputs.
 # - PTY holders: shells outlive dala restarts via holder sockets under
 #   $XDG_RUNTIME_DIR/dala-pty. A private XDG_RUNTIME_DIR keeps e2e holders
 #   away from the user's live shells (a shared dir would let the e2e server
@@ -36,7 +36,7 @@ mkdir -p "$XDG_RUNTIME_DIR" "$DALA_DATA_DIR"
 
 export DALA_E2E_DB="$WORK/dala_e2e.db"
 sqlite3 dala_dev.db ".backup '$DALA_E2E_DB'"
-sqlite3 "$DALA_E2E_DB" "DELETE FROM terminal_sessions;"
+sqlite3 "$DALA_E2E_DB" "DELETE FROM terminal_sessions; DELETE FROM custom_themes WHERE builtin = 0;"
 
 export PORT=4499
 
