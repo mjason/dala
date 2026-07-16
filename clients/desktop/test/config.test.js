@@ -1,7 +1,12 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { normalizeConfig } = require("../src/config");
+const {
+  normalizeConfig,
+  normalizeServerInput,
+  addServerConfig,
+  updateServerConfig,
+} = require("../src/config");
 
 describe("normalizeConfig", () => {
   test("passes a well-formed config through", () => {
@@ -58,5 +63,66 @@ describe("normalizeConfig", () => {
   test("strips unknown extra fields", () => {
     const out = normalizeConfig({ servers: [], extra: true });
     assert.deepEqual(Object.keys(out).sort(), ["last", "locale", "servers"]);
+  });
+});
+
+describe("server config edits", () => {
+  test("normalizes names, protocols, paths, and trailing slashes", () => {
+    assert.deepEqual(normalizeServerInput("  Home  ", " http://example.test:4400/dala/// "), {
+      name: "Home",
+      url: "http://example.test:4400/dala",
+    });
+    assert.deepEqual(normalizeServerInput("", "https://example.test/"), {
+      name: "example.test",
+      url: "https://example.test",
+    });
+  });
+
+  test("rejects malformed and non-http server URLs", () => {
+    assert.throws(() => normalizeServerInput("x", "not a url"), /invalid URL/);
+    assert.throws(() => normalizeServerInput("x", "file:///tmp/dala"), /http:\/\/ or https:\/\//);
+  });
+
+  test("adds a unique normalized server without mutating the input", () => {
+    const config = { servers: [], last: null, locale: "en" };
+    const updated = addServerConfig(config, "Home", "http://host:4400/");
+    assert.deepEqual(config.servers, []);
+    assert.deepEqual(updated.servers, [{ name: "Home", url: "http://host:4400" }]);
+    assert.throws(() => addServerConfig(updated, "Other", "http://host:4400/"), /already added/);
+  });
+
+  test("updates name, URL, and last while preserving list position", () => {
+    const config = {
+      servers: [
+        { name: "Home", url: "http://old:4400" },
+        { name: "Work", url: "https://work:4400" },
+      ],
+      last: "http://old:4400",
+      locale: "zhCN",
+    };
+    const updated = updateServerConfig(config, "http://old:4400", "New home", "https://new:4443/");
+    assert.deepEqual(updated, {
+      servers: [
+        { name: "New home", url: "https://new:4443" },
+        { name: "Work", url: "https://work:4400" },
+      ],
+      last: "https://new:4443",
+      locale: "zhCN",
+    });
+    assert.deepEqual(config.servers[0], { name: "Home", url: "http://old:4400" });
+  });
+
+  test("allows an unchanged URL but rejects unknown and duplicate targets", () => {
+    const config = {
+      servers: [
+        { name: "A", url: "http://a" },
+        { name: "B", url: "http://b" },
+      ],
+      last: null,
+      locale: null,
+    };
+    assert.equal(updateServerConfig(config, "http://a", "Renamed", "http://a/").servers[0].name, "Renamed");
+    assert.throws(() => updateServerConfig(config, "http://missing", "X", "http://x"), /unknown server/);
+    assert.throws(() => updateServerConfig(config, "http://a", "B", "http://b/"), /already added/);
   });
 });

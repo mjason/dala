@@ -11,4 +11,44 @@ function normalizeConfig(raw) {
   return { servers, last, locale };
 }
 
-module.exports = { normalizeConfig };
+function normalizeServerInput(name, url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || "").trim());
+  } catch {
+    throw new Error("invalid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("URL must start with http:// or https://");
+  }
+  const clean = parsed.origin + parsed.pathname.replace(/\/+$/, "");
+  return { name: String(name || "").trim() || parsed.host, url: clean };
+}
+
+function addServerConfig(config, name, url) {
+  const server = normalizeServerInput(name, url);
+  if (config.servers.some((item) => item.url === server.url)) {
+    throw new Error("server already added");
+  }
+  return { ...config, servers: [...config.servers, server] };
+}
+
+function updateServerConfig(config, currentUrl, name, url) {
+  const index = config.servers.findIndex((server) => server.url === currentUrl);
+  if (index < 0) throw new Error("unknown server");
+
+  const server = normalizeServerInput(name, url);
+  if (config.servers.some((item, itemIndex) => itemIndex !== index && item.url === server.url)) {
+    throw new Error("server already added");
+  }
+
+  const servers = config.servers.slice();
+  servers[index] = server;
+  return {
+    ...config,
+    servers,
+    last: config.last === currentUrl ? server.url : config.last,
+  };
+}
+
+module.exports = { normalizeConfig, normalizeServerInput, addServerConfig, updateServerConfig };

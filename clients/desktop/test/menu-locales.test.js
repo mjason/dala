@@ -98,6 +98,14 @@ describe("translate", () => {
     }
   });
 
+  test("every locale names the system-browser action", () => {
+    for (const locale of Object.keys(MESSAGES)) {
+      assert.equal(typeof MESSAGES[locale].openInSystemBrowser, "string");
+      assert.notEqual(MESSAGES[locale].openInSystemBrowser.trim(), "");
+    }
+    assert.equal(translate("zhCN", "openInSystemBrowser"), "在系统浏览器中打开");
+  });
+
   test("the role items main.js labels have translations in every locale", () => {
     // Electron role items render English unless given an explicit label —
     // main.js pulls these keys, so they must exist everywhere.

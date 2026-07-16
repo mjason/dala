@@ -4,16 +4,18 @@
 // bilingual application menu to switch servers, a local management page,
 // a built-in browser window for external links, and a native clipboard
 // bridge for plain-http LAN servers.
-const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeTheme, session, systemPreferences } = require("electron");
+const { app, BrowserWindow, Menu, Notification, WebContentsView, clipboard, dialog, ipcMain, nativeTheme, session, shell, systemPreferences } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { resolveLatestClient, isNewer } = require("./updater");
 const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
-const { normalizeConfig } = require("./src/config");
+const { addServerConfig, normalizeConfig, updateServerConfig } = require("./src/config");
 const { applyTheme: applyShellTheme, backgroundFor, coldStartTheme } = require("./src/theme");
+const { httpUrl } = require("./src/urls");
 const fs = require("fs");
 const path = require("path");
 
 const MANAGE_PAGE = path.join(__dirname, "src", "index.html");
+const BROWSER_PAGE = path.join(__dirname, "src", "browser.html");
 const WINDOW_ICON = path.join(__dirname, "build", "icon.png");
 
 // Safety net: a stray rejection or throw in the main process must never
@@ -106,7 +108,7 @@ function saveConfig(cfg) {
 // window, everything else (file:, javascript:, …) is dropped; no window is
 // ever allowed to spawn a child window directly.
 function externalLinkHandler({ url }) {
-  if (/^https?:/i.test(url)) openBrowserWindow(url);
+  if (httpUrl(url)) openBrowserWindow(url);
   return { action: "deny" };
 }
 
@@ -155,24 +157,80 @@ const BROWSER_SCROLLBAR_CSS = `
   ::-webkit-scrollbar-corner { background: transparent; }
 `;
 
-// External links (terminal web-links, files "open in browser") get a plain
-// Chromium window: no preload, no IPC, page title shown as-is.
+const BROWSER_TOOLBAR_HEIGHT = 44;
+
+function layoutBrowserView(win) {
+  if (!win || win.isDestroyed() || !win.browserView) return;
+  const [width, height] = win.getContentSize();
+  win.browserView.setBounds({
+    x: 0,
+    y: BROWSER_TOOLBAR_HEIGHT,
+    width,
+    height: Math.max(0, height - BROWSER_TOOLBAR_HEIGHT),
+  });
+}
+
+function currentBrowserUrl(win) {
+  if (!win || win.isDestroyed() || !win.isDalaBrowser || !win.browserView) return null;
+  return httpUrl(win.browserView.webContents.getURL());
+}
+
+async function openInSystemBrowser(win) {
+  const url = currentBrowserUrl(win);
+  if (!url) throw new Error("no web page is open");
+  await shell.openExternal(url);
+  return true;
+}
+
+// External links (terminal web-links, files "open in browser") get an
+// isolated remote WebContentsView below a trusted local toolbar. The remote
+// document has no preload or IPC access; only the toolbar may ask the main
+// process to hand the current http(s) URL to the operating system browser.
 function openBrowserWindow(url) {
+  const target = httpUrl(url);
+  if (!target) return null;
+
   const win = new BrowserWindow({
     width: 1100,
     height: 800,
     backgroundColor: "#ffffff",
     icon: WINDOW_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
   });
-  win.webContents.setWindowOpenHandler(externalLinkHandler);
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+    },
+  });
+  win.isDalaBrowser = true;
+  win.browserView = view;
+  win.contentView.addChildView(view);
+  layoutBrowserView(win);
+  win.on("resize", () => layoutBrowserView(win));
+  win.on("closed", rebuildMenu);
+  win.loadFile(BROWSER_PAGE);
+
+  view.webContents.setWindowOpenHandler(externalLinkHandler);
+  view.webContents.on("page-title-updated", (_event, title) => win.setTitle(title || "Dala"));
+  view.webContents.on("did-navigate", rebuildMenu);
+  view.webContents.on("did-navigate-in-page", rebuildMenu);
   // macOS renders its native overlay scrollbars — leave them alone;
   // other platforms get the slim pill instead of Chromium's chunky default.
   if (process.platform !== "darwin") {
-    win.webContents.on("dom-ready", () => {
-      void win.webContents.insertCSS(BROWSER_SCROLLBAR_CSS);
+    view.webContents.on("dom-ready", () => {
+      void view.webContents.insertCSS(BROWSER_SCROLLBAR_CSS);
     });
   }
-  win.loadURL(url);
+  void view.webContents.loadURL(target);
+  return win;
 }
 
 // The dala window that server-switching actions should act on: the focused
@@ -285,6 +343,8 @@ function quitAndInstall() {
 function rebuildMenu() {
   const isMac = process.platform === "darwin";
   const focused = targetShellWindow();
+  const activeWindow = BrowserWindow.getFocusedWindow();
+  const activeBrowser = activeWindow && activeWindow.isDalaBrowser ? activeWindow : null;
 
   const serverItems = config.servers.map((server, i) => ({
     label: server.name,
@@ -334,6 +394,11 @@ function rebuildMenu() {
           label: t("manageServers"),
           accelerator: "CmdOrCtrl+,",
           click: showManagePage,
+        },
+        {
+          label: t("openInSystemBrowser"),
+          enabled: Boolean(currentBrowserUrl(activeBrowser)),
+          click: () => void openInSystemBrowser(activeBrowser).catch(console.error),
         },
         { type: "separator" },
         updateReady
@@ -466,14 +531,23 @@ function rebuildMenu() {
 }
 
 // ---------------------------------------------------------------------------
-// IPC — command names/shapes identical to the previous client, so the
-// management page only changed its invoke binding.
+// IPC — local management and browser-toolbar commands plus the remote-page
+// bridges exposed by preload.js.
 
 // Server management is only for the local management page; remote server
 // pages get nothing but the clipboard bridge.
 function assertManagePage(event) {
   const url = event.senderFrame ? event.senderFrame.url : "";
   if (!url.startsWith("file:")) throw new Error("not allowed from remote pages");
+}
+
+function browserWindowFor(event) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const url = event.senderFrame ? event.senderFrame.url : "";
+  if (!win || !win.isDalaBrowser || event.sender !== win.webContents || !url.startsWith("file:")) {
+    throw new Error("not allowed outside the browser toolbar");
+  }
+  return win;
 }
 
 ipcMain.handle("clip_write", (_event, text) => {
@@ -544,18 +618,26 @@ ipcMain.handle("list_servers", (event) => {
 
 ipcMain.handle("add_server", (event, { name, url }) => {
   assertManagePage(event);
-  let parsed;
-  try {
-    parsed = new URL(String(url || "").trim());
-  } catch {
-    throw new Error("invalid URL");
+  config = addServerConfig(config, name, url);
+  saveConfig(config);
+  rebuildMenu();
+  return config;
+});
+
+ipcMain.handle("update_server", (event, { currentUrl, name, url }) => {
+  assertManagePage(event);
+  const index = config.servers.findIndex((server) => server.url === currentUrl);
+  config = updateServerConfig(config, currentUrl, name, url);
+  const updated = config.servers[index];
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && win.isDalaShell && win.serverUrl === currentUrl) {
+      win.serverUrl = updated.url;
+      win.setTitle(updated.name);
+      if (updated.url !== currentUrl) void win.loadURL(updated.url);
+    }
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("URL must start with http:// or https://");
-  }
-  const clean = parsed.origin + parsed.pathname.replace(/\/+$/, "");
-  if (config.servers.some((s) => s.url === clean)) throw new Error("server already added");
-  config.servers.push({ name: String(name || "").trim() || parsed.host, url: clean });
+
   saveConfig(config);
   rebuildMenu();
   return config;
@@ -583,6 +665,15 @@ ipcMain.handle("open_in_new_window", (event, { url }) => {
   if (!server) throw new Error("unknown server");
   createShellWindow(server);
 });
+
+ipcMain.handle("browser_state", (event) => {
+  const win = browserWindowFor(event);
+  return { openInSystemBrowser: t("openInSystemBrowser"), url: currentBrowserUrl(win) };
+});
+
+ipcMain.handle("open_current_in_system_browser", (event) =>
+  openInSystemBrowser(browserWindowFor(event))
+);
 
 // ---------------------------------------------------------------------------
 // Lifecycle

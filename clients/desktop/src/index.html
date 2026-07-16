@@ -33,6 +33,7 @@
     .server .name { font-weight: 600; }
     .server .url { color: var(--muted); font-size: 12px; overflow: hidden;
                    text-overflow: ellipsis; white-space: nowrap; }
+    .server .actions { display: flex; align-items: center; gap: 8px; flex: none; }
     button { font: inherit; font-size: 12px; border-radius: 6px; cursor: pointer;
              padding: 4px 10px; border: 1px solid var(--line);
              background: transparent; color: var(--muted); transition: all .15s; }
@@ -40,7 +41,7 @@
     button.primary { border-color: rgba(76,195,138,.5); color: var(--mint); }
     button.primary:hover { background: rgba(76,195,138,.1); border-color: var(--mint); }
     button.danger:hover { color: var(--danger); border-color: rgba(229,113,110,.6); }
-    form { display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; margin-top: 8px; }
+    form { display: grid; grid-template-columns: 1fr 2fr auto auto; gap: 8px; margin-top: 8px; }
     input { font: inherit; font-size: 13px; background: var(--bg1); color: var(--fg);
             border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; }
     input:focus { border-color: rgba(76,195,138,.6); }
@@ -51,6 +52,14 @@
           padding: 1px 5px; font-size: 11px; }
     .empty { border: 1px dashed var(--line); border-radius: 10px; padding: 22px;
              text-align: center; color: var(--muted); font-size: 13px; }
+    @media (max-width: 680px) {
+      body { padding: 20px; }
+      .server { align-items: stretch; flex-direction: column; }
+      .server .actions { justify-content: flex-end; }
+      form { grid-template-columns: 1fr 1fr; }
+      form input { grid-column: 1 / -1; }
+      button { min-height: 34px; }
+    }
   </style>
 </head>
 <body>
@@ -65,11 +74,12 @@
     <div id="servers"></div>
     <div id="empty" class="empty" hidden data-i18n="empty"></div>
 
-    <div class="section" data-i18n="add"></div>
+    <div class="section" id="form-title" data-i18n="add"></div>
     <form id="add-form">
       <input id="name" autocomplete="off" />
       <input id="url" placeholder="http://192.168.1.10:4400" autocomplete="off" required />
-      <button type="submit" class="primary" data-i18n="addButton"></button>
+      <button id="submit" type="submit" class="primary" data-i18n="addButton"></button>
+      <button id="cancel" type="button" hidden data-i18n="cancel"></button>
     </form>
     <div id="error"></div>
 
@@ -82,16 +92,16 @@
 
     // --- i18n: same locale set as the dala web app -------------------------
     const MESSAGES = {
-      en: { tagline: "connect to your dala servers", servers: "Servers", empty: "No servers yet — add one below ↓", add: "Add", addButton: "Add", namePh: "name (optional)", connect: "Connect", newWindow: "New window", remove: "Remove", hint: "Use the menu bar to switch servers ({kbd1}), open one in a new window, or come back here ({kbd2}).<br/>Each server keeps its own sign-in for 60 days." },
-      "zh-CN": { tagline: "连接你的 dala 服务器", servers: "服务器", empty: "还没有服务器，先在下面添加一个 ↓", add: "添加", addButton: "添加", namePh: "名称（可选）", connect: "连接", newWindow: "新窗口", remove: "删除", hint: "菜单栏可随时切换服务器（{kbd1}）、新窗口打开、回到本页（{kbd2}）。<br/>每台服务器的登录状态独立保存，登录一次 60 天免登录。" },
-      "zh-TW": { tagline: "連線你的 dala 伺服器", servers: "伺服器", empty: "還沒有伺服器，先在下面新增一個 ↓", add: "新增", addButton: "新增", namePh: "名稱（可選）", connect: "連線", newWindow: "新視窗", remove: "刪除", hint: "選單列可隨時切換伺服器（{kbd1}）、新視窗開啟、回到本頁（{kbd2}）。<br/>每台伺服器的登入狀態獨立保存，登入一次 60 天免登入。" },
-      ja: { tagline: "dala サーバーに接続", servers: "サーバー", empty: "サーバーがまだありません — 下で追加してください ↓", add: "追加", addButton: "追加", namePh: "名前（任意）", connect: "接続", newWindow: "新しいウィンドウ", remove: "削除", hint: "メニューバーからサーバー切替（{kbd1}）、新規ウィンドウ、このページへ戻る（{kbd2}）。<br/>各サーバーのログインは 60 日間保持されます。" },
-      ko: { tagline: "dala 서버에 연결", servers: "서버", empty: "아직 서버가 없습니다 — 아래에서 추가하세요 ↓", add: "추가", addButton: "추가", namePh: "이름 (선택)", connect: "연결", newWindow: "새 창", remove: "삭제", hint: "메뉴 막대에서 서버 전환({kbd1}), 새 창 열기, 이 페이지로 돌아오기({kbd2}).<br/>각 서버의 로그인은 60일간 유지됩니다." },
-      es: { tagline: "conecta con tus servidores dala", servers: "Servidores", empty: "Aún no hay servidores: añade uno abajo ↓", add: "Añadir", addButton: "Añadir", namePh: "nombre (opcional)", connect: "Conectar", newWindow: "Nueva ventana", remove: "Eliminar", hint: "Usa la barra de menús para cambiar de servidor ({kbd1}), abrir en ventana nueva o volver aquí ({kbd2}).<br/>Cada servidor mantiene su sesión 60 días." },
-      fr: { tagline: "connectez-vous à vos serveurs dala", servers: "Serveurs", empty: "Aucun serveur — ajoutez-en un ci-dessous ↓", add: "Ajouter", addButton: "Ajouter", namePh: "nom (facultatif)", connect: "Connecter", newWindow: "Nouvelle fenêtre", remove: "Supprimer", hint: "La barre de menus permet de changer de serveur ({kbd1}), d’ouvrir une fenêtre ou de revenir ici ({kbd2}).<br/>Chaque serveur garde sa session 60 jours." },
-      de: { tagline: "verbinde dich mit deinen dala-Servern", servers: "Server", empty: "Noch keine Server — unten hinzufügen ↓", add: "Hinzufügen", addButton: "Hinzufügen", namePh: "Name (optional)", connect: "Verbinden", newWindow: "Neues Fenster", remove: "Entfernen", hint: "Über die Menüleiste: Server wechseln ({kbd1}), neues Fenster, zurück hierher ({kbd2}).<br/>Jeder Server behält seine Anmeldung 60 Tage." },
-      ru: { tagline: "подключение к серверам dala", servers: "Серверы", empty: "Серверов пока нет — добавьте ниже ↓", add: "Добавить", addButton: "Добавить", namePh: "имя (необязательно)", connect: "Подключить", newWindow: "Новое окно", remove: "Удалить", hint: "Меню: переключение серверов ({kbd1}), новое окно, вернуться сюда ({kbd2}).<br/>Вход на каждый сервер сохраняется 60 дней." },
-      pt: { tagline: "conecte-se aos seus servidores dala", servers: "Servidores", empty: "Nenhum servidor ainda — adicione abaixo ↓", add: "Adicionar", addButton: "Adicionar", namePh: "nome (opcional)", connect: "Conectar", newWindow: "Nova janela", remove: "Remover", hint: "Use a barra de menus para trocar de servidor ({kbd1}), abrir em nova janela ou voltar aqui ({kbd2}).<br/>Cada servidor mantém o login por 60 dias." },
+      en: { tagline: "connect to your dala servers", servers: "Servers", empty: "No servers yet — add one below ↓", add: "Add", addButton: "Add", edit: "Edit", save: "Save", cancel: "Cancel", namePh: "name (optional)", connect: "Connect", newWindow: "New window", remove: "Remove", hint: "Use the menu bar to switch servers ({kbd1}), open one in a new window, or come back here ({kbd2}).<br/>Each server keeps its own sign-in for 60 days." },
+      "zh-CN": { tagline: "连接你的 dala 服务器", servers: "服务器", empty: "还没有服务器，先在下面添加一个 ↓", add: "添加", addButton: "添加", edit: "编辑", save: "保存", cancel: "取消", namePh: "名称（可选）", connect: "连接", newWindow: "新窗口", remove: "删除", hint: "菜单栏可随时切换服务器（{kbd1}）、新窗口打开、回到本页（{kbd2}）。<br/>每台服务器的登录状态独立保存，登录一次 60 天免登录。" },
+      "zh-TW": { tagline: "連線你的 dala 伺服器", servers: "伺服器", empty: "還沒有伺服器，先在下面新增一個 ↓", add: "新增", addButton: "新增", edit: "編輯", save: "儲存", cancel: "取消", namePh: "名稱（可選）", connect: "連線", newWindow: "新視窗", remove: "刪除", hint: "選單列可隨時切換伺服器（{kbd1}）、新視窗開啟、回到本頁（{kbd2}）。<br/>每台伺服器的登入狀態獨立保存，登入一次 60 天免登入。" },
+      ja: { tagline: "dala サーバーに接続", servers: "サーバー", empty: "サーバーがまだありません — 下で追加してください ↓", add: "追加", addButton: "追加", edit: "編集", save: "保存", cancel: "キャンセル", namePh: "名前（任意）", connect: "接続", newWindow: "新しいウィンドウ", remove: "削除", hint: "メニューバーからサーバー切替（{kbd1}）、新規ウィンドウ、このページへ戻る（{kbd2}）。<br/>各サーバーのログインは 60 日間保持されます。" },
+      ko: { tagline: "dala 서버에 연결", servers: "서버", empty: "아직 서버가 없습니다 — 아래에서 추가하세요 ↓", add: "추가", addButton: "추가", edit: "편집", save: "저장", cancel: "취소", namePh: "이름 (선택)", connect: "연결", newWindow: "새 창", remove: "삭제", hint: "메뉴 막대에서 서버 전환({kbd1}), 새 창 열기, 이 페이지로 돌아오기({kbd2}).<br/>각 서버의 로그인은 60일간 유지됩니다." },
+      es: { tagline: "conecta con tus servidores dala", servers: "Servidores", empty: "Aún no hay servidores: añade uno abajo ↓", add: "Añadir", addButton: "Añadir", edit: "Editar", save: "Guardar", cancel: "Cancelar", namePh: "nombre (opcional)", connect: "Conectar", newWindow: "Nueva ventana", remove: "Eliminar", hint: "Usa la barra de menús para cambiar de servidor ({kbd1}), abrir en ventana nueva o volver aquí ({kbd2}).<br/>Cada servidor mantiene su sesión 60 días." },
+      fr: { tagline: "connectez-vous à vos serveurs dala", servers: "Serveurs", empty: "Aucun serveur — ajoutez-en un ci-dessous ↓", add: "Ajouter", addButton: "Ajouter", edit: "Modifier", save: "Enregistrer", cancel: "Annuler", namePh: "nom (facultatif)", connect: "Connecter", newWindow: "Nouvelle fenêtre", remove: "Supprimer", hint: "La barre de menus permet de changer de serveur ({kbd1}), d’ouvrir une fenêtre ou de revenir ici ({kbd2}).<br/>Chaque serveur garde sa session 60 jours." },
+      de: { tagline: "verbinde dich mit deinen dala-Servern", servers: "Server", empty: "Noch keine Server — unten hinzufügen ↓", add: "Hinzufügen", addButton: "Hinzufügen", edit: "Bearbeiten", save: "Speichern", cancel: "Abbrechen", namePh: "Name (optional)", connect: "Verbinden", newWindow: "Neues Fenster", remove: "Entfernen", hint: "Über die Menüleiste: Server wechseln ({kbd1}), neues Fenster, zurück hierher ({kbd2}).<br/>Jeder Server behält seine Anmeldung 60 Tage." },
+      ru: { tagline: "подключение к серверам dala", servers: "Серверы", empty: "Серверов пока нет — добавьте ниже ↓", add: "Добавить", addButton: "Добавить", edit: "Изменить", save: "Сохранить", cancel: "Отмена", namePh: "имя (необязательно)", connect: "Подключить", newWindow: "Новое окно", remove: "Удалить", hint: "Меню: переключение серверов ({kbd1}), новое окно, вернуться сюда ({kbd2}).<br/>Вход на каждый сервер сохраняется 60 дней." },
+      pt: { tagline: "conecte-se aos seus servidores dala", servers: "Servidores", empty: "Nenhum servidor ainda — adicione abaixo ↓", add: "Adicionar", addButton: "Adicionar", edit: "Editar", save: "Salvar", cancel: "Cancelar", namePh: "nome (opcional)", connect: "Conectar", newWindow: "Nova janela", remove: "Remover", hint: "Use a barra de menus para trocar de servidor ({kbd1}), abrir em nova janela ou voltar aqui ({kbd2}).<br/>Cada servidor mantém o login por 60 dias." },
     };
 
     function pickLocale() {
@@ -118,6 +128,27 @@
       .replace("{kbd1}", "<kbd>Ctrl/⌘+1..9</kbd>")
       .replace("{kbd2}", "<kbd>Ctrl/⌘+,</kbd>");
 
+    let editingUrl = null;
+
+    function resetForm() {
+      editingUrl = null;
+      $("name").value = "";
+      $("url").value = "";
+      $("form-title").textContent = T.add;
+      $("submit").textContent = T.addButton;
+      $("cancel").hidden = true;
+    }
+
+    function startEdit(server) {
+      editingUrl = server.url;
+      $("name").value = server.name;
+      $("url").value = server.url;
+      $("form-title").textContent = T.edit;
+      $("submit").textContent = T.save;
+      $("cancel").hidden = false;
+      $("name").focus();
+    }
+
     function render(cfg) {
       const list = $("servers");
       list.innerHTML = "";
@@ -139,13 +170,27 @@
         newWin.textContent = T.newWindow;
         newWin.onclick = () => invoke("open_in_new_window", { url: server.url }).catch(showError);
 
+        const edit = document.createElement("button");
+        edit.textContent = T.edit;
+        edit.onclick = () => startEdit(server);
+
         const del = document.createElement("button");
         del.className = "danger";
         del.textContent = T.remove;
-        del.onclick = () =>
-          invoke("remove_server", { url: server.url }).then(render).catch(showError);
+        del.onclick = () => {
+          invoke("remove_server", { url: server.url })
+            .then((cfg) => {
+              if (editingUrl === server.url) resetForm();
+              render(cfg);
+            })
+            .catch(showError);
+        };
 
-        row.append(meta, newWin, del);
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        actions.append(newWin, edit, del);
+
+        row.append(meta, actions);
         list.append(row);
       }
     }
@@ -157,13 +202,20 @@
     $("add-form").onsubmit = (e) => {
       e.preventDefault();
       showError("");
-      invoke("add_server", { name: $("name").value, url: $("url").value })
+      const command = editingUrl ? "update_server" : "add_server";
+      const payload = { name: $("name").value, url: $("url").value };
+      if (editingUrl) payload.currentUrl = editingUrl;
+      invoke(command, payload)
         .then((cfg) => {
-          $("name").value = "";
-          $("url").value = "";
+          resetForm();
           render(cfg);
         })
         .catch(showError);
+    };
+
+    $("cancel").onclick = () => {
+      showError("");
+      resetForm();
     };
 
     invoke("list_servers").then(render).catch(showError);
