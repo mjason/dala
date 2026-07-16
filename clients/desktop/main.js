@@ -157,16 +157,16 @@ const BROWSER_SCROLLBAR_CSS = `
   ::-webkit-scrollbar-corner { background: transparent; }
 `;
 
-const BROWSER_TOOLBAR_HEIGHT = 44;
+const BROWSER_TITLEBAR_HEIGHT = 40;
 
 function layoutBrowserView(win) {
   if (!win || win.isDestroyed() || !win.browserView) return;
   const [width, height] = win.getContentSize();
   win.browserView.setBounds({
     x: 0,
-    y: BROWSER_TOOLBAR_HEIGHT,
+    y: BROWSER_TITLEBAR_HEIGHT,
     width,
-    height: Math.max(0, height - BROWSER_TOOLBAR_HEIGHT),
+    height: Math.max(0, height - BROWSER_TITLEBAR_HEIGHT),
   });
 }
 
@@ -193,8 +193,18 @@ function openBrowserWindow(url) {
   const win = new BrowserWindow({
     width: 1100,
     height: 800,
-    backgroundColor: "#ffffff",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#20252a" : "#f2f3f5",
     icon: WINDOW_ICON,
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" }
+      : {
+          titleBarStyle: "hidden",
+          titleBarOverlay: {
+            color: nativeTheme.shouldUseDarkColors ? "#20252a" : "#f2f3f5",
+            symbolColor: nativeTheme.shouldUseDarkColors ? "#e5e7eb" : "#30343a",
+            height: BROWSER_TITLEBAR_HEIGHT,
+          },
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -219,7 +229,11 @@ function openBrowserWindow(url) {
   win.loadFile(BROWSER_PAGE);
 
   view.webContents.setWindowOpenHandler(externalLinkHandler);
-  view.webContents.on("page-title-updated", (_event, title) => win.setTitle(title || "Dala"));
+  view.webContents.on("page-title-updated", (_event, title) => {
+    const nextTitle = title || "Dala";
+    win.setTitle(nextTitle);
+    win.webContents.send("dala:browser-title", nextTitle);
+  });
   view.webContents.on("did-navigate", rebuildMenu);
   view.webContents.on("did-navigate-in-page", rebuildMenu);
   // macOS renders its native overlay scrollbars — leave them alone;
@@ -668,7 +682,12 @@ ipcMain.handle("open_in_new_window", (event, { url }) => {
 
 ipcMain.handle("browser_state", (event) => {
   const win = browserWindowFor(event);
-  return { openInSystemBrowser: t("openInSystemBrowser"), url: currentBrowserUrl(win) };
+  return {
+    openInSystemBrowser: t("openInSystemBrowser"),
+    platform: process.platform,
+    title: win.getTitle(),
+    url: currentBrowserUrl(win),
+  };
 });
 
 ipcMain.handle("open_current_in_system_browser", (event) =>

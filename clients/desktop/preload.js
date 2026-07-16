@@ -35,6 +35,12 @@ ipcRenderer.on("dala:notify-click", (_event, tag) => {
   window.dispatchEvent(new CustomEvent("dala:notify-click", { detail: tag }));
 });
 
+// The isolated external-page view reports title changes to its trusted local
+// titlebar without exposing IPC to the remote document.
+ipcRenderer.on("dala:browser-title", (_event, title) => {
+  window.dispatchEvent(new CustomEvent("dala:browser-title", { detail: title }));
+});
+
 // Same contract the web app already probes for: a function returning a
 // promise. Chromium's navigator.clipboard needs a secure context, which
 // plain-http LAN servers are not — this always works.
