@@ -166,8 +166,8 @@
   --color-mint: #4cc38a;
   --color-danger: #f0716e;
   --color-git-added: #5fbf87;
-  --color-git-modified: #d9a860;
-  --color-git-deleted: #d27d9f;
+  --color-git-modified: #e2c08d;
+  --color-git-deleted: #e0705a;
   --color-git-renamed: #6d9fd6;
   --color-git-untracked: #7fd0d0;
   --color-git-conflict: #c9a5dd;
@@ -227,8 +227,8 @@
   --color-mint: #0c7a4f;
   --color-danger: #c92f2c;
   --color-git-added: #116329;
-  --color-git-modified: #7a4b00;
-  --color-git-deleted: #8f3f5f;
+  --color-git-modified: #8a5a00;
+  --color-git-deleted: #a83a1e;
   --color-git-renamed: #0550ae;
   --color-git-untracked: #1b6b72;
   --color-git-conflict: #6639ba;
@@ -278,8 +278,8 @@
     --color-mint: #0c7a4f;
     --color-danger: #c92f2c;
     --color-git-added: #116329;
-    --color-git-modified: #7a4b00;
-    --color-git-deleted: #8f3f5f;
+    --color-git-modified: #8a5a00;
+    --color-git-deleted: #a83a1e;
     --color-git-renamed: #0550ae;
     --color-git-untracked: #1b6b72;
     --color-git-conflict: #6639ba;
