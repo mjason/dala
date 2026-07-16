@@ -76,6 +76,9 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          # Client updates resolve client-v* tags themselves. Keep the repo's
+          # Latest badge/API response reserved for the newest server release.
+          make_latest: false
           # zip / *.yml / *.blockmap feed electron-updater's auto-update
           # (mac updates via the zip; yml carries versions and hashes).
           files: |
