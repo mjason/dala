@@ -17,9 +17,21 @@ describe("external browser shell", () => {
     assert.match(toolbar, /open_current_in_system_browser/);
     assert.match(toolbar, /title="Open in system browser"/);
     assert.match(toolbar, /aria-label="Open in system browser"/);
-    assert.match(toolbar, /🌐/);
+    // A thin-stroke SVG globe, not the chunky 🌐 emoji.
+    assert.match(toolbar, /<svg[^>]*stroke="currentColor"/);
+    assert.doesNotMatch(toolbar, /🌐/);
     assert.match(main, /browserWindowFor\(event\)/);
     assert.match(main, /shell\.openExternal\(url\)/);
+  });
+
+  test("open_external is server-frame-gated and http(s)-only", () => {
+    const start = main.indexOf('ipcMain.handle("open_external"');
+    const handler = main.slice(start, main.indexOf("ipcMain.handle(", start + 1));
+    // Only the server page's own top frame may ask (see ipc-guards.test.js)…
+    assert.match(handler, /assertServerFrame\(event\)/);
+    // …and only for http(s) targets (no file:, javascript:, …).
+    assert.match(handler, /httpUrl\(url\)/);
+    assert.match(handler, /shell\.openExternal\(target\)/);
   });
 
   test("uses one compact custom titlebar instead of stacking a toolbar", () => {

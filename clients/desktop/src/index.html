@@ -34,6 +34,10 @@
     .server .url { color: var(--muted); font-size: 12px; overflow: hidden;
                    text-overflow: ellipsis; white-space: nowrap; }
     .server .actions { display: flex; align-items: center; gap: 8px; flex: none; }
+    .server.editing { gap: 8px; }
+    .server.editing .fields { display: flex; flex: 1; min-width: 0; gap: 8px; }
+    .server.editing .fields input:first-child { flex: 1; min-width: 0; }
+    .server.editing .fields input:last-child { flex: 2; min-width: 0; }
     button { font: inherit; font-size: 12px; border-radius: 6px; cursor: pointer;
              padding: 4px 10px; border: 1px solid var(--line);
              background: transparent; color: var(--muted); transition: all .15s; }
@@ -79,7 +83,6 @@
       <input id="name" autocomplete="off" />
       <input id="url" placeholder="http://192.168.1.10:4400" autocomplete="off" required />
       <button id="submit" type="submit" class="primary" data-i18n="addButton"></button>
-      <button id="cancel" type="button" hidden data-i18n="cancel"></button>
     </form>
     <div id="error"></div>
 
@@ -128,34 +131,86 @@
       .replace("{kbd1}", "<kbd>Ctrl/⌘+1..9</kbd>")
       .replace("{kbd2}", "<kbd>Ctrl/⌘+,</kbd>");
 
+    let lastConfig = { servers: [], last: null };
+    // At most ONE row edits at a time (by server url). Driven through render()
+    // so opening another edit, saving, removing or cancelling can never leave a
+    // second row's inputs stranded or silently discard them out of nowhere.
     let editingUrl = null;
 
-    function resetForm() {
-      editingUrl = null;
-      $("name").value = "";
-      $("url").value = "";
-      $("form-title").textContent = T.add;
-      $("submit").textContent = T.addButton;
-      $("cancel").hidden = true;
+    // IME-safe: a composition-confirming Enter/Escape (isComposing, or legacy
+    // keyCode 229) must NOT submit/cancel — otherwise a pinyin user pressing
+    // Enter to pick a candidate commits a half-typed name. The old form-based
+    // edit got this for free from Chromium; the in-place editor must guard it.
+    function editKey(e, save, cancel) {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter") { e.preventDefault(); save(); }
+      if (e.key === "Escape") { e.preventDefault(); cancel(); }
     }
 
-    function startEdit(server) {
-      editingUrl = server.url;
-      $("name").value = server.name;
-      $("url").value = server.url;
-      $("form-title").textContent = T.edit;
-      $("submit").textContent = T.save;
-      $("cancel").hidden = false;
-      $("name").focus();
+    // The row rewritten in place into name/url inputs + save/cancel — the add
+    // form below stays purely "add" (reusing it for edits reads as a duplicate).
+    function editRow(row, server) {
+      row.classList.add("editing");
+      row.innerHTML = "";
+
+      const name = document.createElement("input");
+      name.value = server.name;
+      name.placeholder = T.namePh;
+      const url = document.createElement("input");
+      url.value = server.url;
+      url.placeholder = "http://192.168.1.10:4400";
+      const fields = document.createElement("div");
+      fields.className = "fields";
+      fields.append(name, url);
+
+      const save = () => {
+        showError("");
+        invoke("update_server", { currentUrl: server.url, name: name.value, url: url.value })
+          .then((cfg) => { editingUrl = null; render(cfg); })
+          .catch(showError);
+      };
+      const cancel = () => {
+        showError("");
+        editingUrl = null;
+        render(lastConfig);
+      };
+
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "primary";
+      saveBtn.textContent = T.save;
+      saveBtn.onclick = save;
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = T.cancel;
+      cancelBtn.onclick = cancel;
+
+      name.onkeydown = (e) => editKey(e, save, cancel);
+      url.onkeydown = (e) => editKey(e, save, cancel);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      actions.append(saveBtn, cancelBtn);
+
+      row.append(fields, actions);
+      name.focus();
+      name.select();
     }
 
     function render(cfg) {
+      lastConfig = cfg;
+      // Drop a stale edit target that no longer exists (e.g. it was removed).
+      if (editingUrl && !cfg.servers.some((s) => s.url === editingUrl)) editingUrl = null;
       const list = $("servers");
       list.innerHTML = "";
       $("empty").hidden = cfg.servers.length > 0;
       for (const server of cfg.servers) {
         const row = document.createElement("div");
         row.className = "server";
+
+        if (server.url === editingUrl) {
+          editRow(row, server);
+          list.append(row);
+          continue;
+        }
 
         const meta = document.createElement("div");
         meta.className = "meta";
@@ -172,18 +227,14 @@
 
         const edit = document.createElement("button");
         edit.textContent = T.edit;
-        edit.onclick = () => startEdit(server);
+        // Opening an edit closes any other one (single edit session).
+        edit.onclick = () => { editingUrl = server.url; render(lastConfig); };
 
         const del = document.createElement("button");
         del.className = "danger";
         del.textContent = T.remove;
         del.onclick = () => {
-          invoke("remove_server", { url: server.url })
-            .then((cfg) => {
-              if (editingUrl === server.url) resetForm();
-              render(cfg);
-            })
-            .catch(showError);
+          invoke("remove_server", { url: server.url }).then(render).catch(showError);
         };
 
         const actions = document.createElement("div");
@@ -202,20 +253,13 @@
     $("add-form").onsubmit = (e) => {
       e.preventDefault();
       showError("");
-      const command = editingUrl ? "update_server" : "add_server";
-      const payload = { name: $("name").value, url: $("url").value };
-      if (editingUrl) payload.currentUrl = editingUrl;
-      invoke(command, payload)
+      invoke("add_server", { name: $("name").value, url: $("url").value })
         .then((cfg) => {
-          resetForm();
+          $("name").value = "";
+          $("url").value = "";
           render(cfg);
         })
         .catch(showError);
-    };
-
-    $("cancel").onclick = () => {
-      showError("");
-      resetForm();
     };
 
     invoke("list_servers").then(render).catch(showError);

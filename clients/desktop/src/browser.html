@@ -47,13 +47,18 @@
     }
     button:hover { background: light-dark(rgba(0, 0, 0, .08), rgba(255, 255, 255, .1)); }
     button:focus-visible { outline: 2px solid #4cc38a; outline-offset: 1px; }
-    .icon { font-size: 18px; line-height: 1; filter: grayscale(1); }
+    button svg { width: 16px; height: 16px; display: block; color: light-dark(#5b626b, #aab1ba); }
+    button:hover svg { color: inherit; }
   </style>
 </head>
 <body>
   <div id="window-title">Dala</div>
   <button id="open" type="button" title="Open in system browser" aria-label="Open in system browser">
-    <span class="icon" aria-hidden="true">🌐</span>
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" />
+      <ellipse cx="8" cy="8" rx="2.75" ry="6.25" />
+      <path d="M2 5.9h12M2 10.1h12" />
+    </svg>
   </button>
   <script>
     const invoke = window.dala.invoke;

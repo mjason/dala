@@ -16,6 +16,27 @@ import SpreadsheetView from "./SpreadsheetView";
 const WRAPPABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv", "spreadsheet"]);
 const EDITABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv"]);
 
+type DalaClientBridge = { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
+
+/** Running inside the desktop client? Its preload exposes `window.dala`. */
+export function desktopClient(): DalaClientBridge | null {
+  const bridge = (window as unknown as { dala?: DalaClientBridge }).dala;
+  return typeof bridge?.invoke === "function" ? bridge : null;
+}
+
+/** Hand an app-relative URL to the OS default browser (client-only path). */
+export async function openInSystemBrowser(relativeUrl: string): Promise<void> {
+  const url = new URL(relativeUrl, window.location.href).href;
+  try {
+    await desktopClient()?.invoke("open_external", { url });
+  } catch {
+    // An older client without the open_external handler: fall back to the
+    // built-in browser window (window.open is routed there) rather than
+    // dead-ending — the two buttons then behave the same until it updates.
+    window.open(url, "_blank", "noopener");
+  }
+}
+
 export type Preview =
   | { kind: "image" | "binary" | "spreadsheet"; path: string; size: number }
   | {
@@ -188,17 +209,39 @@ export default function FilePreview({ preview, onClose, onError, onSaved, startI
           {t("edit")}
         </button>
       )}
-      {preview.kind === "html" && (
-        <a
-          id="open-in-browser-button"
-          href={rawFileUrl(preview.path)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 rounded-md border border-mint/50 px-2 py-0.5 font-mono text-[11px] text-mint transition-colors hover:bg-mint/10"
-        >
-          {t("openInBrowser")}
-        </a>
-      )}
+      {preview.kind === "html" &&
+        (desktopClient() ? (
+          // Inside the desktop client a plain _blank always lands in the
+          // built-in browser window — offer both destinations as a group.
+          <span className="flex shrink-0 items-stretch overflow-hidden rounded-md border border-mint/50 font-mono text-[11px] text-mint">
+            <a
+              id="open-in-browser-button"
+              href={rawFileUrl(preview.path)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2 py-0.5 transition-colors hover:bg-mint/10"
+            >
+              {t("openInAppBrowser")}
+            </a>
+            <button
+              id="open-in-system-browser-button"
+              onClick={() => void openInSystemBrowser(rawFileUrl(preview.path))}
+              className="border-l border-mint/40 px-2 py-0.5 transition-colors hover:bg-mint/10"
+            >
+              {t("openInSystemBrowser")}
+            </button>
+          </span>
+        ) : (
+          <a
+            id="open-in-browser-button"
+            href={rawFileUrl(preview.path)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 rounded-md border border-mint/50 px-2 py-0.5 font-mono text-[11px] text-mint transition-colors hover:bg-mint/10"
+          >
+            {t("openInBrowser")}
+          </a>
+        ))}
       <a
         id="download-file-button"
         href={rawFileUrl(preview.path, true)}

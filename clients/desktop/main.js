@@ -104,6 +104,33 @@ function saveConfig(cfg) {
 // ---------------------------------------------------------------------------
 // Windows
 
+// Same web origin? Used to pin a shell window's navigation to its own server.
+function sameOrigin(a, b) {
+  try {
+    return Boolean(a) && Boolean(b) && new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
+// A menu accelerator the client will accept from a server page's reported
+// keybindings: a modifier chain + one key, and never a bare edit/system role
+// accel (CmdOrCtrl+C/V/X/…) — a connected server must not silently rebind
+// copy/paste/quit app-wide across every window. Real client combos carry Shift.
+const ACCEL_RE =
+  /^((CmdOrCtrl|Cmd|Command|Ctrl|Control|Alt|Option|AltGr|Shift|Super|Meta)\+){1,4}(F[1-9][0-9]?|[A-Za-z0-9`~!@#$%^&*()\-_=+[\]{}\\|;:'",.<>/?]|Plus|Space|Tab|Backspace|Delete|Return|Enter|Up|Down|Left|Right|Home|End|PageUp|PageDown|Escape)$/;
+function validAccelerator(v) {
+  if (typeof v !== "string" || v.length > 40 || !ACCEL_RE.test(v)) return false;
+  const parts = v.split("+");
+  const key = parts.pop().toUpperCase();
+  const mods = new Set(parts.map((m) => m.toLowerCase()));
+  const primaryOnly =
+    mods.size === 1 &&
+    [...mods][0].match(/^(cmdorctrl|cmd|command|ctrl|control|super|meta)$/) !== null;
+  // Bare primary-modifier + reserved editing/system key: refuse.
+  return !(primaryOnly && new Set(["C", "V", "X", "A", "Z", "W", "Q", "N", "M", "H", ","]).has(key));
+}
+
 // Shared window-open policy: http(s) links open in the built-in browser
 // window, everything else (file:, javascript:, …) is dropped; no window is
 // ever allowed to spawn a child window directly.
@@ -132,6 +159,17 @@ function createShellWindow(server) {
   // page sets.
   win.on("page-title-updated", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(externalLinkHandler);
+  // The shell window carries the preload IPC bridge, so it must stay pinned to
+  // its OWN server's origin. setWindowOpenHandler only covers new windows —
+  // an in-place navigation (off-site link, meta refresh, server open-redirect)
+  // would otherwise hand the full bridge to an arbitrary origin. Cancel any
+  // cross-origin navigation and route it through the external-link policy (the
+  // isolated, preload-less browser window) instead.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith("file:") || sameOrigin(url, win.serverUrl)) return;
+    event.preventDefault();
+    if (httpUrl(url)) openBrowserWindow(url);
+  });
   win.on("closed", rebuildMenu);
   if (server) win.loadURL(server.url);
   else win.loadFile(MANAGE_PAGE);
@@ -564,16 +602,44 @@ function browserWindowFor(event) {
   return win;
 }
 
-ipcMain.handle("clip_write", (_event, text) => {
+// A sensitive bridge call coming from the SERVER PAGE itself: a shell window
+// whose LIVE top frame is still on its own server's origin. Rejects foreign
+// iframes embedded in the server page and any frame navigated off-origin (which
+// would otherwise inherit the preload bridge) — the OS-browser/clipboard/notify
+// capabilities must belong only to the server the user actually connected to.
+function serverFrame(event) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const frameUrl = event.senderFrame ? event.senderFrame.url : "";
+  return win &&
+    win.isDalaShell &&
+    event.sender === win.webContents &&
+    sameOrigin(frameUrl, win.serverUrl)
+    ? win
+    : null;
+}
+
+function assertServerFrame(event) {
+  const win = serverFrame(event);
+  if (!win) throw new Error("not allowed from this page");
+  return win;
+}
+
+ipcMain.handle("clip_write", (event, text) => {
+  assertServerFrame(event);
   clipboard.writeText(String(text ?? ""));
 });
 
 // Custom shortcuts from the page become real menu accelerators.
-ipcMain.handle("set_shortcuts", (_event, accelerators = {}) => {
+ipcMain.handle("set_shortcuts", (event, accelerators = {}) => {
+  // Only the server page's own top frame may set these — they are app-wide, so
+  // a foreign iframe/navigated page must not touch them. Combined with the
+  // accelerator whitelist this keeps one server from rebinding copy/paste/quit
+  // across every window.
+  if (!serverFrame(event)) return;
   let changed = false;
   for (const key of Object.keys(menuShortcuts)) {
     const value = accelerators[key];
-    if (typeof value === "string" && value && value !== menuShortcuts[key]) {
+    if (validAccelerator(value) && value !== menuShortcuts[key]) {
       menuShortcuts[key] = value;
       changed = true;
     }
@@ -607,11 +673,11 @@ ipcMain.handle("set_locale", (_event, { locale } = {}) => {
 // Electron one is the platform's own. Click focuses the window that sent it
 // and tells the page which session to jump to.
 ipcMain.handle("notify", (event, payload) => {
+  const win = assertServerFrame(event);
   if (!Notification.isSupported()) return false;
   const title = String(payload?.title ?? "Dala");
   const body = String(payload?.body ?? "");
   const tag = String(payload?.tag ?? "");
-  const win = BrowserWindow.fromWebContents(event.sender);
   const n = new Notification({ title, body });
   n.on("click", () => {
     if (win && !win.isDestroyed()) {
@@ -693,6 +759,17 @@ ipcMain.handle("browser_state", (event) => {
 ipcMain.handle("open_current_in_system_browser", (event) =>
   openInSystemBrowser(browserWindowFor(event))
 );
+
+// Server pages (the dala web app) may hand an http(s) URL to the OS browser —
+// the file preview's "open in system browser" button. Same protocol policy as
+// externalLinkHandler; only the server page's own top frame may ask, and the
+// sandboxed built-in browser view has no IPC at all.
+ipcMain.handle("open_external", (event, { url } = {}) => {
+  assertServerFrame(event);
+  const target = httpUrl(url);
+  if (!target) throw new Error("only http(s) urls can be opened");
+  return shell.openExternal(target).then(() => true);
+});
 
 // ---------------------------------------------------------------------------
 // Lifecycle
