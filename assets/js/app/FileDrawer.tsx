@@ -10,6 +10,7 @@ import { Kbd, KeyHint, modLabel } from "./shortcuts";
 import ResizeHandle from "./ResizeHandle";
 import { buildTreeRows, crumbs, relativePath } from "./fileDrawer/tree";
 import type { DeleteTarget, SelectableRow, TreeRow } from "./fileDrawer/tree";
+import { RenameInput } from "./RenameInput";
 import { Chevron, DownloadIcon, Row, UploadIcon } from "./fileDrawer/rows";
 import { useDirTree } from "./fileDrawer/useDirTree";
 import { useFileOps } from "./fileDrawer/useFileOps";
@@ -61,13 +62,26 @@ export default function FileDrawer({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: TreeRow | null } | null>(
     null,
   );
+  // Inline rename (context menu / F2) — the row currently being edited.
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  // Drawer-internal clipboard for copy/cut + paste of entries.
+  const [clipboard, setClipboard] = useState<{ path: string; op: "copy" | "cut" } | null>(null);
   const ctxUploadDir = useRef<string | null>(null);
   // Directory a drag is currently hovering over (drop target highlight).
   const [dropDir, setDropDir] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
-  const { uploading, uploadProgress, cancelUpload, uploadTo, deleteEntryAt } = useFileOps({
+  const {
+    uploading,
+    uploadProgress,
+    cancelUpload,
+    uploadTo,
+    deleteEntryAt,
+    renameEntryAt,
+    copyEntryTo,
+    moveEntryTo,
+  } = useFileOps({
     onError,
     refreshDir,
     expandDir,
@@ -76,6 +90,25 @@ export default function FileDrawer({
       if (preview && preview.path.startsWith(target.path)) setPreview(null);
     },
   });
+
+  const commitRename = async (row: SelectableRow & { kind: "file" | "dir" }, name: string) => {
+    const next = await renameEntryAt(row.path, row.parentDir, name);
+    if (next && selectedPath === row.path) setSelectedPath(next);
+    if (next && preview && preview.path === row.path) setPreview(null);
+  };
+
+  const pasteInto = async (dir: string) => {
+    const entry = clipboard;
+    if (!entry) return;
+    if (entry.op === "copy") {
+      await copyEntryTo(entry.path, dir);
+    } else {
+      const parentDir = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
+      const moved = await moveEntryTo(entry.path, parentDir, dir);
+      // A cut is one-shot; a failed move keeps it for another try.
+      if (moved) setClipboard(null);
+    }
+  };
 
   const openFile = async (filePath: string, size: number, opts: { edit?: boolean } = {}) => {
     setPreviewLoading(filePath);
@@ -187,6 +220,13 @@ export default function FileDrawer({
             isDir: current.kind === "dir",
             parentDir: current.parentDir,
           });
+        }
+        break;
+
+      case "F2":
+        if (current && current.kind !== "up") {
+          e.preventDefault();
+          setRenamingPath(current.path);
         }
         break;
 
@@ -399,6 +439,21 @@ export default function FileDrawer({
                 <FileTypeIcon name={row.entry.name} isDir={isDir} isOpen={expanded.has(row.path)} />
               }
               name={row.entry.name}
+              nameSlot={
+                renamingPath === row.path ? (
+                  <RenameInput
+                    data-rename-entry={row.path}
+                    name={row.entry.name}
+                    label={t("fileRename")}
+                    className="block h-5 w-full px-1 font-mono text-[13px] leading-5"
+                    onCommit={(next) => {
+                      setRenamingPath(null);
+                      if (next && next !== row.entry.name) void commitRename(row, next);
+                    }}
+                    onCancel={() => setRenamingPath(null)}
+                  />
+                ) : undefined
+              }
               symlink={row.entry.symlink}
               decoration={gitDecorationForPath(gitDecorations, row.path)}
               detail={isDir ? undefined : humanBytes(row.entry.size)}
@@ -524,6 +579,16 @@ export default function FileDrawer({
                 </button>
               );
 
+              // Clipboard verbs shared by file and dir rows.
+              const clipboardItems = (rowPath: string) => [
+                item("copy-entry", t("fileCopy"), () =>
+                  setClipboard({ path: rowPath, op: "copy" }),
+                ),
+                item("cut-entry", t("fileCut"), () => setClipboard({ path: rowPath, op: "cut" })),
+              ];
+              const pasteItem = (dir: string) =>
+                clipboard ? [item("paste-entry", t("filePaste"), () => void pasteInto(dir))] : [];
+
               if (row && row.kind === "file") {
                 const html = /\.(html?|xhtml)$/i.test(row.path);
                 return [
@@ -540,6 +605,9 @@ export default function FileDrawer({
                     a.href = rawFileUrl(row.path, true);
                     a.click();
                   }),
+                  item("rename", t("fileRename"), () => setRenamingPath(row.path)),
+                  ...clipboardItems(row.path),
+                  ...pasteItem(row.parentDir),
                   item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
                   item("copy-relative-path", t("copyRelativePath"), () =>
                     void writeClipboard(relativePath(root?.path ?? "/", row.path)),
@@ -558,6 +626,9 @@ export default function FileDrawer({
                     ctxUploadDir.current = row.path;
                     uploadInputRef.current?.click();
                   }),
+                  item("rename", t("fileRename"), () => setRenamingPath(row.path)),
+                  ...clipboardItems(row.path),
+                  ...pasteItem(row.path),
                   item("copy-path", t("copyPath"), () => void writeClipboard(row.path)),
                   item("copy-relative-path", t("copyRelativePath"), () =>
                     void writeClipboard(relativePath(root?.path ?? "/", row.path)),
@@ -575,6 +646,7 @@ export default function FileDrawer({
                   ctxUploadDir.current = root?.path ?? null;
                   uploadInputRef.current?.click();
                 }),
+                ...(root ? pasteItem(root.path) : []),
                 item("copy-path", t("copyPath"), () => void writeClipboard(root?.path ?? "")),
               ];
             })()}

@@ -165,6 +165,33 @@ test.describe("Given 一个有活动会话的用户", () => {
       )
       .toBe(true);
   });
+
+  test("粘贴图片：路径插入在光标处而不是末尾", async ({ page }) => {
+    await page.keyboard.press("Control+Shift+K");
+    const editor = page.locator("#composer-editor .cm-content");
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.type("hello world");
+    // 光标移到 "hello " 之后（"world" 前）。
+    for (let i = 0; i < "world".length; i++) await page.keyboard.press("ArrowLeft");
+    // 派发带 PNG 的粘贴事件。
+    await page.evaluate(() => {
+      const el = document.querySelector("#composer-editor .cm-content");
+      const b64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      const bytes = atob(b64);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      const dt = new DataTransfer();
+      dt.items.add(new File([arr], "shot.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true }));
+    });
+    // 上传完成后：路径替换占位符，位于 hello 与 world 之间。
+    await expect
+      .poll(async () => await editor.innerText(), { timeout: 10000 })
+      .toMatch(/hello \/.*\/attachments\/.*\/shot\.png world/);
+  });
+
 });
 
 // @ 文件引用：git 仓库中的会话，中文文件名 + 完整绝对路径都要能匹配，

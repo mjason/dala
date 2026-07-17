@@ -214,6 +214,134 @@ defmodule Dala.Terminal.FileSystem do
       end
     end
 
+    action :rename_entry, :map do
+      description "Rename a file or directory in place."
+
+      constraints fields: [path: [type: :string, allow_nil?: false]]
+
+      argument :path, :string, allow_nil?: false
+      argument :name, :string, allow_nil?: false
+
+      run fn input, _context ->
+        path = expand(input.arguments.path)
+        name = input.arguments.name
+
+        cond do
+          name == "" or String.contains?(name, "/") or name in [".", ".."] ->
+            {:error, "invalid name"}
+
+          true ->
+            dest = Path.join(Path.dirname(path), name)
+
+            cond do
+              dest == path ->
+                {:ok, %{path: dest}}
+
+              exists?(dest) ->
+                {:error, "#{name} already exists"}
+
+              true ->
+                case File.rename(path, dest) do
+                  :ok ->
+                    {:ok, %{path: dest}}
+
+                  {:error, reason} ->
+                    {:error, "cannot rename #{path}: #{:file.format_error(reason)}"}
+                end
+            end
+        end
+      end
+    end
+
+    action :copy_entry, :map do
+      description """
+      Copy a file or directory (recursively) into a destination directory.
+      A name collision gets a " copy"-suffixed unique name instead of
+      overwriting.
+      """
+
+      constraints fields: [path: [type: :string, allow_nil?: false]]
+
+      argument :path, :string, allow_nil?: false
+      argument :dir, :string, allow_nil?: false
+
+      run fn input, _context ->
+        source = expand(input.arguments.path)
+        dir = expand(input.arguments.dir)
+
+        cond do
+          not File.dir?(dir) ->
+            {:error, "not a directory: #{dir}"}
+
+          inside?(dir, source) ->
+            {:error, "cannot copy a directory into itself"}
+
+          true ->
+            dest = unique_dest(dir, Path.basename(source), File.dir?(source))
+
+            case File.cp_r(source, dest) do
+              {:ok, _copied} ->
+                {:ok, %{path: dest}}
+
+              {:error, reason, at} ->
+                # A half-written destination must not linger as junk.
+                _ = File.rm_rf(dest)
+                {:error, "cannot copy #{at}: #{:file.format_error(reason)}"}
+            end
+        end
+      end
+    end
+
+    action :move_entry, :map do
+      description "Move a file or directory into a destination directory."
+
+      constraints fields: [path: [type: :string, allow_nil?: false]]
+
+      argument :path, :string, allow_nil?: false
+      argument :dir, :string, allow_nil?: false
+
+      run fn input, _context ->
+        source = expand(input.arguments.path)
+        dir = expand(input.arguments.dir)
+        dest = Path.join(dir, Path.basename(source))
+
+        cond do
+          not File.dir?(dir) ->
+            {:error, "not a directory: #{dir}"}
+
+          dest == source ->
+            {:ok, %{path: dest}}
+
+          inside?(dir, source) ->
+            {:error, "cannot move a directory into itself"}
+
+          exists?(dest) ->
+            {:error, "#{Path.basename(source)} already exists in #{dir}"}
+
+          true ->
+            case File.rename(source, dest) do
+              :ok ->
+                {:ok, %{path: dest}}
+
+              # Cross-device moves (different mounts) cannot rename(2):
+              # copy + delete instead.
+              {:error, :exdev} ->
+                with {:ok, _copied} <- File.cp_r(source, dest),
+                     {:ok, _removed} <- File.rm_rf(source) do
+                  {:ok, %{path: dest}}
+                else
+                  {:error, reason, at} ->
+                    _ = File.rm_rf(dest)
+                    {:error, "cannot move #{at}: #{:file.format_error(reason)}"}
+                end
+
+              {:error, reason} ->
+                {:error, "cannot move #{source}: #{:file.format_error(reason)}"}
+            end
+        end
+      end
+    end
+
     action :lsp_servers, :map do
       description """
       Language servers that should attach to a file: resolved per project
@@ -489,6 +617,35 @@ defmodule Dala.Terminal.FileSystem do
   end
 
   defp expand(path), do: Dala.Paths.expand_user(path)
+
+  # lstat, so dangling symlinks count as existing (rename onto one would
+  # clobber it).
+  defp exists?(path), do: match?({:ok, _stat}, File.lstat(path))
+
+  # Is `path` equal to or nested under `root`?
+  defp inside?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  # First free destination name: "name", then "name copy", "name copy 2", …
+  # File extensions stay at the end ("a.txt copy" would break the type):
+  # "a.txt" → "a copy.txt". Directories keep their full name.
+  defp unique_dest(dir, basename, dir?) do
+    {stem, ext} =
+      if dir? do
+        {basename, ""}
+      else
+        ext = Path.extname(basename)
+        {String.trim_trailing(basename, ext), ext}
+      end
+
+    candidates =
+      Stream.concat(
+        [basename, "#{stem} copy#{ext}"],
+        Stream.map(2..1_000, fn n -> "#{stem} copy #{n}#{ext}" end)
+      )
+
+    name = Enum.find(candidates, &(not exists?(Path.join(dir, &1))))
+    Path.join(dir, name)
+  end
 
   defp entry(dir, name) do
     full = Path.join(dir, name)

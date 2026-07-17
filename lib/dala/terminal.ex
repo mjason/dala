@@ -36,6 +36,9 @@ defmodule Dala.Terminal do
       rpc_action :save_pasted_file, :save_pasted_file
       rpc_action :lsp_servers, :lsp_servers
       rpc_action :delete_entry, :delete_entry
+      rpc_action :rename_entry, :rename_entry
+      rpc_action :copy_entry, :copy_entry
+      rpc_action :move_entry, :move_entry
     end
 
     resource Dala.Terminal.Git do

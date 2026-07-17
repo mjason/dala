@@ -311,7 +311,7 @@ test.describe("Given 手机上的 dala 用户", () => {
 
       // 桌面端点工具栏"适配宽度"(宽视口下直接可见,不在 ⋯ 菜单里):
       // follower 状态下 Refit = "适配到我的屏幕" = 接管尺寸。
-      await desktopPage.locator("#terminal-refit-button").click();
+      await h.clickTerminalTool(desktopPage, "terminal-refit-button");
       // 桌面端接管也弹出重排提示(手机宽 → 桌面宽,宽度确实变了)。
       await expect(desktopPage.locator("#reflow-tip")).toBeVisible();
       // 桌面重新成为所有者:横幅消失,布局宽度涨回桌面容器宽度,无缩放。
@@ -384,7 +384,7 @@ test.describe("Given 手机上的 dala 用户", () => {
       const resetsBefore = await desktopPage.evaluate(
         () => window.__dalaFlow?.resets ?? 0,
       );
-      await desktopPage.locator("#terminal-refit-button").click();
+      await h.clickTerminalTool(desktopPage, "terminal-refit-button");
       await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
 
       // 接管后必须收到一份全新重绘快照(reset replay)……
@@ -518,7 +518,7 @@ test.describe("Given 手机上的 dala 用户", () => {
       const resetsBefore = await desktopPage.evaluate(
         () => window.__dalaFlow?.resets ?? 0,
       );
-      await desktopPage.locator("#terminal-refit-button").click();
+      await h.clickTerminalTool(desktopPage, "terminal-refit-button");
       await expect(desktopPage.locator("#size-follower-banner")).toHaveCount(0);
       await expect
         .poll(() => desktopPage.evaluate(() => window.__dalaFlow?.resets ?? 0), {
@@ -761,12 +761,12 @@ test.describe("Given 手机上的 dala 用户", () => {
       id = await h.createSession(page);
       await expect(page.locator(".xterm").first()).toBeVisible();
       await expect(page.locator("#touch-key-bar")).toHaveCount(0);
-      // 桌面工具栏保持原样:Refit 直接可见,没有 ⋯ 溢出按钮。
-      await expect(page.locator("#terminal-refit-button")).toBeVisible();
+      // 桌面工具栏:低频工具收进 ⋯ 组(narrow-screen 溢出按钮不出现)。
+      await expect(page.locator("#toolbar-tools-button")).toBeVisible();
       await expect(page.locator("#toolbar-overflow-button")).toBeHidden();
       // 密度适配只作用于 coarse pointer:桌面按钮保持紧凑(高度 < 40px)。
-      const refitBox = await page.locator("#terminal-refit-button").boundingBox();
-      expect(refitBox.height).toBeLessThan(40);
+      const toolsBox = await page.locator("#toolbar-tools-button").boundingBox();
+      expect(toolsBox.height).toBeLessThan(40);
     } finally {
       if (id) await h.deleteSession(page, id).catch(() => {});
       await context.close();

@@ -1,11 +1,13 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { SessionUpdatedPayload } from "../ash_types";
 import { authEnabled, userEmail } from "./meta";
 import { beforeIdFor, insertionIndex } from "./reorder";
+import { groupSessions, rangeBetween } from "./sessionGroups";
 import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
 import UpdateCheck from "./UpdateCheck";
+import { RenameInput } from "./RenameInput";
 import ResizeHandle from "./ResizeHandle";
 import { Select } from "./ui";
 
@@ -20,6 +22,8 @@ type Props = {
   onCreate: () => void;
   onOpenSettings: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Batch delete for the multi-selection (App confirms first). */
+  onDeleteMany: (ids: string[]) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
   /** Session whose row is currently being renamed in place (⌥⌘R / double-click). */
@@ -45,6 +49,7 @@ export default function Sidebar({
   onCreate,
   onOpenSettings,
   onDelete,
+  onDeleteMany,
   onReorder,
   renamingId,
   onRenameStart,
@@ -69,6 +74,90 @@ export default function Sidebar({
   // CURRENT list, never the one frozen into the pointerdown closure.
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+
+  // ---- Grouping (auto, by cwd) + collapse persistence ----------------------
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("dala:collapsed-session-groups") ?? "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleGroup = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      localStorage.setItem("dala:collapsed-session-groups", JSON.stringify([...next]));
+      return next;
+    });
+
+  const groups = groupSessions(sessions);
+  // The rows actually on screen, in render order — drag geometry, drop
+  // resolution and shift-ranges must all speak THIS list, not the full one
+  // (collapsed groups hide rows).
+  const visibleSessions = groups.flatMap((g) =>
+    g.sessions.length > 1 && collapsed.has(g.key) ? [] : g.sessions,
+  );
+  const visibleRef = useRef(visibleSessions);
+  visibleRef.current = visibleSessions;
+
+  // ---- Multi-selection (Ctrl/Cmd toggle, Shift range) ----------------------
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const anchorRef = useRef<string | null>(null);
+
+  // Prune selections for sessions that no longer exist (deleted elsewhere).
+  useEffect(() => {
+    setSelected((prev) => {
+      const alive = new Set(sessions.map((s) => s.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [sessions]);
+
+  // Esc clears the selection (only while one exists, and never from a field).
+  useEffect(() => {
+    if (selected.size === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const el = document.activeElement;
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement
+      )
+        return;
+      setSelected(new Set());
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selected.size]);
+
+  const rowClick = (e: React.MouseEvent, id: string) => {
+    if (e.metaKey || e.ctrlKey) {
+      anchorRef.current = id;
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else if (e.shiftKey && anchorRef.current) {
+      setSelected(
+        new Set(
+          rangeBetween(
+            visibleRef.current.map((s) => s.id),
+            anchorRef.current,
+            id,
+          ),
+        ),
+      );
+    } else {
+      anchorRef.current = id;
+      if (selected.size > 0) setSelected(new Set());
+      onSelect(id);
+    }
+  };
 
   const startDrag = (e: React.PointerEvent, id: string) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -103,9 +192,10 @@ export default function Sidebar({
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       if (slot === null && Math.abs(ev.clientY - startY) < 5) return;
-      // Fresh index on every move: the midpoints come from the live DOM,
-      // so the dragged row's index must come from the live list too.
-      const index = sessionsRef.current.findIndex((s) => s.id === id);
+      // Fresh index on every move: the midpoints come from the live DOM
+      // (visible rows only — collapsed groups hide theirs), so the dragged
+      // row's index must come from the live VISIBLE list too.
+      const index = visibleRef.current.findIndex((s) => s.id === id);
       if (index === -1) return cleanup(); // dragged session vanished
       slot = insertionIndex(midpoints(), index, ev.clientY);
       setDrag({ id, slot });
@@ -114,10 +204,9 @@ export default function Sidebar({
       if (ev.pointerId !== pointerId) return;
       cleanup();
       if (slot === null) return; // never crossed the threshold: a plain tap
-      // Resolve the committed neighbour against the CURRENT list — the drop
-      // must land where the indicator points now, not where the rows were
-      // at pointerdown.
-      const list = sessionsRef.current;
+      // Resolve the committed neighbour against the CURRENT visible list —
+      // the drop must land where the indicator points now.
+      const list = visibleRef.current;
       const index = list.findIndex((s) => s.id === id);
       if (index === -1) return; // dragged session vanished mid-drag
       const beforeId = beforeIdFor(list, id, slot);
@@ -139,8 +228,9 @@ export default function Sidebar({
   };
 
   // Row carrying the insertion indicator (undefined = none, null = after
-  // the last row).
-  const dropBeforeId = drag ? beforeIdFor(sessions, drag.id, drag.slot) : undefined;
+  // the last visible row).
+  const dropBeforeId = drag ? beforeIdFor(visibleSessions, drag.id, drag.slot) : undefined;
+  const lastVisibleId = visibleSessions[visibleSessions.length - 1]?.id;
 
   return (
     <aside
@@ -172,6 +262,31 @@ export default function Sidebar({
         </button>
       </div>
 
+      {selected.size > 0 && (
+        <div
+          id="session-multibar"
+          className="mx-2 mb-1 flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-bg2/70 px-2 py-1 text-[12px]"
+        >
+          <span className="min-w-0 flex-1 truncate text-fg-muted">
+            {t("sessionsSelected", { count: selected.size })}
+          </span>
+          <button
+            id="delete-selected-button"
+            onClick={() => onDeleteMany([...selected])}
+            className="shrink-0 rounded px-1.5 py-0.5 font-medium text-danger transition-colors hover:bg-danger/10"
+          >
+            {t("deleteSelected")}
+          </button>
+          <button
+            aria-label={t("clearSelection")}
+            onClick={() => setSelected(new Set())}
+            className="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       <nav id="session-list" ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
         {sessions.length === 0 && (
           <div className="mt-10 px-3 text-center text-[13px] leading-6 text-fg-muted">
@@ -182,21 +297,93 @@ export default function Sidebar({
             </button>
           </div>
         )}
-        {sessions.map((s, index) => {
-          const active = s.id === activeId;
+        {groups.map((g) => {
+          const grouped = g.sessions.length > 1;
+          const isCollapsed = grouped && collapsed.has(g.key);
           return (
+            <React.Fragment key={g.key}>
+              {grouped && (
+                <button
+                  data-session-group={g.key}
+                  aria-expanded={!isCollapsed}
+                  onClick={() => toggleGroup(g.key)}
+                  title={g.key}
+                  className="mb-0.5 flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left font-mono text-[11px] text-fg-muted/80 transition-colors hover:bg-bg2/50 hover:text-fg-muted pointer-coarse:min-h-9"
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    className={`h-3 w-3 shrink-0 transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                  >
+                    <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="min-w-0 truncate">{g.label}</span>
+                  <span className="shrink-0 text-fg-muted/50">{g.sessions.length}</span>
+                </button>
+              )}
+              {!isCollapsed && g.sessions.map((s) => renderRow(s, grouped))}
+            </React.Fragment>
+          );
+        })}
+      </nav>
+
+      <footer className="space-y-2 border-t border-line px-4 py-3 text-xs text-fg-muted">
+        <div className="flex items-center justify-between gap-2">
+          {authEnabled ? (
+            <>
+              <span className="truncate font-mono" title={userEmail ?? ""}>
+                {userEmail}
+              </span>
+              <a href="/sign-out" className="shrink-0 transition-colors hover:text-fg">
+                {t("signOut")}
+              </a>
+            </>
+          ) : (
+            <span className="font-mono">{t("localMode")}</span>
+          )}
+        </div>
+        <UpdateCheck />
+        <Select
+          id="language-select"
+          aria-label={t("language")}
+          value={locale}
+          onChange={(e) => setLocale(e.target.value as Locale)}
+        >
+          {(Object.keys(LOCALE_NAMES) as Locale[]).map((code) => (
+            <option key={code} value={code}>
+              {LOCALE_NAMES[code]}
+            </option>
+          ))}
+        </Select>
+      </footer>
+    </aside>
+  );
+
+  function renderRow(s: Session, grouped: boolean) {
+    const active = s.id === activeId;
+    const isSelected = selected.has(s.id);
+    return (
             <div
               key={s.id}
               data-session-row={s.id}
-              onClick={() => onSelect(s.id)}
+              data-selected={isSelected || undefined}
+              onClick={(e) => rowClick(e, s.id)}
               className={`group relative mb-0.5 flex cursor-pointer items-center gap-2 rounded-lg py-2 pr-2.5 pl-1 transition-colors pointer-coarse:min-h-11 ${
-                active ? "bg-bg2 text-fg" : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
+                grouped ? "ml-2" : ""
+              } ${
+                isSelected
+                  ? "bg-mint/10 text-fg ring-1 ring-inset ring-mint/50"
+                  : active
+                    ? "bg-bg2 text-fg"
+                    : "text-fg-muted hover:bg-bg2/60 hover:text-fg"
               } ${drag?.id === s.id ? "opacity-50" : ""}`}
             >
               {dropBeforeId === s.id && (
                 <span className="pointer-events-none absolute inset-x-1 -top-[2px] h-0.5 rounded-full bg-mint" />
               )}
-              {dropBeforeId === null && drag?.id !== s.id && index === sessions.length - 1 && (
+              {dropBeforeId === null && drag?.id !== s.id && s.id === lastVisibleId && (
                 <span className="pointer-events-none absolute inset-x-1 -bottom-[2px] h-0.5 rounded-full bg-mint" />
               )}
               <button
@@ -231,9 +418,16 @@ export default function Sidebar({
               <div className="min-w-0 flex-1">
                 {renamingId === s.id ? (
                   <RenameInput
-                    id={s.id}
+                    data-rename-session={s.id}
                     name={s.name}
                     label={t("kbRenameSession")}
+                    // Occupy EXACTLY the box the name div occupied: no
+                    // border (the shared ring paints without layout), and
+                    // the horizontal padding is cancelled by an equal
+                    // negative margin. h-5/leading-5 pins the line box to
+                    // the div's 20px; `block` avoids inline-block baseline
+                    // descender space growing the row.
+                    className="-mx-1 block h-5 w-[calc(100%+0.5rem)] px-1 font-mono text-sm leading-5"
                     onCommit={(next) => {
                       if (next && next !== s.name) onRename(s.id, next);
                       onRenameStart(null);
@@ -290,107 +484,6 @@ export default function Sidebar({
                 </svg>
               </button>
             </div>
-          );
-        })}
-      </nav>
-
-      <footer className="space-y-2 border-t border-line px-4 py-3 text-xs text-fg-muted">
-        <div className="flex items-center justify-between gap-2">
-          {authEnabled ? (
-            <>
-              <span className="truncate font-mono" title={userEmail ?? ""}>
-                {userEmail}
-              </span>
-              <a href="/sign-out" className="shrink-0 transition-colors hover:text-fg">
-                {t("signOut")}
-              </a>
-            </>
-          ) : (
-            <span className="font-mono">{t("localMode")}</span>
-          )}
-        </div>
-        <UpdateCheck />
-        <Select
-          id="language-select"
-          aria-label={t("language")}
-          value={locale}
-          onChange={(e) => setLocale(e.target.value as Locale)}
-        >
-          {(Object.keys(LOCALE_NAMES) as Locale[]).map((code) => (
-            <option key={code} value={code}>
-              {LOCALE_NAMES[code]}
-            </option>
-          ))}
-        </Select>
-      </footer>
-    </aside>
-  );
-}
-
-/**
- * In-place name editor for one sidebar row: Enter and blur commit, Escape
- * cancels. Escape is swallowed here (stopPropagation + preventDefault) — the
- * editor is not a "window" on the Esc stack, so it must not pop one.
- */
-function RenameInput({
-  id,
-  name,
-  label,
-  onCommit,
-  onCancel,
-}: {
-  id: string;
-  name: string;
-  label: string;
-  onCommit: (name: string) => void;
-  onCancel: () => void;
-}) {
-  // Enter commits and then blurs: the first outcome wins, the blur is a no-op.
-  const settled = useRef(false);
-  const commit = (value: string) => {
-    if (settled.current) return;
-    settled.current = true;
-    onCommit(value.trim());
-  };
-  const cancel = () => {
-    if (settled.current) return;
-    settled.current = true;
-    onCancel();
-  };
-
-  return (
-    <input
-      data-rename-session={id}
-      aria-label={label}
-      defaultValue={name}
-      autoFocus
-      spellCheck={false}
-      onFocus={(e) => e.currentTarget.select()}
-      onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit(e.currentTarget.value);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          cancel();
-        }
-      }}
-      onBlur={(e) => commit(e.currentTarget.value)}
-      // Must occupy EXACTLY the box the name div occupied — a border and
-      // padding would shove the text sideways and grow the row (measured:
-      // 52px → 58px, text +5px right). So: no border (a ring is painted, it
-      // costs no layout), and the horizontal padding is cancelled by an equal
-      // negative margin. h-5/leading-5 pins the line box to the div's 20px.
-      // No border/ring: the darkest background (bg0, against the row's bg2)
-      // is the whole affordance — a "well" that reads as editable without
-      // adding a single pixel of layout. `block` matters too: an inline-block
-      // input sits on the text baseline, so the line box would reserve
-      // descender space under it and the row would grow 4px.
-      className="-mx-1 block h-5 w-[calc(100%+0.5rem)] rounded bg-bg0 px-1 font-mono text-sm leading-5 text-fg caret-mint outline-none selection:bg-mint/30"
-    />
-  );
+    );
+  }
 }

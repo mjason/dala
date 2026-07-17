@@ -10,15 +10,25 @@ export type AgentAttachments = {
   rest: string;
 };
 
+export type AttachmentSegment =
+  | { type: "text"; value: string }
+  | { type: "path"; value: string };
+
 /**
- * Pull only Dala-managed attachment paths out of composer text. Ordinary
- * project paths must stay in the prompt so agents do not treat them as
- * freshly uploaded files.
+ * Split composer text into an ordered stream of text runs and Dala-managed
+ * attachment paths. Ordinary project paths stay inside the text runs so
+ * agents do not treat them as freshly uploaded files. Order is preserved so
+ * delivery can interleave paste frames — the agent's [Image #N] chips land
+ * where the user actually placed the images, not all at the front.
  */
-export function extractAgentAttachments(text: string): AgentAttachments {
-  const paths: string[] = [];
-  const remaining: string[] = [];
+export function splitAgentAttachments(text: string): AttachmentSegment[] {
+  const segments: AttachmentSegment[] = [];
   let cursor = 0;
+
+  const pushText = (value: string) => {
+    const cleaned = value.replace(/[ \t]{2,}/g, " ");
+    if (cleaned.trim() !== "") segments.push({ type: "text", value: cleaned.trim() });
+  };
 
   for (const match of text.matchAll(attachmentPathPattern)) {
     const path = match[0];
@@ -29,16 +39,27 @@ export function extractAgentAttachments(text: string): AgentAttachments {
 
     if ((before && !/\s/.test(before)) || (after && !/\s/.test(after))) continue;
 
-    remaining.push(text.slice(cursor, start));
-    paths.push(path);
+    pushText(text.slice(cursor, start));
+    segments.push({ type: "path", value: path });
     cursor = end;
   }
 
-  if (paths.length === 0) return { paths, rest: text };
+  pushText(text.slice(cursor));
+  return segments;
+}
 
-  remaining.push(text.slice(cursor));
+/** Flattened view of `splitAgentAttachments` for callers that only need the
+ * path list and the remaining prompt. */
+export function extractAgentAttachments(text: string): AgentAttachments {
+  const segments = splitAgentAttachments(text);
+  const paths = segments.filter((s) => s.type === "path").map((s) => s.value);
+  if (paths.length === 0) return { paths, rest: text };
   return {
     paths,
-    rest: remaining.join("").replace(/[ \t]{2,}/g, " ").trim(),
+    rest: segments
+      .filter((s) => s.type === "text")
+      .map((s) => s.value)
+      .join(" ")
+      .trim(),
   };
 }

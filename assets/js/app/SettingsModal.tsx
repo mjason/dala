@@ -208,7 +208,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             role="tablist"
             aria-label={t("sessionSettings")}
             onKeyDown={onTabKeyDown}
-            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg0 p-0.5 sm:grid-cols-5"
+            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5 sm:grid-cols-5"
           >
             {tabs.map(({ key, label }) => (
               <button
@@ -220,9 +220,14 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                 tabIndex={tab === key ? 0 : -1}
                 data-settings-tab={key}
                 onClick={() => setTab(key)}
-                className={`min-w-0 break-words rounded-md px-2 py-1.5 text-[13px] transition-colors sm:px-3 ${
+                // leading-5 pins the line box to an integer height (13px text
+                // defaults to 19.5px — the half pixel rounds into one edge and
+                // the selected pill sits visibly off-center in light mode).
+                // Track/pill colors mirror the theme segmented control below
+                // (bg2 track, lightest pill) for one consistent language.
+                className={`min-w-0 break-words rounded-md px-2 py-1.5 text-[13px] leading-5 transition-colors sm:px-3 ${
                   tab === key
-                    ? "bg-bg2 font-medium text-fg shadow-sm"
+                    ? "bg-bg0 font-medium text-fg shadow-sm"
                     : "text-fg-muted hover:text-fg"
                 }`}
               >

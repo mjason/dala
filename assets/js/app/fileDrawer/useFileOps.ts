@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { deleteEntry } from "../../ash_rpc";
+import { copyEntry, deleteEntry, moveEntry, renameEntry } from "../../ash_rpc";
 import { call } from "../rpc";
 import { useI18n } from "../i18n";
 import {
@@ -95,5 +95,59 @@ export function useFileOps(opts: {
     await refreshDir(target.parentDir);
   };
 
-  return { uploading, uploadProgress, cancelUpload, uploadTo, deleteEntryAt };
+  /** Rename in place; resolves to the new path, or null on failure. */
+  const renameEntryAt = async (path: string, parentDir: string, name: string) => {
+    const result = await call<{ path: string }>(renameEntry, {
+      input: { path, name },
+      fields: ["path"],
+    });
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
+      return null;
+    }
+    await refreshDir(parentDir);
+    return result.data.path;
+  };
+
+  /** Copy an entry into a directory (collision-safe on the server). */
+  const copyEntryTo = async (path: string, dir: string) => {
+    const result = await call<{ path: string }>(copyEntry, {
+      input: { path, dir },
+      fields: ["path"],
+    });
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
+      return false;
+    }
+    await refreshDir(dir);
+    expandDir(dir);
+    return true;
+  };
+
+  /** Move an entry into a directory; refreshes both ends. */
+  const moveEntryTo = async (path: string, parentDir: string, dir: string) => {
+    const result = await call<{ path: string }>(moveEntry, {
+      input: { path, dir },
+      fields: ["path"],
+    });
+    if (!result.ok) {
+      onError(result.error || t("somethingWentWrong"));
+      return false;
+    }
+    await refreshDir(parentDir);
+    await refreshDir(dir);
+    expandDir(dir);
+    return true;
+  };
+
+  return {
+    uploading,
+    uploadProgress,
+    cancelUpload,
+    uploadTo,
+    deleteEntryAt,
+    renameEntryAt,
+    copyEntryTo,
+    moveEntryTo,
+  };
 }

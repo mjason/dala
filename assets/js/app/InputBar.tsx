@@ -7,7 +7,7 @@ import { shortPath } from "./util";
 import { useI18n } from "./i18n";
 import { isTopWindow, Kbd, modShiftCombo, popWindow, pushWindow } from "./shortcuts";
 import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "./keybindings";
-import ComposerEditor from "./ComposerEditor";
+import ComposerEditor, { type ComposerEditorApi } from "./ComposerEditor";
 import { uploadPastedFiles } from "./pastedFileUpload";
 import type { UploadProgress } from "./fileUpload";
 import UploadProgressView from "./UploadProgressView";
@@ -363,7 +363,9 @@ export default function InputBar({
     setMention(null);
   };
 
-  const attach = async (files: File[] | FileList | null) => {
+  const editorApiRef = useRef<ComposerEditorApi | null>(null);
+
+  const attach = async (files: File[] | FileList | null, marker?: string) => {
     const batch = Array.from(files ?? []);
     if (batch.length === 0 || attachAbortRef.current) return;
 
@@ -376,10 +378,22 @@ export default function InputBar({
           if (mountedRef.current) setUploadProgress(progress);
         },
       });
-      if (paths.length > 0 && mountedRef.current) {
+      if (!mountedRef.current) return;
+      const pasted = paths.length > 0 ? `${paths.join(" ")} ` : "";
+
+      // The editor put a placeholder at the paste/drop position — swap it
+      // in place (the user may have kept typing around it meanwhile).
+      if (marker && editorApiRef.current?.replaceOnce(marker, pasted)) return;
+      if (marker && valueRef.current.includes(marker)) {
+        // Editor closed mid-upload: the draft string still has the marker.
+        setValue(valueRef.current.replace(marker, pasted));
+        return;
+      }
+      // No marker (attach button) or the user deleted it: append at the end.
+      if (paths.length > 0) {
         const current = valueRef.current;
         const prefix = current !== "" && !current.endsWith(" ") ? `${current} ` : current;
-        setValue(`${prefix}${paths.join(" ")} `);
+        setValue(`${prefix}${pasted}`);
       }
     } finally {
       if (attachAbortRef.current === controller) attachAbortRef.current = null;
@@ -526,7 +540,8 @@ export default function InputBar({
           setSlash(slashAt(text, pos));
           setMentionIndex(0);
         }}
-        onFiles={(files) => void attach(files)}
+        onFiles={(files, marker) => void attach(files, marker)}
+        apiRef={editorApiRef}
         sendKey={comboToCodeMirror(bindings.composerSend)}
         focusConsumed={focusConsumed}
         onFocusConsumed={onFocusConsumed}

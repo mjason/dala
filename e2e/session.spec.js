@@ -87,7 +87,7 @@ test.describe("Given 一个打开 dala 的用户", () => {
 
       // 锁定 driver（size owner）。e2e 里偶发 soft-follower（缩放而非 reflow），
       // 那样测不到 reflow 路径；接管刷新把角色钉成 driver 并把焦点还给终端。
-      await page.click("#terminal-refit-button");
+      await h.clickTerminalTool(page, "terminal-refit-button");
       await page.waitForTimeout(300);
 
       // 200 行会随宽度重新折行的长行，每行带唯一标记 LINE-nnn-。
@@ -167,7 +167,7 @@ test.describe("Given 一个打开 dala 的用户", () => {
       id = await h.createSession(page, cwd);
       await expect(page.locator(".xterm").first()).toBeVisible();
       await waitTerminalReady(page);
-      await page.click("#terminal-refit-button");
+      await h.clickTerminalTool(page, "terminal-refit-button");
 
       // Start narrow, then mimic an inline TUI that clears and redraws a long
       // transcript whenever the PTY width changes. Codex does this after the
@@ -224,7 +224,7 @@ test.describe("Given 一个打开 dala 的用户", () => {
       id = await h.createSession(page, cwd);
       await expect(page.locator(".xterm").first()).toBeVisible();
       await waitTerminalReady(page);
-      await page.click("#terminal-refit-button");
+      await h.clickTerminalTool(page, "terminal-refit-button");
       await page.waitForTimeout(300);
 
       // 260 行「完全相同」的边框。纯文本锚会全命中→落到第一处（顶部）；联合锚
@@ -293,7 +293,7 @@ test.describe("Given 一个打开 dala 的用户", () => {
       id = await h.createSession(page, cwd);
       await expect(page.locator(".xterm").first()).toBeVisible();
       await waitTerminalReady(page);
-      await page.click("#terminal-refit-button");
+      await h.clickTerminalTool(page, "terminal-refit-button");
       await page.waitForTimeout(300);
 
       // 20 行普通 + 一条 2400 字符的超长单行（折成很多行）+ 80 行普通。
@@ -429,7 +429,7 @@ test.describe("Given 一个打开 dala 的用户", () => {
 
       // 点工具栏"重置":不切走会话,holder 快照应以 reset replay 到达。
       const resetsBefore = await page.evaluate(() => window.__dalaFlow?.resets ?? 0);
-      await page.locator("#terminal-reset-button").click();
+      await h.clickTerminalTool(page, "terminal-reset-button");
       await expect
         .poll(() => page.evaluate(() => window.__dalaFlow?.resets ?? 0), { timeout: 15_000 })
         .toBeGreaterThan(resetsBefore);
@@ -480,6 +480,41 @@ test.describe("Given 一个打开 dala 的用户", () => {
     } finally {
       // 兜底清理：正常路径下会话已经删掉，RPC 会失败，忽略即可。
       await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+  test("会话按目录自动分组可折叠，Ctrl 多选批量删除", async ({ page }) => {
+    const cwdA = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-grp-a-`);
+    const cwdB = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-grp-b-`);
+    let s1, s2, s3;
+    try {
+      await h.gotoApp(page);
+      s1 = await h.createSession(page, cwdA);
+      s2 = await h.createSession(page, cwdA);
+      s3 = await h.createSession(page, cwdB);
+
+      // 同目录的两个会话聚成组：组头显示目录名与数量，可折叠。
+      const header = page.locator(`[data-session-group="${cwdA}"]`);
+      await expect(header).toBeVisible();
+      await expect(header).toContainText("2");
+      await header.click();
+      await expect(page.locator(`[data-session-row="${s1}"]`)).toBeHidden();
+      await header.click();
+      await expect(page.locator(`[data-session-row="${s1}"]`)).toBeVisible();
+
+      // Ctrl 点选两行 → 出现多选条 → 批量删除（确认框列出两条）。
+      await page.click(`[data-session-row="${s1}"]`, { modifiers: ["Control"] });
+      await page.click(`[data-session-row="${s2}"]`, { modifiers: ["Control"] });
+      await expect(page.locator("#session-multibar")).toContainText("2");
+      await page.click("#delete-selected-button");
+      await page.click("#confirm-delete-many-button");
+      await expect(page.locator(`[data-session-row="${s1}"]`)).toHaveCount(0);
+      await expect(page.locator(`[data-session-row="${s2}"]`)).toHaveCount(0);
+      await expect(page.locator(`[data-session-row="${s3}"]`)).toBeVisible();
+      s1 = s2 = null;
+    } finally {
+      for (const id of [s1, s2, s3]) if (id) await h.deleteSession(page, id).catch(() => {});
+      fs.rmSync(cwdA, { recursive: true, force: true });
+      fs.rmSync(cwdB, { recursive: true, force: true });
     }
   });
 });

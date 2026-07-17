@@ -33,7 +33,7 @@ import { useI18n } from "./i18n";
 import { onReconnect } from "./socket";
 import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
-import { extractAgentAttachments } from "./agentAttachments";
+import { splitAgentAttachments } from "./agentAttachments";
 
 type Toast = { id: number; message: string };
 
@@ -64,6 +64,8 @@ export default function App() {
   // Session whose sidebar row is being renamed in place (F2 / double-click).
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
+  // Sidebar multi-selection pending batch deletion (confirm modal).
+  const [deleteManyFor, setDeleteManyFor] = useState<string[] | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   // Composer is per-session: each session keeps its own open flag, draft
   // and detected foreground agent — switching sessions never mixes them.
@@ -86,6 +88,9 @@ export default function App() {
   // tappable composer hint instead of shortcut chips.
   const coarsePointer = useCoarsePointer();
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  // Desktop ⋯ group for the rarely-used terminal plumbing (detach viewers,
+  // refit, reset) — keeps the toolbar focused on the daily verbs.
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   // Sticky Ctrl from the touch key bar: latched until the next key — a bar
   // key or a single soft-keyboard character — goes out with Ctrl applied.
   const [ctrlLatch, setCtrlLatch] = useState(false);
@@ -428,28 +433,31 @@ export default function App() {
     // Agents only attachment-ify a pasted path when the paste IS the path:
     // opencode turns it into a File chip, Claude Code into [Image #N] — mixed
     // into a sentence it degrades to plain text (and non-vision models can't
-    // follow it). So attachment paths each go out as their own bracketed
-    // paste first, then the remaining message, then the submit.
+    // follow it). So each attachment path goes out as its own bracketed
+    // paste, INTERLEAVED with the surrounding text runs in their original
+    // order — the agent's chips land where the user placed the images.
     const isAgent = ["claude", "opencode", "gemini", "codex", "copilot"].includes(app);
-    const { paths, rest } = isAgent
-      ? extractAgentAttachments(text)
-      : { paths: [], rest: text };
+    const segments = isAgent ? splitAgentAttachments(text) : [];
+    const paths = segments.filter((s) => s.type === "path");
     if (paths.length > 0) {
       const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       const image = /\.(png|jpe?g|gif|webp|bmp|svg|tiff?)$/i;
-      for (const path of paths) {
-        // Text files: Claude Code and Gemini attach @path references inline
-        // (content lands in context, no Read round-trip, no permission
-        // prompt); opencode/codex read bare paths. Images keep bare paths —
-        // that's what all the image-attachment detectors key on.
-        const prefix =
-          !image.test(path) && (app === "claude" || app === "gemini") ? "@" : "";
-        termActions.current?.sendText(prefix + path + " ", false, "bracketed");
-        await wait(200);
-      }
-      if (rest) {
-        termActions.current?.sendText(rest, false, rest.includes("\n") ? "bracketed" : undefined);
-        await wait(120);
+      for (const segment of segments) {
+        if (segment.type === "path") {
+          // Text files: Claude Code and Gemini attach @path references inline
+          // (content lands in context, no Read round-trip, no permission
+          // prompt); opencode/codex read bare paths. Images keep bare paths —
+          // that's what all the image-attachment detectors key on.
+          const prefix =
+            !image.test(segment.value) && (app === "claude" || app === "gemini") ? "@" : "";
+          termActions.current?.sendText(prefix + segment.value + " ", false, "bracketed");
+          await wait(200);
+        } else {
+          // Trailing space keeps the run separated from a following chip.
+          const run = segment.value + " ";
+          termActions.current?.sendText(run, false, run.includes("\n") ? "bracketed" : undefined);
+          await wait(120);
+        }
       }
       if (submit) termActions.current?.sendText("", true, strategy ?? "delayed");
       return;
@@ -551,6 +559,21 @@ export default function App() {
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
   const sessionToDelete = ordered.find((s) => s.id === deleteFor) ?? null;
 
+  // One row of the desktop ⋯ tools menu (label + shortcut hint).
+  const toolsItem = (id: string, label: string, keys: string | null, run: () => void) => (
+    <button
+      id={id}
+      onClick={() => {
+        setToolsMenuOpen(false);
+        run();
+      }}
+      className="flex items-center justify-between gap-3 px-3 py-2 text-left font-mono text-[12px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg pointer-coarse:min-h-11 pointer-coarse:py-3 pointer-coarse:text-sm"
+    >
+      <span>{label}</span>
+      {keys && <Kbd>{keys}</Kbd>}
+    </button>
+  );
+
   // One row of the narrow-screen toolbar overflow menu.
   const overflowItem = (id: string, label: string, run: () => void) => (
     <button
@@ -616,6 +639,7 @@ export default function App() {
           onCreate={() => void handleCreate()}
           onOpenSettings={setSettingsFor}
           onDelete={setDeleteFor}
+          onDeleteMany={setDeleteManyFor}
           onReorder={(id, beforeId) => void handleReorder(id, beforeId)}
           renamingId={renamingId}
           onRenameStart={(id) => (id ? startRename(id) : endRename())}
@@ -742,47 +766,43 @@ export default function App() {
                   {t("git")}
                 </button>
               </Tooltip>
-              <Tooltip
-                label={t("kickViewers")}
-                description={t("kickViewersHint")}
-                className="max-sm:hidden"
-              >
-                <button
-                  id="kick-viewers-header-button"
-                  onClick={() => void kickOtherViewers()}
-                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
-                >
-                  {t("kickViewersAction")}
-                </button>
-              </Tooltip>
-              <Tooltip
-                label={t("refitWidth")}
-                description={t("refitDesc")}
-                keys={modShiftCombo("f")}
-                className="max-sm:hidden"
-              >
-                <button
-                  id="terminal-refit-button"
-                  onClick={() => termActions.current?.refit(true)}
-                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
-                >
-                  {t("refitWidth")}
-                </button>
-              </Tooltip>
-              <Tooltip
-                label={t("resetTerminal")}
-                description={t("resetDesc")}
-                keys={modShiftCombo("x")}
-                className="max-sm:hidden"
-              >
-                <button
-                  id="terminal-reset-button"
-                  onClick={() => termActions.current?.reset()}
-                  className={`rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-fg-muted hover:text-fg ${touchToolbarBtn}`}
-                >
-                  {t("resetTerminal")}
-                </button>
-              </Tooltip>
+              {/* Rarely-used terminal plumbing grouped behind one ⋯ (their
+                  keyboard shortcuts keep working; ids stay stable for tests). */}
+              <div className="relative max-sm:hidden">
+                <Tooltip label={t("moreActions")}>
+                  <button
+                    id="toolbar-tools-button"
+                    aria-label={t("moreActions")}
+                    onClick={() => setToolsMenuOpen((v) => !v)}
+                    className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
+                      toolsMenuOpen
+                        ? "border-mint/50 text-mint"
+                        : "border-line text-fg-muted hover:border-fg-muted hover:text-fg"
+                    }`}
+                  >
+                    ⋯
+                  </button>
+                </Tooltip>
+                {toolsMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setToolsMenuOpen(false)} />
+                    <div
+                      id="toolbar-tools"
+                      className="absolute right-0 top-full z-40 mt-1.5 flex w-56 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
+                    >
+                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), null, () =>
+                        void kickOtherViewers(),
+                      )}
+                      {toolsItem("terminal-refit-button", t("refitWidth"), modShiftCombo("f"), () =>
+                        termActions.current?.refit(true),
+                      )}
+                      {toolsItem("terminal-reset-button", t("resetTerminal"), modShiftCombo("x"), () =>
+                        termActions.current?.reset(),
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
               <Tooltip
                 label={t("sessionSettings")}
                 description={t("settingsDesc")}
@@ -1072,6 +1092,60 @@ export default function App() {
                 className="inline-flex items-center gap-1.5 rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-bg0 transition-colors hover:bg-danger"
               >
                 {t("deleteSession")} <Kbd>⏎</Kbd>
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {deleteManyFor && deleteManyFor.length > 0 && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 sm:p-6"
+          onClick={() => setDeleteManyFor(null)}
+        >
+          <div
+            id="delete-many-modal"
+            className="w-full max-w-sm rounded-xl border border-line bg-bg1 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="border-b border-line px-4 py-3">
+              <span className="text-[15px] font-medium text-fg">
+                {t("reallyDeleteMany", { count: deleteManyFor.length })}
+              </span>
+            </header>
+            <div className="max-h-48 space-y-1 overflow-y-auto px-4 py-4">
+              {ordered
+                .filter((s) => deleteManyFor.includes(s.id))
+                .map((s) => (
+                  <div key={s.id} className="truncate font-mono text-sm text-fg" title={s.cwd}>
+                    {s.name}
+                    <span className="text-fg-muted"> · {shortPath(s.cwd, 24)}</span>
+                  </div>
+                ))}
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                onClick={() => setDeleteManyFor(null)}
+                className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
+              >
+                {t("cancel")} <Kbd>Esc</Kbd>
+              </button>
+              <button
+                id="confirm-delete-many-button"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setDeleteManyFor(null);
+                }}
+                onClick={() => {
+                  const ids = deleteManyFor;
+                  setDeleteManyFor(null);
+                  void (async () => {
+                    for (const id of ids) await handleDelete(id);
+                  })();
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md bg-danger/90 px-3 py-1.5 text-[13px] font-medium text-bg0 transition-colors hover:bg-danger"
+              >
+                {t("deleteSelected")} <Kbd>⏎</Kbd>
               </button>
             </footer>
           </div>

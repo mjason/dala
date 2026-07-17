@@ -56,6 +56,52 @@ test.describe("Given 打开文件抽屉的用户", () => {
     }
   });
 
+  test("文件抽屉：重命名、复制粘贴、剪切粘贴", async ({ page }) => {
+    fs.writeFileSync(path.join(cwd, "a.txt"), "hello\n");
+    fs.mkdirSync(path.join(cwd, "sub"));
+
+    let s;
+    try {
+      await h.gotoApp(page);
+      s = await h.createSession(page, cwd);
+      await h.selectSession(page, s);
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toBeVisible();
+
+      // 重命名：右键 → 重命名 → 改名回车。
+      const rowA = `[data-path="${path.join(cwd, "a.txt")}"]`;
+      await page.click(rowA, { button: "right" });
+      await page.click('[data-ctx-item="rename"]');
+      const input = page.locator(`[data-rename-entry="${path.join(cwd, "a.txt")}"]`);
+      await expect(input).toBeVisible();
+      await input.fill("b.txt");
+      await input.press("Enter");
+      const rowB = `[data-path="${path.join(cwd, "b.txt")}"]`;
+      await expect(page.locator(rowB)).toBeVisible();
+      await expect(page.locator(rowA)).toHaveCount(0);
+      expect(fs.readFileSync(path.join(cwd, "b.txt"), "utf8")).toBe("hello\n");
+
+      // 复制 → 同目录（文件行上粘贴 = 粘到其父目录）：服务端起唯一名。
+      await page.click(rowB, { button: "right" });
+      await page.click('[data-ctx-item="copy-entry"]');
+      await page.click(rowB, { button: "right" });
+      await page.click('[data-ctx-item="paste-entry"]');
+      await expect(page.locator(`[data-path="${path.join(cwd, "b copy.txt")}"]`)).toBeVisible();
+
+      // 剪切 → 粘进 sub/：目标出现，原位置消失。
+      await page.click(rowB, { button: "right" });
+      await page.click('[data-ctx-item="cut-entry"]');
+      const rowSub = `[data-path="${path.join(cwd, "sub")}"]`;
+      await page.click(rowSub, { button: "right" });
+      await page.click('[data-ctx-item="paste-entry"]');
+      await expect(page.locator(`[data-path="${path.join(cwd, "sub/b.txt")}"]`)).toBeVisible();
+      await expect(page.locator(rowB)).toHaveCount(0);
+      expect(fs.readFileSync(path.join(cwd, "sub/b.txt"), "utf8")).toBe("hello\n");
+    } finally {
+      if (s) await h.deleteSession(page, s).catch(() => {});
+    }
+  });
+
   test("删除确认框完整显示路径，绝不省略号截断（要删的东西必须看得清）", async ({ page }) => {
     // 曾经用 truncate：路径尾部——恰恰是"这到底是哪个文件"的关键——被切成
     // "…"。现在整条路径换行显示（break-all，路径没有空格可断），高度封顶后

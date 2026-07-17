@@ -30,13 +30,29 @@ type Props = {
   onPick: () => boolean;
   /** Cursor/document sync for @-mention tracking. */
   onCursor: (text: string, pos: number) => void;
-  /** Local files pasted or dropped into the editor (uploaded by the parent). */
-  onFiles: (files: File[]) => void;
+  /**
+   * Local files pasted or dropped into the editor (uploaded by the parent).
+   * `marker` is a placeholder token this editor already inserted at the
+   * paste/drop position — the parent replaces it with the uploaded paths via
+   * `apiRef.replaceOnce`, so the insertion lands where the user aimed even
+   * though the upload is async.
+   */
+  onFiles: (files: File[], marker: string) => void;
+  /** Imperative escape hatch for async text edits (upload placeholders). */
+  apiRef?: React.MutableRefObject<ComposerEditorApi | null>;
   /** Fullscreen: fill the host (a flex child) instead of growing to the cap. */
   fullscreen: boolean;
   /** Debounced editor-height changes (auto-grow), if the parent needs them. */
   onResize: () => void;
 };
+
+export type ComposerEditorApi = {
+  /** Replace the first occurrence of `find`; false when it is gone. */
+  replaceOnce: (find: string, replacement: string) => boolean;
+};
+
+let uploadMarkerCounter = 0;
+const uploadMarker = () => `⟨upload:${++uploadMarkerCounter}⟩`;
 
 /**
  * The composer's editor: CodeMirror with Markdown + fenced-code syntax
@@ -52,7 +68,7 @@ type Callbacks = {
     onPick: () => boolean;
     onChange: (value: string) => void;
     onCursor: (text: string, pos: number) => void;
-    onFiles: (files: File[]) => void;
+    onFiles: (files: File[], marker: string) => void;
     onResize: () => void;
   };
 };
@@ -135,11 +151,31 @@ export default function ComposerEditor({
   onPick,
   onCursor,
   onFiles,
+  apiRef,
   fullscreen,
   onResize,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+
+  // Imperative surface for async edits: published while mounted only, so a
+  // caller holding it across a close falls back to plain string edits.
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      replaceOnce: (find, replacement) => {
+        const view = viewRef.current;
+        if (!view) return false;
+        const index = view.state.doc.toString().indexOf(find);
+        if (index === -1) return false;
+        view.dispatch({ changes: { from: index, to: index + find.length, insert: replacement } });
+        return true;
+      },
+    };
+    return () => {
+      apiRef.current = null;
+    };
+  }, [apiRef]);
   const placeholderCompartment = useRef(new Compartment());
   const keymapCompartment = useRef(new Compartment());
   const sizingCompartment = useRef(new Compartment());
@@ -183,19 +219,32 @@ export default function ComposerEditor({
             }
           }),
           // Local files pasted or dropped land as uploads, like the terminal.
+          // A placeholder marker goes in at the paste/drop position NOW; the
+          // parent swaps it for the uploaded paths when they resolve, so the
+          // async upload cannot teleport the insertion to the end.
           EditorView.domEventHandlers({
-            paste: (event) => {
+            paste: (event, view) => {
               const files = collectTransferFiles(event.clipboardData);
               if (files.length === 0) return false;
               event.preventDefault();
-              cbs.current.onFiles(files);
+              const marker = uploadMarker();
+              view.dispatch(view.state.replaceSelection(marker));
+              cbs.current.onFiles(files, marker);
               return true;
             },
-            drop: (event) => {
+            drop: (event, view) => {
               const files = collectTransferFiles(event.dataTransfer);
               if (files.length === 0) return false;
               event.preventDefault();
-              cbs.current.onFiles(files);
+              const marker = uploadMarker();
+              const at =
+                view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
+                view.state.selection.main.head;
+              view.dispatch({
+                changes: { from: at, insert: marker },
+                selection: { anchor: at + marker.length },
+              });
+              cbs.current.onFiles(files, marker);
               return true;
             },
           }),

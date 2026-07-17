@@ -211,6 +211,7 @@ export function Row({
   icon,
   extraIcon,
   name,
+  nameSlot,
   detail,
   symlink,
   loading,
@@ -226,6 +227,8 @@ export function Row({
   icon: React.ReactNode;
   extraIcon: React.ReactNode;
   name: string;
+  /** Replaces the name text (inline rename editor). */
+  nameSlot?: React.ReactNode;
   detail?: string;
   symlink?: boolean;
   loading?: boolean;
@@ -265,14 +268,18 @@ export function Row({
     >
       <span className="grid w-3.5 shrink-0 place-items-center text-fg-muted">{icon}</span>
       <span className="shrink-0 text-fg-muted">{extraIcon}</span>
-      <span
-        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
-          decoration ? DECORATION_CLASSES[decoration.tone] : "text-fg"
-        }`}
-      >
-        {name}
-        {symlink && <span className="text-fg-muted"> ⇢</span>}
-      </span>
+      {nameSlot ? (
+        <span className="min-w-0 flex-1">{nameSlot}</span>
+      ) : (
+        <span
+          className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
+            decoration ? DECORATION_CLASSES[decoration.tone] : "text-fg"
+          }`}
+        >
+          {name}
+          {symlink && <span className="text-fg-muted"> ⇢</span>}
+        </span>
+      )}
       {(decoration || loading || detail) && (
         <span
           className={`flex shrink-0 items-center gap-1.5 transition-opacity ${

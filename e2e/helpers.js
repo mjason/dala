@@ -70,7 +70,16 @@ async function openSettingsTab(page, key) {
   await page.locator(`[data-settings-tab="${key}"]`).click();
 }
 
+
+/** Click one of the grouped terminal tools (refit/reset/detach) — they live
+ * behind the desktop ⋯ menu since v0.25.4. */
+async function clickTerminalTool(page, id) {
+  await page.click("#toolbar-tools-button");
+  await page.click("#" + id);
+}
+
 module.exports = {
+  clickTerminalTool,
   rpcRun,
   gotoApp,
   createSession,

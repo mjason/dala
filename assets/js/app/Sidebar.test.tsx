@@ -42,6 +42,7 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
     onCreate: vi.fn(),
     onOpenSettings: vi.fn(),
     onDelete: vi.fn(),
+    onDeleteMany: vi.fn(),
     onReorder: vi.fn(),
     renamingId: null as string | null,
     onRenameStart: vi.fn(),
@@ -268,6 +269,7 @@ describe("Sidebar", () => {
         renamingId: null,
         onRenameStart: vi.fn(),
         onRename: vi.fn(),
+        onDeleteMany: vi.fn(),
       };
       const view = render(
         <I18nProvider>

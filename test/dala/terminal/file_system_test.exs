@@ -223,4 +223,87 @@ defmodule Dala.Terminal.FileSystemTest do
     assert {:error, error} = list_files(file)
     assert Exception.message(error) =~ "not a directory"
   end
+
+  defp run(action, args) do
+    Dala.Terminal.FileSystem
+    |> Ash.ActionInput.for_action(action, args)
+    |> Ash.run_action()
+  end
+
+  describe "rename_entry" do
+    test "renames a file in place", %{dir: dir} do
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+
+      dest = Path.join(dir, "b.txt")
+      assert {:ok, %{path: ^dest}} = run(:rename_entry, %{path: path, name: "b.txt"})
+      assert File.read!(dest) == "hi"
+      refute File.exists?(path)
+    end
+
+    test "refuses collisions, slashes and dot names", %{dir: dir} do
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+      File.write!(Path.join(dir, "b.txt"), "there")
+
+      assert {:error, _taken} = run(:rename_entry, %{path: path, name: "b.txt"})
+      assert {:error, _slash} = run(:rename_entry, %{path: path, name: "x/y"})
+      assert {:error, _dots} = run(:rename_entry, %{path: path, name: ".."})
+      assert File.read!(path) == "hi"
+    end
+  end
+
+  describe "copy_entry" do
+    test "copies a file and uniquifies collisions before the extension", %{dir: dir} do
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+
+      first = Path.join(dir, "a copy.txt")
+      second = Path.join(dir, "a copy 2.txt")
+      assert {:ok, %{path: ^first}} = run(:copy_entry, %{path: path, dir: dir})
+      assert {:ok, %{path: ^second}} = run(:copy_entry, %{path: path, dir: dir})
+      assert File.read!(first) == "hi"
+      assert File.read!(second) == "hi"
+    end
+
+    test "copies a directory recursively and refuses copying into itself", %{dir: dir} do
+      sub = Path.join(dir, "sub")
+      File.mkdir_p!(Path.join(sub, "nested"))
+      File.write!(Path.join(sub, "nested/f.txt"), "deep")
+
+      dest = Path.join(dir, "target")
+      File.mkdir_p!(dest)
+      assert {:ok, %{path: copied}} = run(:copy_entry, %{path: sub, dir: dest})
+      assert File.read!(Path.join(copied, "nested/f.txt")) == "deep"
+
+      assert {:error, _into_itself} =
+               run(:copy_entry, %{path: sub, dir: Path.join(sub, "nested")})
+    end
+  end
+
+  describe "move_entry" do
+    test "moves a file into a directory", %{dir: dir} do
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+      dest_dir = Path.join(dir, "target")
+      File.mkdir_p!(dest_dir)
+
+      dest = Path.join(dest_dir, "a.txt")
+      assert {:ok, %{path: ^dest}} = run(:move_entry, %{path: path, dir: dest_dir})
+      assert File.read!(dest) == "hi"
+      refute File.exists?(path)
+    end
+
+    test "refuses collisions and moving a directory into itself", %{dir: dir} do
+      sub = Path.join(dir, "sub")
+      File.mkdir_p!(sub)
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+      File.write!(Path.join(sub, "a.txt"), "taken")
+
+      assert {:error, _taken} = run(:move_entry, %{path: path, dir: sub})
+      assert {:error, _into_itself} = run(:move_entry, %{path: sub, dir: sub})
+      assert File.read!(path) == "hi"
+    end
+  end
 end

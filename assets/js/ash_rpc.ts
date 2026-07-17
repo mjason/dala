@@ -963,6 +963,79 @@ export async function validateUpdateTheme(
 }
 
 
+export type CopyEntryInput = {
+  path: string;
+  dir: string;
+};
+
+export type CopyEntryFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferCopyEntryResult<
+  Fields extends CopyEntryFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type CopyEntryResult<Fields extends CopyEntryFields | undefined = undefined> = | { success: true; data: InferCopyEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function copyEntry<Fields extends CopyEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CopyEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CopyEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "copy_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CopyEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateCopyEntry(
+  config: {
+  tenant?: string;
+  input: CopyEntryInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "copy_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type DeleteEntryInput = {
   path: string;
 };
@@ -1251,6 +1324,79 @@ export async function validateLspServers(
 }
 
 
+export type MoveEntryInput = {
+  path: string;
+  dir: string;
+};
+
+export type MoveEntryFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferMoveEntryResult<
+  Fields extends MoveEntryFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type MoveEntryResult<Fields extends MoveEntryFields | undefined = undefined> = | { success: true; data: InferMoveEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function moveEntry<Fields extends MoveEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MoveEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MoveEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "move_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MoveEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateMoveEntry(
+  config: {
+  tenant?: string;
+  input: MoveEntryInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "move_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type ReadFileInput = {
   path: string;
   maxBytes?: number | null;
@@ -1313,6 +1459,79 @@ export async function validateReadFile(
 ): Promise<ValidationResult> {
   const payload = {
     action: "read_file",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type RenameEntryInput = {
+  path: string;
+  name: string;
+};
+
+export type RenameEntryFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferRenameEntryResult<
+  Fields extends RenameEntryFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type RenameEntryResult<Fields extends RenameEntryFields | undefined = undefined> = | { success: true; data: InferRenameEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function renameEntry<Fields extends RenameEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RenameEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RenameEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "rename_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RenameEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateRenameEntry(
+  config: {
+  tenant?: string;
+  input: RenameEntryInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "rename_entry",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input
   };
