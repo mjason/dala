@@ -22,6 +22,23 @@ const IGNORED_DECORATION: GitDecoration = {
   tone: "ignored",
 };
 
+// The single-letter badge for each tone (VSCode-style). A folder shows the
+// letter of its strongest descendant change instead of a bare dot, so the
+// colour + letter read the same way a file's badge does.
+const TONE_LETTER: Record<GitDecoration["tone"], string> = {
+  ignored: "I",
+  added: "A",
+  renamed: "R",
+  untracked: "U",
+  modified: "M",
+  deleted: "D",
+  conflict: "!",
+};
+
+function folderSummary(tone: GitDecoration["tone"]): GitDecoration {
+  return { label: TONE_LETTER[tone], title: `Contains ${tone} changes`, tone };
+}
+
 export type GitDecorationIndex = {
   entries: Map<string, GitDecoration>;
   ignored: Set<string>;
@@ -86,11 +103,12 @@ export function buildGitDecorations(status: Status | null): GitDecorationIndex {
     const decoration = fileDecoration(file);
     entries.set(absolute, decoration);
 
+    const summary = folderSummary(decoration.tone);
     let dir = parent(absolute);
     while (dir && (dir === root || dir.startsWith(`${root}/`))) {
       const existing = entries.get(dir);
       if (!existing || TONE_PRIORITY[decoration.tone] > TONE_PRIORITY[existing.tone]) {
-        entries.set(dir, { ...decoration, label: "•" });
+        entries.set(dir, summary);
       }
       if (dir === root) break;
       dir = parent(dir);

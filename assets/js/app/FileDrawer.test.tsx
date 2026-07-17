@@ -131,7 +131,11 @@ describe("FileDrawer tree", () => {
     expect(modified).not.toHaveAttribute("title");
     expect(modified).toHaveClass("text-git-modified");
     expect(folderRow).not.toHaveAttribute("title");
-    expect(folderRow.querySelector('[data-git-status="•"]')).not.toBeNull();
+    // The folder carries its strongest descendant's letter (here U for the
+    // untracked src/main.ex), coloured like the file badges — not a bare dot.
+    const folderBadge = folderRow.querySelector('[data-git-status="U"]');
+    expect(folderBadge).not.toBeNull();
+    expect(folderBadge).toHaveClass("text-git-untracked");
     expect(ignoredRow.querySelector('[data-git-status="I"]')).toHaveClass("text-git-ignored");
   });
 

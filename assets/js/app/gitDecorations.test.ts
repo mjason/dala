@@ -16,8 +16,9 @@ describe("buildGitDecorations", () => {
     );
 
     expect(result.entries.get("/repo/lib/dala/app.ex")).toMatchObject({ label: "M", tone: "modified" });
-    expect(result.entries.get("/repo/lib/dala")).toMatchObject({ label: "•", tone: "modified" });
-    expect(result.entries.get("/repo/lib")).toMatchObject({ label: "•", tone: "modified" });
+    // Folders carry the strongest descendant's letter (VSCode-style), not a dot.
+    expect(result.entries.get("/repo/lib/dala")).toMatchObject({ label: "M", tone: "modified" });
+    expect(result.entries.get("/repo/lib")).toMatchObject({ label: "M", tone: "modified" });
     expect(result.entries.get("/repo/README.md")).toMatchObject({ label: "U", tone: "untracked" });
   });
 
@@ -30,7 +31,7 @@ describe("buildGitDecorations", () => {
       ]),
     );
 
-    expect(result.entries.get("/repo/src")).toMatchObject({ label: "•", tone: "conflict" });
+    expect(result.entries.get("/repo/src")).toMatchObject({ label: "!", tone: "conflict" });
     expect(result.entries.get("/repo/src/gone.ex")).toMatchObject({ label: "D", tone: "deleted" });
     expect(result.entries.get("/repo/src/conflict.ex")).toMatchObject({ label: "!", tone: "conflict" });
   });
