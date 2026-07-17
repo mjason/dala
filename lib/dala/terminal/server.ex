@@ -54,6 +54,37 @@ defmodule Dala.Terminal.Server do
     VSCODE_INJECTION VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_IPC_HANDLE
   )
 
+  # Dala's own server configuration must not leak into the shells it spawns:
+  # anything the user runs inside a dala terminal that reads the same
+  # variables (a dev `mix phx.server` grabbing the production PORT and
+  # PHX_SERVER, a test server coming up with DALA_AUTH_ENABLED…) breaks in
+  # ways that look like application bugs — and DALA_USERS, SECRET_KEY_BASE,
+  # TOKEN_SIGNING_SECRET and RELEASE_COOKIE are secrets with no business in
+  # a user shell. Exact names cover the config surface of runtime.exs plus
+  # the BEAM release launcher's own variables.
+  @env_remove_config ~w(
+    PORT DATABASE_PATH POOL_SIZE SECRET_KEY_BASE TOKEN_SIGNING_SECRET
+    DNS_CLUSTER_QUERY MIX_ENV ELIXIR_ERL_OPTIONS ROOTDIR BINDIR EMU PROGNAME
+  )
+
+  # Open-ended families, matched against the live environment at spawn time
+  # so configuration added later can never leak by omission.
+  @env_remove_config_prefixes ~w(DALA_ PHX_ RELEASE_)
+
+  @doc """
+  Environment variable names scrubbed from spawned shells: host-terminal
+  identity, dala's own server configuration (secrets included), and every
+  currently-set variable in the `DALA_*`/`PHX_*`/`RELEASE_*` families.
+  """
+  def env_remove do
+    inherited =
+      for {name, _value} <- System.get_env(),
+          String.starts_with?(name, @env_remove_config_prefixes),
+          do: name
+
+    @env_remove ++ @env_remove_config ++ inherited
+  end
+
   # When the shell dies, whatever modes its programs had enabled (mouse
   # tracking, bracketed paste, alt-screen, hidden cursor) are stale on the
   # connected clients and would turn mouse movement into `35;36M`-style
@@ -325,7 +356,7 @@ defmodule Dala.Terminal.Server do
         {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
         {"WARP_CLIENT_VERSION", "dala"}
       ],
-      env_remove: @env_remove,
+      env_remove: env_remove(),
       rows: 24,
       cols: 80,
       history_lines: Dala.Terminal.Session.history_lines(session.scrollback_limit)

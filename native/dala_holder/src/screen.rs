@@ -15,6 +15,12 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor};
 use serde::Serialize;
 use std::collections::VecDeque;
 
+/// Byte budget for the scrollback portion of an attach repaint. The client
+/// parses the whole repaint synchronously; ~512 KiB is tens of milliseconds
+/// of xterm parsing (thousands of ordinary lines) — a snappy attach — while
+/// the full history could reach many megabytes under a chatty AI TUI.
+const REPAINT_HISTORY_BUDGET: usize = 512 * 1024;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSnapshot {
@@ -147,10 +153,44 @@ impl Screen {
         if alt {
             out.extend_from_slice(b"\x1b[?1049h");
         } else {
-            // Oldest history line first; the grid indexes history as negative
-            // lines. The alt screen has no history.
+            // The repaint is parsed synchronously on the client's main
+            // thread, so an unbounded history (up to 50k SGR-heavy lines =
+            // many megabytes) would freeze the UI on every attach/switch.
+            // A cheap newest-first pre-pass sizes rows until the byte budget
+            // is spent, picking the oldest row to emit; the emission below
+            // then renders that tail exactly as before (one continuous pen,
+            // nothing inserted between soft-wrapped segments).
             let history = grid.history_size();
-            for i in 0..history {
+            let mut first = history;
+            let mut used = 0usize;
+            for i in (0..history).rev() {
+                // The grid indexes history as negative lines; -1 is newest.
+                let line = Line(i as i32 - history as i32);
+                let mut scratch: Vec<u8> = Vec::with_capacity(64);
+                let mut scratch_pen = Pen::default();
+                let wrapped = render_row(&mut scratch, &mut scratch_pen, grid, line, columns, soft_wrap);
+                let row_len = scratch.len() + if wrapped { 0 } else { 2 };
+                if used + row_len > REPAINT_HISTORY_BUDGET {
+                    break;
+                }
+                used += row_len;
+                first = i;
+            }
+            // Never start mid-logical-line: if the row before `first` wraps
+            // into it, advance to the next logical line start (a partial
+            // continuation would render with wrong colours and reflow).
+            while first > 0 && first < history {
+                let prev = Line(first as i32 - 1 - history as i32);
+                let prev_wraps = columns > 0
+                    && grid[prev][Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+                if prev_wraps {
+                    first += 1;
+                } else {
+                    break;
+                }
+            }
+
+            for i in first..history {
                 let line = Line(i as i32 - history as i32);
                 // Wrapped rows flow into the next one without an explicit
                 // newline, so xterm re-marks them as one logical line and
@@ -679,6 +719,39 @@ mod tests {
         assert!(out.contains("\x1b[?1002h"));
         assert!(out.contains("\x1b[?1006h"));
         assert!(out.contains("TUI"));
+    }
+
+    #[test]
+    fn repaint_history_is_byte_bounded() {
+        let mut screen = Screen::new(24, 80, 50_000);
+        // SGR-heavy lines so the full history would far exceed the budget.
+        for i in 0..30_000 {
+            screen.advance(format!("\x1b[1;31mcolored line number {i}\x1b[0m\r\n").as_bytes());
+        }
+        let out = screen.repaint(true);
+
+        // Bounded: history budget + screen grid + modes slack.
+        assert!(
+            out.len() <= REPAINT_HISTORY_BUDGET + 64 * 1024,
+            "repaint was {} bytes",
+            out.len()
+        );
+
+        let s = text(&out);
+        // The newest lines survive; the oldest are dropped by the budget.
+        assert!(s.contains("colored line number 29999"));
+        assert!(!s.contains("colored line number 0\u{1b}"));
+    }
+
+    #[test]
+    fn repaint_under_budget_is_untruncated() {
+        let mut screen = Screen::new(4, 20, 100);
+        for i in 0..10 {
+            screen.advance(format!("line-{i}\r\n").as_bytes());
+        }
+        let out = text(&screen.repaint(true));
+        assert!(out.contains("line-0"));
+        assert!(out.contains("line-9"));
     }
 
     #[test]
