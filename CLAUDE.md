@@ -1,5 +1,25 @@
 This is a web application written using the Phoenix web framework.
 
+## Configuration rules (dala-specific, MANDATORY)
+
+- **NEVER read `System.get_env` in application code (`lib/`).** All server
+  configuration flows through ONE pipeline: `~/.config/dala/config.jsonc`
+  (prod) / env vars (dev & legacy only) → `Dala.RuntimeConfig` →
+  `config/runtime.exs` → `Application.get_env(:dala, ...)` in app code.
+  Adding a config knob = add a camelCase key to config.jsonc + a
+  `DALA_`-prefixed env fallback in runtime.exs — nothing else.
+- **Env var names must be `DALA_`-prefixed.** Generic names (`PORT`, …)
+  collide with other tools in both directions; the bare legacy names exist
+  only for pre-config-file installs and must not grow.
+- **Once a config file is present, env is ignored entirely** (production
+  determinism). Do not add code that breaks this rule.
+- **dala never manipulates the environment it passes to spawned shells** —
+  no scrubbing, no allowlists (a removed ShellEnv module tried both;
+  user-rejected). The server process stays clean at the source instead.
+  Permitted `System.get_env` exceptions: OS conventions only (`SHELL`,
+  `XDG_RUNTIME_DIR`, `RELEASE_NAME` detection, `${VAR}` expansion of
+  user-authored config values).
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

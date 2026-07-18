@@ -1,73 +1,24 @@
 defmodule Dala.Terminal.HolderEnvTest do
-  # System.put_env is process-global — keep this module out of async.
+  # Spawns a real holder + shell.
   use ExUnit.Case, async: false
 
   alias Dala.Terminal.Holder
-  alias Dala.Terminal.Server
 
-  describe "Server.env_remove/0" do
-    test "scrubs any PRESENT variable outside the fresh-login allowlist" do
-      System.put_env("TERM_PROGRAM", "test-term")
-      System.put_env("SECRET_KEY_BASE", "s3cret")
-
-      on_exit(fn ->
-        System.delete_env("TERM_PROGRAM")
-        System.delete_env("SECRET_KEY_BASE")
-      end)
-
-      names = Server.env_remove()
-      assert "TERM_PROGRAM" in names
-      assert "SECRET_KEY_BASE" in names
-    end
-
-    test "scrubs agent session markers inherited from an agent-run deploy" do
-      System.put_env("CLAUDE_CODE_TEST_LEAK", "1")
-      System.put_env("CLAUDECODE", "1")
-
-      on_exit(fn ->
-        System.delete_env("CLAUDE_CODE_TEST_LEAK")
-        System.delete_env("CLAUDECODE")
-      end)
-
-      names = Server.env_remove()
-      assert "CLAUDECODE" in names
-      assert "CLAUDE_CODE_TEST_LEAK" in names
-    end
-
-    test "scrubs whatever DALA_*/PHX_*/RELEASE_* variables are currently set" do
-      System.put_env("DALA_TEST_LEAK_XYZ", "1")
-      System.put_env("PHX_TEST_LEAK_XYZ", "1")
-      System.put_env("RELEASE_TEST_LEAK_XYZ", "1")
-
-      on_exit(fn ->
-        System.delete_env("DALA_TEST_LEAK_XYZ")
-        System.delete_env("PHX_TEST_LEAK_XYZ")
-        System.delete_env("RELEASE_TEST_LEAK_XYZ")
-      end)
-
-      names = Server.env_remove()
-      assert "DALA_TEST_LEAK_XYZ" in names
-      assert "PHX_TEST_LEAK_XYZ" in names
-      assert "RELEASE_TEST_LEAK_XYZ" in names
-    end
-
-    test "leaves the ordinary user environment alone" do
-      names = Server.env_remove()
-      refute "PATH" in names
-      refute "HOME" in names
-      refute "XDG_RUNTIME_DIR" in names
-      refute "LANG" in names
-    end
-  end
+  # POLICY (user decision): dala does NOT touch the environment it passes to
+  # shells. The server process is kept clean at the SOURCE — configuration
+  # lives in config.jsonc and secrets in the data dir, so there is nothing
+  # dala-specific in the process environment to begin with. No scrubbing,
+  # no allowlist: what the server inherited passes through, plus dala's own
+  # explicit spawn additions (TERM & friends).
 
   describe "holder spawn (end to end)" do
     @tag :tmp_dir
-    test "a polluted variable does not reach the spawned shell", %{tmp_dir: tmp_dir} do
+    test "the environment passes through untouched, plus explicit additions", %{tmp_dir: tmp_dir} do
       out = Path.join(tmp_dir, "env.txt")
       id = "env-test-#{System.unique_integer([:positive])}"
 
-      System.put_env("DALA_TEST_LEAK_E2E", "polluted")
-      on_exit(fn -> System.delete_env("DALA_TEST_LEAK_E2E") end)
+      System.put_env("DALA_TEST_PASSTHROUGH_E2E", "inherited")
+      on_exit(fn -> System.delete_env("DALA_TEST_PASSTHROUGH_E2E") end)
 
       assert {:ok, socket, false} =
                Holder.attach_or_spawn(id,
@@ -75,8 +26,7 @@ defmodule Dala.Terminal.HolderEnvTest do
                  # tmp_dir carries the test name (spaces, parens) — quote it.
                  args: ["-c", "env > '#{out}'; exec sleep 60"],
                  cwd: tmp_dir,
-                 env: [{"DALA_ENV_TEST_MARKER", "kept"}],
-                 env_remove: Server.env_remove()
+                 env: [{"DALA_ENV_TEST_MARKER", "kept"}]
                )
 
       on_exit(fn ->
@@ -96,19 +46,14 @@ defmodule Dala.Terminal.HolderEnvTest do
       env_text = await_file(out)
       :gen_tcp.close(socket)
 
-      # Server-process ancestry is gone; explicitly-passed spawn env still
-      # arrives (the removal list only names PRESENT server variables).
-      refute env_text =~ "DALA_TEST_LEAK_E2E"
+      # Inherited environment arrives untouched; explicit spawn env arrives.
+      assert env_text =~ "DALA_TEST_PASSTHROUGH_E2E=inherited"
       assert env_text =~ "DALA_ENV_TEST_MARKER=kept"
-      # The fresh-login allowlist survives: the shell still has a home and a
-      # search path to build the user's real environment from.
       assert env_text =~ "PATH="
       assert env_text =~ "HOME="
     end
   end
 
-  # The shell writes the file right after spawn; poll instead of sleeping a
-  # fixed amount (guideline-compliant: bounded busy-wait on the observable).
   defp await_file(path, attempts \\ 200) do
     case File.read(path) do
       {:ok, contents} when contents != "" ->

@@ -17,16 +17,18 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 # Server configuration comes from ~/.config/dala/config.jsonc (see
-# Dala.RuntimeConfig). Environment variables remain as LEGACY overrides so
-# pre-config-file installs (dala.env) keep working unchanged.
-cfg = Dala.RuntimeConfig.load()
+# Dala.RuntimeConfig) — PROD ONLY: development and test configure through
+# env/config files in the repo, and must never pick up a machine's personal
+# server config. Env precedence: DALA_-prefixed (deliberate, dev) > file >
+# bare legacy names (old dala.env installs) > default.
+cfg = if config_env() == :prod, do: Dala.RuntimeConfig.load(), else: %{}
 
-if System.get_env("PHX_SERVER") || cfg["server"] == true do
+if System.get_env("DALA_SERVER") || System.get_env("PHX_SERVER") || cfg["server"] == true do
   config :dala, DalaWeb.Endpoint, server: true
 end
 
 config :dala, DalaWeb.Endpoint,
-  http: [port: Dala.RuntimeConfig.get_int(cfg, "PORT", "port", 4000)]
+  http: [port: Dala.RuntimeConfig.get_int(cfg, {"DALA_PORT", "PORT"}, "port", 4000)]
 
 # Optional authentication: when enabled, only the bootstrapped accounts
 # (auth.users in config.jsonc, or legacy DALA_USERS) can sign in.
@@ -91,12 +93,12 @@ end
 
 if config_env() == :prod do
   database_path =
-    Dala.RuntimeConfig.get(cfg, "DATABASE_PATH", "databasePath") ||
+    Dala.RuntimeConfig.get(cfg, {"DALA_DATABASE_PATH", "DATABASE_PATH"}, "databasePath") ||
       Path.join(Dala.RuntimeConfig.data_dir(cfg), "dala.db")
 
   config :dala, Dala.Repo,
     database: database_path,
-    pool_size: Dala.RuntimeConfig.get_int(cfg, "POOL_SIZE", "poolSize", 10)
+    pool_size: Dala.RuntimeConfig.get_int(cfg, {"DALA_POOL_SIZE", "POOL_SIZE"}, "poolSize", 10)
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
@@ -105,25 +107,32 @@ if config_env() == :prod do
   # variable instead.
   # Secrets never live in the config file: generated on first boot and
   # persisted 0600 at <data_dir>/secrets.json. Legacy env still wins.
-  secret_key_base = Dala.RuntimeConfig.secret(cfg, "SECRET_KEY_BASE", "secretKeyBase")
+  secret_key_base =
+    Dala.RuntimeConfig.secret(cfg, {"DALA_SECRET_KEY_BASE", "SECRET_KEY_BASE"}, "secretKeyBase")
 
-  host = Dala.RuntimeConfig.get(cfg, "PHX_HOST", "host", "localhost")
+  host = Dala.RuntimeConfig.get(cfg, {"DALA_HOST", "PHX_HOST"}, "host", "localhost")
 
   # Local daemon installs serve plain http on localhost; a reverse-proxied
   # deployment sets scheme https (and its own host).
-  scheme = Dala.RuntimeConfig.get(cfg, "PHX_SCHEME", "scheme", "http")
+  scheme = Dala.RuntimeConfig.get(cfg, {"DALA_SCHEME", "PHX_SCHEME"}, "scheme", "http")
 
   url_port =
-    Dala.RuntimeConfig.get_int(cfg, "PHX_URL_PORT", "urlPort", nil) ||
+    Dala.RuntimeConfig.get_int(cfg, {"DALA_URL_PORT", "PHX_URL_PORT"}, "urlPort", nil) ||
       if(scheme == "https",
         do: 443,
-        else: Dala.RuntimeConfig.get_int(cfg, "PORT", "port", 4000)
+        else: Dala.RuntimeConfig.get_int(cfg, {"DALA_PORT", "PORT"}, "port", 4000)
       )
 
   # The origin check breaks WebSockets when the app is reached by IP or an
   # alternate hostname (common for a personal terminal server on a LAN), so
   # it is opt-in for reverse-proxied setups.
-  check_origin = Dala.RuntimeConfig.get_bool(cfg, "PHX_CHECK_ORIGIN", "checkOrigin", false)
+  check_origin =
+    Dala.RuntimeConfig.get_bool(
+      cfg,
+      {"DALA_CHECK_ORIGIN", "PHX_CHECK_ORIGIN"},
+      "checkOrigin",
+      false
+    )
 
   config :dala,
          :dns_cluster_query,
@@ -148,7 +157,11 @@ if config_env() == :prod do
 
   config :dala,
     token_signing_secret:
-      Dala.RuntimeConfig.secret(cfg, "TOKEN_SIGNING_SECRET", "tokenSigningSecret")
+      Dala.RuntimeConfig.secret(
+        cfg,
+        {"DALA_TOKEN_SIGNING_SECRET", "TOKEN_SIGNING_SECRET"},
+        "tokenSigningSecret"
+      )
 
   # ## SSL Support
   #

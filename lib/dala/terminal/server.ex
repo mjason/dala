@@ -40,13 +40,6 @@ defmodule Dala.Terminal.Server do
   @waiters_per_session 8
   @match_buffer_bytes 128 * 1024
 
-  @doc """
-  Environment variable names scrubbed from spawned shells — see
-  `Dala.Terminal.ShellEnv` for the categorized inventory and the reasons.
-  Kept as a public delegate: callers and tests speak to the server.
-  """
-  defdelegate env_remove, to: Dala.Terminal.ShellEnv, as: :remove_list
-
   # When the shell dies, whatever modes its programs had enabled (mouse
   # tracking, bracketed paste, alt-screen, hidden cursor) are stale on the
   # connected clients and would turn mouse movement into `35;36M`-style
@@ -318,7 +311,6 @@ defmodule Dala.Terminal.Server do
         {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
         {"WARP_CLIENT_VERSION", "dala"}
       ],
-      env_remove: env_remove(),
       rows: 24,
       cols: 80,
       history_lines: Dala.Terminal.Session.history_lines(session.scrollback_limit)

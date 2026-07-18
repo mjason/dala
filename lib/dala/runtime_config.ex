@@ -10,13 +10,18 @@ defmodule Dala.RuntimeConfig do
   the server process needs essentially NO environment of its own: nothing
   to leak, nothing to scrub, no collision with whatever the user runs.
 
-  Sources, in precedence order:
-  1. Environment variables — LEGACY compatibility only: pre-existing
-     installs configured through `dala.env` keep working unchanged. New
-     installs set none of them.
-  2. `$DALA_CONFIG` or `$XDG_CONFIG_HOME/dala/config.jsonc` (JSONC:
-     comments + trailing commas welcome).
-  3. Built-in defaults.
+  The rule (user decision): environment variables are a DEVELOPMENT tool
+  and a legacy-compat path — production uses the file, full stop.
+
+  - Config file present (`$DALA_CONFIG` or `$XDG_CONFIG_HOME/dala/
+    config.jsonc`, JSONC): the file is the sole authority; every env
+    override is ignored. Deterministic — nothing ambient (a stray generic
+    `PORT` in whatever shell started the server!) can affect a configured
+    install.
+  - No config file (development, or an unmigrated dala.env install): env
+    applies — `DALA_`-prefixed names first (collision-free, the documented
+    dev knobs), then the bare legacy names (`PORT`, `PHX_HOST`, …), then
+    defaults.
 
   Secrets (`secret_key_base`, `token_signing_secret`) never appear in the
   config file: they are generated on first boot and persisted 0600 at
@@ -42,31 +47,57 @@ defmodule Dala.RuntimeConfig do
     end
   end
 
-  @doc "String value: env override (legacy) > file key > default."
-  def get(cfg, env_var, file_key, default \\ nil) do
-    case System.get_env(env_var) do
-      nil ->
-        case Map.get(cfg, file_key, default) do
-          nil -> nil
-          value -> to_string(value)
-        end
+  @doc """
+  String value. Precedence: `DALA_`-prefixed env (deliberate, collision-free
+  — for development) > config file > bare legacy env (old dala.env installs;
+  BELOW the file so an ambient generic name like `PORT` in whatever shell
+  started the server can never hijack a configured install) > default.
 
-      value ->
-        value
+  `env_var` is either one name or `{primary, legacy}`.
+  """
+  def get(cfg, env_var, file_key, default \\ nil) do
+    value =
+      if env_enabled?(cfg) do
+        {primary, legacy} = env_pair(env_var)
+        System.get_env(primary) || (legacy && System.get_env(legacy))
+      else
+        file_value(cfg, file_key)
+      end
+
+    case value || default do
+      nil -> nil
+      found -> to_string(found)
     end
   end
 
-  @doc "Boolean value (env accepts true/1)."
-  def get_bool(cfg, env_var, file_key, default) do
-    case System.get_env(env_var) do
-      nil ->
-        case Map.get(cfg, file_key) do
-          nil -> default
-          value -> value in [true, "true", "1", 1]
-        end
+  # Env applies ONLY when there is no config file: the file, once present,
+  # is the sole authority (production determinism).
+  defp env_enabled?(cfg), do: cfg == %{}
 
-      value ->
-        value in ~w(true 1)
+  defp env_pair({primary, legacy}), do: {primary, legacy}
+  defp env_pair(name) when is_binary(name), do: {name, nil}
+
+  defp file_value(cfg, file_key) do
+    case Map.get(cfg, file_key) do
+      nil -> nil
+      value -> to_string(value)
+    end
+  end
+
+  @doc "Boolean value (env accepts true/1); same precedence as `get/4`."
+  def get_bool(cfg, env_var, file_key, default) do
+    if env_enabled?(cfg) do
+      {primary, legacy} = env_pair(env_var)
+
+      case System.get_env(primary) || (legacy && System.get_env(legacy)) do
+        value when value in [nil, false] -> default
+        value -> value in ~w(true 1)
+      end
+    else
+      case Map.fetch(cfg, file_key) do
+        {:ok, value} -> value in [true, "true", "1", 1]
+        :error -> default
+      end
     end
   end
 
@@ -82,7 +113,7 @@ defmodule Dala.RuntimeConfig do
         nil
 
       _ ->
-        raise "invalid #{file_key}/#{env_var} (expected a positive integer, got #{inspect(raw)})"
+        raise "invalid #{file_key} (expected a positive integer, got #{inspect(raw)})"
     end
   end
 
@@ -99,8 +130,15 @@ defmodule Dala.RuntimeConfig do
   upgrades and never needs to be written by a human.
   """
   def secret(cfg, env_var, file_key) do
-    case System.get_env(env_var) do
-      nil ->
+    {primary, legacy} = env_pair(env_var)
+
+    env_value =
+      if env_enabled?(cfg),
+        do: System.get_env(primary) || (legacy && System.get_env(legacy)),
+        else: nil
+
+    case env_value do
+      value when value in [nil, false] ->
         path = Path.join(data_dir(cfg), "secrets.json")
         secrets = read_secrets(path)
 
@@ -129,9 +167,10 @@ defmodule Dala.RuntimeConfig do
 
     mb = fn env_var, file_key, default ->
       raw =
-        case System.get_env(env_var) do
-          nil -> Map.get(limits, file_key, default)
-          value -> value
+        if env_enabled?(cfg) do
+          System.get_env(env_var) || default
+        else
+          Map.get(limits, file_key, default)
         end
 
       case Integer.parse(to_string(raw)) do

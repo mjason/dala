@@ -37,28 +37,56 @@ defmodule Dala.RuntimeConfigTest do
     end)
   end
 
-  describe "precedence: legacy env > file > default" do
-    test "get/get_int/get_bool" do
+  describe "the rule: a config file present = env ignored entirely" do
+    test "file values win over every env form once the file exists" do
       cfg = %{"port" => 5000, "checkOrigin" => true, "host" => "filehost"}
 
+      with_env(%{"PORT" => "6000", "DALA_PORT" => "7000"}, fn ->
+        # A stray generic PORT (or even a deliberate DALA_PORT) can never
+        # hijack a CONFIGURED install — production determinism.
+        assert RuntimeConfig.get_int(cfg, {"DALA_PORT", "PORT"}, "port", 4000) == 5000
+      end)
+
+      assert RuntimeConfig.get(cfg, {"DALA_HOST", "PHX_HOST"}, "host", "localhost") == "filehost"
+
+      assert RuntimeConfig.get_bool(
+               cfg,
+               {"DALA_CHECK_ORIGIN", "PHX_CHECK_ORIGIN"},
+               "checkOrigin",
+               false
+             ) ==
+               true
+
+      # Keys absent from the file fall to DEFAULT (not to env): the file is
+      # the sole authority once present.
+      with_env(%{"DALA_POOL_SIZE" => "99"}, fn ->
+        assert RuntimeConfig.get_int(cfg, {"DALA_POOL_SIZE", "POOL_SIZE"}, "poolSize", 10) == 10
+      end)
+    end
+
+    test "without a file (dev / unmigrated): DALA_-prefixed > bare legacy > default" do
+      with_env(%{"PORT" => "6000", "DALA_PORT" => "7000"}, fn ->
+        assert RuntimeConfig.get_int(%{}, {"DALA_PORT", "PORT"}, "port", 4000) == 7000
+      end)
+
       with_env(%{"PORT" => "6000"}, fn ->
-        assert RuntimeConfig.get_int(cfg, "PORT", "port", 4000) == 6000
+        assert RuntimeConfig.get_int(%{}, {"DALA_PORT", "PORT"}, "port", 4000) == 6000
       end)
 
-      assert RuntimeConfig.get_int(cfg, "PORT", "port", 4000) == 5000
-      assert RuntimeConfig.get_int(%{}, "PORT", "port", 4000) == 4000
-      assert RuntimeConfig.get(cfg, "PHX_HOST", "host", "localhost") == "filehost"
-      assert RuntimeConfig.get_bool(cfg, "PHX_CHECK_ORIGIN", "checkOrigin", false) == true
-      assert RuntimeConfig.get_bool(%{}, "PHX_CHECK_ORIGIN", "checkOrigin", false) == false
+      assert RuntimeConfig.get_int(%{}, {"DALA_PORT", "PORT"}, "port", 4000) == 4000
 
-      with_env(%{"PHX_CHECK_ORIGIN" => "false"}, fn ->
-        assert RuntimeConfig.get_bool(cfg, "PHX_CHECK_ORIGIN", "checkOrigin", false) == false
-      end)
+      assert RuntimeConfig.get_bool(
+               %{},
+               {"DALA_CHECK_ORIGIN", "PHX_CHECK_ORIGIN"},
+               "checkOrigin",
+               false
+             ) ==
+               false
     end
 
     test "garbage integers are loud, not silent" do
       assert_raise RuntimeError, ~r/positive integer/, fn ->
-        RuntimeConfig.get_int(%{"port" => "many"}, "PORT", "port", 4000)
+        RuntimeConfig.get_int(%{"port" => "many"}, {"DALA_PORT", "PORT"}, "port", 4000)
       end
     end
   end
@@ -84,14 +112,19 @@ defmodule Dala.RuntimeConfigTest do
     end
 
     @tag :tmp_dir
-    test "legacy env override wins and writes nothing", %{tmp_dir: tmp} do
-      cfg = %{"dataDir" => tmp}
-
-      with_env(%{"DALA_TEST_SECRET_Y" => "from-env"}, fn ->
-        assert RuntimeConfig.secret(cfg, "DALA_TEST_SECRET_Y", "secretKeyBase") == "from-env"
+    test "env secrets apply only WITHOUT a config file (legacy installs)", %{tmp_dir: tmp} do
+      with_env(%{"DALA_TEST_SECRET_Y" => "from-env", "DALA_DATA_DIR" => tmp}, fn ->
+        assert RuntimeConfig.secret(%{}, "DALA_TEST_SECRET_Y", "secretKeyBase") == "from-env"
       end)
 
       refute File.exists?(Path.join(tmp, "secrets.json"))
+
+      # With a file present the env secret is ignored — generated instead.
+      cfg = %{"dataDir" => tmp}
+
+      with_env(%{"DALA_TEST_SECRET_Y" => "from-env"}, fn ->
+        refute RuntimeConfig.secret(cfg, "DALA_TEST_SECRET_Y", "secretKeyBase") == "from-env"
+      end)
     end
   end
 
@@ -100,7 +133,9 @@ defmodule Dala.RuntimeConfigTest do
              Path.expand("~/dala-data")
 
     with_env(%{"DALA_DATA_DIR" => "/tmp/env-wins"}, fn ->
-      assert RuntimeConfig.data_dir(%{"dataDir" => "/tmp/file"}) == "/tmp/env-wins"
+      # File present → env ignored, even for the data dir.
+      assert RuntimeConfig.data_dir(%{"dataDir" => "/tmp/file"}) == "/tmp/file"
+      assert RuntimeConfig.data_dir(%{}) == "/tmp/env-wins"
     end)
 
     assert RuntimeConfig.data_dir(%{}) =~ ~r{/dala$}
@@ -116,7 +151,9 @@ defmodule Dala.RuntimeConfigTest do
       assert limits.browser_attachment_bytes == 512 * 1024 * 1024
 
       with_env(%{"DALA_DRAWER_UPLOAD_MAX_MB" => "7"}, fn ->
-        assert RuntimeConfig.file_limits(cfg).drawer_upload_bytes == 7 * 1024 * 1024
+        # File present → env ignored; without a file → env applies.
+        assert RuntimeConfig.file_limits(cfg).drawer_upload_bytes == 100 * 1024 * 1024
+        assert RuntimeConfig.file_limits(%{}).drawer_upload_bytes == 7 * 1024 * 1024
       end)
     end
 
