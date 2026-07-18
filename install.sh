@@ -98,9 +98,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
   // Reached from other machines? Keep false, or set host + true behind a
   // reverse proxy.
   "checkOrigin": false,
-  "dataDir": "$DATA_DIR",
+$( [ "$DATA_DIR" != "$HOME/.local/share/dala" ] && printf '  "dataDir": "%s",' "$DATA_DIR" )
+  // Install location - also the switch that enables the in-app updater.
   "releaseRoot": "$ROOT",
-  "serviceName": "$SERVICE_NAME",
+$( { [ "$SERVICE_NAME" != "dala" ] && [ "$SERVICE_NAME" != "com.manjialin.dala" ]; } && printf '  "serviceName": "%s",' "$SERVICE_NAME" )
   // Optional login (default: open, local use):
   //   "auth": { "enabled": true, "users": "you@example.com:yourpassword" }
   // auth.users is BOOTSTRAP-ONLY - the account is created on first boot;
