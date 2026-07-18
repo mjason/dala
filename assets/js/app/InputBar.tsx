@@ -8,6 +8,7 @@ import { useI18n } from "./i18n";
 import { isTopWindow, Kbd, modShiftCombo, popWindow, pushWindow } from "./shortcuts";
 import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "./keybindings";
 import ComposerEditor, { type ComposerEditorApi } from "./ComposerEditor";
+import PromptStash from "./PromptStash";
 import { uploadPastedFiles } from "./pastedFileUpload";
 import type { UploadProgress } from "./fileUpload";
 import UploadProgressView from "./UploadProgressView";
@@ -183,6 +184,7 @@ export default function InputBar({
       const id = (e as CustomEvent).detail;
       if (id === "composerMention") insertMentionRef.current();
       if (id === "composerAttach") attachRef.current?.click();
+      if (id === "composerStash") stashActionRef.current?.();
     };
     window.addEventListener("dala:action", onAction);
     return () => window.removeEventListener("dala:action", onAction);
@@ -364,6 +366,8 @@ export default function InputBar({
   };
 
   const editorApiRef = useRef<ComposerEditorApi | null>(null);
+  // Filled by PromptStash: stashes the current composer text (keyboard path).
+  const stashActionRef = useRef<(() => void) | null>(null);
 
   const attach = async (files: File[] | FileList | null, marker?: string) => {
     const batch = Array.from(files ?? []);
@@ -644,6 +648,13 @@ export default function InputBar({
             <path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14" strokeLinecap="round" />
           </svg>
         </button>
+        <PromptStash
+          value={value}
+          setValue={setValue}
+          onError={onError}
+          stashActionRef={stashActionRef}
+          shortcutHint={formatCombo(bindings.composerStash)}
+        />
         {agentLabel && (
           <span className="rounded-full bg-mint/10 px-2 py-0.5 font-mono text-[11px] text-mint">
             {agentLabel}

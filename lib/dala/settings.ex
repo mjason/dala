@@ -27,6 +27,18 @@ defmodule Dala.Settings do
       rpc_action :delete_theme, :destroy
     end
 
+    # The prompt stash: quick capture / recall of prompts and ideas. Also the
+    # MCP surface for it — `Dala.Mcp.Registry` derives tools from this block,
+    # so agents anywhere can stash an idea into this dala.
+    resource Dala.Settings.Prompt do
+      rpc_action :list_prompts, :list
+      rpc_action :stash_prompt, :stash
+      rpc_action :archive_prompt, :archive
+      rpc_action :restore_prompt, :restore
+      rpc_action :edit_prompt, :edit
+      rpc_action :delete_prompt, :destroy
+    end
+
     # For the WEB Settings panel only (via the auth-gated /rpc/run). These are
     # DELIBERATELY excluded from the MCP tool registry — an AI on /mcp must
     # never be able to toggle MCP or read/rotate its own token. See
@@ -43,5 +55,6 @@ defmodule Dala.Settings do
     resource Dala.Settings.Speech
     resource Dala.Settings.Theme
     resource Dala.Settings.Mcp
+    resource Dala.Settings.Prompt
   end
 end

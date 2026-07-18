@@ -67,7 +67,16 @@ defmodule Dala.Mcp.Registry do
       "For theme design, call theme_reference, iterate with preview_theme, and only then " <>
         "create_theme or update_theme."
 
-    [theme, Dala.Mcp.TerminalTools.instructions(access), Dala.Mcp.FileTools.instructions(access)]
+    prompts =
+      "When the user asks to save/stash a prompt or idea for later, call stash_prompt with " <>
+        "the full text; list_prompts shows the stash (stashed = not yet used, archived = history)."
+
+    [
+      theme,
+      prompts,
+      Dala.Mcp.TerminalTools.instructions(access),
+      Dala.Mcp.FileTools.instructions(access)
+    ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
   end

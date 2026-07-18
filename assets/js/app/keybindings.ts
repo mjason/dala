@@ -40,6 +40,7 @@ export const BINDINGS: BindingSpec[] = [
   { id: "composerSend", labelKey: "inputBarSend", default: "shift+enter", scope: "composer" },
   { id: "composerMention", labelKey: "composerMention", default: "mod+shift+a", scope: "composer" },
   { id: "composerAttach", labelKey: "composerAttach", default: "mod+shift+u", scope: "composer" },
+  { id: "composerStash", labelKey: "stashCurrentInput", default: "mod+shift+s", scope: "composer" },
 ];
 
 const KEY = "dala:keybindings";

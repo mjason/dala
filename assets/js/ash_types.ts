@@ -30,6 +30,36 @@ export type McpConfigAttributesOnlySchema = {
 };
 
 
+// Prompt Schema
+export type PromptResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "content" | "status" | "usedAt" | "ownerId" | "insertedAt" | "updatedAt" | "userId";
+  id: UUID;
+  content: string;
+  status: "archived" | "stashed";
+  usedAt: UtcDateTimeUsec | null;
+  ownerId: UUID;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+  userId: UUID | null;
+};
+
+
+
+export type PromptAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "content" | "status" | "usedAt" | "ownerId" | "insertedAt" | "updatedAt" | "userId";
+  id: UUID;
+  content: string;
+  status: "archived" | "stashed";
+  usedAt: UtcDateTimeUsec | null;
+  ownerId: UUID;
+  insertedAt: UtcDateTimeUsec;
+  updatedAt: UtcDateTimeUsec;
+  userId: UUID | null;
+};
+
+
 // SpeechSettings Schema
 export type SpeechSettingsResourceSchema = {
   __type: "Resource";
@@ -208,6 +238,76 @@ export type McpConfigFilterInput = {
   terminalControl?: {
     eq?: boolean;
     notEq?: boolean;
+  };
+
+
+
+};
+export type PromptFilterInput = {
+  and?: Array<PromptFilterInput>;
+  or?: Array<PromptFilterInput>;
+  not?: Array<PromptFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  content?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  status?: {
+    eq?: "archived" | "stashed";
+    notEq?: "archived" | "stashed";
+    in?: Array<"archived" | "stashed">;
+  };
+
+  usedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+    isNil?: boolean;
+  };
+
+  ownerId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  insertedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+  };
+
+  updatedAt?: {
+    eq?: UtcDateTimeUsec;
+    notEq?: UtcDateTimeUsec;
+    greaterThan?: UtcDateTimeUsec;
+    greaterThanOrEqual?: UtcDateTimeUsec;
+    lessThan?: UtcDateTimeUsec;
+    lessThanOrEqual?: UtcDateTimeUsec;
+    in?: Array<UtcDateTimeUsec>;
+  };
+
+  userId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+    isNil?: boolean;
   };
 
 
@@ -458,6 +558,9 @@ export type UpdaterFilterInput = {
 export const mcpConfigFilterFields = ["id", "enabled", "token", "terminalRead", "terminalControl"] as const;
 export type McpConfigFilterField = (typeof mcpConfigFilterFields)[number];
 
+export const promptFilterFields = ["id", "content", "status", "usedAt", "ownerId", "insertedAt", "updatedAt", "userId", "user"] as const;
+export type PromptFilterField = (typeof promptFilterFields)[number];
+
 export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
 export type SpeechSettingsFilterField = (typeof speechSettingsFilterFields)[number];
 
@@ -474,6 +577,9 @@ export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 export const mcpConfigSortFields = ["id", "enabled", "token", "terminalRead", "terminalControl"] as const;
 export type McpConfigSortField = (typeof mcpConfigSortFields)[number];
+
+export const promptSortFields = ["id", "content", "status", "usedAt", "ownerId", "insertedAt", "updatedAt", "userId"] as const;
+export type PromptSortField = (typeof promptSortFields)[number];
 
 export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;
 export type SpeechSettingsSortField = (typeof speechSettingsSortFields)[number];

@@ -196,6 +196,24 @@ defmodule DalaWeb.McpControllerTest do
       assert create["inputSchema"]["properties"]["base"]["enum"] == ["light", "dark"]
     end
 
+    test "the prompt stash works end to end: stash -> list -> archive -> delete" do
+      stashed = tool_content(call_tool("stash_prompt", %{"content" => "test the new parser"}))
+      assert stashed["content"] == "test the new parser"
+      assert stashed["status"] == "stashed"
+      id = stashed["id"]
+
+      listed = tool_content(call_tool("list_prompts", %{}))
+      assert Enum.any?(listed, &(&1["id"] == id and &1["status"] == "stashed"))
+
+      archived = tool_content(call_tool("archive_prompt", %{"id" => id}))
+      assert archived["status"] == "archived"
+      assert archived["used_at"]
+
+      _ = tool_content(call_tool("delete_prompt", %{"id" => id}))
+      listed = tool_content(call_tool("list_prompts", %{}))
+      refute Enum.any?(listed, &(&1["id"] == id))
+    end
+
     test "SECURITY: the MCP self-management actions are NOT exposed as tools" do
       body = json_response(mcp_post(rpc("tools/list", 6)), 200)
       names = Enum.map(body["result"]["tools"], & &1["name"])

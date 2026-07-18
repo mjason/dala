@@ -16,6 +16,19 @@ defmodule Dala.Mcp.RegistryTest do
     end
   end
 
+  test "the prompt stash surfaces as MCP tools (capture ideas from anywhere)" do
+    names = Enum.map(Registry.tools(), & &1["name"])
+
+    for expected <- ~w(list_prompts stash_prompt archive_prompt restore_prompt
+                       edit_prompt delete_prompt) do
+      assert expected in names, "expected #{expected} in #{inspect(names)}"
+    end
+
+    schema = tool("stash_prompt")["inputSchema"]
+    assert schema["properties"]["content"]["type"] == "string"
+    assert "content" in schema["required"]
+  end
+
   test "SECURITY: the Dala.Settings.Mcp self-management actions are excluded" do
     names = Enum.map(Registry.tools(), & &1["name"])
 

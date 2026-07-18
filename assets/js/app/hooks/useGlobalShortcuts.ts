@@ -156,6 +156,10 @@ export function useGlobalShortcuts(opts: {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerAttach" }));
       },
+      composerStash: (e) => {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerStash" }));
+      },
     };
 
     const handler = (e: KeyboardEvent) => {

@@ -25,6 +25,34 @@ test.describe("Given 一个有活动会话的用户", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  test("Prompt 暂存：存当前输入 → 面板调用 → 转入存档", async ({ page }) => {
+    const marker = `idea-${Date.now()}`;
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator("#composer-editor")).toBeVisible();
+    await page.keyboard.type(`${marker} remember this`);
+
+    // 暂存当前输入：composer 清空，条目入列。
+    await page.click("#prompt-stash-button");
+    await page.click("#stash-current-button");
+    await expect(page.locator("#composer-editor .cm-content")).not.toContainText(marker);
+    const row = page.locator("[data-prompt-row]", { hasText: marker });
+    await expect(row).toBeVisible();
+
+    // 调用：点条目 → 回到 composer → 面板关闭；重开面板后它在存档区。
+    await row.click();
+    await expect(page.locator("#composer-editor .cm-content")).toContainText(marker);
+    await expect(page.locator("#prompt-stash-panel")).toHaveCount(0);
+    await page.click("#prompt-stash-button");
+    await expect(page.locator("#prompt-stash-panel")).toBeVisible();
+    const archivedRow = page.locator("[data-prompt-row]", { hasText: marker });
+    await expect(archivedRow).toBeVisible();
+
+    // 收尾：删掉这条，避免污染其他用例。
+    await archivedRow.hover();
+    await archivedRow.locator("[data-prompt-delete]").click();
+    await expect(page.locator("[data-prompt-row]", { hasText: marker })).toHaveCount(0);
+  });
+
   test("用户按快捷键 Ctrl+Shift+K 打开 composer 并获得焦点", async ({ page }) => {
     await page.keyboard.press("Control+Shift+K");
     await expect(page.locator("#composer-editor")).toBeVisible();
