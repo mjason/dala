@@ -28,11 +28,8 @@
       "output": "dist"
     },
     "files": [
-      "main.js",
-      "preload.js",
-      "updater.js",
-      "src/**",
-      "menu-locales.js"
+      "*.js",
+      "src/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

@@ -553,6 +553,19 @@ function rebuildMenu() {
         { role: "reload", label: t("reload") },
         { role: "forceReload", label: t("forceReload") },
         { role: "toggleDevTools", label: t("toggleDevTools") },
+        {
+          label: t("gpuDiagnostics"),
+          click: () => {
+            // chrome://gpu — an isolated, preload-less window (the built-in
+            // browser only accepts http(s)).
+            const win = new BrowserWindow({
+              width: 980,
+              height: 760,
+              webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+            });
+            void win.loadURL("chrome://gpu");
+          },
+        },
         { type: "separator" },
         { role: "resetZoom", label: t("actualSize") },
         { role: "zoomIn", label: t("zoomIn") },
@@ -821,6 +834,12 @@ if (!app.requestSingleInstanceLock()) {
         .filter(Boolean)
     ),
   ];
+  // GPU rasterization for canvas/compositing (the terminal is a WebGL
+  // canvas) — Chrome enables this per-device; Electron leaves it off more
+  // often. Verify the result under Help → GPU Diagnostics (chrome://gpu).
+  app.commandLine.appendSwitch("enable-gpu-rasterization");
+  app.commandLine.appendSwitch("enable-zero-copy");
+
   if (insecureOrigins.length > 0) {
     app.commandLine.appendSwitch(
       "unsafely-treat-insecure-origin-as-secure",
