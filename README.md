@@ -347,10 +347,12 @@ Upload/preview size limits live under `"limits"`
 `attachmentStorageMaxMb`, `textSaveMaxMb`, `textPreviewDefaultMb`,
 `textPreviewMaxMb`), and `updateRepo`/`dnsClusterQuery` are available too.
 
-Every key also has a LEGACY environment-variable override (the old
-`dala.env` names) — pre-existing installs keep working unchanged; env wins
-over the file, but env-based config is meant for development. Old installs
-should migrate: one command, reversible —
+Environment variables are for DEVELOPMENT and legacy installs only, and
+dala's own env names are `DALA_`-prefixed (`DALA_PORT`, `DALA_HOST`, … —
+generic names like `PORT` collide with other tools; the bare legacy names
+keep working solely for old `dala.env` installs). **Once `config.jsonc`
+exists, every environment variable is ignored** — a configured install is
+deterministic. Old installs should migrate: one command, reversible —
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/migrate-config.sh | bash

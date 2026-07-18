@@ -13,8 +13,9 @@ example agent session markers) caused real bugs.
 Since the config-file release, dala reads `~/.config/dala/config.jsonc`
 instead, and generates its secrets itself (`<dataDir>/secrets.json`, 0600).
 A migrated service process carries **no dala-specific environment
-variables at all**. Environment variables remain supported as overrides,
-but they are meant for development — production installs should migrate.
+variables at all** — and once `config.jsonc` exists, dala ignores
+environment variables entirely (they remain only as a development tool and
+for unmigrated legacy installs).
 
 If your sidebar footer shows a "config upgrade" notice, you are running in
 legacy mode.
