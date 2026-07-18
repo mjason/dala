@@ -35,10 +35,21 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          # v2 invalidates an older partial cache that had BEAM files but no
-          # Rustler NIFs. Native source changes must invalidate both `_build`
-          # and Cargo targets together.
-          key: elixir-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+          # v3: BEAM-without-NIF poisoning happened twice (v2 was the first
+          # bump). The guard step below now self-heals it; the bump just
+          # discards the currently poisoned generation.
+          key: elixir-v3-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler .so（取消/中断的
+      # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
+      # app 的 _build 强制重编，自愈而不是再红一轮。
+      - name: guard against BEAM-without-NIF poisoned cache
+        run: |
+          for env in dev test; do
+            if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
+              echo "poisoned cache: _build/$env has BEAMs but no NIF — forcing rebuild"
+              rm -rf "_build/$env/lib/dala"
+            fi
+          done
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
       - run: mix deps.get
@@ -123,7 +134,18 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          key: elixir-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+          key: elixir-v3-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler .so（取消/中断的
+      # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
+      # app 的 _build 强制重编，自愈而不是再红一轮。
+      - name: guard against BEAM-without-NIF poisoned cache
+        run: |
+          for env in dev test; do
+            if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
+              echo "poisoned cache: _build/$env has BEAMs but no NIF — forcing rebuild"
+              rm -rf "_build/$env/lib/dala"
+            fi
+          done
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: mix setup
       - run: npm ci
