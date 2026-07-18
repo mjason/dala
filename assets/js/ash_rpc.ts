@@ -3028,6 +3028,7 @@ export async function validateGitUnstage(
 
 export type AgentCommandsInput = {
   id: UUID;
+  locale?: string | null;
 };
 
 export type AgentCommandsFields = UnifiedFieldSelection<{app: string, commands: Array<{name: string, description: string, __type: "TypedMap", __primitiveFields: "name" | "description"}>, __type: "TypedMap", __primitiveFields: "app"}>[];

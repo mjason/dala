@@ -246,6 +246,20 @@ allowed.
   "speech": {
     "prompt": "This session covers dala, zellij, Phoenix LiveView and basedpyright.",
   },
+
+  // Composer slash-command menu: extend or patch the per-agent command
+  // catalog. dala ships tables curated from each CLI's official docs
+  // (priv/agent_commands) and scans the CLIs' own custom-command files
+  // (.claude/commands|skills, ~/.codex/prompts, opencode command dirs) —
+  // when a CLI update adds commands first, add them here (or globally in
+  // <data_dir>/agent_commands/<agent>.json). Entries override built-ins by
+  // name; "hidden": true removes one from the menu.
+  "agentCommands": {
+    "codex": [
+      { "name": "/my-new-cmd", "description": "Added by a newer Codex" },
+      { "name": "/quit", "hidden": true },
+    ],
+  },
 }
 ```
 

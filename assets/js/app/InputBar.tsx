@@ -79,7 +79,7 @@ export default function InputBar({
   onLayoutReady,
   onResize,
 }: Props) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const setValue = onChange;
   const [files, setFiles] = useState<string[] | null>(null);
   const [filesTruncated, setFilesTruncated] = useState(false);
@@ -307,7 +307,7 @@ export default function InputBar({
       app: string;
       commands: { name: string; description: string }[];
     }>(agentCommands, {
-      input: { id: sessionId },
+      input: { id: sessionId, locale },
       fields: ["app", "commands"] as never,
     }).then((result) => {
       if (stale) return;

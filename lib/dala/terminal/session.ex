@@ -109,6 +109,9 @@ defmodule Dala.Terminal.Session do
 
       argument :id, :uuid, allow_nil?: false
 
+      # UI locale for built-in command descriptions ("zh-CN" → zh, else en).
+      argument :locale, :string
+
       constraints fields: [
                     app: [type: :string, allow_nil?: false],
                     commands: [
@@ -128,7 +131,9 @@ defmodule Dala.Terminal.Session do
       run fn input, _context ->
         with {:ok, %{app: app}} <- Dala.Terminal.Server.foreground_app(input.arguments.id) do
           session = Dala.Terminal.get_session!(input.arguments.id)
-          {:ok, %{app: app, commands: Dala.Terminal.AgentCommands.list(app, session.cwd)}}
+          locale = input.arguments[:locale] || "en"
+
+          {:ok, %{app: app, commands: Dala.Terminal.AgentCommands.list(app, session.cwd, locale)}}
         end
       end
     end

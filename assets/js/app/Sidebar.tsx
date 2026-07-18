@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { SessionUpdatedPayload } from "../ash_types";
 import { authEnabled, userEmail } from "./meta";
 import { beforeIdFor, insertionIndex } from "./reorder";
 import { groupNames, groupSessions, rangeBetween } from "./sessionGroups";
 import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
+import { KeyHint, modLabel } from "./shortcuts";
 import type { Locale } from "./i18n";
 import UpdateCheck from "./UpdateCheck";
 import { RenameInput } from "./RenameInput";
@@ -28,6 +30,8 @@ type Props = {
   onSetGroup: (ids: string[], group: string | null) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
+  /** Move a whole block of sessions (a group) before `beforeId`, in order. */
+  onReorderMany: (ids: string[], beforeId: string | null) => void;
   /** Session whose row is currently being renamed in place (⌥⌘R / double-click). */
   renamingId: string | null;
   /** Open (id) or close (null) the inline rename editor. */
@@ -54,6 +58,7 @@ export default function Sidebar({
   onDeleteMany,
   onSetGroup,
   onReorder,
+  onReorderMany,
   renamingId,
   onRenameStart,
   onRename,
@@ -122,7 +127,10 @@ export default function Sidebar({
     | null
   >(null);
   // Naming dialog for "new group…" / "rename group" (ids get that name).
-  const [groupModal, setGroupModal] = useState<{ ids: string[]; initial: string } | null>(null);
+  const [groupModal, setGroupModal] = useState<
+    | { ids: string[]; initial: string; fromSelection?: boolean }
+    | null
+  >(null);
 
   useEffect(() => {
     if (!ctxMenu) return;
@@ -262,9 +270,94 @@ export default function Sidebar({
     window.addEventListener("keydown", onKeyDown);
   };
 
+  // ---- Whole-group drag (header handle) ------------------------------------
+  const [groupDrag, setGroupDrag] = useState<{ key: string; beforeId: string | null } | null>(
+    null,
+  );
+
+  const startGroupDrag = (e: React.PointerEvent, key: string) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pointerId = e.pointerId;
+    const handle = e.currentTarget as HTMLElement;
+    try {
+      handle.setPointerCapture?.(pointerId);
+    } catch {
+      /* not supported */
+    }
+    const startY = e.clientY;
+    const memberIds = new Set(
+      groupSessions(sessionsRef.current)
+        .find((g) => g.key === key)
+        ?.sessions.map((s) => s.id) ?? [],
+    );
+    let active = false;
+    let beforeId: string | null = null;
+
+    // Drop candidates are the visible NON-member rows: the group block moves
+    // as one unit, so its own rows are not valid targets.
+    const candidates = () =>
+      Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-session-row]") ?? [])
+        .map((row) => {
+          const box = row.getBoundingClientRect();
+          return { id: row.getAttribute("data-session-row")!, mid: box.top + box.height / 2 };
+        })
+        .filter((row) => !memberIds.has(row.id));
+
+    const resolve = (y: number): string | null => {
+      for (const row of candidates()) if (y < row.mid) return row.id;
+      return null;
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown);
+      setGroupDrag(null);
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!active && Math.abs(ev.clientY - startY) < 5) return;
+      active = true;
+      beforeId = resolve(ev.clientY);
+      setGroupDrag({ key, beforeId });
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const committed = active;
+      cleanup();
+      if (!committed) return;
+      const current = groupSessions(sessionsRef.current);
+      // Never split another group: a target inside one snaps to its start.
+      let target = beforeId;
+      if (target) {
+        const host = current.find((g) => g.key != null && g.sessions.some((s) => s.id === target));
+        if (host && host.key !== key) target = host.sessions[0].id;
+      }
+      const ids = current.find((g) => g.key === key)?.sessions.map((s) => s.id) ?? [];
+      if (ids.length > 0) onReorderMany(ids, target);
+    };
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId === pointerId) cleanup();
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") cleanup();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown);
+  };
+
   // Row carrying the insertion indicator (undefined = none, null = after
   // the last visible row).
-  const dropBeforeId = drag ? beforeIdFor(visibleSessions, drag.id, drag.slot) : undefined;
+  const dropBeforeId = drag
+    ? beforeIdFor(visibleSessions, drag.id, drag.slot)
+    : groupDrag
+      ? groupDrag.beforeId
+      : undefined;
   const lastVisibleId = visibleSessions[visibleSessions.length - 1]?.id;
 
   return (
@@ -313,6 +406,24 @@ export default function Sidebar({
           return (
             <React.Fragment key={g.key ?? `loose-${gi}`}>
               {grouped && (
+                <div className="group/hdr mb-0.5 flex items-center">
+                  <button
+                    data-drag-group={g.key}
+                    aria-label={t("dragToReorder")}
+                    title={t("dragToReorder")}
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => startGroupDrag(e, g.key!)}
+                    className="flex h-6 w-4 shrink-0 cursor-grab touch-none items-center justify-center rounded text-transparent transition-colors group-hover/hdr:text-fg-muted active:cursor-grabbing pointer-coarse:h-9 pointer-coarse:w-6 pointer-coarse:text-fg-muted/60"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 pointer-coarse:h-4 pointer-coarse:w-4" fill="currentColor">
+                      <circle cx="5.5" cy="3.5" r="1.15" />
+                      <circle cx="10.5" cy="3.5" r="1.15" />
+                      <circle cx="5.5" cy="8" r="1.15" />
+                      <circle cx="10.5" cy="8" r="1.15" />
+                      <circle cx="5.5" cy="12.5" r="1.15" />
+                      <circle cx="10.5" cy="12.5" r="1.15" />
+                    </svg>
+                  </button>
                 <button
                   data-session-group={g.key}
                   aria-expanded={!isCollapsed}
@@ -322,7 +433,7 @@ export default function Sidebar({
                     setCtxMenu({ x: e.clientX, y: e.clientY, target: { kind: "group", key: g.key! } });
                   }}
                   title={g.key!}
-                  className="mb-0.5 flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left font-mono text-[11px] text-fg-muted/80 transition-colors hover:bg-bg2/50 hover:text-fg-muted pointer-coarse:min-h-9"
+                  className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 text-left font-mono text-[11px] text-fg-muted/80 transition-colors hover:bg-bg2/50 hover:text-fg-muted pointer-coarse:min-h-9"
                 >
                   <svg
                     viewBox="0 0 16 16"
@@ -336,6 +447,7 @@ export default function Sidebar({
                   <span className="min-w-0 truncate">{g.key}</span>
                   <span className="shrink-0 text-fg-muted/50">{g.sessions.length}</span>
                 </button>
+                </div>
               )}
               {!isCollapsed && g.sessions.map((s) => renderRow(s, grouped))}
             </React.Fragment>
@@ -343,29 +455,51 @@ export default function Sidebar({
         })}
       </nav>
 
+      <div
+        id="session-hints"
+        className="hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 font-mono text-[10px] leading-4 text-fg-muted/70 md:flex"
+      >
+        <KeyHint keys={t("hintRightClick")} label={t("hintCtxMenu")} />
+        <KeyHint keys={modLabel} label={t("hintMultiSelect")} />
+        <KeyHint keys="Shift" label={t("hintRangeSelect")} />
+        <KeyHint keys={t("hintDoubleClick")} label={t("hintRename")} />
+        <KeyHint keys={t("hintDrag")} label={t("hintReorder")} />
+      </div>
+
       {selected.size > 0 && (
         <div
           id="session-multibar"
-          className="mx-2 mb-2 flex shrink-0 items-center gap-2 rounded-lg border border-mint/30 bg-bg2 px-2.5 py-1.5 text-[12px] shadow-lg shadow-black/20"
+          className="mx-2 mb-2 shrink-0 space-y-1.5 rounded-lg border border-mint/30 bg-bg2 px-2.5 py-2 text-[12px] shadow-lg shadow-black/20"
         >
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-mint" />
-          <span className="min-w-0 flex-1 truncate text-fg">
-            {t("sessionsSelected", { count: selected.size })}
-          </span>
-          <button
-            id="delete-selected-button"
-            onClick={() => onDeleteMany([...selected])}
-            className="shrink-0 rounded-md bg-danger/10 px-2 py-1 font-medium text-danger transition-colors hover:bg-danger/20"
-          >
-            {t("deleteSelected")}
-          </button>
-          <button
-            aria-label={t("clearSelection")}
-            onClick={() => setSelected(new Set())}
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg0/60 hover:text-fg"
-          >
-            ×
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-mint" />
+            <span className="min-w-0 flex-1 truncate text-fg">
+              {t("sessionsSelected", { count: selected.size })}
+            </span>
+            <button
+              aria-label={t("clearSelection")}
+              onClick={() => setSelected(new Set())}
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg0/60 hover:text-fg"
+            >
+              ×
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              id="group-selected-button"
+              onClick={() => setGroupModal({ ids: [...selected], initial: "", fromSelection: true })}
+              className="min-w-0 flex-1 truncate rounded-md bg-mint/10 px-2 py-1 text-center font-medium text-mint transition-colors hover:bg-mint/20"
+            >
+              {t("moveToGroup")}
+            </button>
+            <button
+              id="delete-selected-button"
+              onClick={() => onDeleteMany([...selected])}
+              className="min-w-0 flex-1 truncate rounded-md bg-danger/10 px-2 py-1 text-center font-medium text-danger transition-colors hover:bg-danger/20"
+            >
+              {t("deleteSelected")}
+            </button>
+          </div>
         </div>
       )}
 
@@ -399,7 +533,8 @@ export default function Sidebar({
         </Select>
       </footer>
 
-      {ctxMenu && (
+      {ctxMenu &&
+        createPortal(
         <>
           <div
             className="fixed inset-0 z-40"
@@ -507,10 +642,12 @@ export default function Sidebar({
               ];
             })()}
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
-      {groupModal && (
+      {groupModal &&
+        createPortal(
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/40"
           onClick={() => setGroupModal(null)}
@@ -523,6 +660,7 @@ export default function Sidebar({
               e.preventDefault();
               const name = new FormData(e.currentTarget).get("group")?.toString().trim();
               if (name) onSetGroup(groupModal.ids, name);
+              if (groupModal.fromSelection) setSelected(new Set());
               setGroupModal(null);
             }}
           >
@@ -533,6 +671,7 @@ export default function Sidebar({
               id="group-name-input"
               name="group"
               defaultValue={groupModal.initial}
+              list="session-group-names"
               autoFocus
               maxLength={100}
               autoComplete="off"
@@ -545,6 +684,11 @@ export default function Sidebar({
               }}
               className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-sm text-fg outline-none focus:border-mint/60"
             />
+            <datalist id="session-group-names">
+              {groupNames(sessions).map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
             <div className="mt-3 flex justify-end gap-2 text-xs">
               <button
                 type="button"
@@ -562,7 +706,8 @@ export default function Sidebar({
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body,
       )}
     </aside>
   );

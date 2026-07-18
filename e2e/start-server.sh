@@ -36,7 +36,7 @@ mkdir -p "$XDG_RUNTIME_DIR" "$DALA_DATA_DIR"
 
 export DALA_E2E_DB="$WORK/dala_e2e.db"
 sqlite3 dala_dev.db ".backup '$DALA_E2E_DB'"
-sqlite3 "$DALA_E2E_DB" "DELETE FROM terminal_sessions; DELETE FROM custom_themes WHERE builtin = 0;"
+sqlite3 "$DALA_E2E_DB" "DELETE FROM terminal_sessions; DELETE FROM custom_themes WHERE builtin = 0; DELETE FROM prompt_stash;"
 
 export PORT=4499
 

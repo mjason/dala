@@ -1,0 +1,100 @@
+[
+  {
+    "name": "/about",
+    "description": {
+      "en": "Version info",
+      "zh": "版本信息"
+    }
+  },
+  {
+    "name": "/auth",
+    "description": {
+      "en": "Change authentication method",
+      "zh": "更换认证方式"
+    }
+  },
+  {
+    "name": "/chat",
+    "description": {
+      "en": "Manage conversation state",
+      "zh": "管理对话状态"
+    }
+  },
+  {
+    "name": "/clear",
+    "description": {
+      "en": "Clear the screen",
+      "zh": "清屏"
+    }
+  },
+  {
+    "name": "/compress",
+    "description": {
+      "en": "Compress context",
+      "zh": "压缩上下文"
+    }
+  },
+  {
+    "name": "/copy",
+    "description": {
+      "en": "Copy last output",
+      "zh": "复制上一次输出"
+    }
+  },
+  {
+    "name": "/docs",
+    "description": {
+      "en": "Open documentation",
+      "zh": "打开文档"
+    }
+  },
+  {
+    "name": "/help",
+    "description": {
+      "en": "Show help",
+      "zh": "显示帮助"
+    }
+  },
+  {
+    "name": "/mcp",
+    "description": {
+      "en": "Manage MCP servers",
+      "zh": "管理 MCP 服务器"
+    }
+  },
+  {
+    "name": "/memory",
+    "description": {
+      "en": "Manage memory",
+      "zh": "管理记忆"
+    }
+  },
+  {
+    "name": "/quit",
+    "description": {
+      "en": "Exit Gemini CLI",
+      "zh": "退出 Gemini CLI"
+    }
+  },
+  {
+    "name": "/stats",
+    "description": {
+      "en": "Show session stats",
+      "zh": "显示会话统计"
+    }
+  },
+  {
+    "name": "/theme",
+    "description": {
+      "en": "Switch theme",
+      "zh": "切换主题"
+    }
+  },
+  {
+    "name": "/tools",
+    "description": {
+      "en": "List available tools",
+      "zh": "列出可用工具"
+    }
+  }
+]

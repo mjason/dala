@@ -1,0 +1,310 @@
+[
+  {
+    "name": "/agent",
+    "description": {
+      "en": "Switch the active agent thread (alias /subagents)",
+      "zh": "切换当前的 agent 线程（别名 /subagents）"
+    }
+  },
+  {
+    "name": "/app",
+    "description": {
+      "en": "Continue the current session in the desktop app",
+      "zh": "在桌面应用中继续当前会话"
+    }
+  },
+  {
+    "name": "/approvals",
+    "description": {
+      "en": "Set approval mode (legacy)",
+      "zh": "设置审批模式（旧版）"
+    }
+  },
+  {
+    "name": "/approve",
+    "description": {
+      "en": "Approve one retry of a recent auto review denial",
+      "zh": "批准最近一次自动审查拒绝的重试"
+    }
+  },
+  {
+    "name": "/apps",
+    "description": {
+      "en": "Browse apps (connectors) and insert them",
+      "zh": "浏览 apps（连接器）并插入"
+    }
+  },
+  {
+    "name": "/archive",
+    "description": {
+      "en": "Archive the current session and exit",
+      "zh": "归档当前会话并退出"
+    }
+  },
+  {
+    "name": "/btw",
+    "description": {
+      "en": "Start an ephemeral side chat (alias /side)",
+      "zh": "开启临时侧边对话（别名 /side）"
+    }
+  },
+  {
+    "name": "/clear",
+    "description": {
+      "en": "Clear the terminal and start a new chat",
+      "zh": "清屏并开始新对话"
+    }
+  },
+  {
+    "name": "/compact",
+    "description": {
+      "en": "Summarize the visible chat to free tokens",
+      "zh": "总结当前对话以释放 token"
+    }
+  },
+  {
+    "name": "/copy",
+    "description": {
+      "en": "Copy the latest completed Codex output",
+      "zh": "复制最近一次完成的输出"
+    }
+  },
+  {
+    "name": "/delete",
+    "description": {
+      "en": "Permanently delete the current session",
+      "zh": "永久删除当前会话"
+    }
+  },
+  {
+    "name": "/diff",
+    "description": {
+      "en": "Review changes with git diff",
+      "zh": "用 git diff 查看更改"
+    }
+  },
+  {
+    "name": "/exit",
+    "description": {
+      "en": "Exit Codex (alias /quit)",
+      "zh": "退出 Codex（别名 /quit）"
+    }
+  },
+  {
+    "name": "/experimental",
+    "description": {
+      "en": "Toggle experimental features",
+      "zh": "开关实验特性"
+    }
+  },
+  {
+    "name": "/fast",
+    "description": {
+      "en": "Toggle the Fast service tier",
+      "zh": "切换 Fast 服务档位"
+    }
+  },
+  {
+    "name": "/feedback",
+    "description": {
+      "en": "Send logs to the Codex maintainers",
+      "zh": "把日志发送给 Codex 维护者"
+    }
+  },
+  {
+    "name": "/fork",
+    "description": {
+      "en": "Fork the current chat into a new chat",
+      "zh": "把当前对话分叉成新对话"
+    }
+  },
+  {
+    "name": "/goal",
+    "description": {
+      "en": "Set, edit, or view a task goal",
+      "zh": "设置/编辑/查看任务目标"
+    }
+  },
+  {
+    "name": "/hooks",
+    "description": {
+      "en": "View and manage lifecycle hooks",
+      "zh": "查看和管理生命周期钩子"
+    }
+  },
+  {
+    "name": "/ide",
+    "description": {
+      "en": "Include editor context in prompts",
+      "zh": "在提示中包含编辑器上下文"
+    }
+  },
+  {
+    "name": "/import",
+    "description": {
+      "en": "Import Claude Code configuration",
+      "zh": "导入 Claude Code 配置"
+    }
+  },
+  {
+    "name": "/init",
+    "description": {
+      "en": "Generate an AGENTS.md scaffold",
+      "zh": "生成 AGENTS.md 脚手架"
+    }
+  },
+  {
+    "name": "/keymap",
+    "description": {
+      "en": "Remap TUI keyboard shortcuts",
+      "zh": "重映射 TUI 键盘快捷键"
+    }
+  },
+  {
+    "name": "/logout",
+    "description": {
+      "en": "Sign out of Codex",
+      "zh": "退出登录"
+    }
+  },
+  {
+    "name": "/mcp",
+    "description": {
+      "en": "List configured MCP tools",
+      "zh": "列出已配置的 MCP 工具"
+    }
+  },
+  {
+    "name": "/memories",
+    "description": {
+      "en": "Configure memory use",
+      "zh": "配置记忆功能"
+    }
+  },
+  {
+    "name": "/mention",
+    "description": {
+      "en": "Attach a file to the chat",
+      "zh": "把文件附加到对话"
+    }
+  },
+  {
+    "name": "/model",
+    "description": {
+      "en": "Choose the active model",
+      "zh": "选择当前模型"
+    }
+  },
+  {
+    "name": "/new",
+    "description": {
+      "en": "Start a new chat inside the same CLI session",
+      "zh": "在同一 CLI 会话里开始新对话"
+    }
+  },
+  {
+    "name": "/permissions",
+    "description": {
+      "en": "Set what Codex can do without asking first",
+      "zh": "设置 Codex 免确认可做的事"
+    }
+  },
+  {
+    "name": "/personality",
+    "description": {
+      "en": "Choose a communication style for responses",
+      "zh": "选择回复的沟通风格"
+    }
+  },
+  {
+    "name": "/plan",
+    "description": {
+      "en": "Switch to plan mode",
+      "zh": "切换到计划模式"
+    }
+  },
+  {
+    "name": "/plugins",
+    "description": {
+      "en": "Manage installed plugins",
+      "zh": "管理已安装的插件"
+    }
+  },
+  {
+    "name": "/ps",
+    "description": {
+      "en": "Check background terminals",
+      "zh": "查看后台终端"
+    }
+  },
+  {
+    "name": "/quit",
+    "description": {
+      "en": "Exit the CLI",
+      "zh": "退出 CLI"
+    }
+  },
+  {
+    "name": "/raw",
+    "description": {
+      "en": "Toggle raw scrollback mode",
+      "zh": "切换原始回滚显示模式"
+    }
+  },
+  {
+    "name": "/rename",
+    "description": {
+      "en": "Rename the current chat",
+      "zh": "重命名当前对话"
+    }
+  },
+  {
+    "name": "/resume",
+    "description": {
+      "en": "Resume a saved chat from the session list",
+      "zh": "从会话列表恢复保存的对话"
+    }
+  },
+  {
+    "name": "/review",
+    "description": {
+      "en": "Ask Codex to review your working tree",
+      "zh": "让 Codex 审查工作区更改"
+    }
+  },
+  {
+    "name": "/skills",
+    "description": {
+      "en": "Browse and use skills",
+      "zh": "浏览并使用 skills"
+    }
+  },
+  {
+    "name": "/status",
+    "description": {
+      "en": "Display session configuration and token usage",
+      "zh": "显示会话配置与 token 用量"
+    }
+  },
+  {
+    "name": "/stop",
+    "description": {
+      "en": "Stop all background terminals",
+      "zh": "停止所有后台终端"
+    }
+  },
+  {
+    "name": "/usage",
+    "description": {
+      "en": "View account token usage",
+      "zh": "查看账户 token 用量"
+    }
+  },
+  {
+    "name": "/vim",
+    "description": {
+      "en": "Toggle Vim mode for the composer",
+      "zh": "开关 Vim 编辑模式"
+    }
+  }
+]

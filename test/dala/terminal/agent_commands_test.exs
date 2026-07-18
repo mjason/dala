@@ -99,6 +99,83 @@ defmodule Dala.Terminal.AgentCommandsTest do
     end
   end
 
+  describe "builtin tables (priv data files)" do
+    test "codex list covers the current TUI commands from the official docs", %{cwd: cwd} do
+      names = AgentCommands.list("codex", cwd) |> Enum.map(& &1.name)
+
+      for expected <- ~w(/plan /fork /skills /personality /goal /fast /apps /hooks) do
+        assert expected in names, "expected #{expected} in codex builtins"
+      end
+    end
+
+    test "claude list includes bundled-skill commands, not only TUI builtins", %{cwd: cwd} do
+      names = AgentCommands.list("claude", cwd) |> Enum.map(& &1.name)
+
+      for expected <- ~w(/code-review /security-review /plan /effort /loop /rewind) do
+        assert expected in names, "expected #{expected} in claude builtins"
+      end
+    end
+
+    test "opencode list includes the newer TUI commands", %{cwd: cwd} do
+      names = AgentCommands.list("opencode", cwd) |> Enum.map(& &1.name)
+      for expected <- ~w(/thinking /unshare /details /connect), do: assert(expected in names)
+    end
+  end
+
+  describe "codex custom prompts" do
+    test "project .codex/prompts files surface as commands", %{cwd: cwd} do
+      write_md(cwd, ".codex/prompts/dalatest-ship.md", """
+      ---
+      description: Ship it
+      ---
+      """)
+
+      assert %{description: "Ship it"} =
+               find(AgentCommands.list("codex", cwd), "/dalatest-ship")
+    end
+  end
+
+  describe "user overlays" do
+    test "project dala.jsonc agentCommands adds and overrides entries", %{cwd: cwd} do
+      File.write!(Path.join(cwd, "dala.jsonc"), """
+      {
+        // 本地补充：CLI 更新先于 dala 数据表时自己加
+        "agentCommands": {
+          "codex": [
+            { "name": "/dalatest-extra", "description": "Local addition" },
+            { "name": "/model", "description": "Overridden description" },
+            { "name": "/quit", "hidden": true },
+          ],
+        },
+      }
+      """)
+
+      commands = AgentCommands.list("codex", cwd)
+      assert %{description: "Local addition"} = find(commands, "/dalatest-extra")
+      assert %{description: "Overridden description"} = find(commands, "/model")
+      refute find(commands, "/quit")
+    end
+  end
+
+  describe "i18n" do
+    test "zh locales get the Chinese description column, others fall back to English", %{cwd: cwd} do
+      zh = AgentCommands.list("claude", cwd, "zhCN")
+      assert %{description: "显示帮助和可用命令"} = find(zh, "/help")
+
+      ja = AgentCommands.list("claude", cwd, "ja")
+      assert %{description: "Show help and available commands"} = find(ja, "/help")
+    end
+
+    test "plain-string overlay descriptions pass through for every locale", %{cwd: cwd} do
+      File.write!(Path.join(cwd, "dala.jsonc"), """
+      {"agentCommands": {"codex": [{"name": "/dalatest-plain", "description": "原样"}]}}
+      """)
+
+      assert %{description: "原样"} =
+               find(AgentCommands.list("codex", cwd, "en"), "/dalatest-plain")
+    end
+  end
+
   describe "list/2 general behavior" do
     test "claude includes builtins and is deduped + sorted by name", %{cwd: cwd} do
       # a project file shadowing a builtin: the builtin (added first) wins

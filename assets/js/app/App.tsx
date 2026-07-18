@@ -33,7 +33,7 @@ import { useI18n } from "./i18n";
 import { onReconnect } from "./socket";
 import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
-import { splitAgentAttachments } from "./agentAttachments";
+import { planDelivery, resolveApp } from "./agentDelivery";
 
 type Toast = { id: number; message: string };
 
@@ -421,59 +421,21 @@ export default function App() {
   // Warp): ask the server what runs in the session's foreground first.
   const sendToForegroundApp = async (text: string, submit: boolean) => {
     if (!active) return;
-    let app = "unknown";
+    let detected = "unknown";
     const appResult = await call<{ app: string }>(foregroundApp, {
       input: { id: active.id },
       fields: ["app", "cmdline"],
     });
-    if (appResult.ok) app = appResult.data.app;
-    const strategy =
-      app === "codex"
-        ? ("bracketed" as const)
-        : app === "copilot"
-          ? ("bracketed-delayed" as const)
-          : app === "claude" || app === "opencode" || app === "gemini"
-            ? // Warp sends bare text to these, but a bare multiline paste
-              // would submit at the first newline — bracket those.
-              text.includes("\n")
-              ? ("bracketed-delayed" as const)
-              : ("delayed" as const)
-            : undefined;
+    if (appResult.ok) detected = appResult.data.app;
+    // Live sniffing can miss mid-task (a spawned tool owns the tty, a mux
+    // pane reports its own command) — the OSC-777-recorded agent backs it up.
+    const app = resolveApp(detected, composerApps[active.id] ?? null);
 
-    // Agents only attachment-ify a pasted path when the paste IS the path:
-    // opencode turns it into a File chip, Claude Code into [Image #N] — mixed
-    // into a sentence it degrades to plain text (and non-vision models can't
-    // follow it). So each attachment path goes out as its own bracketed
-    // paste, INTERLEAVED with the surrounding text runs in their original
-    // order — the agent's chips land where the user placed the images.
-    const isAgent = ["claude", "opencode", "gemini", "codex", "copilot"].includes(app);
-    const segments = isAgent ? splitAgentAttachments(text) : [];
-    const paths = segments.filter((s) => s.type === "path");
-    if (paths.length > 0) {
-      const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-      const image = /\.(png|jpe?g|gif|webp|bmp|svg|tiff?)$/i;
-      for (const segment of segments) {
-        if (segment.type === "path") {
-          // Text files: Claude Code and Gemini attach @path references inline
-          // (content lands in context, no Read round-trip, no permission
-          // prompt); opencode/codex read bare paths. Images keep bare paths —
-          // that's what all the image-attachment detectors key on.
-          const prefix =
-            !image.test(segment.value) && (app === "claude" || app === "gemini") ? "@" : "";
-          termActions.current?.sendText(prefix + segment.value + " ", false, "bracketed");
-          await wait(200);
-        } else {
-          // Trailing space keeps the run separated from a following chip.
-          const run = segment.value + " ";
-          termActions.current?.sendText(run, false, run.includes("\n") ? "bracketed" : undefined);
-          await wait(120);
-        }
-      }
-      if (submit) termActions.current?.sendText("", true, strategy ?? "delayed");
-      return;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    for (const step of planDelivery(app, text, submit)) {
+      termActions.current?.sendText(step.text, step.submit, step.strategy);
+      if (step.waitAfterMs) await wait(step.waitAfterMs);
     }
-
-    termActions.current?.sendText(text, submit, strategy);
   };
 
   // Kick other zellij/tmux viewers capping this terminal's size, then
@@ -661,6 +623,14 @@ export default function App() {
           onDeleteMany={setDeleteManyFor}
           onSetGroup={(ids, group) => void handleSetGroup(ids, group)}
           onReorder={(id, beforeId) => void handleReorder(id, beforeId)}
+          onReorderMany={(ids, beforeId) => {
+            // Sequential on purpose: each insert lands immediately before
+            // `beforeId`, so members re-queue in their original order, and
+            // concurrent reorders would race the server's renormalization.
+            void (async () => {
+              for (const id of ids) await handleReorder(id, beforeId);
+            })();
+          }}
           renamingId={renamingId}
           onRenameStart={(id) => (id ? startRename(id) : endRename())}
           onRename={(id, name) => void handleRename(id, name)}

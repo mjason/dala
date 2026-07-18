@@ -1,0 +1,121 @@
+[
+  {
+    "name": "/compact",
+    "description": {
+      "en": "Compress the current session (alias /summarize)",
+      "zh": "压缩当前会话（别名 /summarize）"
+    }
+  },
+  {
+    "name": "/connect",
+    "description": {
+      "en": "Pick a provider and add its API key",
+      "zh": "选择提供商并添加 API 密钥"
+    }
+  },
+  {
+    "name": "/details",
+    "description": {
+      "en": "Toggle display of tool execution details",
+      "zh": "开关工具执行详情显示"
+    }
+  },
+  {
+    "name": "/editor",
+    "description": {
+      "en": "Open an external editor for composing messages",
+      "zh": "打开外部编辑器撰写消息"
+    }
+  },
+  {
+    "name": "/exit",
+    "description": {
+      "en": "Quit opencode (aliases /quit /q)",
+      "zh": "退出 opencode（别名 /quit /q）"
+    }
+  },
+  {
+    "name": "/export",
+    "description": {
+      "en": "Export the conversation as Markdown and open it",
+      "zh": "把对话导出为 Markdown 并打开"
+    }
+  },
+  {
+    "name": "/help",
+    "description": {
+      "en": "Show help",
+      "zh": "显示帮助"
+    }
+  },
+  {
+    "name": "/init",
+    "description": {
+      "en": "Create or update AGENTS.md",
+      "zh": "创建或更新 AGENTS.md"
+    }
+  },
+  {
+    "name": "/models",
+    "description": {
+      "en": "List available models",
+      "zh": "列出可用模型"
+    }
+  },
+  {
+    "name": "/new",
+    "description": {
+      "en": "Start a new session (alias /clear)",
+      "zh": "开始新会话（别名 /clear）"
+    }
+  },
+  {
+    "name": "/redo",
+    "description": {
+      "en": "Restore previously undone messages",
+      "zh": "恢复已撤销的消息"
+    }
+  },
+  {
+    "name": "/sessions",
+    "description": {
+      "en": "List and switch sessions (aliases /resume /continue)",
+      "zh": "列出并切换会话（别名 /resume /continue）"
+    }
+  },
+  {
+    "name": "/share",
+    "description": {
+      "en": "Share the current session",
+      "zh": "分享当前会话"
+    }
+  },
+  {
+    "name": "/themes",
+    "description": {
+      "en": "List available themes",
+      "zh": "列出可用主题"
+    }
+  },
+  {
+    "name": "/thinking",
+    "description": {
+      "en": "Toggle visibility of thinking blocks",
+      "zh": "开关思考/推理块显示"
+    }
+  },
+  {
+    "name": "/undo",
+    "description": {
+      "en": "Undo the last message and its file changes",
+      "zh": "撤销上一条消息及其文件改动"
+    }
+  },
+  {
+    "name": "/unshare",
+    "description": {
+      "en": "Unshare the current session",
+      "zh": "取消分享当前会话"
+    }
+  }
+]

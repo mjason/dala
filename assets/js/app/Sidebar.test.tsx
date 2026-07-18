@@ -47,6 +47,7 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
     onDeleteMany: vi.fn(),
     onSetGroup: vi.fn(),
     onReorder: vi.fn(),
+    onReorderMany: vi.fn(),
     renamingId: null as string | null,
     onRenameStart: vi.fn(),
     onRename: vi.fn(),
@@ -274,6 +275,7 @@ describe("Sidebar", () => {
         onRename: vi.fn(),
         onDeleteMany: vi.fn(),
         onSetGroup: vi.fn(),
+        onReorderMany: vi.fn(),
       };
       const view = render(
         <I18nProvider>
@@ -310,6 +312,13 @@ describe("Sidebar", () => {
     expect(screen.getByTitle("新建终端")).toBeInTheDocument();
   });
 });
+
+  it("shows an interaction hints bar under the list", () => {
+    renderSidebar();
+    const hints = document.querySelector("#session-hints");
+    expect(hints).not.toBeNull();
+    expect(hints!.textContent).toContain("Shift");
+  });
 
 describe("Sidebar context menu", () => {
   const menu = () => document.querySelector("#session-context-menu");
@@ -410,5 +419,84 @@ describe("Sidebar context menu", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(menu()).toBeNull();
     expect(document.querySelector('[data-session-row="s1"][data-selected]')).not.toBeNull();
+  });
+});
+
+describe("Sidebar group actions", () => {
+  it("multibar offers move-to-group for the whole selection and clears it after", () => {
+    const props = renderSidebar();
+    fireEvent.click(document.querySelector('[data-session-row="s1"]')!, { ctrlKey: true });
+    fireEvent.click(document.querySelector('[data-session-row="s2"]')!, { ctrlKey: true });
+    fireEvent.click(document.querySelector("#group-selected-button")!);
+    const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
+    fireEvent.change(input, { target: { value: "work" } });
+    fireEvent.submit(document.querySelector("#group-name-modal")!);
+    expect(props.onSetGroup).toHaveBeenCalledWith(
+      expect.arrayContaining(["s1", "s2"]),
+      "work",
+    );
+    // Action done — the selection (and multibar) goes away.
+    expect(document.querySelector("#session-multibar")).toBeNull();
+  });
+
+  it("the naming dialog suggests existing group names", () => {
+    const grouped = [{ ...sessions[0], group: "work" }, sessions[1]];
+    renderSidebar({ sessions: grouped });
+    fireEvent.contextMenu(document.querySelector('[data-session-row="s2"]')!);
+    fireEvent.click(document.querySelector('[data-ctx-item="move"]')!);
+    fireEvent.click(document.querySelector('[data-ctx-item="new-group"]')!);
+    const options = Array.from(
+      document.querySelectorAll("#session-group-names option"),
+    ).map((o) => (o as HTMLOptionElement).value);
+    expect(options).toEqual(["work"]);
+  });
+
+  it("dragging a group header moves the whole group to the drop position", () => {
+    const three = [
+      { ...sessions[0], group: "work" },
+      { ...sessions[1], id: "s2", group: "work" },
+      { ...sessions[1], id: "s3", group: null },
+    ];
+    const props = renderSidebar({ sessions: three });
+    document.querySelectorAll<HTMLElement>("[data-session-row]").forEach((row, i) => {
+      row.getBoundingClientRect = () =>
+        ({ top: i * 40, height: 40, bottom: i * 40 + 40 }) as DOMRect;
+    });
+
+    const handle = document.querySelector('[data-drag-group="work"]')!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: 0, button: 0 });
+    // Below every row → drop at the end.
+    fireEvent.pointerMove(window, { pointerId: 1, clientY: 500 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 500 });
+    expect(props.onReorderMany).toHaveBeenCalledWith(["s1", "s2"], null);
+  });
+
+  it("a drop inside another group snaps to that group's start (never splits it)", () => {
+    const four = [
+      { ...sessions[0], group: "a" },
+      { ...sessions[1], id: "s2", group: "b" },
+      { ...sessions[1], id: "s3", group: "b" },
+    ];
+    const props = renderSidebar({ sessions: four });
+    document.querySelectorAll<HTMLElement>("[data-session-row]").forEach((row, i) => {
+      row.getBoundingClientRect = () =>
+        ({ top: i * 40, height: 40, bottom: i * 40 + 40 }) as DOMRect;
+    });
+
+    const handle = document.querySelector('[data-drag-group="a"]')!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: 0, button: 0 });
+    // Between s2 and s3 (inside group b) → snaps to s2, group b's start.
+    fireEvent.pointerMove(window, { pointerId: 1, clientY: 95 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 95 });
+    expect(props.onReorderMany).toHaveBeenCalledWith(["s1"], "s2");
+  });
+
+  it("a click on the header without crossing the threshold still just toggles collapse", () => {
+    const grouped = sessions.map((s) => ({ ...s, group: "work" }));
+    const props = renderSidebar({ sessions: grouped });
+    const handle = document.querySelector('[data-drag-group="work"]')!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: 10, button: 0 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 12 });
+    expect(props.onReorderMany).not.toHaveBeenCalled();
   });
 });
