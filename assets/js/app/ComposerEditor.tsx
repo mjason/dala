@@ -4,6 +4,7 @@ import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from 
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
 import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { collectTransferFiles } from "./pasteFiles";
+import { createMarker } from "./composer/markers";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 import { composerSizing } from "./composerSize";
@@ -49,10 +50,11 @@ type Props = {
 export type ComposerEditorApi = {
   /** Replace the first occurrence of `find`; false when it is gone. */
   replaceOnce: (find: string, replacement: string) => boolean;
+  /** The CURRENT document — the send path reads the editor, not a possibly
+   * stale React mirror. */
+  read: () => string;
 };
 
-let uploadMarkerCounter = 0;
-const uploadMarker = () => `⟨upload:${++uploadMarkerCounter}⟩`;
 
 /**
  * The composer's editor: CodeMirror with Markdown + fenced-code syntax
@@ -171,6 +173,7 @@ export default function ComposerEditor({
         view.dispatch({ changes: { from: index, to: index + find.length, insert: replacement } });
         return true;
       },
+      read: () => viewRef.current?.state.doc.toString() ?? "",
     };
     return () => {
       apiRef.current = null;
@@ -227,7 +230,7 @@ export default function ComposerEditor({
               const files = collectTransferFiles(event.clipboardData);
               if (files.length === 0) return false;
               event.preventDefault();
-              const marker = uploadMarker();
+              const marker = createMarker();
               view.dispatch(view.state.replaceSelection(marker));
               cbs.current.onFiles(files, marker);
               return true;
@@ -236,7 +239,7 @@ export default function ComposerEditor({
               const files = collectTransferFiles(event.dataTransfer);
               if (files.length === 0) return false;
               event.preventDefault();
-              const marker = uploadMarker();
+              const marker = createMarker();
               const at =
                 view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
                 view.state.selection.main.head;

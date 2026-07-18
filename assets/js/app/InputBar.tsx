@@ -10,6 +10,8 @@ import { comboToCodeMirror, formatCombo, loadBindings, onBindingsChange } from "
 import ComposerEditor, { type ComposerEditorApi } from "./ComposerEditor";
 import PromptStash from "./PromptStash";
 import { uploadPastedFiles } from "./pastedFileUpload";
+import { appendWithSpace, stripMarkers } from "./composer/markers";
+import { createUploadQueue } from "./composer/uploadQueue";
 import type { UploadProgress } from "./fileUpload";
 import UploadProgressView from "./UploadProgressView";
 
@@ -90,7 +92,6 @@ export default function InputBar({
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
   const attachRef = useRef<HTMLInputElement>(null);
-  const attachAbortRef = useRef<AbortController | null>(null);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const mountedRef = useRef(true);
   const valueRef = useRef(value);
@@ -101,7 +102,7 @@ export default function InputBar({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      attachAbortRef.current?.abort();
+      uploadQueue.abortAll();
     };
   }, []);
 
@@ -228,7 +229,7 @@ export default function InputBar({
         if (!data || data.error || !data.text) {
           onError(speechError(data?.error));
         } else {
-          setValue(value === "" || value.endsWith(" ") ? value + data.text : value + " " + data.text);
+          setValue(appendWithSpace(value, data.text));
         }
       } catch (error) {
         onError(error instanceof Error ? error.message : t("speechFailed"));
@@ -359,50 +360,42 @@ export default function InputBar({
   };
 
   const send = () => {
-    if (!value.trim()) return;
-    onSend(value, true);
+    // The editor is the source of truth for WHAT gets sent (a React mirror
+    // can lag a keystroke), and in-flight upload markers are placeholders —
+    // never deliverable text (their uploads append to the next draft when
+    // they resolve; see composer/uploadQueue).
+    const text = stripMarkers(editorApiRef.current?.read() ?? value);
+    if (!text.trim()) return;
+    onSend(text, true);
     setValue("");
     setMention(null);
   };
 
   const editorApiRef = useRef<ComposerEditorApi | null>(null);
+  const setValueRef = useRef(setValue);
+  setValueRef.current = setValue;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   // Filled by PromptStash: stashes the current composer text (keyboard path).
   const stashActionRef = useRef<(() => void) | null>(null);
 
-  const attach = async (files: File[] | FileList | null, marker?: string) => {
-    const batch = Array.from(files ?? []);
-    if (batch.length === 0 || attachAbortRef.current) return;
+  const uploadQueue = useRef(
+    createUploadQueue({
+      target: {
+        replaceInEditor: (marker, replacement) =>
+          editorApiRef.current?.replaceOnce(marker, replacement) ?? false,
+        readDraft: () => valueRef.current,
+        setDraft: (next) => setValueRef.current(next),
+      },
+      upload: (files, opts) => uploadPastedFiles(files, (m) => onErrorRef.current(m), opts),
+      onProgress: (progress) => {
+        if (mountedRef.current) setUploadProgress(progress);
+      },
+    }),
+  ).current;
 
-    const controller = new AbortController();
-    attachAbortRef.current = controller;
-    try {
-      const paths = await uploadPastedFiles(batch, onError, {
-        signal: controller.signal,
-        onProgress: (progress) => {
-          if (mountedRef.current) setUploadProgress(progress);
-        },
-      });
-      if (!mountedRef.current) return;
-      const pasted = paths.length > 0 ? `${paths.join(" ")} ` : "";
-
-      // The editor put a placeholder at the paste/drop position — swap it
-      // in place (the user may have kept typing around it meanwhile).
-      if (marker && editorApiRef.current?.replaceOnce(marker, pasted)) return;
-      if (marker && valueRef.current.includes(marker)) {
-        // Editor closed mid-upload: the draft string still has the marker.
-        setValue(valueRef.current.replace(marker, pasted));
-        return;
-      }
-      // No marker (attach button) or the user deleted it: append at the end.
-      if (paths.length > 0) {
-        const current = valueRef.current;
-        const prefix = current !== "" && !current.endsWith(" ") ? `${current} ` : current;
-        setValue(`${prefix}${pasted}`);
-      }
-    } finally {
-      if (attachAbortRef.current === controller) attachAbortRef.current = null;
-      if (mountedRef.current) setUploadProgress(null);
-    }
+  const attach = (files: File[] | FileList | null, marker?: string) => {
+    void uploadQueue.enqueue(Array.from(files ?? []), marker);
   };
 
   const effectiveApp = app ?? detectedApp;
@@ -544,7 +537,7 @@ export default function InputBar({
           setSlash(slashAt(text, pos));
           setMentionIndex(0);
         }}
-        onFiles={(files, marker) => void attach(files, marker)}
+        onFiles={(files, marker) => attach(files, marker)}
         apiRef={editorApiRef}
         sendKey={comboToCodeMirror(bindings.composerSend)}
         focusConsumed={focusConsumed}
@@ -556,7 +549,7 @@ export default function InputBar({
       {uploadProgress && (
         <UploadProgressView
           progress={uploadProgress}
-          onCancel={() => attachAbortRef.current?.abort()}
+          onCancel={() => uploadQueue.abortAll()}
           cancelLabel={t("cancel")}
           className="mt-2 rounded-md border border-line bg-bg0/40 px-2.5 py-2"
         />
@@ -601,7 +594,7 @@ export default function InputBar({
           multiple
           className="hidden"
           onChange={(e) => {
-            void attach(Array.from(e.target.files ?? []));
+            attach(e.target.files);
             e.target.value = "";
           }}
         />

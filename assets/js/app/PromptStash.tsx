@@ -8,6 +8,7 @@ import {
 } from "../ash_rpc";
 import { call } from "./rpc";
 import { useI18n } from "./i18n";
+import { stripMarkers } from "./composer/markers";
 
 /**
  * The prompt stash: quick capture of prompts/ideas, quick recall in the
@@ -74,7 +75,7 @@ export default function PromptStash({
   }, [open]);
 
   const stashCurrent = async () => {
-    const content = value.trim();
+    const content = stripMarkers(value).trim();
     if (!content) return;
     const result = await call<unknown>(stashPrompt, { input: { content }, fields: ["id"] });
     if (!result.ok) return onError(result.error || t("somethingWentWrong"));
