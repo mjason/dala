@@ -31,9 +31,19 @@ export const SESSION_FIELDS = [
   "exitCode",
   "scrollbackLimit",
   "ephemeral",
+  "group",
   "position",
   "insertedAt",
 ] as const;
+
+// COMPILE-TIME exhaustiveness guard: every field the session payload carries
+// must also be fetched over RPC. A payload gains a field (like `group`) →
+// this line stops compiling until SESSION_FIELDS lists it. Without it, the
+// reconnect refetch silently drops the new field and state "vanishes" until
+// a full page reload (that was a real bug: groups disappearing).
+type _MissingSessionFields = Exclude<keyof Session, (typeof SESSION_FIELDS)[number]>;
+const _sessionFieldsComplete: _MissingSessionFields extends never ? true : never = true;
+void _sessionFieldsComplete;
 
 /** Insert or replace a session in the list, keeping order stable on update. */
 export function upsertList<T extends { id: string }>(list: T[], session: T): T[] {

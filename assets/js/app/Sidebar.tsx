@@ -594,19 +594,15 @@ export default function Sidebar({
               const moveIds = inSelection && selected.size > 1 ? [...selected] : [id];
               const session = sessions.find((x) => x.id === id);
 
-              if (ctxMenu.view === "move") {
-                return [
-                  ...groupNames(sessions).map((name) =>
-                    item(`move-to:${name}`, name, () => onSetGroup(moveIds, name)),
-                  ),
-                  item("new-group", t("newGroup"), () =>
-                    setGroupModal({ ids: moveIds, initial: "" }),
-                  ),
-                  ...(session?.group != null
-                    ? [item("remove-from-group", t("removeFromGroup"), () => onSetGroup(moveIds, null))]
-                    : []),
-                ];
-              }
+              const moveItems = [
+                ...groupNames(sessions).map((name) =>
+                  item(`move-to:${name}`, name, () => onSetGroup(moveIds, name)),
+                ),
+                item("new-group", t("newGroup"), () => setGroupModal({ ids: moveIds, initial: "" })),
+                ...(session?.group != null
+                  ? [item("remove-from-group", t("removeFromGroup"), () => onSetGroup(moveIds, null))]
+                  : []),
+              ];
 
               return [
                 item(
@@ -614,18 +610,34 @@ export default function Sidebar({
                   inSelection ? t("sessionUnselect") : t("sessionSelect"),
                   () => toggleSelect(id),
                 ),
-                <button
+                // Standard flyout submenu: hovering (or clicking, for touch)
+                // opens it to the side — the root level stays visible.
+                <div
                   key="move"
-                  data-ctx-item="move"
-                  onClick={() => setCtxMenu({ ...ctxMenu, view: "move" })}
-                  className="flex w-full items-center px-3 py-1.5 text-left font-mono text-xs text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+                  className="relative"
+                  onMouseEnter={() => setCtxMenu((m) => (m ? { ...m, view: "move" } : m))}
+                  onMouseLeave={() => setCtxMenu((m) => (m ? { ...m, view: undefined } : m))}
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    {t("moveToGroup")}
-                    {moveIds.length > 1 ? ` (${moveIds.length})` : ""}
-                  </span>
-                  <span className="shrink-0 text-fg-muted/60">›</span>
-                </button>,
+                  <button
+                    data-ctx-item="move"
+                    onClick={() => setCtxMenu((m) => (m ? { ...m, view: "move" } : m))}
+                    className="flex w-full items-center px-3 py-1.5 text-left font-mono text-xs text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {t("moveToGroup")}
+                      {moveIds.length > 1 ? ` (${moveIds.length})` : ""}
+                    </span>
+                    <span className="shrink-0 text-fg-muted/60">›</span>
+                  </button>
+                  {ctxMenu.view === "move" && (
+                    <div
+                      id="session-group-flyout"
+                      className="absolute top-0 left-full z-50 -ml-px min-w-40 rounded-md border border-line bg-bg1 py-1 shadow-xl shadow-black/50"
+                    >
+                      {moveItems}
+                    </div>
+                  )}
+                </div>,
                 ...(selected.size > 1 && inSelection
                   ? [
                       item(

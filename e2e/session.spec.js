@@ -485,6 +485,36 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await h.deleteSession(page, id).catch(() => {});
     }
   });
+  test("回归固化：socket 重连后的列表重取不丢分组字段", async ({ page, context }) => {
+    const cwd = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-refetch-`);
+    const gname = `grp-refetch-${Date.now()}`;
+    let s1;
+    try {
+      await h.gotoApp(page);
+      s1 = await h.createSession(page, cwd);
+      await h.selectSession(page, s1);
+      await page.click(`[data-session-row="${s1}"]`, { button: "right" });
+      await page.click('[data-ctx-item="move"]');
+      await page.click('[data-ctx-item="new-group"]');
+      await page.fill("#group-name-input", gname);
+      await page.click("#group-name-confirm");
+      await expect(page.locator(`[data-session-group="${gname}"]`)).toBeVisible();
+
+      // 断网→恢复：socket 重连触发 RPC 全量重取。曾因字段清单漏 group
+      // 导致所有分组"突然消失"（刷新才恢复）。
+      await context.setOffline(true);
+      await page.waitForTimeout(1500);
+      await context.setOffline(false);
+      // 等重连完成（会话行还在 = 列表重取成功），分组必须还在。
+      await expect(page.locator(`[data-session-row="${s1}"]`)).toBeVisible({ timeout: 20000 });
+      await page.waitForTimeout(1000);
+      await expect(page.locator(`[data-session-group="${gname}"]`)).toBeVisible();
+    } finally {
+      if (s1) await h.deleteSession(page, s1).catch(() => {});
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("MRU 终端池：切走再切回不重建（双实例并存，内容即时可见）", async ({ page }) => {
     const cwd = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-pool-`);
     let s1, s2;

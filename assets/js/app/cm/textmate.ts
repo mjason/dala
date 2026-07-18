@@ -72,7 +72,13 @@ function fetchRawGrammar(key: string, url: string): Promise<IRawGrammar | null> 
       if (!response.ok) throw new Error(`grammar ${url}: HTTP ${response.status}`);
       return JSON.parse(await response.text()) as IRawGrammar;
     })
-    .catch(() => null);
+    .catch(() => {
+      // NEVER cache a failure: a transient fetch error (server restarting,
+      // network blip) would otherwise pin this grammar — and every injection
+      // it powers — to "missing" until a full page reload.
+      rawGrammarCache.delete(key);
+      return null;
+    });
   rawGrammarCache.set(key, promise);
   return promise;
 }
@@ -100,14 +106,31 @@ function loadGrammarScoped(scope: string, infos: GrammarInfo[]): Promise<IGramma
 
   const promise = (async () => {
     const injections = await injectionScopes(infos);
+    // Debug surface (e2e/troubleshooting): what the registry was built with.
+    (window as unknown as Record<string, unknown>).__dalaTmDebug = {
+      scope,
+      injections,
+      grammarPaths: infos.map((g) => g.path),
+      loads: [],
+    };
     const registry = new Registry({
       onigLib: onigLib(),
       loadGrammar: async (scopeName) => {
+        const debug = (window as unknown as { __dalaTmDebug?: { loads?: unknown[] } }).__dalaTmDebug;
         const bundled = BUNDLED_BASES[scopeName];
-        if (bundled) return fetchRawGrammar(scopeName, bundled.url);
+        if (bundled) {
+          const raw = await fetchRawGrammar(scopeName, bundled.url);
+          debug?.loads?.push([scopeName, "bundled", raw != null]);
+          return raw;
+        }
         const info = infos.find((g) => g.scopeName === scopeName);
-        if (!info) return null;
-        return fetchRawGrammar(info.path, rawFileUrl(info.path));
+        if (!info) {
+          debug?.loads?.push([scopeName, "MISS", false]);
+          return null;
+        }
+        const raw = await fetchRawGrammar(info.path, rawFileUrl(info.path));
+        debug?.loads?.push([scopeName, info.path, raw != null]);
+        return raw;
       },
       getInjections: (scopeName) =>
         // Only bases receive injections (an injection injecting into another
@@ -115,8 +138,15 @@ function loadGrammarScoped(scope: string, infos: GrammarInfo[]): Promise<IGramma
         // decides where inside the base it actually applies.
         scopeName === scope ? injections : [],
     });
-    return registry.loadGrammar(scope);
-  })().catch(() => null);
+    const grammar = await registry.loadGrammar(scope);
+    (window as unknown as { __dalaTmDebug?: Record<string, unknown> }).__dalaTmDebug!.grammar =
+      grammar;
+    if (!grammar) grammarCache.delete(cacheKey);
+    return grammar;
+  })().catch(() => {
+    grammarCache.delete(cacheKey);
+    return null;
+  });
 
   grammarCache.set(cacheKey, promise);
   return promise;

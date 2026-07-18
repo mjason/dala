@@ -362,6 +362,17 @@ describe("Sidebar context menu", () => {
     expect(props.onDelete).toHaveBeenCalledWith("s2");
   });
 
+  it("hovering move-to-group opens the flyout submenu", () => {
+    renderSidebar();
+    rightClickRow("s1");
+    const wrapper = document.querySelector('[data-ctx-item="move"]')!.parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    expect(document.querySelector("#session-group-flyout")).not.toBeNull();
+    expect(document.querySelector('[data-ctx-item="new-group"]')).not.toBeNull();
+    fireEvent.mouseLeave(wrapper);
+    expect(document.querySelector("#session-group-flyout")).toBeNull();
+  });
+
   it("moves a session into a new group via the naming dialog", () => {
     const props = renderSidebar();
     rightClickRow("s1");
