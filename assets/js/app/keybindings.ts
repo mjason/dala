@@ -41,6 +41,11 @@ export const BINDINGS: BindingSpec[] = [
   { id: "composerMention", labelKey: "composerMention", default: "mod+shift+a", scope: "composer" },
   { id: "composerAttach", labelKey: "composerAttach", default: "mod+shift+u", scope: "composer" },
   { id: "composerStash", labelKey: "stashCurrentInput", default: "mod+shift+s", scope: "composer" },
+  // Spacemacs-style leader: one chord opens a which-key menu; single keys
+  // then navigate/execute. The discoverable path to every other action.
+  // ⌥Space on macOS; on Windows/Linux Alt+Space is the OS window menu and
+  // never reaches the page, so the default there is Ctrl+Shift+Space.
+  { id: "leader", labelKey: "leaderMenu", default: isMac ? "alt+space" : "ctrl+shift+space", scope: "global" },
 ];
 
 const KEY = "dala:keybindings";
@@ -127,11 +132,13 @@ function eventKey(e: KeyboardEvent): string {
   // letters/digits we bind.
   if (e.altKey) {
     const code = e.code;
+    if (code === "Space") return "space";
     if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
     if (/^Digit\d$/.test(code)) return code.slice(5);
   }
   const key = e.key.toLowerCase();
-  return key === " " ? "space" : key;
+  // macOS types a non-breaking space for ⌥Space — same key for our purposes.
+  return key === " " || key === "\u00a0" ? "space" : key;
 }
 
 /** Does this keyboard event match the combo? */
@@ -163,7 +170,7 @@ export function comboFromEvent(e: KeyboardEvent): string | null {
 
 // ----------------------------------------------------------------- display
 
-const MAC_KEYS: Record<string, string> = { enter: "⏎", escape: "⎋", backspace: "⌫" };
+const MAC_KEYS: Record<string, string> = { enter: "⏎", escape: "⎋", backspace: "⌫", space: "Space" };
 
 /** F1–F24: the function keys browsers report and Electron accepts. */
 function functionKey(key: string): boolean {
@@ -174,6 +181,7 @@ function functionKey(key: string): boolean {
 function displayKey(key: string): string {
   if (key.length === 1) return key.toUpperCase();
   if (functionKey(key)) return key.toUpperCase();
+  if (key === "space") return "Space";
   return key;
 }
 

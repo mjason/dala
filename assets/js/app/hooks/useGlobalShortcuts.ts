@@ -53,6 +53,8 @@ export function useGlobalShortcuts(opts: {
   toggleGit: () => void;
   /** Start the inline rename of the active session's sidebar row. */
   startRename: () => void;
+  /** Open the Spacemacs-style leader (which-key) menu. */
+  openLeader: () => void;
   onNotifyClick: (id: string) => void;
 }) {
   const {
@@ -67,6 +69,7 @@ export function useGlobalShortcuts(opts: {
     toggleDrawer,
     toggleGit,
     startRename,
+    openLeader,
     onNotifyClick,
   } = opts;
 
@@ -159,6 +162,13 @@ export function useGlobalShortcuts(opts: {
       composerStash: (e) => {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("dala:action", { detail: "composerStash" }));
+      },
+      leader: (e) => {
+        // Claimed even from the terminal (that is the whole point of a
+        // leader key); stop it before xterm forwards ⌥Space to the shell.
+        e.preventDefault();
+        e.stopPropagation();
+        openLeader();
       },
     };
 

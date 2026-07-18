@@ -173,6 +173,9 @@
   --color-git-conflict: #c9a5dd;
   --color-git-ignored: #748493;
   --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
+  /* Bundled terminal mono for UI chrome that shows keys/symbols/Latin —
+     CJK text falls through to the system stack. */
+  --font-term: "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 /* Semantic diff + CodeMirror-chrome tokens. Defined as plain custom props

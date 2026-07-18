@@ -455,17 +455,6 @@ export default function Sidebar({
         })}
       </nav>
 
-      <div
-        id="session-hints"
-        className="hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 font-mono text-[10px] leading-4 text-fg-muted/70 md:flex"
-      >
-        <KeyHint keys={t("hintRightClick")} label={t("hintCtxMenu")} />
-        <KeyHint keys={modLabel} label={t("hintMultiSelect")} />
-        <KeyHint keys="Shift" label={t("hintRangeSelect")} />
-        <KeyHint keys={t("hintDoubleClick")} label={t("hintRename")} />
-        <KeyHint keys={t("hintDrag")} label={t("hintReorder")} />
-      </div>
-
       {selected.size > 0 && (
         <div
           id="session-multibar"
@@ -502,6 +491,17 @@ export default function Sidebar({
           </div>
         </div>
       )}
+
+      <div
+        id="session-hints"
+        className="hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 font-mono text-[10px] leading-4 text-fg-muted/70 md:flex"
+      >
+        <KeyHint keys={t("hintRightClick")} label={t("hintCtxMenu")} />
+        <KeyHint keys={modLabel} label={t("hintMultiSelect")} />
+        <KeyHint keys="Shift" label={t("hintRangeSelect")} />
+        <KeyHint keys={t("hintDoubleClick")} label={t("hintRename")} />
+        <KeyHint keys={t("hintDrag")} label={t("hintReorder")} />
+      </div>
 
       <footer className="space-y-2 border-t border-line px-4 py-3 text-xs text-fg-muted">
         <div className="flex items-center justify-between gap-2">

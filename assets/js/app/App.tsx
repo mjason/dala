@@ -34,6 +34,7 @@ import { onReconnect } from "./socket";
 import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
 import { planDelivery, resolveApp } from "./agentDelivery";
+import LeaderMenu from "./LeaderMenu";
 
 type Toast = { id: number; message: string };
 
@@ -508,6 +509,61 @@ export default function App() {
     }, 0);
   };
 
+  const [leaderOpen, setLeaderOpen] = useState(false);
+
+  // Leader-menu executor: every which-key leaf lands here.
+  const runLeaderAction = (action: string) => {
+    switch (action) {
+      case "newSession":
+        void handleCreate();
+        break;
+      case "quickShell":
+        quickShellRef.current();
+        break;
+      case "renameSession":
+        startRename(activeIdRef.current);
+        break;
+      case "sessionSettings":
+        if (activeIdRef.current) setSettingsFor(activeIdRef.current);
+        break;
+      case "focusTerminal":
+        (qsRef.current.open ? qsActions : termActions).current?.focus();
+        break;
+      case "refit":
+        termActions.current?.refit(true);
+        break;
+      case "resetTerminal":
+        termActions.current?.reset();
+        break;
+      case "kickViewers":
+        void kickOtherViewers();
+        break;
+      case "drawer":
+        toggleDrawer();
+        break;
+      case "git":
+        toggleGit();
+        break;
+      case "sidebar":
+        toggleSidebar();
+        break;
+      case "composer":
+        toggleComposerRef.current();
+        break;
+      case "voice":
+        voiceShortcutRef.current();
+        break;
+      case "composerMention":
+      case "composerAttach":
+      case "composerStash":
+        window.dispatchEvent(new CustomEvent("dala:action", { detail: action }));
+        break;
+      case "quickOpen":
+        setQuickOpen(true);
+        break;
+    }
+  };
+
   useGlobalShortcuts({
     termActions,
     qsActions,
@@ -520,6 +576,7 @@ export default function App() {
     toggleDrawer,
     toggleGit,
     startRename: () => startRename(activeIdRef.current),
+    openLeader: () => setLeaderOpen(true),
     onNotifyClick: (id) => {
       if (sessionsRef.current.some((s) => s.id === id)) setActiveId(id);
     },
@@ -1020,6 +1077,12 @@ export default function App() {
           onError={toast}
         />
       )}
+
+      <LeaderMenu
+        open={leaderOpen}
+        onClose={() => setLeaderOpen(false)}
+        onAction={runLeaderAction}
+      />
 
       {quickOpen && active && (
         <QuickOpen
