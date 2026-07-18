@@ -15,6 +15,16 @@ defmodule Dala.Terminal.HolderEnvTest do
       assert "MIX_ENV" in names
     end
 
+    test "scrubs agent session markers inherited from an agent-run deploy" do
+      System.put_env("CLAUDE_CODE_TEST_LEAK", "1")
+      on_exit(fn -> System.delete_env("CLAUDE_CODE_TEST_LEAK") end)
+
+      names = Server.env_remove()
+      assert "CLAUDECODE" in names
+      assert "CLAUDE_CODE_TEST_LEAK" in names
+      assert "CODEX_SANDBOX" in names
+    end
+
     test "scrubs whatever DALA_*/PHX_*/RELEASE_* variables are currently set" do
       System.put_env("DALA_TEST_LEAK_XYZ", "1")
       System.put_env("PHX_TEST_LEAK_XYZ", "1")

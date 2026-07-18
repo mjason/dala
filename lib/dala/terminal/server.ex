@@ -40,50 +40,12 @@ defmodule Dala.Terminal.Server do
   @waiters_per_session 8
   @match_buffer_bytes 128 * 1024
 
-  # Host-terminal identity leaked from the parent process would make shell
-  # integrations and TUIs (opencode, …) negotiate protocols the web terminal
-  # does not speak (ghostty/kitty extensions, …).
-  @env_remove ~w(
-    TERM_PROGRAM TERM_PROGRAM_VERSION
-    GHOSTTY_RESOURCES_DIR GHOSTTY_BIN_DIR GHOSTTY_SHELL_INTEGRATION_NO_SUDO
-    KITTY_WINDOW_ID KITTY_PID KITTY_INSTALLATION_DIR KITTY_PUBLIC_KEY
-    WEZTERM_EXECUTABLE WEZTERM_CONFIG_FILE WEZTERM_PANE WEZTERM_UNIX_SOCKET
-    ITERM_SESSION_ID LC_TERMINAL LC_TERMINAL_VERSION
-    VTE_VERSION WT_SESSION WT_PROFILE_ID
-    TMUX TMUX_PANE STY ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID
-    VSCODE_INJECTION VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_IPC_HANDLE
-  )
-
-  # Dala's own server configuration must not leak into the shells it spawns:
-  # anything the user runs inside a dala terminal that reads the same
-  # variables (a dev `mix phx.server` grabbing the production PORT and
-  # PHX_SERVER, a test server coming up with DALA_AUTH_ENABLED…) breaks in
-  # ways that look like application bugs — and DALA_USERS, SECRET_KEY_BASE,
-  # TOKEN_SIGNING_SECRET and RELEASE_COOKIE are secrets with no business in
-  # a user shell. Exact names cover the config surface of runtime.exs plus
-  # the BEAM release launcher's own variables.
-  @env_remove_config ~w(
-    PORT DATABASE_PATH POOL_SIZE SECRET_KEY_BASE TOKEN_SIGNING_SECRET
-    DNS_CLUSTER_QUERY MIX_ENV ELIXIR_ERL_OPTIONS ROOTDIR BINDIR EMU PROGNAME
-  )
-
-  # Open-ended families, matched against the live environment at spawn time
-  # so configuration added later can never leak by omission.
-  @env_remove_config_prefixes ~w(DALA_ PHX_ RELEASE_)
-
   @doc """
-  Environment variable names scrubbed from spawned shells: host-terminal
-  identity, dala's own server configuration (secrets included), and every
-  currently-set variable in the `DALA_*`/`PHX_*`/`RELEASE_*` families.
+  Environment variable names scrubbed from spawned shells — see
+  `Dala.Terminal.ShellEnv` for the categorized inventory and the reasons.
+  Kept as a public delegate: callers and tests speak to the server.
   """
-  def env_remove do
-    inherited =
-      for {name, _value} <- System.get_env(),
-          String.starts_with?(name, @env_remove_config_prefixes),
-          do: name
-
-    @env_remove ++ @env_remove_config ++ inherited
-  end
+  defdelegate env_remove, to: Dala.Terminal.ShellEnv, as: :remove_list
 
   # When the shell dies, whatever modes its programs had enabled (mouse
   # tracking, bracketed paste, alt-screen, hidden cursor) are stale on the
