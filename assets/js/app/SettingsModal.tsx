@@ -15,7 +15,6 @@ import { useI18n } from "./i18n";
 import { historyLines as normalizeHistoryLines, sessionRef, writeClipboard } from "./util";
 import { isTopWindow, Kbd, modCombo, popWindow, pushWindow } from "./shortcuts";
 import AppearanceSection from "./settings/AppearanceSection";
-import GrammarSection from "./settings/GrammarSection";
 import NotificationsSection from "./settings/NotificationsSection";
 import ShortcutsSection from "./settings/ShortcutsSection";
 import SpeechSection from "./settings/SpeechSection";
@@ -441,7 +440,6 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           ) : (
             <>
               <AppearanceSection onError={fail} />
-              <GrammarSection onError={fail} />
               <NotificationsSection />
             </>
           )}

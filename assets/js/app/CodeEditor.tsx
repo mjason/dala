@@ -23,7 +23,6 @@ import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/sea
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
-import { textmateForFile } from "./cm/textmate";
 import { findOnModF } from "./cm/findOnModF";
 
 type Props = {
@@ -50,7 +49,6 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
   const lspCompartment = useRef(new Compartment());
-  const textmateCompartment = useRef(new Compartment());
 
   useEffect(() => {
     const host = hostRef.current;
@@ -91,7 +89,6 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
         wrapCompartment.current.of([]),
         languageCompartment.current.of([]),
         lspCompartment.current.of([]),
-        textmateCompartment.current.of([]),
         dalaTheme,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
@@ -138,24 +135,6 @@ export default function CodeEditor({ value, onChange, onSave, wrap, filename }: 
       if (cancelled) return;
       viewRef.current?.dispatch({
         effects: languageCompartment.current.reconfigure(language ?? []),
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [filename]);
-
-  // User TextMate grammars (project dala.jsonc + global uploads) paint over
-  // the base language — which stays loaded for indentation and comments.
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      const tm = filename ? await textmateForFile(filename) : null;
-      if (cancelled) return;
-      viewRef.current?.dispatch({
-        effects: textmateCompartment.current.reconfigure(tm ?? []),
       });
     })();
 

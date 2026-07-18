@@ -40,7 +40,6 @@ defmodule Dala.Terminal do
       rpc_action :rename_entry, :rename_entry
       rpc_action :copy_entry, :copy_entry
       rpc_action :move_entry, :move_entry
-      rpc_action :syntax_grammars, :syntax_grammars
     end
 
     resource Dala.Terminal.Git do

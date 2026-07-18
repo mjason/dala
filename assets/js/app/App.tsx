@@ -65,7 +65,9 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(() => {
     const stored = localStorage.getItem("dala:drawer-open");
     if (stored != null) return stored === "1";
-    return window.matchMedia?.("(min-width: 768px)").matches ?? false;
+    // Default-open needs real estate: at 22rem the drawer would squeeze a
+    // landscape phone (844px) to nothing — only lg screens start open.
+    return window.matchMedia?.("(min-width: 1024px)").matches ?? false;
   });
   const [gitOpen, setGitOpen] = useState(false);
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
@@ -509,6 +511,20 @@ export default function App() {
     }, 0);
   };
 
+  // Default-open is an ≥lg convenience — when the window shrinks below lg
+  // the drawer would crush the toolbar (and below md it becomes a
+  // fullscreen overlay trapping the UI), so it self-revokes on that
+  // transition. An EXPLICIT open (stored "1") is the user's call and is
+  // never overridden; the stored preference itself is untouched either way.
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches && localStorage.getItem("dala:drawer-open") !== "1") setDrawerOpen(false);
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   const [leaderOpen, setLeaderOpen] = useState(false);
 
   // MRU terminal pool: the last few sessions keep their TerminalView alive
@@ -721,7 +737,7 @@ export default function App() {
           <>
             <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg1 px-3 sm:gap-3 sm:px-4">
               {hamburger}
-              <span className="truncate font-mono text-sm text-fg">{active.name}</span>
+              <span className="min-w-0 shrink truncate font-mono text-sm text-fg">{active.name}</span>
               <button
                 id="active-session-reference"
                 type="button"
@@ -736,7 +752,7 @@ export default function App() {
                 {sessionRef(active.id)}
               </button>
               <span
-                className="hidden truncate font-mono text-xs text-fg-muted sm:block"
+                className="hidden min-w-0 shrink truncate font-mono text-xs text-fg-muted sm:block"
                 title={active.cwd}
               >
                 {shortPath(active.cwd, 60)}

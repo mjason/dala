@@ -342,50 +342,6 @@ defmodule Dala.Terminal.FileSystem do
       end
     end
 
-    action :syntax_grammars, :map do
-      description """
-      TextMate grammars that may highlight a file: project `dala.jsonc`
-      entries first (they win extension collisions), then globally-uploaded
-      grammars from the data directory. Without a path only the global set
-      is returned (the settings management view).
-      """
-
-      constraints fields: [
-                    global_dir: [type: :string, allow_nil?: false],
-                    grammars: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            path: [type: :string, allow_nil?: false],
-                            scope_name: [type: :string, allow_nil?: false],
-                            name: [type: :string, allow_nil?: false],
-                            extensions: [type: {:array, :string}, allow_nil?: false],
-                            source: [type: :string, allow_nil?: false]
-                          ]
-                        ]
-                      ]
-                    ]
-                  ]
-
-      argument :path, :string, allow_nil?: true
-
-      run fn input, _context ->
-        result = Dala.SyntaxGrammars.resolve(Map.get(input.arguments, :path))
-
-        {:ok,
-         %{
-           result
-           | grammars:
-               Enum.map(
-                 result.grammars,
-                 &Map.take(&1, ~w(path scope_name name extensions source)a)
-               )
-         }}
-      end
-    end
-
     action :lsp_servers, :map do
       description """
       Language servers that should attach to a file: resolved per project

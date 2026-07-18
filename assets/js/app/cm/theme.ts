@@ -9,7 +9,7 @@ import type { Extension } from "@codemirror/state";
  * search panel and the merge view.
  */
 
-export const colors = {
+const colors = {
   // Chrome/structure references the app tokens (var(--color-*)) so the editor
   // re-themes together with the shell: the CSS custom properties flip with
   // <html data-theme> and CodeMirror re-resolves them live, no reconfigure.
