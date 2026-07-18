@@ -78,7 +78,17 @@ async function clickTerminalTool(page, id) {
   await page.click("#" + id);
 }
 
+
+/** Ensure the file drawer is open (it defaults open on desktop now — a
+ * blind toggle click would close it). */
+async function openDrawer(page) {
+  const visible = await page.locator("#file-tree").isVisible().catch(() => false);
+  if (!visible) await page.click("#toggle-drawer-button");
+  await page.waitForSelector("#file-tree", { state: "visible" });
+}
+
 module.exports = {
+  openDrawer,
   clickTerminalTool,
   rpcRun,
   gotoApp,

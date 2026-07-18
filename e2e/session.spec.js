@@ -39,7 +39,10 @@ async function waitTerminalReady(page) {
 test.describe("Given 一个打开 dala 的用户", () => {
   let cwd;
 
-  test.beforeEach(() => {
+  test.beforeEach(async ({ page }) => {
+    // 抽屉在桌面默认打开；本 spec 的 reflow 编舞假设“从关闭开始”，
+    // 显式种下关闭偏好还原旧语义。
+    await page.addInitScript(() => localStorage.setItem("dala:drawer-open", "0"));
     cwd = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-session-`);
   });
 
@@ -482,26 +485,39 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await h.deleteSession(page, id).catch(() => {});
     }
   });
-  test("会话按目录自动分组可折叠，Ctrl 多选批量删除", async ({ page }) => {
+  test("手工分组：右键建组/入组/折叠/整组删除，Ctrl 多选批量删除", async ({ page }) => {
     const cwdA = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-grp-a-`);
-    const cwdB = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-grp-b-`);
+    const gname = `grp-${Date.now()}`;
     let s1, s2, s3;
     try {
       await h.gotoApp(page);
       s1 = await h.createSession(page, cwdA);
       s2 = await h.createSession(page, cwdA);
-      s3 = await h.createSession(page, cwdB);
+      s3 = await h.createSession(page, cwdA);
 
-      // 同目录的两个会话聚成组：组头显示目录名与数量，可折叠。
-      const header = page.locator(`[data-session-group="${cwdA}"]`);
+      // 右键 s1 → 移动到分组 → 新建分组，命名后出现组头。
+      await page.click(`[data-session-row="${s1}"]`, { button: "right" });
+      await page.click('[data-ctx-item="move"]');
+      await page.click('[data-ctx-item="new-group"]');
+      await page.fill("#group-name-input", gname);
+      await page.click("#group-name-confirm");
+      const header = page.locator(`[data-session-group="${gname}"]`);
       await expect(header).toBeVisible();
+      await expect(header).toContainText("1");
+
+      // 右键 s2 → 移动到分组 → 已有组名作为目标直接列出。
+      await page.click(`[data-session-row="${s2}"]`, { button: "right" });
+      await page.click('[data-ctx-item="move"]');
+      await page.click(`[data-ctx-item="move-to:${gname}"]`);
       await expect(header).toContainText("2");
+
+      // 组头点击折叠/展开。
       await header.click();
       await expect(page.locator(`[data-session-row="${s1}"]`)).toBeHidden();
       await header.click();
       await expect(page.locator(`[data-session-row="${s1}"]`)).toBeVisible();
 
-      // Ctrl 点选两行 → 出现多选条 → 批量删除（确认框列出两条）。
+      // Ctrl 点选两行 → 底部多选条 → 批量删除（确认框）。
       await page.click(`[data-session-row="${s1}"]`, { modifiers: ["Control"] });
       await page.click(`[data-session-row="${s2}"]`, { modifiers: ["Control"] });
       await expect(page.locator("#session-multibar")).toContainText("2");
@@ -511,10 +527,22 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await expect(page.locator(`[data-session-row="${s2}"]`)).toHaveCount(0);
       await expect(page.locator(`[data-session-row="${s3}"]`)).toBeVisible();
       s1 = s2 = null;
+
+      // 组的生命周期跟随成员：s1/s2 删光后组名消失，重新建组再验证整组删除。
+      await page.click(`[data-session-row="${s3}"]`, { button: "right" });
+      await page.click('[data-ctx-item="move"]');
+      await expect(page.locator(`[data-ctx-item="move-to:${gname}"]`)).toHaveCount(0);
+      await page.click('[data-ctx-item="new-group"]');
+      await page.fill("#group-name-input", gname);
+      await page.click("#group-name-confirm");
+      await page.click(`[data-session-group="${gname}"]`, { button: "right" });
+      await page.click('[data-ctx-item="delete-group"]');
+      await page.click("#confirm-delete-many-button");
+      await expect(page.locator(`[data-session-row="${s3}"]`)).toHaveCount(0);
+      s3 = null;
     } finally {
       for (const id of [s1, s2, s3]) if (id) await h.deleteSession(page, id).catch(() => {});
       fs.rmSync(cwdA, { recursive: true, force: true });
-      fs.rmSync(cwdB, { recursive: true, force: true });
     }
   });
 });

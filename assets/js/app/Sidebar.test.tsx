@@ -15,6 +15,7 @@ const sessions: Session[] = [
     exitCode: null,
     scrollbackLimit: 5_242_880,
     ephemeral: false,
+    group: null,
     position: 1,
     insertedAt: "2026-07-08T00:00:00Z",
   },
@@ -27,6 +28,7 @@ const sessions: Session[] = [
     exitCode: 0,
     scrollbackLimit: 5_242_880,
     ephemeral: false,
+    group: null,
     position: 2,
     insertedAt: "2026-07-08T01:00:00Z",
   },
@@ -43,6 +45,7 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
     onOpenSettings: vi.fn(),
     onDelete: vi.fn(),
     onDeleteMany: vi.fn(),
+    onSetGroup: vi.fn(),
     onReorder: vi.fn(),
     renamingId: null as string | null,
     onRenameStart: vi.fn(),
@@ -270,6 +273,7 @@ describe("Sidebar", () => {
         onRenameStart: vi.fn(),
         onRename: vi.fn(),
         onDeleteMany: vi.fn(),
+        onSetGroup: vi.fn(),
       };
       const view = render(
         <I18nProvider>
@@ -304,5 +308,107 @@ describe("Sidebar", () => {
     const select = document.getElementById("language-select") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "zh-CN" } });
     expect(screen.getByTitle("新建终端")).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar context menu", () => {
+  const menu = () => document.querySelector("#session-context-menu");
+  const pick = (key: string) =>
+    fireEvent.click(document.querySelector(`[data-ctx-item="${key}"]`)!);
+  const rightClickRow = (id: string) =>
+    fireEvent.contextMenu(document.querySelector(`[data-session-row="${id}"]`)!);
+
+  it("opens on right click and toggles the row into the selection", () => {
+    renderSidebar();
+    expect(menu()).toBeNull();
+    rightClickRow("s2");
+    expect(menu()).not.toBeNull();
+    pick("toggle-select");
+    expect(menu()).toBeNull();
+    expect(document.querySelector('[data-session-row="s2"][data-selected]')).not.toBeNull();
+    // The multibar surfaces at the bottom with the batch-delete action.
+    expect(document.querySelector("#session-multibar")).not.toBeNull();
+    expect(document.querySelector("#delete-selected-button")).not.toBeNull();
+  });
+
+  it("offers batch delete when the row is part of a multi-selection", () => {
+    const props = renderSidebar();
+    fireEvent.click(document.querySelector('[data-session-row="s1"]')!, { ctrlKey: true });
+    fireEvent.click(document.querySelector('[data-session-row="s2"]')!, { ctrlKey: true });
+    rightClickRow("s2");
+    pick("delete-selected");
+    expect(props.onDeleteMany).toHaveBeenCalledWith(expect.arrayContaining(["s1", "s2"]));
+  });
+
+  it("routes rename, settings and delete to the row's session", () => {
+    const props = renderSidebar();
+    rightClickRow("s2");
+    pick("rename");
+    expect(props.onRenameStart).toHaveBeenCalledWith("s2");
+    rightClickRow("s2");
+    pick("settings");
+    expect(props.onOpenSettings).toHaveBeenCalledWith("s2");
+    rightClickRow("s2");
+    pick("delete");
+    expect(props.onDelete).toHaveBeenCalledWith("s2");
+  });
+
+  it("moves a session into a new group via the naming dialog", () => {
+    const props = renderSidebar();
+    rightClickRow("s1");
+    pick("move");
+    // Second level: no groups exist yet, only "new group…".
+    pick("new-group");
+    const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
+    fireEvent.change(input, { target: { value: "  work  " } });
+    fireEvent.submit(document.querySelector("#group-name-modal")!);
+    expect(props.onSetGroup).toHaveBeenCalledWith(["s1"], "work");
+    expect(document.querySelector("#group-name-modal")).toBeNull();
+  });
+
+  it("lists existing groups as move targets and offers remove-from-group", () => {
+    const grouped = [{ ...sessions[0], group: "work" }, sessions[1]];
+    const props = renderSidebar({ sessions: grouped });
+    rightClickRow("s2");
+    pick("move");
+    pick("move-to:work");
+    expect(props.onSetGroup).toHaveBeenCalledWith(["s2"], "work");
+    // A grouped row offers the way back out.
+    rightClickRow("s1");
+    pick("move");
+    pick("remove-from-group");
+    expect(props.onSetGroup).toHaveBeenCalledWith(["s1"], null);
+  });
+
+  it("group header menu selects, renames, ungroups and deletes the whole group", () => {
+    const grouped = sessions.map((s) => ({ ...s, group: "work" }));
+    const props = renderSidebar({ sessions: grouped });
+    const header = document.querySelector('[data-session-group="work"]')!;
+    fireEvent.contextMenu(header);
+    pick("select-group");
+    expect(document.querySelectorAll("[data-session-row][data-selected]").length).toBe(2);
+    fireEvent.contextMenu(header);
+    pick("rename-group");
+    const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
+    expect(input.value).toBe("work");
+    fireEvent.change(input, { target: { value: "play" } });
+    fireEvent.submit(document.querySelector("#group-name-modal")!);
+    expect(props.onSetGroup).toHaveBeenCalledWith(["s1", "s2"], "play");
+    fireEvent.contextMenu(header);
+    pick("ungroup");
+    expect(props.onSetGroup).toHaveBeenCalledWith(["s1", "s2"], null);
+    fireEvent.contextMenu(header);
+    pick("delete-group");
+    expect(props.onDeleteMany).toHaveBeenCalledWith(["s1", "s2"]);
+  });
+
+  it("Escape closes the menu without clearing the selection", () => {
+    renderSidebar();
+    fireEvent.click(document.querySelector('[data-session-row="s1"]')!, { ctrlKey: true });
+    rightClickRow("s1");
+    expect(menu()).not.toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(menu()).toBeNull();
+    expect(document.querySelector('[data-session-row="s1"][data-selected]')).not.toBeNull();
   });
 });

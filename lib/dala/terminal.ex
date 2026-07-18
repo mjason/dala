@@ -12,6 +12,7 @@ defmodule Dala.Terminal do
       rpc_action :list_sessions, :list
       rpc_action :create_session, :create
       rpc_action :rename_session, :rename
+      rpc_action :set_session_group, :set_group
       rpc_action :reorder_session, :reorder
       rpc_action :set_scrollback_limit, :set_scrollback_limit
       rpc_action :agent_commands, :agent_commands
@@ -39,6 +40,7 @@ defmodule Dala.Terminal do
       rpc_action :rename_entry, :rename_entry
       rpc_action :copy_entry, :copy_entry
       rpc_action :move_entry, :move_entry
+      rpc_action :syntax_grammars, :syntax_grammars
     end
 
     resource Dala.Terminal.Git do

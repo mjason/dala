@@ -18,6 +18,25 @@ test.describe("Given 打开文件抽屉的用户", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  test("文件抽屉桌面默认打开，关闭后记住偏好", async ({ page }) => {
+    let s;
+    try {
+      await h.gotoApp(page);
+      s = await h.createSession(page, cwd);
+      await h.selectSession(page, s);
+      // 无偏好时桌面默认打开。
+      await expect(page.locator("#file-tree")).toBeVisible();
+      // 显式关闭 → 刷新后保持关闭。
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator("#file-tree")).toHaveCount(0);
+      await page.reload();
+      await expect(page.locator("#new-session-button")).toBeVisible();
+      await expect(page.locator("#file-tree")).toHaveCount(0);
+    } finally {
+      if (s) await h.deleteSession(page, s).catch(() => {});
+    }
+  });
+
   test("展开的目录在切到别的会话再切回后依然展开（不重新 collapse）", async ({ page }) => {
     // 会话 A 的目录里放一个嵌套目录；会话 B 用另一个目录，切过去时抽屉换成
     // 另一棵树。回到 A 时，之前展开的 nested 应当恢复，而不是塌回根。
@@ -31,7 +50,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
       await h.gotoApp(page);
       a = await h.createSession(page, cwd);
       await h.selectSession(page, a);
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       await expect(page.locator("#file-tree")).toBeVisible();
 
       const inner = `[data-path="${path.join(cwd, "nested/inner.txt")}"]`;
@@ -65,7 +84,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
       await h.gotoApp(page);
       s = await h.createSession(page, cwd);
       await h.selectSession(page, s);
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       await expect(page.locator("#file-tree")).toBeVisible();
 
       // 重命名：右键 → 重命名 → 改名回车。
@@ -114,7 +133,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
     const id = await h.createSession(page, cwd);
     await h.selectSession(page, id);
     try {
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       // 逐级展开到目标文件所在目录
       for (const dir of ["very", "very/deeply", "very/deeply/nested", "very/deeply/nested/directory", "very/deeply/nested/directory/chain"]) {
         await page.click(`[data-path="${path.join(cwd, dir)}"]`);
@@ -172,7 +191,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
     await h.selectSession(page, id);
 
     try {
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       await page.click(`[data-path="${csvPath}"]`);
       await expect(page.locator("#file-preview table")).toBeVisible();
       await expect(page.locator("#file-preview")).toContainText("1,200 rows");
@@ -201,7 +220,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
 
     try {
       await h.selectSession(page, id);
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
 
       const drawerUpload = await page.evaluate(async (dir) => {
         const form = new FormData();
@@ -325,7 +344,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
     const id = await h.createSession(page, cwd);
     try {
       await expect(page.locator(".xterm").first()).toBeVisible();
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       await expect(page.locator("#file-tree")).toBeVisible();
       await expect(page.locator(`[data-path="${cwd}/seed.txt"]`)).toBeVisible();
 
@@ -379,7 +398,7 @@ test.describe("Given 打开文件抽屉的用户", () => {
     const id = await h.createSession(page, cwd);
     try {
       await h.selectSession(page, id);
-      await page.click("#toggle-drawer-button");
+      await h.openDrawer(page);
       const treeRow = page.locator(`[data-path="${tracked}"]`);
       await expect(treeRow).toBeVisible();
       await expect(treeRow).not.toHaveAttribute("title");

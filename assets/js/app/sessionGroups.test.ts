@@ -1,26 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { groupSessions, rangeBetween } from "./sessionGroups";
+import { groupNames, groupSessions, rangeBetween } from "./sessionGroups";
 
-const s = (id: string, cwd: string) => ({ id, cwd });
+const s = (id: string, group: string | null = null) => ({ id, group });
 
 describe("groupSessions", () => {
-  it("groups by cwd at first appearance, keeping in-group order", () => {
-    const groups = groupSessions([
-      s("a", "/p/alpha"),
-      s("b", "/p/beta"),
-      s("c", "/p/alpha"),
-      s("d", "/p/beta"),
-    ]);
-    expect(groups.map((g) => g.key)).toEqual(["/p/alpha", "/p/beta"]);
+  it("clusters by manual group at first appearance, keeping in-group order", () => {
+    const groups = groupSessions([s("a", "work"), s("b", "play"), s("c", "work"), s("d", "play")]);
+    expect(groups.map((g) => g.key)).toEqual(["work", "play"]);
     expect(groups[0].sessions.map((x) => x.id)).toEqual(["a", "c"]);
     expect(groups[1].sessions.map((x) => x.id)).toEqual(["b", "d"]);
   });
 
-  it("labels groups by directory basename", () => {
-    const [g] = groupSessions([s("a", "/home/mj/dev/elixir/dala")]);
-    expect(g.label).toBe("dala");
-    const [root] = groupSessions([s("b", "/")]);
-    expect(root.label).toBe("/");
+  it("keeps a header for a single-member named group", () => {
+    const groups = groupSessions([s("a", "solo")]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe("solo");
+  });
+
+  it("runs of ungrouped rows form anonymous pseudo-groups between named ones", () => {
+    const groups = groupSessions([s("a"), s("b"), s("c", "work"), s("d")]);
+    expect(groups.map((g) => g.key)).toEqual([null, "work", null]);
+    expect(groups[0].sessions.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(groups[2].sessions.map((x) => x.id)).toEqual(["d"]);
+  });
+});
+
+describe("groupNames", () => {
+  it("lists distinct names in order", () => {
+    expect(groupNames([s("a", "work"), s("b"), s("c", "play"), s("d", "work")])).toEqual([
+      "work",
+      "play",
+    ]);
   });
 });
 

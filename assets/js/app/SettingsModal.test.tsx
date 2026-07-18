@@ -44,6 +44,7 @@ const session = {
   scrollbackLimit: 10_000,
   ephemeral: false,
   position: 0,
+  group: null,
   insertedAt: "2026-01-01T00:00:00Z",
 };
 

@@ -10,6 +10,7 @@ const { resolveLatestClient, isNewer } = require("./updater");
 const { detectLocale, normalizeLocale, translate } = require("./menu-locales");
 const { addServerConfig, normalizeConfig, updateServerConfig } = require("./src/config");
 const { applyTheme: applyShellTheme, backgroundFor, coldStartTheme } = require("./src/theme");
+const { attachCrashRecovery, recoverFromGpuCrash } = require("./crash-recovery");
 const { httpUrl } = require("./src/urls");
 const fs = require("fs");
 const path = require("path");
@@ -171,6 +172,7 @@ function createShellWindow(server) {
     if (httpUrl(url)) openBrowserWindow(url);
   });
   win.on("closed", rebuildMenu);
+  win.crashPolicy = attachCrashRecovery(win.webContents);
   if (server) win.loadURL(server.url);
   else win.loadFile(MANAGE_PAGE);
   return win;
@@ -264,6 +266,8 @@ function openBrowserWindow(url) {
   layoutBrowserView(win);
   win.on("resize", () => layoutBrowserView(win));
   win.on("closed", rebuildMenu);
+  win.crashPolicy = attachCrashRecovery(win.webContents);
+  win.browserViewCrashPolicy = attachCrashRecovery(view.webContents);
   win.loadFile(BROWSER_PAGE);
 
   view.webContents.setWindowOpenHandler(externalLinkHandler);
@@ -778,6 +782,20 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => createShellWindow(startupServer()));
+
+  // Chromium restarts a dead GPU process on its own, but existing windows can
+  // keep compositing to a black screen; reload them (each through its own
+  // crash-recovery cap) so a driver reset / OOM kill never needs a manual
+  // client restart.
+  app.on("child-process-gone", (_event, details) => {
+    if (details.type !== "GPU" || details.reason === "clean-exit") return;
+    const targets = BrowserWindow.getAllWindows().flatMap((win) => [
+      win.crashPolicy && { contents: win.webContents, policy: win.crashPolicy },
+      win.browserViewCrashPolicy &&
+        win.browserView && { contents: win.browserView.webContents, policy: win.browserViewCrashPolicy },
+    ]);
+    recoverFromGpuCrash(targets.filter(Boolean), details.reason);
+  });
 
   // Windows toasts require a stable AppUserModelID matching the installer's.
   app.setAppUserModelId("com.manjialin.dala");

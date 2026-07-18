@@ -56,7 +56,16 @@ export default function App() {
     });
   const sidebarHiddenRef = useRef(sidebarHidden);
   sidebarHiddenRef.current = sidebarHidden;
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // The file drawer defaults OPEN on desktop (the tree is core context);
+  // narrow screens start closed — there it's a fullscreen overlay that
+  // would bury the terminal. An explicit open/close wins on later loads;
+  // the git-panel auto-close (panels are mutually exclusive) is deliberately
+  // not persisted as a preference.
+  const [drawerOpen, setDrawerOpen] = useState(() => {
+    const stored = localStorage.getItem("dala:drawer-open");
+    if (stored != null) return stored === "1";
+    return window.matchMedia?.("(min-width: 768px)").matches ?? false;
+  });
   const [gitOpen, setGitOpen] = useState(false);
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
   const [followCwd, setFollowCwd] = useState(true);
@@ -195,6 +204,7 @@ export default function App() {
     handleDelete,
     handleReorder,
     handleRename,
+    handleSetGroup,
   } = useSessions({
     toast,
     onAgentEvent: (payload) => agentEventRef.current(payload),
@@ -492,7 +502,11 @@ export default function App() {
   };
 
   const toggleDrawer = () => {
-    setDrawerOpen((v) => !v);
+    setDrawerOpen((v) => {
+      const next = !v;
+      localStorage.setItem("dala:drawer-open", next ? "1" : "0");
+      return next;
+    });
     setGitOpen(false);
   };
   const toggleGit = () => {
@@ -559,18 +573,23 @@ export default function App() {
   const settingsSession = ordered.find((s) => s.id === settingsFor) ?? null;
   const sessionToDelete = ordered.find((s) => s.id === deleteFor) ?? null;
 
-  // One row of the desktop ⋯ tools menu (label + shortcut hint).
-  const toolsItem = (id: string, label: string, keys: string | null, run: () => void) => (
+  // One row of the desktop ⋯ tools menu: label + shortcut hint, plus an
+  // inline one-line description — these are rare, jargon-y actions, and a
+  // hover tooltip would be invisible on touch.
+  const toolsItem = (id: string, label: string, desc: string, keys: string | null, run: () => void) => (
     <button
       id={id}
       onClick={() => {
         setToolsMenuOpen(false);
         run();
       }}
-      className="flex items-center justify-between gap-3 px-3 py-2 text-left font-mono text-[12px] text-fg-muted transition-colors hover:bg-bg2 hover:text-fg pointer-coarse:min-h-11 pointer-coarse:py-3 pointer-coarse:text-sm"
+      className="group flex flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-bg2 pointer-coarse:min-h-11 pointer-coarse:py-3"
     >
-      <span>{label}</span>
-      {keys && <Kbd>{keys}</Kbd>}
+      <span className="flex items-center justify-between gap-3 font-mono text-[12px] text-fg-muted transition-colors group-hover:text-fg pointer-coarse:text-sm">
+        <span>{label}</span>
+        {keys && <Kbd>{keys}</Kbd>}
+      </span>
+      <span className="max-w-56 text-[11px] leading-4 text-fg-muted/60">{desc}</span>
     </button>
   );
 
@@ -640,6 +659,7 @@ export default function App() {
           onOpenSettings={setSettingsFor}
           onDelete={setDeleteFor}
           onDeleteMany={setDeleteManyFor}
+          onSetGroup={(ids, group) => void handleSetGroup(ids, group)}
           onReorder={(id, beforeId) => void handleReorder(id, beforeId)}
           renamingId={renamingId}
           onRenameStart={(id) => (id ? startRename(id) : endRename())}
@@ -790,13 +810,13 @@ export default function App() {
                       id="toolbar-tools"
                       className="absolute right-0 top-full z-40 mt-1.5 flex w-56 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
                     >
-                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), null, () =>
+                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), t("kickViewersHint"), null, () =>
                         void kickOtherViewers(),
                       )}
-                      {toolsItem("terminal-refit-button", t("refitWidth"), modShiftCombo("f"), () =>
+                      {toolsItem("terminal-refit-button", t("refitWidth"), t("refitDesc"), modShiftCombo("f"), () =>
                         termActions.current?.refit(true),
                       )}
-                      {toolsItem("terminal-reset-button", t("resetTerminal"), modShiftCombo("x"), () =>
+                      {toolsItem("terminal-reset-button", t("resetTerminal"), t("resetDesc"), modShiftCombo("x"), () =>
                         termActions.current?.reset(),
                       )}
                     </div>
@@ -1023,7 +1043,10 @@ export default function App() {
             setDrawerPath(p);
           }}
           onToggleFollow={() => setFollowCwd((v) => !v)}
-          onClose={() => setDrawerOpen(false)}
+          onClose={() => {
+            setDrawerOpen(false);
+            localStorage.setItem("dala:drawer-open", "0");
+          }}
           onError={toast}
         />
       )}

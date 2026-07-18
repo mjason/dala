@@ -1616,6 +1616,78 @@ export async function validateSavePastedFile(
 }
 
 
+export type SyntaxGrammarsInput = {
+  path?: string | null;
+};
+
+export type SyntaxGrammarsFields = UnifiedFieldSelection<{globalDir: string, grammars: Array<{path: string, scopeName: string, name: string, extensions: Array<string>, source: string, __type: "TypedMap", __primitiveFields: "path" | "scopeName" | "name" | "extensions" | "source"}>, __type: "TypedMap", __primitiveFields: "globalDir"}>[];
+
+export type InferSyntaxGrammarsResult<
+  Fields extends SyntaxGrammarsFields | undefined,
+> = InferResult<{globalDir: string, grammars: Array<{path: string, scopeName: string, name: string, extensions: Array<string>, source: string, __type: "TypedMap", __primitiveFields: "path" | "scopeName" | "name" | "extensions" | "source"}>, __type: "TypedMap", __primitiveFields: "globalDir"}, Fields>;
+
+export type SyntaxGrammarsResult<Fields extends SyntaxGrammarsFields | undefined = undefined> = | { success: true; data: InferSyntaxGrammarsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ */
+export async function syntaxGrammars<Fields extends SyntaxGrammarsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input?: SyntaxGrammarsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SyntaxGrammarsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "syntax_grammars",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SyntaxGrammarsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on FileSystem
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSyntaxGrammars(
+  config: {
+  tenant?: string;
+  input?: SyntaxGrammarsInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "syntax_grammars",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type WriteFileInput = {
   path: string;
   content: string;
@@ -3311,6 +3383,82 @@ export async function validateSetScrollbackLimit(
 ): Promise<ValidationResult> {
   const payload = {
     action: "set_scrollback_limit",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    identity: config.identity,
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SetSessionGroupInput = {
+  group?: string | null;
+};
+
+export type SetSessionGroupFields = UnifiedFieldSelection<SessionResourceSchema>[];
+
+export type InferSetSessionGroupResult<
+  Fields extends SetSessionGroupFields | undefined,
+> = InferResult<SessionResourceSchema, Fields>;
+
+export type SetSessionGroupResult<Fields extends SetSessionGroupFields | undefined = undefined> = | { success: true; data: InferSetSessionGroupResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Update an existing Session
+ *
+ * @ashActionType :update
+ */
+export async function setSessionGroup<Fields extends SetSessionGroupFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  identity: UUID;
+  input?: SetSessionGroupInput;
+  fields?: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetSessionGroupResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_session_group",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    identity: config.identity,
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetSessionGroupResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Update an existing Session
+ *
+ * @ashActionType :update
+ * @validation true
+ */
+export async function validateSetSessionGroup(
+  config: {
+  tenant?: string;
+  identity: UUID | string;
+  input?: SetSessionGroupInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "set_session_group",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     identity: config.identity,
     input: config.input

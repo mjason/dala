@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { SessionUpdatedPayload } from "../ash_types";
 import { authEnabled, userEmail } from "./meta";
 import { beforeIdFor, insertionIndex } from "./reorder";
-import { groupSessions, rangeBetween } from "./sessionGroups";
+import { groupNames, groupSessions, rangeBetween } from "./sessionGroups";
 import { shortPath } from "./util";
 import { LOCALE_NAMES, useI18n } from "./i18n";
 import type { Locale } from "./i18n";
@@ -24,6 +24,8 @@ type Props = {
   onDelete: (id: string) => void;
   /** Batch delete for the multi-selection (App confirms first). */
   onDeleteMany: (ids: string[]) => void;
+  /** Assign sessions to a named group (null = ungroup). */
+  onSetGroup: (ids: string[], group: string | null) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
   /** Session whose row is currently being renamed in place (⌥⌘R / double-click). */
@@ -50,6 +52,7 @@ export default function Sidebar({
   onOpenSettings,
   onDelete,
   onDeleteMany,
+  onSetGroup,
   onReorder,
   renamingId,
   onRenameStart,
@@ -97,7 +100,7 @@ export default function Sidebar({
   // resolution and shift-ranges must all speak THIS list, not the full one
   // (collapsed groups hide rows).
   const visibleSessions = groups.flatMap((g) =>
-    g.sessions.length > 1 && collapsed.has(g.key) ? [] : g.sessions,
+    g.key != null && collapsed.has(g.key) ? [] : g.sessions,
   );
   const visibleRef = useRef(visibleSessions);
   visibleRef.current = visibleSessions;
@@ -105,6 +108,44 @@ export default function Sidebar({
   // ---- Multi-selection (Ctrl/Cmd toggle, Shift range) ----------------------
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
+
+  // Right-click menu — the discoverable path to multi-select and batch
+  // delete (Ctrl/Shift-click alone is invisible to anyone not looking).
+  const [ctxMenu, setCtxMenu] = useState<
+    | {
+        x: number;
+        y: number;
+        target: { kind: "session"; id: string } | { kind: "group"; key: string };
+        /** "move" = second level: pick a destination group. */
+        view?: "move";
+      }
+    | null
+  >(null);
+  // Naming dialog for "new group…" / "rename group" (ids get that name).
+  const [groupModal, setGroupModal] = useState<{ ids: string[]; initial: string } | null>(null);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault(); // one Esc closes one layer: the menu, not the selection
+      setCtxMenu(null);
+    };
+    // Capture phase: the selection-clearing Escape listener below was
+    // registered earlier and would otherwise run first.
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [ctxMenu]);
+
+  const toggleSelect = (id: string) => {
+    anchorRef.current = id;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Prune selections for sessions that no longer exist (deleted elsewhere).
   useEffect(() => {
@@ -135,13 +176,7 @@ export default function Sidebar({
 
   const rowClick = (e: React.MouseEvent, id: string) => {
     if (e.metaKey || e.ctrlKey) {
-      anchorRef.current = id;
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
+      toggleSelect(id);
     } else if (e.shiftKey && anchorRef.current) {
       setSelected(
         new Set(
@@ -262,31 +297,6 @@ export default function Sidebar({
         </button>
       </div>
 
-      {selected.size > 0 && (
-        <div
-          id="session-multibar"
-          className="mx-2 mb-1 flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-bg2/70 px-2 py-1 text-[12px]"
-        >
-          <span className="min-w-0 flex-1 truncate text-fg-muted">
-            {t("sessionsSelected", { count: selected.size })}
-          </span>
-          <button
-            id="delete-selected-button"
-            onClick={() => onDeleteMany([...selected])}
-            className="shrink-0 rounded px-1.5 py-0.5 font-medium text-danger transition-colors hover:bg-danger/10"
-          >
-            {t("deleteSelected")}
-          </button>
-          <button
-            aria-label={t("clearSelection")}
-            onClick={() => setSelected(new Set())}
-            className="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:text-fg"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
       <nav id="session-list" ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
         {sessions.length === 0 && (
           <div className="mt-10 px-3 text-center text-[13px] leading-6 text-fg-muted">
@@ -297,17 +307,21 @@ export default function Sidebar({
             </button>
           </div>
         )}
-        {groups.map((g) => {
-          const grouped = g.sessions.length > 1;
-          const isCollapsed = grouped && collapsed.has(g.key);
+        {groups.map((g, gi) => {
+          const grouped = g.key != null;
+          const isCollapsed = grouped && collapsed.has(g.key!);
           return (
-            <React.Fragment key={g.key}>
+            <React.Fragment key={g.key ?? `loose-${gi}`}>
               {grouped && (
                 <button
                   data-session-group={g.key}
                   aria-expanded={!isCollapsed}
-                  onClick={() => toggleGroup(g.key)}
-                  title={g.key}
+                  onClick={() => toggleGroup(g.key!)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({ x: e.clientX, y: e.clientY, target: { kind: "group", key: g.key! } });
+                  }}
+                  title={g.key!}
                   className="mb-0.5 flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left font-mono text-[11px] text-fg-muted/80 transition-colors hover:bg-bg2/50 hover:text-fg-muted pointer-coarse:min-h-9"
                 >
                   <svg
@@ -319,7 +333,7 @@ export default function Sidebar({
                   >
                     <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  <span className="min-w-0 truncate">{g.label}</span>
+                  <span className="min-w-0 truncate">{g.key}</span>
                   <span className="shrink-0 text-fg-muted/50">{g.sessions.length}</span>
                 </button>
               )}
@@ -328,6 +342,32 @@ export default function Sidebar({
           );
         })}
       </nav>
+
+      {selected.size > 0 && (
+        <div
+          id="session-multibar"
+          className="mx-2 mb-2 flex shrink-0 items-center gap-2 rounded-lg border border-mint/30 bg-bg2 px-2.5 py-1.5 text-[12px] shadow-lg shadow-black/20"
+        >
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-mint" />
+          <span className="min-w-0 flex-1 truncate text-fg">
+            {t("sessionsSelected", { count: selected.size })}
+          </span>
+          <button
+            id="delete-selected-button"
+            onClick={() => onDeleteMany([...selected])}
+            className="shrink-0 rounded-md bg-danger/10 px-2 py-1 font-medium text-danger transition-colors hover:bg-danger/20"
+          >
+            {t("deleteSelected")}
+          </button>
+          <button
+            aria-label={t("clearSelection")}
+            onClick={() => setSelected(new Set())}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg0/60 hover:text-fg"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <footer className="space-y-2 border-t border-line px-4 py-3 text-xs text-fg-muted">
         <div className="flex items-center justify-between gap-2">
@@ -358,6 +398,172 @@ export default function Sidebar({
           ))}
         </Select>
       </footer>
+
+      {ctxMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setCtxMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu(null);
+            }}
+          />
+          <div
+            id="session-context-menu"
+            className="fixed z-50 min-w-44 rounded-md border border-line bg-bg1 py-1 shadow-xl shadow-black/50"
+            style={{
+              left: Math.min(ctxMenu.x, window.innerWidth - 190),
+              top: Math.min(ctxMenu.y, window.innerHeight - 220),
+            }}
+          >
+            {(() => {
+              const close = () => setCtxMenu(null);
+              const item = (key: string, label: string, onPick: () => void, danger = false) => (
+                <button
+                  key={key}
+                  data-ctx-item={key}
+                  onClick={() => {
+                    close();
+                    onPick();
+                  }}
+                  className={`block w-full px-3 py-1.5 text-left font-mono text-xs transition-colors ${
+                    danger
+                      ? "text-fg-muted hover:bg-danger/10 hover:text-danger"
+                      : "text-fg-muted hover:bg-bg2 hover:text-fg"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+
+              if (ctxMenu.target.kind === "group") {
+                const key = ctxMenu.target.key;
+                const ids = groups.find((g) => g.key === key)?.sessions.map((s) => s.id) ?? [];
+                return [
+                  item("select-group", t("selectGroup"), () =>
+                    setSelected((prev) => new Set([...prev, ...ids])),
+                  ),
+                  item("rename-group", t("renameGroup"), () =>
+                    setGroupModal({ ids, initial: key }),
+                  ),
+                  item("ungroup", t("ungroup"), () => onSetGroup(ids, null)),
+                  item("delete-group", t("deleteGroup"), () => onDeleteMany(ids), true),
+                ];
+              }
+
+              const id = ctxMenu.target.id;
+              const inSelection = selected.has(id);
+              // Moving acts on the whole selection when the row is part of
+              // one — that is what makes multi-select worth discovering.
+              const moveIds = inSelection && selected.size > 1 ? [...selected] : [id];
+              const session = sessions.find((x) => x.id === id);
+
+              if (ctxMenu.view === "move") {
+                return [
+                  ...groupNames(sessions).map((name) =>
+                    item(`move-to:${name}`, name, () => onSetGroup(moveIds, name)),
+                  ),
+                  item("new-group", t("newGroup"), () =>
+                    setGroupModal({ ids: moveIds, initial: "" }),
+                  ),
+                  ...(session?.group != null
+                    ? [item("remove-from-group", t("removeFromGroup"), () => onSetGroup(moveIds, null))]
+                    : []),
+                ];
+              }
+
+              return [
+                item(
+                  "toggle-select",
+                  inSelection ? t("sessionUnselect") : t("sessionSelect"),
+                  () => toggleSelect(id),
+                ),
+                <button
+                  key="move"
+                  data-ctx-item="move"
+                  onClick={() => setCtxMenu({ ...ctxMenu, view: "move" })}
+                  className="flex w-full items-center px-3 py-1.5 text-left font-mono text-xs text-fg-muted transition-colors hover:bg-bg2 hover:text-fg"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {t("moveToGroup")}
+                    {moveIds.length > 1 ? ` (${moveIds.length})` : ""}
+                  </span>
+                  <span className="shrink-0 text-fg-muted/60">›</span>
+                </button>,
+                ...(selected.size > 1 && inSelection
+                  ? [
+                      item(
+                        "delete-selected",
+                        `${t("deleteSelected")} (${selected.size})`,
+                        () => onDeleteMany([...selected]),
+                        true,
+                      ),
+                    ]
+                  : []),
+                item("rename", t("kbRenameSession"), () => onRenameStart(id)),
+                item("settings", t("sessionSettings"), () => onOpenSettings(id)),
+                item("delete", t("deleteSession"), () => onDelete(id), true),
+              ];
+            })()}
+          </div>
+        </>
+      )}
+
+      {groupModal && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40"
+          onClick={() => setGroupModal(null)}
+        >
+          <form
+            id="group-name-modal"
+            className="w-72 rounded-xl border border-line bg-bg1 p-4 shadow-2xl shadow-black/50"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const name = new FormData(e.currentTarget).get("group")?.toString().trim();
+              if (name) onSetGroup(groupModal.ids, name);
+              setGroupModal(null);
+            }}
+          >
+            <label className="mb-2 block text-xs font-medium text-fg-muted" htmlFor="group-name-input">
+              {t("groupName")}
+            </label>
+            <input
+              id="group-name-input"
+              name="group"
+              defaultValue={groupModal.initial}
+              autoFocus
+              maxLength={100}
+              autoComplete="off"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setGroupModal(null);
+                }
+              }}
+              className="w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-sm text-fg outline-none focus:border-mint/60"
+            />
+            <div className="mt-3 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setGroupModal(null)}
+                className="rounded-md px-2.5 py-1.5 text-fg-muted transition-colors hover:text-fg"
+              >
+                {t("cancel")}
+              </button>
+              <button
+                id="group-name-confirm"
+                type="submit"
+                className="rounded-md bg-mint/15 px-2.5 py-1.5 font-medium text-mint transition-colors hover:bg-mint/25"
+              >
+                {t("save")}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </aside>
   );
 
@@ -370,6 +576,10 @@ export default function Sidebar({
               data-session-row={s.id}
               data-selected={isSelected || undefined}
               onClick={(e) => rowClick(e, s.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCtxMenu({ x: e.clientX, y: e.clientY, target: { kind: "session", id: s.id } });
+              }}
               className={`group relative mb-0.5 flex cursor-pointer items-center gap-2 rounded-lg py-2 pr-2.5 pl-1 transition-colors pointer-coarse:min-h-11 ${
                 grouped ? "ml-2" : ""
               } ${

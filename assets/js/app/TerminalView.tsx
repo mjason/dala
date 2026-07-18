@@ -242,19 +242,35 @@ export default function TerminalView({
       // Code), which keeps full-screen apps such as vim pixel-aligned. Fall
       // back to the DOM renderer when WebGL isn't available.
       let webgl: WebglAddon | undefined;
-      try {
-        webgl = new WebglAddon();
-        webgl.onContextLoss(() => {
-          webgl?.dispose();
-          webgl = undefined;
-        });
-        term.loadAddon(webgl);
-      } catch {
-        webgl = undefined;
-      }
+      let webglRetryTimer: number | undefined;
       // Surfaced in the appearance settings: a silent DOM fallback is the
       // usual culprit when scrolling feels sluggish.
-      document.documentElement.dataset.termRenderer = webgl ? "webgl" : "dom";
+      const publishRenderer = () => {
+        document.documentElement.dataset.termRenderer = webgl ? "webgl" : "dom";
+      };
+      const enableWebgl = (retryOnLoss: boolean) => {
+        try {
+          const addon = new WebglAddon();
+          addon.onContextLoss(() => {
+            // GPU reset / OOM kill: drop to the DOM renderer right away so
+            // the terminal never sits on a dead black canvas, then try WebGL
+            // once more — the GPU process is usually back within seconds.
+            addon.dispose();
+            webgl = undefined;
+            publishRenderer();
+            term.refresh(0, term.rows - 1);
+            if (retryOnLoss) {
+              webglRetryTimer = window.setTimeout(() => enableWebgl(false), 3_000);
+            }
+          });
+          term.loadAddon(addon);
+          webgl = addon;
+        } catch {
+          webgl = undefined;
+        }
+        publishRenderer();
+      };
+      enableWebgl(true);
 
       const searchAddon = new SearchAddon();
       term.loadAddon(searchAddon);
@@ -1234,6 +1250,7 @@ export default function TerminalView({
         canvasObserver?.disconnect();
         window.clearTimeout(coverTimer);
         window.clearTimeout(resizeTimer);
+        window.clearTimeout(webglRetryTimer);
         window.clearTimeout(bottomPinTimer);
         if (bottomPinFrame != null) cancelAnimationFrame(bottomPinFrame);
         window.clearInterval(idleTimer);

@@ -6,6 +6,7 @@ import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/sea
 import { dalaTheme } from "./cm/theme";
 import { languageExtension } from "./cm/languages";
 import { lspExtensionsFor } from "./cm/lsp";
+import { textmateForFile } from "./cm/textmate";
 import { findOnModF } from "./cm/findOnModF";
 
 type Props = {
@@ -27,6 +28,7 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());
   const lspCompartment = useRef(new Compartment());
+  const textmateCompartment = useRef(new Compartment());
 
   useEffect(() => {
     const host = hostRef.current;
@@ -46,6 +48,7 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
           wrapCompartment.current.of([]),
           languageCompartment.current.of([]),
           lspCompartment.current.of([]),
+          textmateCompartment.current.of([]),
           dalaTheme,
         ],
       }),
@@ -97,6 +100,24 @@ export default function CmCode({ content, filename, wrap, lspPath }: Props) {
       cancelled = true;
     };
   }, [filename]);
+
+  // User TextMate grammars in previews too (needs the absolute path for the
+  // project-level dala.jsonc walk).
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const tm = lspPath ? await textmateForFile(lspPath) : null;
+      if (cancelled) return;
+      viewRef.current?.dispatch({
+        effects: textmateCompartment.current.reconfigure(tm ?? []),
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lspPath]);
 
   // Hover docs + diagnostics in previews too — reading code benefits from
   // the docs as much as writing it (readOnly: completion stays off).

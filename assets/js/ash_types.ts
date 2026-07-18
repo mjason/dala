@@ -115,7 +115,7 @@ export type GitAttributesOnlySchema = {
 // Session Schema
 export type SessionResourceSchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "group" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
   id: UUID;
   name: string;
   shell: string;
@@ -123,6 +123,7 @@ export type SessionResourceSchema = {
   status: "exited" | "running";
   exitCode: number | null;
   scrollbackLimit: number;
+  group: string | null;
   position: number;
   ephemeral: boolean;
   insertedAt: UtcDateTimeUsec;
@@ -133,7 +134,7 @@ export type SessionResourceSchema = {
 
 export type SessionAttributesOnlySchema = {
   __type: "Resource";
-  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
+  __primitiveFields: "id" | "name" | "shell" | "cwd" | "status" | "exitCode" | "scrollbackLimit" | "group" | "position" | "ephemeral" | "insertedAt" | "updatedAt";
   id: UUID;
   name: string;
   shell: string;
@@ -141,6 +142,7 @@ export type SessionAttributesOnlySchema = {
   status: "exited" | "running";
   exitCode: number | null;
   scrollbackLimit: number;
+  group: string | null;
   position: number;
   ephemeral: boolean;
   insertedAt: UtcDateTimeUsec;
@@ -388,6 +390,13 @@ export type SessionFilterInput = {
     in?: Array<number>;
   };
 
+  group?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+    isNil?: boolean;
+  };
+
   position?: {
     eq?: number;
     notEq?: number;
@@ -457,7 +466,7 @@ export type CustomThemeFilterField = (typeof customThemeFilterFields)[number];
 
 
 
-export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
+export const sessionFilterFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "group", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
 export type SessionFilterField = (typeof sessionFilterFields)[number];
 
 
@@ -474,7 +483,7 @@ export type CustomThemeSortField = (typeof customThemeSortFields)[number];
 
 
 
-export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
+export const sessionSortFields = ["id", "name", "shell", "cwd", "status", "exitCode", "scrollbackLimit", "group", "position", "ephemeral", "insertedAt", "updatedAt"] as const;
 export type SessionSortField = (typeof sessionSortFields)[number];
 
 
@@ -911,9 +920,9 @@ export type CwdPayload = {id: UUID, cwd: string};
 export type ExitPayload = {id: UUID, exitCode: number | null};
 export type OutputPayload = {data: string, seq: number};
 export type ReplayPayload = {data: string, seq: number, done: boolean};
-export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
+export type SessionCreatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, group: string | null, position: number, insertedAt: UtcDateTimeUsec};
 export type SessionDeletedPayload = {id: UUID};
-export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, position: number, insertedAt: UtcDateTimeUsec};
+export type SessionUpdatedPayload = {id: UUID, name: string, shell: string, cwd: string, status: "exited" | "running", exitCode: number | null, scrollbackLimit: number, ephemeral: boolean, group: string | null, position: number, insertedAt: UtcDateTimeUsec};
 export type ThemeCreatedPayload = {id: UUID, ownerId: UUID, name: string, base: "dark" | "light", builtin: boolean, tokens: Record<string, any>, insertedAt: UtcDateTimeUsec, updatedAt: UtcDateTimeUsec};
 export type ThemeDeletedPayload = {id: UUID, ownerId: UUID};
 export type ThemeUpdatedPayload = {id: UUID, ownerId: UUID, name: string, base: "dark" | "light", builtin: boolean, tokens: Record<string, any>, insertedAt: UtcDateTimeUsec, updatedAt: UtcDateTimeUsec};

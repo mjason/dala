@@ -5,6 +5,7 @@ import {
   deleteSession,
   listSessions,
   renameSession,
+  setSessionGroup,
   reorderSession,
   restartSession,
 } from "../../ash_rpc";
@@ -259,6 +260,32 @@ export function useSessions(opts: {
     }
   };
 
+  /**
+   * Assign sessions to a group (null = ungroup): optimistic like rename,
+   * rolled back per-session on error; broadcasts sync other devices.
+   */
+  const handleSetGroup = async (ids: string[], group: string | null) => {
+    const previous = new Map(
+      sessionsRef.current.filter((s) => ids.includes(s.id)).map((s) => [s.id, s.group]),
+    );
+    setSessions((list) => list.map((s) => (previous.has(s.id) ? { ...s, group } : s)));
+    const results = await Promise.all(
+      ids.map(async (id) => ({
+        id,
+        result: await call<unknown>(setSessionGroup, { identity: id, input: { group } }),
+      })),
+    );
+    const failed = results.filter((r) => !r.result.ok);
+    if (failed.length > 0) {
+      setSessions((list) =>
+        list.map((s) =>
+          failed.some((f) => f.id === s.id) ? { ...s, group: previous.get(s.id) ?? null } : s,
+        ),
+      );
+      toast(failed[0].result.ok ? t("somethingWentWrong") : failed[0].result.error || t("somethingWentWrong"));
+    }
+  };
+
   const deleting = useRef(new Set<string>());
   const handleDelete = async (id: string) => {
     if (deleting.current.has(id)) return;
@@ -294,5 +321,6 @@ export function useSessions(opts: {
     handleDelete,
     handleReorder,
     handleRename,
+    handleSetGroup,
   };
 }

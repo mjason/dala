@@ -55,6 +55,16 @@ defmodule Dala.Terminal.Session do
       accept [:name]
     end
 
+    update :set_group do
+      description """
+      Put the session into a named sidebar group (nil = ungrouped). Groups
+      are purely user-defined labels — created by naming one, gone when the
+      last member leaves.
+      """
+
+      accept [:group]
+    end
+
     update :reorder do
       description """
       Move the session in the sidebar: before the session `before_id`, or to
@@ -385,6 +395,16 @@ defmodule Dala.Terminal.Session do
       constraints min: 1_000, max: 268_435_456
       default 10_000
       allow_nil? false
+      public? true
+    end
+
+    attribute :group, :string do
+      description """
+      User-defined sidebar group name. Purely presentational clustering —
+      nil renders as a plain top-level row.
+      """
+
+      constraints max_length: 100
       public? true
     end
 
