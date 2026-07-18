@@ -6,23 +6,32 @@ defmodule Dala.Terminal.HolderEnvTest do
   alias Dala.Terminal.Server
 
   describe "Server.env_remove/0" do
-    test "always scrubs host-terminal identity and server config names" do
+    test "scrubs any PRESENT variable outside the fresh-login allowlist" do
+      System.put_env("TERM_PROGRAM", "test-term")
+      System.put_env("SECRET_KEY_BASE", "s3cret")
+
+      on_exit(fn ->
+        System.delete_env("TERM_PROGRAM")
+        System.delete_env("SECRET_KEY_BASE")
+      end)
+
       names = Server.env_remove()
       assert "TERM_PROGRAM" in names
-      assert "PORT" in names
       assert "SECRET_KEY_BASE" in names
-      assert "TOKEN_SIGNING_SECRET" in names
-      assert "MIX_ENV" in names
     end
 
     test "scrubs agent session markers inherited from an agent-run deploy" do
       System.put_env("CLAUDE_CODE_TEST_LEAK", "1")
-      on_exit(fn -> System.delete_env("CLAUDE_CODE_TEST_LEAK") end)
+      System.put_env("CLAUDECODE", "1")
+
+      on_exit(fn ->
+        System.delete_env("CLAUDE_CODE_TEST_LEAK")
+        System.delete_env("CLAUDECODE")
+      end)
 
       names = Server.env_remove()
       assert "CLAUDECODE" in names
       assert "CLAUDE_CODE_TEST_LEAK" in names
-      assert "CODEX_SANDBOX" in names
     end
 
     test "scrubs whatever DALA_*/PHX_*/RELEASE_* variables are currently set" do
@@ -87,11 +96,14 @@ defmodule Dala.Terminal.HolderEnvTest do
       env_text = await_file(out)
       :gen_tcp.close(socket)
 
-      # The scrubbed family is gone; explicitly-passed env still arrives.
+      # Server-process ancestry is gone; explicitly-passed spawn env still
+      # arrives (the removal list only names PRESENT server variables).
       refute env_text =~ "DALA_TEST_LEAK_E2E"
       assert env_text =~ "DALA_ENV_TEST_MARKER=kept"
-      # PATH survives — the scrub is surgical, not a clean-slate environment.
+      # The fresh-login allowlist survives: the shell still has a home and a
+      # search path to build the user's real environment from.
       assert env_text =~ "PATH="
+      assert env_text =~ "HOME="
     end
   end
 

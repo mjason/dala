@@ -4,70 +4,74 @@ defmodule Dala.Terminal.ShellEnvTest do
 
   alias Dala.Terminal.ShellEnv
 
-  describe "agent session markers" do
-    test "REGRESSION: a dala server (re)started from inside a Claude Code session
-          must not make its shells look like nested agent sessions" do
-      # The exact leak a user hit: agent-run deploy → server inherits the
-      # session plumbing → `claude` in a dala terminal sees CHILD_SESSION
-      # and stops persisting history.
-      env = %{
-        "CLAUDECODE" => "1",
-        "CLAUDE_CODE_ENTRYPOINT" => "cli",
-        "CLAUDE_CODE_SESSION_ID" => "abc",
-        "CLAUDE_CODE_CHILD_SESSION" => "1",
-        "CLAUDE_CODE_BRIDGE_SESSION_ID" => "abc",
-        "CLAUDE_CODE_SSE_PORT" => "12345",
-        "CLAUDE_EFFORT" => "high",
-        "PATH" => "/usr/bin"
-      }
+  # Everything a fresh local login would have survives.
+  @survives ~w(
+    HOME USER LOGNAME SHELL PATH TMPDIR TZ
+    LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES
+    XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_DIRS
+    SSH_AUTH_SOCK SSH_AGENT_PID DBUS_SESSION_BUS_ADDRESS
+    DISPLAY WAYLAND_DISPLAY XAUTHORITY
+    WSL_DISTRO_NAME WSL_INTEROP WSLENV
+    TERM COLORTERM WARP_CLI_AGENT_PROTOCOL_VERSION
+  )
 
-      names = ShellEnv.remove_list(env)
+  # Server-process ancestry never reaches a shell — whatever it is.
+  @removed ~w(
+    CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION
+    CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT CLAUDE_EFFORT
+    CODEX_SANDBOX OPENCODE_SESSION
+    DALA_AUTH_ENABLED DALA_USERS PHX_SERVER RELEASE_COOKIE
+    PORT SECRET_KEY_BASE TOKEN_SIGNING_SECRET MIX_ENV
+    TERM_PROGRAM TMUX ZELLIJ KITTY_WINDOW_ID VSCODE_INJECTION
+    INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID
+    ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR CODEX_HOME NODE_OPTIONS
+  )
 
-      for marker <- Map.keys(env), marker != "PATH" do
-        assert marker in names, "expected #{marker} to be scrubbed"
-      end
-    end
-
-    test "codex sandbox markers are scrubbed" do
-      names = ShellEnv.remove_list(%{"CODEX_SANDBOX" => "seatbelt"})
-      assert "CODEX_SANDBOX" in names
-      assert "CODEX_SANDBOX_NETWORK_DISABLED" in names
-    end
-
-    test "deliberate user agent CONFIG is left alone" do
-      env = %{
-        "CLAUDE_CONFIG_DIR" => "/home/u/.claude-alt",
-        "ANTHROPIC_API_KEY" => "sk-x",
-        "CODEX_HOME" => "/home/u/.codex",
-        "OPENCODE_CONFIG" => "/home/u/.config/opencode.json"
-      }
-
-      names = ShellEnv.remove_list(env)
-      for name <- Map.keys(env), do: refute(name in names, "#{name} must survive")
-    end
+  test "allowlist: a fresh-login environment passes through untouched" do
+    env = Map.new(@survives, &{&1, "x"})
+    assert ShellEnv.remove_list(env) == []
   end
 
-  describe "families" do
-    test "prefix families are matched against the given environment only" do
-      names = ShellEnv.remove_list(%{"DALA_X" => "1", "CLAUDE_CODE_Y" => "1"})
-      assert "DALA_X" in names
-      assert "CLAUDE_CODE_Y" in names
-      refute "DALA_OTHER" in names
-    end
+  test "everything outside the allowlist is removed — agent markers, server
+        config/secrets, host-terminal identity, systemd plumbing, and even
+        ad-hoc user exports (their rc re-creates what they configured)" do
+    env = Map.new(@survives ++ @removed, &{&1, "x"})
+    removed = ShellEnv.remove_list(env)
 
-    test "host terminal + server config exacts are always present" do
-      names = ShellEnv.remove_list(%{})
+    for name <- @removed, do: assert(name in removed, "#{name} must be removed")
+    for name <- @survives, do: refute(name in removed, "#{name} must survive")
+  end
 
-      for name <- ~w(TERM_PROGRAM TMUX ZELLIJ PORT SECRET_KEY_BASE MIX_ENV) do
-        assert name in names
-      end
-    end
+  test "REGRESSION: an agent-run deploy cannot make dala shells look like
+        nested agent sessions" do
+    # The exact leak a user hit: agent restarts the server inside a Claude
+    # Code session → CLAUDE_CODE_CHILD_SESSION reaches the shell → claude
+    # inside dala stops persisting history.
+    env = %{"CLAUDE_CODE_CHILD_SESSION" => "1", "CLAUDECODE" => "1", "HOME" => "/home/u"}
+    removed = ShellEnv.remove_list(env)
+    assert "CLAUDE_CODE_CHILD_SESSION" in removed
+    assert "CLAUDECODE" in removed
+    refute "HOME" in removed
+  end
 
-    test "ordinary user environment is untouched" do
-      names =
-        ShellEnv.remove_list(%{"PATH" => "x", "HOME" => "y", "LANG" => "z", "EDITOR" => "vim"})
+  test "LC_TERMINAL identity smuggling is denied even inside the LC_ family" do
+    removed = ShellEnv.remove_list(%{"LC_TERMINAL" => "iTerm2", "LC_CTYPE" => "UTF-8"})
+    assert "LC_TERMINAL" in removed
+    refute "LC_CTYPE" in removed
+  end
 
-      for name <- ~w(PATH HOME LANG EDITOR), do: refute(name in names)
-    end
+  test "dala's own spawn additions are never in the removal list (the holder
+        applies env before env_remove — removal would strip them)" do
+    env = %{
+      "TERM" => "xterm-256color",
+      "COLORTERM" => "truecolor",
+      "WARP_CLIENT_VERSION" => "dala"
+    }
+
+    assert ShellEnv.remove_list(env) == []
+  end
+
+  test "removal list only names variables that are actually present" do
+    assert ShellEnv.remove_list(%{}) == []
   end
 end
