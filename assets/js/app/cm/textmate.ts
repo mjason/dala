@@ -184,6 +184,11 @@ const SCOPE_STYLES: [prefix: string, style: string][] = [
   ["support.class", `color:${colors.type}`],
   ["variable.language", `color:${colors.keyword}`],
   ["variable.parameter", `color:${colors.fg}`],
+  // DSL/injection vocabularies leaning on generic variable/punctuation
+  // scopes (a $var inside a string must stand out from the string).
+  ["variable.other", `color:${colors.type}`],
+  ["punctuation.definition.variable", `color:${colors.type}`],
+  ["punctuation.definition.constant", `color:${colors.number}`],
   ["markup.heading", `color:${colors.title};font-weight:600`],
   ["markup.bold", "font-weight:600"],
   ["markup.italic", "font-style:italic"],

@@ -36,3 +36,28 @@ describe("styleForScopes", () => {
     expect(styleForScopes(["source.python", "meta.function-call"])).toBeNull();
   });
 });
+
+describe("styleForScopes — DSL injection vocabulary", () => {
+  it("a $variable inside a Python string stands out from the string", () => {
+    const scopes = [
+      "source.python",
+      "string.quoted.double.python",
+      "meta.embedded.dark-magician-dsl",
+      "variable.other.dsl",
+    ];
+    expect(styleForScopes(scopes)).not.toBe(styleForScopes(["source.python", "string.quoted.double.python"]));
+    expect(styleForScopes(scopes)).toContain("color");
+  });
+
+  it("the $ sigil and DSL function/operator/constant scopes all resolve", () => {
+    for (const scope of [
+      "punctuation.definition.variable.dsl",
+      "support.function.dsl",
+      "keyword.operator.dsl",
+      "constant.numeric.dsl",
+      "constant.language.dsl",
+    ]) {
+      expect(styleForScopes(["source.python", "string.quoted.double.python", scope])).toBeTruthy();
+    }
+  });
+});
