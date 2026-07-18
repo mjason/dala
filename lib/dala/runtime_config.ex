@@ -119,6 +119,47 @@ defmodule Dala.RuntimeConfig do
     end
   end
 
+  @doc """
+  Upload/preview size limits in BYTES: legacy env (MB) > `limits` object in
+  the config file (MB) > default. Garbage raises — a size typo silently
+  becoming a default is how quota surprises happen.
+  """
+  def file_limits(cfg) do
+    limits = cfg["limits"] || %{}
+
+    mb = fn env_var, file_key, default ->
+      raw =
+        case System.get_env(env_var) do
+          nil -> Map.get(limits, file_key, default)
+          value -> value
+        end
+
+      case Integer.parse(to_string(raw)) do
+        {value, ""} when value > 0 -> value * 1024 * 1024
+        _ -> raise "invalid #{file_key}/#{env_var} (expected a positive integer in MB)"
+      end
+    end
+
+    preview_default = mb.("DALA_TEXT_PREVIEW_DEFAULT_MB", "textPreviewDefaultMb", 1)
+    preview_max = mb.("DALA_TEXT_PREVIEW_MAX_MB", "textPreviewMaxMb", 16)
+
+    if preview_default > preview_max do
+      raise "textPreviewDefaultMb cannot exceed textPreviewMaxMb"
+    end
+
+    %{
+      drawer_upload_bytes: mb.("DALA_DRAWER_UPLOAD_MAX_MB", "drawerUploadMaxMb", 2048),
+      browser_attachment_bytes:
+        mb.("DALA_BROWSER_ATTACHMENT_MAX_MB", "browserAttachmentMaxMb", 512),
+      mcp_attachment_bytes: mb.("DALA_MCP_ATTACHMENT_MAX_MB", "mcpAttachmentMaxMb", 64),
+      managed_attachment_bytes:
+        mb.("DALA_ATTACHMENT_STORAGE_MAX_MB", "attachmentStorageMaxMb", 5120),
+      text_write_bytes: mb.("DALA_TEXT_SAVE_MAX_MB", "textSaveMaxMb", 50),
+      preview_default_bytes: preview_default,
+      preview_max_bytes: preview_max
+    }
+  end
+
   defp read_secrets(path) do
     with {:ok, body} <- File.read(path),
          {:ok, parsed} when is_map(parsed) <- Jason.decode(body) do

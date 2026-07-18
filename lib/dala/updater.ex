@@ -14,7 +14,7 @@ defmodule Dala.Updater do
 
   alias Dala.Updater.Release
 
-  def repo, do: System.get_env("DALA_UPDATE_REPO", "mjason/dala")
+  def repo, do: Application.get_env(:dala, :update_repo) || "mjason/dala"
 
   def release_root do
     case Application.get_env(:dala, :release_root) do

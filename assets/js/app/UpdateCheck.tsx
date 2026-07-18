@@ -11,6 +11,7 @@ type Info = {
   tag: string | null;
   updateAvailable: boolean | null;
   notesUrl: string | null;
+  legacyEnvConfig?: boolean;
 };
 
 /**
@@ -29,7 +30,7 @@ export default function UpdateCheck() {
     let cancelled = false;
     void (async () => {
       const result = await call<Info>(checkUpdate, {
-        fields: ["enabled", "current", "latest", "tag", "updateAvailable", "notesUrl"],
+        fields: ["enabled", "current", "latest", "tag", "updateAvailable", "notesUrl", "legacyEnvConfig"],
       });
       if (!cancelled && result.ok) setInfo(result.data);
     })();
@@ -91,6 +92,17 @@ export default function UpdateCheck() {
       </div>
       {state === "restarting" && (
         <div className="font-mono text-[11px] text-mint">{t("updateReload")}</div>
+      )}
+      {info?.legacyEnvConfig && (
+        <a
+          id="config-migrate-notice"
+          href="https://github.com/mjason/dala/blob/main/docs/config-migration.md"
+          target="_blank"
+          rel="noreferrer"
+          className="block text-[11px] leading-4 text-[#d9a860] underline decoration-dotted underline-offset-2 hover:brightness-110"
+        >
+          {t("configMigrateNotice")}
+        </a>
       )}
       {error && <div className="text-[11px] text-danger">{error}</div>}
     </div>

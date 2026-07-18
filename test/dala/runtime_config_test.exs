@@ -106,6 +106,33 @@ defmodule Dala.RuntimeConfigTest do
     assert RuntimeConfig.data_dir(%{}) =~ ~r{/dala$}
   end
 
+  describe "file_limits" do
+    test "env (MB) > limits object > default, converted to bytes" do
+      cfg = %{"limits" => %{"drawerUploadMaxMb" => 100, "textSaveMaxMb" => 5}}
+
+      limits = RuntimeConfig.file_limits(cfg)
+      assert limits.drawer_upload_bytes == 100 * 1024 * 1024
+      assert limits.text_write_bytes == 5 * 1024 * 1024
+      assert limits.browser_attachment_bytes == 512 * 1024 * 1024
+
+      with_env(%{"DALA_DRAWER_UPLOAD_MAX_MB" => "7"}, fn ->
+        assert RuntimeConfig.file_limits(cfg).drawer_upload_bytes == 7 * 1024 * 1024
+      end)
+    end
+
+    test "garbage sizes and preview-default > preview-max are loud" do
+      assert_raise RuntimeError, ~r/positive integer in MB/, fn ->
+        RuntimeConfig.file_limits(%{"limits" => %{"textSaveMaxMb" => "big"}})
+      end
+
+      assert_raise RuntimeError, ~r/cannot exceed/, fn ->
+        RuntimeConfig.file_limits(%{
+          "limits" => %{"textPreviewDefaultMb" => 32, "textPreviewMaxMb" => 16}
+        })
+      end
+    end
+  end
+
   defp with_env(vars, fun) do
     previous = Map.new(vars, fn {name, _} -> {name, System.get_env(name)} end)
     Enum.each(vars, fn {name, value} -> System.put_env(name, value) end)

@@ -22,11 +22,19 @@ defmodule Dala.Terminal.Updater do
                     latest: [type: :string],
                     tag: [type: :string],
                     update_available: [type: :boolean, allow_nil?: false],
-                    notes_url: [type: :string]
+                    notes_url: [type: :string],
+                    legacy_env_config: [type: :boolean, allow_nil?: false]
                   ]
 
       run fn _input, _context ->
-        Dala.Updater.check()
+        with {:ok, info} <- Dala.Updater.check() do
+          {:ok,
+           Map.put(
+             info,
+             :legacy_env_config,
+             Application.get_env(:dala, :legacy_env_config, false)
+           )}
+        end
       end
     end
 

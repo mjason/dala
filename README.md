@@ -342,11 +342,22 @@ never write them. Restart the service after editing.
 | `releaseRoot` / `serviceName` | set by install.sh | Enable the in-app updater |
 | `server` | `true` (written by install.sh) | Start the HTTP server (release installs) |
 
+Upload/preview size limits live under `"limits"`
+(`drawerUploadMaxMb`, `browserAttachmentMaxMb`, `mcpAttachmentMaxMb`,
+`attachmentStorageMaxMb`, `textSaveMaxMb`, `textPreviewDefaultMb`,
+`textPreviewMaxMb`), and `updateRepo`/`dnsClusterQuery` are available too.
+
 Every key also has a LEGACY environment-variable override (the old
-`dala.env` names: `PORT`, `DALA_LISTEN_IP`, `DALA_AUTH_ENABLED`,
-`DALA_USERS`, `PHX_HOST`, `SECRET_KEY_BASE`, …) — pre-existing installs keep
-working unchanged; env wins over the file. Upload/preview size limits remain
-env-only for now (`DALA_DRAWER_UPLOAD_MAX_MB` and friends, see runtime.exs).
+`dala.env` names) — pre-existing installs keep working unchanged; env wins
+over the file, but env-based config is meant for development. Old installs
+should migrate: one command, reversible —
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/migrate-config.sh | bash
+```
+
+see [docs/config-migration.md](docs/config-migration.md). Legacy-mode
+servers show a migration notice in the sidebar footer.
 
 On Linux, `install.sh` runs `loginctl enable-linger` so the daemon also runs
 while you are logged out. The macOS LaunchAgent starts when the user logs in.

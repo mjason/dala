@@ -54,36 +54,23 @@ else
   end
 end
 
-megabytes = fn name, default ->
-  case Integer.parse(System.get_env(name, Integer.to_string(default))) do
-    {value, ""} when value > 0 -> value * 1024 * 1024
-    _ -> raise "invalid #{name} (expected a positive integer in MB)"
-  end
-end
-
-preview_default_bytes = megabytes.("DALA_TEXT_PREVIEW_DEFAULT_MB", 1)
-preview_max_bytes = megabytes.("DALA_TEXT_PREVIEW_MAX_MB", 16)
-
-if preview_default_bytes > preview_max_bytes do
-  raise "DALA_TEXT_PREVIEW_DEFAULT_MB cannot exceed DALA_TEXT_PREVIEW_MAX_MB"
-end
-
-config :dala,
-  file_limits: %{
-    drawer_upload_bytes: megabytes.("DALA_DRAWER_UPLOAD_MAX_MB", 2048),
-    browser_attachment_bytes: megabytes.("DALA_BROWSER_ATTACHMENT_MAX_MB", 512),
-    mcp_attachment_bytes: megabytes.("DALA_MCP_ATTACHMENT_MAX_MB", 64),
-    managed_attachment_bytes: megabytes.("DALA_ATTACHMENT_STORAGE_MAX_MB", 5120),
-    text_write_bytes: megabytes.("DALA_TEXT_SAVE_MAX_MB", 50),
-    preview_default_bytes: preview_default_bytes,
-    preview_max_bytes: preview_max_bytes
-  }
+config :dala, file_limits: Dala.RuntimeConfig.file_limits(cfg)
 
 # Set by install.sh (config.jsonc releaseRoot / legacy env): the root of the
 # versioned install tree. Its presence enables the in-app updater; running
 # from source (mix) leaves it off.
 config :dala, release_root: Dala.RuntimeConfig.get(cfg, "DALA_RELEASE_ROOT", "releaseRoot")
 config :dala, service_name: Dala.RuntimeConfig.get(cfg, "DALA_SERVICE", "serviceName")
+
+config :dala,
+  update_repo: Dala.RuntimeConfig.get(cfg, "DALA_UPDATE_REPO", "updateRepo", "mjason/dala")
+
+# Legacy-mode detection: a prod install still configured purely through
+# dala.env (no config file at all). The web UI surfaces a migration nudge —
+# env-based config is for development; production should carry none.
+config :dala,
+  legacy_env_config:
+    config_env() == :prod and cfg == %{} and System.get_env("SECRET_KEY_BASE") != nil
 
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
@@ -138,7 +125,9 @@ if config_env() == :prod do
   # it is opt-in for reverse-proxied setups.
   check_origin = Dala.RuntimeConfig.get_bool(cfg, "PHX_CHECK_ORIGIN", "checkOrigin", false)
 
-  config :dala, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :dala,
+         :dns_cluster_query,
+         Dala.RuntimeConfig.get(cfg, "DNS_CLUSTER_QUERY", "dnsClusterQuery")
 
   # Loopback-only by default — exposing a terminal server is opt-in.
   # DALA_LISTEN_IP=0.0.0.0 serves the LAN (WSL2 mirrored networking needs

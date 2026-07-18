@@ -4094,11 +4094,11 @@ export async function validateApplyUpdate(
 }
 
 
-export type CheckUpdateFields = UnifiedFieldSelection<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl"}>[];
+export type CheckUpdateFields = UnifiedFieldSelection<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "legacyEnvConfig"}>[];
 
 export type InferCheckUpdateResult<
   Fields extends CheckUpdateFields | undefined,
-> = InferResult<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl"}, Fields>;
+> = InferResult<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "legacyEnvConfig"}, Fields>;
 
 export type CheckUpdateResult<Fields extends CheckUpdateFields | undefined = undefined> = | { success: true; data: InferCheckUpdateResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

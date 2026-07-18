@@ -38,8 +38,9 @@ defmodule Dala.UpdaterTest do
       assert Updater.repo() == "mjason/dala"
     end
 
-    test "honours the DALA_UPDATE_REPO override" do
-      put_system_env("DALA_UPDATE_REPO", "someone/fork")
+    test "honours the update_repo app config (runtime.exs: updateRepo / legacy env)" do
+      Application.put_env(:dala, :update_repo, "someone/fork")
+      on_exit(fn -> Application.delete_env(:dala, :update_repo) end)
       assert Updater.repo() == "someone/fork"
     end
   end
