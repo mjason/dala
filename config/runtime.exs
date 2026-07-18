@@ -16,22 +16,42 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
-if System.get_env("PHX_SERVER") do
+# Server configuration comes from ~/.config/dala/config.jsonc (see
+# Dala.RuntimeConfig). Environment variables remain as LEGACY overrides so
+# pre-config-file installs (dala.env) keep working unchanged.
+cfg = Dala.RuntimeConfig.load()
+
+if System.get_env("PHX_SERVER") || cfg["server"] == true do
   config :dala, DalaWeb.Endpoint, server: true
 end
 
-config :dala, DalaWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+config :dala, DalaWeb.Endpoint,
+  http: [port: Dala.RuntimeConfig.get_int(cfg, "PORT", "port", 4000)]
 
-# Optional authentication: when enabled, only the accounts seeded from
-# DALA_USERS ("email:password,email2:password2") can sign in.
-config :dala, auth_enabled: System.get_env("DALA_AUTH_ENABLED", "false") in ~w(true 1)
+# Optional authentication: when enabled, only the bootstrapped accounts
+# (auth.users in config.jsonc, or legacy DALA_USERS) can sign in.
+auth = cfg["auth"] || %{}
+
+config :dala,
+  auth_enabled: System.get_env("DALA_AUTH_ENABLED", "") in ~w(true 1) or auth["enabled"] == true
+
+config :dala,
+  bootstrap_users: System.get_env("DALA_USERS") || auth["users"] || "",
+  bootstrap_users_reset:
+    System.get_env("DALA_USERS_RESET") in ~w(true 1) or auth["usersReset"] == true
 
 # The MCP (Model Context Protocol) server is enabled/disabled at RUNTIME from
 # the web Settings panel, and its bearer token is server-generated — both live
 # in `Dala.Settings.Mcp` (a DB singleton), not the environment. See docs/mcp.md.
 
-if data_dir = System.get_env("DALA_DATA_DIR") do
-  config :dala, data_dir: data_dir
+# Dev/test keep their own data_dir defaults (config.exs) unless explicitly
+# overridden; prod resolves file/XDG so no env var is required.
+if config_env() == :prod do
+  config :dala, data_dir: Dala.RuntimeConfig.data_dir(cfg)
+else
+  if data_dir = System.get_env("DALA_DATA_DIR") do
+    config :dala, data_dir: data_dir
+  end
 end
 
 megabytes = fn name, default ->
@@ -59,10 +79,11 @@ config :dala,
     preview_max_bytes: preview_max_bytes
   }
 
-# Set by install.sh: the root of the versioned install tree
-# (<root>/versions/<tag> + <root>/current). Its presence enables the in-app
-# updater; running from source (mix) leaves it off.
-config :dala, release_root: System.get_env("DALA_RELEASE_ROOT")
+# Set by install.sh (config.jsonc releaseRoot / legacy env): the root of the
+# versioned install tree. Its presence enables the in-app updater; running
+# from source (mix) leaves it off.
+config :dala, release_root: Dala.RuntimeConfig.get(cfg, "DALA_RELEASE_ROOT", "releaseRoot")
+config :dala, service_name: Dala.RuntimeConfig.get(cfg, "DALA_SERVICE", "serviceName")
 
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
@@ -83,44 +104,39 @@ end
 
 if config_env() == :prod do
   database_path =
-    System.get_env("DATABASE_PATH") ||
-      raise """
-      environment variable DATABASE_PATH is missing.
-      For example: /etc/dala/dala.db
-      """
+    Dala.RuntimeConfig.get(cfg, "DATABASE_PATH", "databasePath") ||
+      Path.join(Dala.RuntimeConfig.data_dir(cfg), "dala.db")
 
   config :dala, Dala.Repo,
     database: database_path,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10")
+    pool_size: Dala.RuntimeConfig.get_int(cfg, "POOL_SIZE", "poolSize", 10)
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
   # want to use a different value for prod and you most likely don't want
   # to check this value into version control, so we use an environment
   # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+  # Secrets never live in the config file: generated on first boot and
+  # persisted 0600 at <data_dir>/secrets.json. Legacy env still wins.
+  secret_key_base = Dala.RuntimeConfig.secret(cfg, "SECRET_KEY_BASE", "secretKeyBase")
 
-  host = System.get_env("PHX_HOST") || "localhost"
+  host = Dala.RuntimeConfig.get(cfg, "PHX_HOST", "host", "localhost")
 
   # Local daemon installs serve plain http on localhost; a reverse-proxied
-  # deployment sets PHX_SCHEME=https (and its own PHX_HOST).
-  scheme = System.get_env("PHX_SCHEME") || "http"
+  # deployment sets scheme https (and its own host).
+  scheme = Dala.RuntimeConfig.get(cfg, "PHX_SCHEME", "scheme", "http")
 
   url_port =
-    String.to_integer(
-      System.get_env("PHX_URL_PORT") ||
-        if(scheme == "https", do: "443", else: System.get_env("PORT", "4000"))
-    )
+    Dala.RuntimeConfig.get_int(cfg, "PHX_URL_PORT", "urlPort", nil) ||
+      if(scheme == "https",
+        do: 443,
+        else: Dala.RuntimeConfig.get_int(cfg, "PORT", "port", 4000)
+      )
 
   # The origin check breaks WebSockets when the app is reached by IP or an
   # alternate hostname (common for a personal terminal server on a LAN), so
   # it is opt-in for reverse-proxied setups.
-  check_origin = System.get_env("PHX_CHECK_ORIGIN", "false") in ~w(true 1)
+  check_origin = Dala.RuntimeConfig.get_bool(cfg, "PHX_CHECK_ORIGIN", "checkOrigin", false)
 
   config :dala, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
@@ -128,7 +144,7 @@ if config_env() == :prod do
   # DALA_LISTEN_IP=0.0.0.0 serves the LAN (WSL2 mirrored networking needs
   # the explicit IPv4-any; an IPv6-any `::` socket is not reliably mirrored).
   listen_ip =
-    with raw = System.get_env("DALA_LISTEN_IP", "127.0.0.1"),
+    with raw = Dala.RuntimeConfig.get(cfg, "DALA_LISTEN_IP", "listenIp", "127.0.0.1"),
          {:ok, ip} <- raw |> String.to_charlist() |> :inet.parse_address() do
       ip
     else
@@ -143,8 +159,7 @@ if config_env() == :prod do
 
   config :dala,
     token_signing_secret:
-      System.get_env("TOKEN_SIGNING_SECRET") ||
-        raise("Missing environment variable `TOKEN_SIGNING_SECRET`!")
+      Dala.RuntimeConfig.secret(cfg, "TOKEN_SIGNING_SECRET", "tokenSigningSecret")
 
   # ## SSL Support
   #

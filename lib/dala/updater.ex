@@ -153,7 +153,7 @@ defmodule Dala.Updater do
   defp restart do
     case Release.platform() do
       "macos-arm64" ->
-        service = System.get_env("DALA_SERVICE", "com.manjialin.dala")
+        service = Application.get_env(:dala, :service_name) || "com.manjialin.dala"
         {uid, 0} = System.cmd("id", ["-u"])
 
         System.cmd(
@@ -163,7 +163,7 @@ defmodule Dala.Updater do
         )
 
       _ ->
-        service = System.get_env("DALA_SERVICE", "dala")
+        service = Application.get_env(:dala, :service_name) || "dala"
 
         System.cmd("systemctl", ["--user", "restart", "--no-block", service],
           stderr_to_stdout: true

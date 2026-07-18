@@ -29,9 +29,9 @@ defmodule Dala.Accounts.Seeder do
   end
 
   def run do
-    reset? = System.get_env("DALA_USERS_RESET") in ["true", "1"]
+    reset? = Application.get_env(:dala, :bootstrap_users_reset, false)
 
-    System.get_env("DALA_USERS", "")
+    Application.get_env(:dala, :bootstrap_users, "")
     |> String.split([",", ";", "\n"], trim: true)
     |> Enum.each(&seed_user(&1, reset?))
 

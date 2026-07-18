@@ -4,18 +4,30 @@ defmodule Dala.Accounts.SeederTest do
 
   alias Dala.Accounts.Seeder
 
-  defp with_env(pairs, fun) do
-    originals = Enum.map(pairs, fn {k, _} -> {k, System.get_env(k)} end)
+  # The seeder reads Application env (:bootstrap_users/_reset — set by
+  # runtime.exs from config.jsonc, or from the legacy DALA_USERS env vars).
+  @app_keys %{"DALA_USERS" => :bootstrap_users, "DALA_USERS_RESET" => :bootstrap_users_reset}
 
-    Enum.each(pairs, fn
-      {k, nil} -> System.delete_env(k)
-      {k, v} -> System.put_env(k, v)
-    end)
+  defp put_bootstrap(name, value) do
+    key = Map.fetch!(@app_keys, name)
+
+    case {key, value} do
+      {_, nil} -> Application.delete_env(:dala, key)
+      {:bootstrap_users_reset, v} -> Application.put_env(:dala, key, v in ["true", "1", true])
+      {_, v} -> Application.put_env(:dala, key, v)
+    end
+  end
+
+  defp with_env(pairs, fun) do
+    originals =
+      Enum.map(pairs, fn {k, _} -> {k, Application.get_env(:dala, Map.fetch!(@app_keys, k))} end)
+
+    Enum.each(pairs, fn {k, v} -> put_bootstrap(k, v) end)
 
     on_exit(fn ->
       Enum.each(originals, fn
-        {k, nil} -> System.delete_env(k)
-        {k, v} -> System.put_env(k, v)
+        {k, nil} -> Application.delete_env(:dala, Map.fetch!(@app_keys, k))
+        {k, v} -> Application.put_env(:dala, Map.fetch!(@app_keys, k), v)
       end)
     end)
 
@@ -51,7 +63,7 @@ defmodule Dala.Accounts.SeederTest do
 
       # Same email, different password still in the env file — a stale
       # plaintext line must not become the account's password.
-      System.put_env("DALA_USERS", "#{email}:attacker-edited")
+      put_bootstrap("DALA_USERS", "#{email}:attacker-edited")
       Seeder.run()
 
       assert hashed_password!(email) == original_hash
@@ -65,8 +77,8 @@ defmodule Dala.Accounts.SeederTest do
       Seeder.run()
       original_hash = hashed_password!(email)
 
-      System.put_env("DALA_USERS", "#{email}:recovered-pass")
-      System.put_env("DALA_USERS_RESET", "true")
+      put_bootstrap("DALA_USERS", "#{email}:recovered-pass")
+      put_bootstrap("DALA_USERS_RESET", "true")
       Seeder.run()
 
       refute hashed_password!(email) == original_hash
@@ -79,7 +91,7 @@ defmodule Dala.Accounts.SeederTest do
     with_env([{"DALA_USERS", "#{email}:bootstrap-pass"}, {"DALA_USERS_RESET", nil}], fn ->
       Seeder.run()
 
-      System.delete_env("DALA_USERS")
+      put_bootstrap("DALA_USERS", nil)
       # Must not raise: at least one account exists in the DB.
       Seeder.run()
       assert hashed_password!(email)
