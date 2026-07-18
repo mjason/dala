@@ -525,6 +525,18 @@ export default function App() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // ONE selection path for every entry point (sidebar click, leader-menu
+  // switcher): activate, close the mobile nav, clear a settled agent badge.
+  const selectSession = (id: string) => {
+    setActiveId(id);
+    setNavOpen(false);
+    setAgentStatus((m) =>
+      m[id] && m[id].state !== "working"
+        ? Object.fromEntries(Object.entries(m).filter(([k]) => k !== id))
+        : m,
+    );
+  };
+
   const [leaderOpen, setLeaderOpen] = useState(false);
 
   // MRU terminal pool: the last few sessions keep their TerminalView alive
@@ -702,15 +714,7 @@ export default function App() {
           width={sidebarW}
           onResize={(x) => setSidebarW(clampWidth(x, 180, 440))}
           onResetWidth={() => setSidebarW(PANEL_W.sidebar)}
-          onSelect={(id) => {
-            setActiveId(id);
-            setNavOpen(false);
-            setAgentStatus((m) =>
-              m[id] && m[id].state !== "working"
-                ? Object.fromEntries(Object.entries(m).filter(([k]) => k !== id))
-                : m,
-            );
-          }}
+          onSelect={selectSession}
           onCreate={() => void handleCreate()}
           onOpenSettings={setSettingsFor}
           onDelete={setDeleteFor}
@@ -1133,6 +1137,13 @@ export default function App() {
         open={leaderOpen}
         onClose={() => setLeaderOpen(false)}
         onAction={runLeaderAction}
+        sessions={ordered.map((s) => ({
+          id: s.id,
+          name: s.name,
+          cwd: s.cwd,
+          active: s.id === active?.id,
+        }))}
+        onSelectSession={selectSession}
       />
 
       {quickOpen && active && (
