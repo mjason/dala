@@ -55,34 +55,77 @@ function onigLib() {
 
 // ----------------------------------------------------------------- grammars
 
+// Bundled base grammars: extensions we can tokenize with TextMate when the
+// user has INJECTION grammars targeting them (MagicPython for .py). Without
+// injections these files keep their Lezer highlighting.
+const BUNDLED_BASES: Record<string, { ext: string; url: string }> = {
+  "source.python": { ext: ".py", url: "/grammars/python.tmLanguage.json" },
+};
+
+const rawGrammarCache = new Map<string, Promise<IRawGrammar | null>>();
+
+function fetchRawGrammar(key: string, url: string): Promise<IRawGrammar | null> {
+  const cached = rawGrammarCache.get(key);
+  if (cached) return cached;
+  const promise = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`grammar ${url}: HTTP ${response.status}`);
+      return JSON.parse(await response.text()) as IRawGrammar;
+    })
+    .catch(() => null);
+  rawGrammarCache.set(key, promise);
+  return promise;
+}
+
+/** Injection grammars declare where they apply themselves
+ * (`injectionSelector`); the registry hands them to every base grammar and
+ * the selector gates the actual placement. */
+async function injectionScopes(infos: GrammarInfo[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const info of infos) {
+    const raw = await fetchRawGrammar(info.path, rawFileUrl(info.path));
+    if (raw && (raw as { injectionSelector?: string }).injectionSelector) out.push(info.scopeName);
+  }
+  return out;
+}
+
 const grammarCache = new Map<string, Promise<IGrammar | null>>();
 
-function loadGrammarFor(info: GrammarInfo): Promise<IGrammar | null> {
-  const cached = grammarCache.get(info.path);
+/** Load `scope` in a registry that can also resolve every OTHER configured
+ * grammar (and the bundled bases) — required for injections. */
+function loadGrammarScoped(scope: string, infos: GrammarInfo[]): Promise<IGrammar | null> {
+  const cacheKey = `${scope}::${infos.map((g) => g.path).join("|")}`;
+  const cached = grammarCache.get(cacheKey);
   if (cached) return cached;
 
   const promise = (async () => {
-    // One registry per grammar file. Cross-grammar includes (other scope
-    // names) resolve to null — single-file grammars only, by design.
+    const injections = await injectionScopes(infos);
     const registry = new Registry({
       onigLib: onigLib(),
       loadGrammar: async (scopeName) => {
-        if (scopeName !== info.scopeName) return null;
-        const response = await fetch(rawFileUrl(info.path));
-        if (!response.ok) throw new Error(`grammar ${info.path}: HTTP ${response.status}`);
-        return JSON.parse(await response.text()) as IRawGrammar;
+        const bundled = BUNDLED_BASES[scopeName];
+        if (bundled) return fetchRawGrammar(scopeName, bundled.url);
+        const info = infos.find((g) => g.scopeName === scopeName);
+        if (!info) return null;
+        return fetchRawGrammar(info.path, rawFileUrl(info.path));
       },
+      getInjections: (scopeName) =>
+        // Only bases receive injections (an injection injecting into another
+        // injection is out of scope); each grammar's own injectionSelector
+        // decides where inside the base it actually applies.
+        scopeName === scope ? injections : [],
     });
-    return registry.loadGrammar(info.scopeName);
+    return registry.loadGrammar(scope);
   })().catch(() => null);
 
-  grammarCache.set(info.path, promise);
+  grammarCache.set(cacheKey, promise);
   return promise;
 }
 
 /** Drop cached grammars so an updated upload takes effect on next open. */
 export function clearGrammarCache() {
   grammarCache.clear();
+  rawGrammarCache.clear();
 }
 
 // -------------------------------------------------------------- scope → css
@@ -149,8 +192,22 @@ export async function textmateExtension(
   infos: GrammarInfo[],
 ): Promise<Extension | null> {
   const info = grammarForFile(filename, infos);
-  if (!info) return null;
-  const grammar = await loadGrammarFor(info);
+  if (info) {
+    const grammar = await loadGrammarScoped(info.scopeName, infos);
+    if (!grammar) return null;
+    return tmHighlight(grammar);
+  }
+
+  // No standalone grammar claims the file — but injection grammars might
+  // (a DSL inside Python strings): tokenize with the bundled base so the
+  // injections have something to inject into.
+  const lower = filename.toLowerCase();
+  const baseScope = Object.keys(BUNDLED_BASES).find((scope) =>
+    lower.endsWith(BUNDLED_BASES[scope].ext),
+  );
+  if (!baseScope) return null;
+  if ((await injectionScopes(infos)).length === 0) return null;
+  const grammar = await loadGrammarScoped(baseScope, infos);
   if (!grammar) return null;
   return tmHighlight(grammar);
 }

@@ -60,6 +60,17 @@ describe("LeaderMenu", () => {
     expect(props.onAction).toHaveBeenCalledWith("quickOpen");
   });
 
+  it("focus returns to the previous element only when NO action ran", () => {
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+
+    const props = renderMenu();
+    fireEvent.keyDown(window, { key: "f" });
+    expect(props.onAction).toHaveBeenCalledWith("quickOpen");
+    input.remove();
+  });
+
   it("every leaf key is unique within its level", () => {
     const check = (nodes: typeof LEADER_TREE) => {
       const keys = nodes.map((n) => n.key);

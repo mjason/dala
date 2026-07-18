@@ -108,6 +108,10 @@ type Props = {
    * the MAIN session view sets it — overlay terminals (quick shells) must
    * not steal the handle from the session the tests read. */
   debugHandle?: boolean;
+  /** Pooled views: false = kept alive but hidden (visibility:hidden). A
+   * hidden view keeps its channel and live output; only the shared
+   * actionsRef/debug-handle claims and focus follow visibility. */
+  visible?: boolean;
 };
 
 // Sessions that already showed the width-change tip (module memory): one
@@ -127,8 +131,14 @@ export default function TerminalView({
   onEscape,
   inputHookRef,
   debugHandle,
+  visible = true,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // The mount closure reads visibility through refs (it runs once).
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const localActionsRef = useRef<TerminalActions | null>(null);
+  const relayoutRef = useRef<((force?: boolean) => void) | null>(null);
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
@@ -499,7 +509,7 @@ export default function TerminalView({
       // Debug/e2e handle: WebGL leaves no text in the DOM, so tests read the
       // emulator buffer through this instead of scraping HTML. Only the main
       // session view (debugHandle) binds it — see the Props doc.
-      if (debugHandle) {
+      if (debugHandle && visibleRef.current) {
         (window as unknown as Record<string, unknown>).__dalaTerm = term;
       }
       const ackCounter = createAckCounter((bytes, alt) => {
@@ -955,9 +965,9 @@ export default function TerminalView({
         if (!gate.acceptInput() || !data) return;
         phxChannel.push("input", { data });
       };
-      if (actionsRef) {
-        actionsRef.current = { reset, refit, focus: () => term.focus(), sendText, sendKey };
-      }
+      localActionsRef.current = { reset, refit, focus: () => term.focus(), sendText, sendKey };
+      if (actionsRef && visibleRef.current) actionsRef.current = localActionsRef.current;
+      relayoutRef.current = relayout;
 
       // Fallback: a session with no replay (or a lost done frame) must not
       // stay covered.
@@ -1230,7 +1240,9 @@ export default function TerminalView({
       document.addEventListener("visibilitychange", onVisibilityChange);
 
       cleanup = () => {
-        if (actionsRef) actionsRef.current = null;
+        if (actionsRef && actionsRef.current === localActionsRef.current) actionsRef.current = null;
+        localActionsRef.current = null;
+        relayoutRef.current = null;
         // Only drop the debug handle when it is still OURS — a newer view
         // (session switch) may have rebound it already.
         const w = window as unknown as Record<string, unknown>;
@@ -1278,6 +1290,20 @@ export default function TerminalView({
       cleanup?.();
     };
   }, [sessionId]);
+
+  // Pooled visibility: on reveal, this instance claims the shared action/
+  // debug handles, re-checks layout (a window resize may have landed while
+  // hidden) and takes focus; hiding releases the claims to the next view.
+  useEffect(() => {
+    if (!visible) return;
+    if (actionsRef && localActionsRef.current) actionsRef.current = localActionsRef.current;
+    if (debugHandle && termRef.current) {
+      (window as unknown as Record<string, unknown>).__dalaTerm = termRef.current;
+    }
+    relayoutRef.current?.(true);
+    termRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   return (
     <div className="relative h-full w-full [contain:layout_paint]">

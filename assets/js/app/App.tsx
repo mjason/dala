@@ -511,6 +511,27 @@ export default function App() {
 
   const [leaderOpen, setLeaderOpen] = useState(false);
 
+  // MRU terminal pool: the last few sessions keep their TerminalView alive
+  // (visibility:hidden) — switching back skips the teardown/rebuild/repaint
+  // cycle entirely and shows the live screen instantly. Hidden views keep
+  // real layout dimensions, so resizes/streams stay correct while parked.
+  const TERM_POOL_SIZE = 3;
+  const [termPool, setTermPool] = useState<string[]>([]);
+  useEffect(() => {
+    if (!active?.id) return;
+    setTermPool((prev) =>
+      [active.id, ...prev.filter((id) => id !== active.id)].slice(0, TERM_POOL_SIZE),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id]);
+  // Deleted sessions leave the pool (their channel/process is gone).
+  useEffect(() => {
+    setTermPool((prev) => {
+      const alive = prev.filter((id) => sessions.some((s) => s.id === id));
+      return alive.length === prev.length ? prev : alive;
+    });
+  }, [sessions]);
+
   // Leader-menu executor: every which-key leaf lands here.
   const runLeaderAction = (action: string) => {
     switch (action) {
@@ -913,18 +934,32 @@ export default function App() {
             </header>
 
             <div className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
-              <TerminalView
-                key={active.id}
-                sessionId={active.id}
-                scrollbackLines={historyLines(active.scrollbackLimit)}
-                actionsRef={termActions}
-                inputHookRef={termInputHookRef}
-                debugHandle
-                onError={toast}
-                onCwdChange={(cwd) => {
-                  if (followCwd) setDrawerPath(cwd);
-                }}
-              />
+              {(termPool.includes(active.id) ? termPool : [active.id, ...termPool]).map((id) => {
+                const session = sessions.find((s) => s.id === id);
+                if (!session) return null;
+                const isActive = id === active.id;
+                return (
+                  <div
+                    key={id}
+                    data-terminal-pane={id}
+                    className={`absolute inset-0 ${isActive ? "z-[1]" : "invisible z-0"}`}
+                  >
+                    <TerminalView
+                      sessionId={id}
+                      visible={isActive}
+                      scrollbackLines={historyLines(session.scrollbackLimit)}
+                      actionsRef={termActions}
+                      inputHookRef={termInputHookRef}
+                      debugHandle
+                      onError={toast}
+                      onCwdChange={(cwd) => {
+                        // Only the ACTIVE session drives the drawer path.
+                        if (followCwd && id === activeIdRef.current) setDrawerPath(cwd);
+                      }}
+                    />
+                  </div>
+                );
+              })}
               {active.status === "exited" && (
                 <div className="absolute inset-0 z-10 grid place-items-center bg-bg0/70 backdrop-blur-[1px]">
                   <div className="flex flex-col items-center gap-3 rounded-xl border border-line bg-bg1 px-8 py-6 shadow-2xl">

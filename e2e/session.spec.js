@@ -485,6 +485,52 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await h.deleteSession(page, id).catch(() => {});
     }
   });
+  test("MRU 终端池：切走再切回不重建（双实例并存，内容即时可见）", async ({ page }) => {
+    const cwd = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-pool-`);
+    let s1, s2;
+    try {
+      await h.gotoApp(page);
+      s1 = await h.createSession(page, cwd);
+      await h.selectSession(page, s1);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await page.locator(".xterm").first().click();
+      const marker = `pool-${Date.now()}`;
+      await page.keyboard.type(`echo ${marker}`);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => page.evaluate(() => {
+          const term = window.__dalaTerm;
+          if (!term) return "";
+          const b = term.buffer.active;
+          let out = "";
+          for (let i = 0; i < b.length; i++) out += b.getLine(i)?.translateToString(true) + "\n";
+          return out;
+        }))
+        .toContain(marker);
+
+      s2 = await h.createSession(page, cwd);
+      await h.selectSession(page, s2);
+      // 两个终端实例都活着（池化），旧的只是隐藏。
+      await expect(page.locator("[data-terminal-pane]")).toHaveCount(2);
+
+      // 切回：无需 replay，内容立即在（__dalaTerm 已回到 s1 的实例）。
+      await h.selectSession(page, s1);
+      await expect
+        .poll(() => page.evaluate(() => {
+          const term = window.__dalaTerm;
+          if (!term) return "";
+          const b = term.buffer.active;
+          let out = "";
+          for (let i = 0; i < b.length; i++) out += b.getLine(i)?.translateToString(true) + "\n";
+          return out;
+        }))
+        .toContain(marker);
+    } finally {
+      for (const id of [s1, s2]) if (id) await h.deleteSession(page, id).catch(() => {});
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("手工分组：右键建组/入组/折叠/整组删除，Ctrl 多选批量删除", async ({ page }) => {
     const cwdA = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-grp-a-`);
     const gname = `grp-${Date.now()}`;

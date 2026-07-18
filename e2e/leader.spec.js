@@ -41,6 +41,19 @@ test.describe("Given 一个打开 dala 的用户", () => {
     await expect.poll(drawerVisible).toBe(!before);
   });
 
+  test("s→r 重命名：面板关闭后改名输入框保持焦点可用", async ({ page }) => {
+    await page.keyboard.press("Control+Shift+Space");
+    await expect(page.locator("#leader-menu")).toBeVisible();
+    await page.keyboard.press("s");
+    await page.keyboard.press("r");
+    const input = page.locator(`[data-rename-session="${sessionId}"]`);
+    await expect(input).toBeVisible();
+    // 焦点必须在输入框里（回归：面板曾把焦点还给终端导致 blur 秒关）。
+    await expect(input).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(input).toHaveCount(0);
+  });
+
   test("终端聚焦时 leader 键一样生效（leader 的意义所在）", async ({ page }) => {
     await page.locator(".xterm").first().click();
     await page.keyboard.press("Control+Shift+Space");

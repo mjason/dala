@@ -60,6 +60,46 @@ test.describe("Given 配置了项目级 TextMate 语法的用户", () => {
       if (s) await h.deleteSession(page, s).catch(() => {});
     }
   });
+  test("注入语法：无 fileTypes 的 DSL 注入到 Python 字符串内着色", async ({ page }) => {
+    // 模拟 dark-magician 式注入：injectionSelector 指向 source.python，
+    // 自身不认领任何扩展名 —— .py 走内置 MagicPython 基底 + 注入。
+    fs.writeFileSync(
+      path.join(cwd, "syntaxes/inj.tmLanguage.json"),
+      JSON.stringify({
+        scopeName: "source.dmx-inject",
+        injectionSelector: "L:source.python -comment",
+        patterns: [{ match: "魔法词", name: "keyword.control.dmx" }],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, "dala.jsonc"),
+      `{ "grammars": [
+        { "path": "./syntaxes/dmx.tmLanguage.json" },
+        { "path": "./syntaxes/inj.tmLanguage.json" },
+      ] }`,
+    );
+    fs.writeFileSync(path.join(cwd, "demo_inj.py"), 'import os\nx = "调用 魔法词 结束"\n');
+
+    let s;
+    try {
+      await h.gotoApp(page);
+      s = await h.createSession(page, cwd);
+      await h.selectSession(page, s);
+      await h.openDrawer(page);
+      await page.click(`[data-path="${path.join(cwd, "demo_inj.py")}"]`);
+
+      const content = page.locator(".cm-content");
+      await expect(content).toContainText("魔法词");
+      // 注入的 DSL 关键字在字符串内拿到 keyword 色。
+      const dsl = page.locator('.cm-content span[style*="rgb(176, 135, 201)"]', { hasText: "魔法词" });
+      await expect(dsl.first()).toBeVisible({ timeout: 15000 });
+      // 基底 MagicPython 同时生效：import 也是 keyword 色。
+      const kw = page.locator('.cm-content span[style*="rgb(176, 135, 201)"]', { hasText: "import" });
+      await expect(kw.first()).toBeVisible();
+    } finally {
+      if (s) await h.deleteSession(page, s).catch(() => {});
+    }
+  });
   test("全局语法：设置里上传后生效，可删除", async ({ page }) => {
     // 待上传的语法（qmx 扩展名，避免与项目级用例互扰）。
     const grammarFile = path.join(cwd, "qmx.tmLanguage.json");

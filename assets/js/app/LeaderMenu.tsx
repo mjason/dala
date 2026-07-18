@@ -78,11 +78,16 @@ export default function LeaderMenu({ open, onClose, onAction }: Props) {
   pathRef.current = path;
 
   const panelRef = useRef<HTMLDivElement | null>(null);
+  // Whether this open ended by RUNNING an action: then the action's own UI
+  // (rename input, composer, …) owns the focus — restoring the previous
+  // focus would blur it right back shut.
+  const ranActionRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
     setPath(null);
     pathRef.current = null;
+    ranActionRef.current = false;
     // Steal focus from whatever editable element had it (usually xterm's
     // hidden textarea): with focus on a non-editable panel the OS input
     // method never engages, so CJK IMEs cannot swallow the nav keys.
@@ -104,6 +109,7 @@ export default function LeaderMenu({ open, onClose, onAction }: Props) {
       if ("children" in hit) {
         setPath(hit);
       } else {
+        ranActionRef.current = true;
         onAction(hit.action);
         onClose();
       }
@@ -111,7 +117,7 @@ export default function LeaderMenu({ open, onClose, onAction }: Props) {
     window.addEventListener("keydown", handler, true);
     return () => {
       window.removeEventListener("keydown", handler, true);
-      previous?.focus?.();
+      if (!ranActionRef.current) previous?.focus?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -156,6 +162,7 @@ export default function LeaderMenu({ open, onClose, onAction }: Props) {
                   if (group) {
                     setPath(node as Group);
                   } else {
+                    ranActionRef.current = true;
                     onAction((node as Leaf).action);
                     onClose();
                   }

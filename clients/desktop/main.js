@@ -152,6 +152,10 @@ function createShellWindow(server) {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
+      // A terminal keeps consuming PTY streams while the window is covered
+      // or minimized — throttled timers would batch it all up and stutter
+      // on refocus.
+      backgroundThrottling: false,
     },
   });
   win.isDalaShell = true;
