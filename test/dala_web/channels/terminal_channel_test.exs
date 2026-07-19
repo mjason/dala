@@ -79,6 +79,11 @@ defmodule DalaWeb.TerminalChannelTest do
     pid = Server.whereis(id)
     ref = Process.monitor(pid)
 
+    # Let post_init (mark_running + its DB round-trips) finish first: killing
+    # the server MID-QUERY drags the sandbox connection down with it, and the
+    # next DB call in this test then fails spuriously.
+    _ = :sys.get_state(pid)
+
     # A brutal kill (code-reload purge, crash) skips terminate/2 — but the
     # shell lives in a detached holder, so join must reattach, not bury it.
     Process.exit(pid, :kill)
@@ -97,6 +102,8 @@ defmodule DalaWeb.TerminalChannelTest do
     id = to_string(session.id)
     pid = Server.whereis(id)
     ref = Process.monitor(pid)
+    # Same as above: never kill mid-query (see the reattach test).
+    _ = :sys.get_state(pid)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
 
