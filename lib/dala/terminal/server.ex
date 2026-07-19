@@ -382,7 +382,7 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_continue(:post_init, state) do
-    state = %{state | session: Dala.Terminal.mark_running!(state.session)}
+    state = %{state | session: Dala.Terminal.mark_running!(refresh_session(state))}
     Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
     {:noreply, state}
   end
@@ -624,7 +624,7 @@ defmodule Dala.Terminal.Server do
 
   def handle_info(:force_stop, state) do
     # The holder did not report an exit within the timeout after kill.
-    case Dala.Terminal.mark_exited(state.session, %{exit_code: nil}) do
+    case Dala.Terminal.mark_exited(refresh_session(state), %{exit_code: nil}) do
       {:ok, _session} -> :ok
       {:error, error} -> Logger.warning("could not mark session exited: #{inspect(error)}")
     end
@@ -692,7 +692,7 @@ defmodule Dala.Terminal.Server do
 
   defp apply_cwd(state, cwd) do
     if File.dir?(cwd) do
-      case Dala.Terminal.update_cwd(state.session, %{cwd: cwd}) do
+      case Dala.Terminal.update_cwd(refresh_session(state), %{cwd: cwd}) do
         {:ok, session} -> %{state | cwd: cwd, session: session}
         {:error, _error} -> state
       end
@@ -810,7 +810,7 @@ defmodule Dala.Terminal.Server do
         end
       end)
     else
-      case Dala.Terminal.mark_exited(state.session, %{exit_code: status}) do
+      case Dala.Terminal.mark_exited(refresh_session(state), %{exit_code: status}) do
         {:ok, _session} ->
           :ok
 
@@ -820,6 +820,19 @@ defmodule Dala.Terminal.Server do
     end
 
     {:stop, :normal, state}
+  end
+
+  # Metadata updates must run on the COMMITTED row, not the copy this
+  # server loaded at spawn: renames/reorders/regroups land over RPC without
+  # ever touching this process, so `state.session` goes stale immediately.
+  # The broadcast layer re-reads too (Payloads.summary reload) — refreshing
+  # here keeps the DB write itself clean if an update action ever grows
+  # non-atomic fields, and keeps our in-state copy converging.
+  defp refresh_session(state) do
+    case Dala.Terminal.get_session(state.session.id) do
+      {:ok, fresh} -> fresh
+      {:error, _error} -> state.session
+    end
   end
 
   defp current_cwd(nil), do: nil
@@ -854,7 +867,9 @@ defmodule Dala.Terminal.Server do
   defp remember_device(%{size_owner_device: device} = state, device), do: state
 
   defp remember_device(state, device_id) do
-    case Dala.Terminal.set_size_owner_device(state.session, %{size_owner_device: device_id}) do
+    case Dala.Terminal.set_size_owner_device(refresh_session(state), %{
+           size_owner_device: device_id
+         }) do
       {:ok, session} ->
         %{state | session: session, size_owner_device: device_id}
 

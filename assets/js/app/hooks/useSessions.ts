@@ -34,6 +34,7 @@ export const SESSION_FIELDS = [
   "group",
   "position",
   "insertedAt",
+  "updatedAt",
 ] as const;
 
 // COMPILE-TIME exhaustiveness guard: every field the session payload carries
@@ -41,32 +42,73 @@ export const SESSION_FIELDS = [
 // this line stops compiling until SESSION_FIELDS lists it. Without it, the
 // reconnect refetch silently drops the new field and state "vanishes" until
 // a full page reload (that was a real bug: groups disappearing).
-type _MissingSessionFields = Exclude<keyof Session, (typeof SESSION_FIELDS)[number]>;
-const _sessionFieldsComplete: _MissingSessionFields extends never ? true : never = true;
+type _MissingSessionFields = Exclude<
+  keyof Session,
+  (typeof SESSION_FIELDS)[number]
+>;
+const _sessionFieldsComplete: _MissingSessionFields extends never
+  ? true
+  : never = true;
 void _sessionFieldsComplete;
 
-/** Insert or replace a session in the list, keeping order stable on update. */
-export function upsertList<T extends { id: string }>(list: T[], session: T): T[] {
+type Versioned = { id: string; updatedAt?: string };
+
+/**
+ * May `incoming` replace `current`? Rows carry the server's `updatedAt` as a
+ * version: an out-of-order or raced broadcast can never roll a session back.
+ * A missing timestamp on either side accepts the incoming copy (optimistic
+ * local edits keep the old stamp on purpose, so the authoritative broadcast
+ * that follows always lands).
+ */
+export function isFresher(
+  current: Versioned | undefined,
+  incoming: Versioned,
+): boolean {
+  if (!current?.updatedAt || !incoming.updatedAt) return true;
+  // utc_datetime_usec serializes to fixed-width ISO-8601: string compare
+  // IS chronological compare.
+  return incoming.updatedAt >= current.updatedAt;
+}
+
+/**
+ * Insert or replace a session in the list, keeping order stable on update.
+ * Stale copies (older `updatedAt` than what the list holds) are dropped.
+ */
+export function upsertList<T extends Versioned>(list: T[], session: T): T[] {
   const idx = list.findIndex((s) => s.id === session.id);
   if (idx === -1) return [...list, session];
+  if (!isFresher(list[idx], session)) return list;
   const next = [...list];
   next[idx] = session;
   return next;
 }
 
 /**
- * Reconcile the first RPC snapshot with channel events received while that
- * request was in flight. Live rows win over stale snapshot copies; creations
- * absent from the snapshot survive, and observed deletions are not resurrected.
+ * Reconcile a full server snapshot (initial load AND every channel rejoin)
+ * with the rows already in memory:
+ * - observed deletions never resurrect;
+ * - rows present in both keep whichever copy is newer (`updatedAt`), so
+ *   broadcasts that raced the fetch are not lost and a stale in-memory row
+ *   (missed broadcasts while disconnected) is corrected;
+ * - live rows absent from the snapshot survive only when they appeared
+ *   during THIS fetch (creations in flight) — anything else is a ghost the
+ *   server no longer knows about (deleted while we were offline).
  */
-export function mergeInitialSessions<T extends { id: string }>(
+export function reconcileSnapshot<T extends Versioned>(
   snapshot: T[],
   live: T[],
   deletedIds: ReadonlySet<string>,
+  arrivedInFlight: ReadonlySet<string>,
 ): T[] {
   let merged = snapshot.filter((session) => !deletedIds.has(session.id));
+  const inSnapshot = new Set(merged.map((session) => session.id));
   for (const session of live) {
-    if (!deletedIds.has(session.id)) merged = upsertList(merged, session);
+    if (deletedIds.has(session.id)) continue;
+    if (inSnapshot.has(session.id)) {
+      merged = upsertList(merged, session);
+    } else if (arrivedInFlight.has(session.id)) {
+      merged = [...merged, session];
+    }
   }
   return merged;
 }
@@ -104,8 +146,14 @@ export function useSessions(opts: {
   const [creating, setCreating] = useState(false);
   const deletedSessionIdsRef = useRef(new Set<string>());
 
+  // While a snapshot fetch is in flight, ids seen on the channel are
+  // recorded here so reconcileSnapshot can tell an in-flight creation from
+  // a ghost row the server no longer knows (see its doc).
+  const fetchFlightRef = useRef<Set<string> | null>(null);
+
   const upsertSession = useCallback((session: Session) => {
     if (deletedSessionIdsRef.current.has(session.id)) return;
+    fetchFlightRef.current?.add(session.id);
     setSessions((list) => upsertList(list, session));
   }, []);
 
@@ -154,26 +202,47 @@ export function useSessions(opts: {
         // The active session was deleted: return to the most recently
         // visited one that still exists.
         if (id === activeIdRef.current) {
-          const previous = pickPreviousSession(historyRef.current, id, sessionsRef.current);
+          const previous = pickPreviousSession(
+            historyRef.current,
+            id,
+            sessionsRef.current,
+          );
           if (previous) setActiveId(previous);
         }
       },
     });
-    phxChannel.join();
-
-    void (async () => {
+    const refetchSessions = async () => {
+      // One fetch at a time: a redundant trigger (mount + the first join
+      // "ok" land together) rides on the running one; broadcasts raced by
+      // it are reconciled anyway.
+      if (fetchFlightRef.current) return;
+      const flight = new Set<string>();
+      fetchFlightRef.current = flight;
       const result = await call<Session[]>(listSessions, {
         fields: [...SESSION_FIELDS],
         sort: ["position", "insertedAt"],
       });
+      if (fetchFlightRef.current === flight) fetchFlightRef.current = null;
       if (result.ok) {
         setSessions((live) =>
-          mergeInitialSessions(result.data, live, deletedSessionIdsRef.current),
+          reconcileSnapshot(
+            result.data,
+            live,
+            deletedSessionIdsRef.current,
+            flight,
+          ),
         );
       } else {
         toast(result.error || t("couldNotLoadSessions"));
       }
-    })();
+    };
+
+    // The join "ok" fires on the initial join AND on every automatic
+    // rejoin — refetching there heals whatever broadcasts were missed
+    // while disconnected (renames from other devices used to stay stale
+    // until a manual page reload).
+    phxChannel.join().receive("ok", () => void refetchSessions());
+    void refetchSessions();
 
     return () => {
       unsubscribeSessionsChannel(channel, refs);
@@ -263,9 +332,14 @@ export function useSessions(opts: {
     const previous = sessionsRef.current.find((s) => s.id === id)?.name;
     if (previous === undefined || previous === name) return;
     setSessions((list) => list.map((s) => (s.id === id ? { ...s, name } : s)));
-    const result = await call<unknown>(renameSession, { identity: id, input: { name } });
+    const result = await call<unknown>(renameSession, {
+      identity: id,
+      input: { name },
+    });
     if (!result.ok) {
-      setSessions((list) => list.map((s) => (s.id === id ? { ...s, name: previous } : s)));
+      setSessions((list) =>
+        list.map((s) => (s.id === id ? { ...s, name: previous } : s)),
+      );
       toast(result.error || t("somethingWentWrong"));
     }
   };
@@ -276,23 +350,36 @@ export function useSessions(opts: {
    */
   const handleSetGroup = async (ids: string[], group: string | null) => {
     const previous = new Map(
-      sessionsRef.current.filter((s) => ids.includes(s.id)).map((s) => [s.id, s.group]),
+      sessionsRef.current
+        .filter((s) => ids.includes(s.id))
+        .map((s) => [s.id, s.group]),
     );
-    setSessions((list) => list.map((s) => (previous.has(s.id) ? { ...s, group } : s)));
+    setSessions((list) =>
+      list.map((s) => (previous.has(s.id) ? { ...s, group } : s)),
+    );
     const results = await Promise.all(
       ids.map(async (id) => ({
         id,
-        result: await call<unknown>(setSessionGroup, { identity: id, input: { group } }),
+        result: await call<unknown>(setSessionGroup, {
+          identity: id,
+          input: { group },
+        }),
       })),
     );
     const failed = results.filter((r) => !r.result.ok);
     if (failed.length > 0) {
       setSessions((list) =>
         list.map((s) =>
-          failed.some((f) => f.id === s.id) ? { ...s, group: previous.get(s.id) ?? null } : s,
+          failed.some((f) => f.id === s.id)
+            ? { ...s, group: previous.get(s.id) ?? null }
+            : s,
         ),
       );
-      toast(failed[0].result.ok ? t("somethingWentWrong") : failed[0].result.error || t("somethingWentWrong"));
+      toast(
+        failed[0].result.ok
+          ? t("somethingWentWrong")
+          : failed[0].result.error || t("somethingWentWrong"),
+      );
     }
   };
 

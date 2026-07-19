@@ -18,6 +18,7 @@ const sessions: Session[] = [
     group: null,
     position: 1,
     insertedAt: "2026-07-08T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00.000000Z",
   },
   {
     id: "s2",
@@ -31,6 +32,7 @@ const sessions: Session[] = [
     group: null,
     position: 2,
     insertedAt: "2026-07-08T01:00:00Z",
+    updatedAt: "2026-01-01T00:00:00.000000Z",
   },
 ];
 
@@ -259,6 +261,7 @@ describe("Sidebar", () => {
         name: "extra",
         position: 3,
         insertedAt: "2026-07-08T02:00:00Z",
+        updatedAt: "2026-01-01T00:00:00.000000Z",
       };
       const props = {
         sessions: [...sessions, third],

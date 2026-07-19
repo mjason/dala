@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  mergeInitialSessions,
+  isFresher,
   pickPreviousSession,
+  reconcileSnapshot,
   upsertList,
 } from "./useSessions";
 import type { Session } from "../Sidebar";
 
-type Row = { id: string; name: string };
-
-const session = (id: string, name = id): Session =>
+const session = (id: string, name = id, updatedAt = "2026-01-01T00:00:00.000000Z"): Session =>
   ({
     id,
     name,
@@ -18,8 +17,27 @@ const session = (id: string, name = id): Session =>
     exitCode: null,
     scrollbackLimit: 10_000,
     ephemeral: false,
-    insertedAt: "2026-01-01T00:00:00Z",
+    insertedAt: "2026-01-01T00:00:00.000000Z",
+    updatedAt,
   }) as Session;
+
+const T1 = "2026-01-01T00:00:01.000000Z";
+const T2 = "2026-01-01T00:00:02.000000Z";
+
+describe("isFresher (row versions)", () => {
+  it("newer or equal updatedAt may replace; older may not", () => {
+    expect(isFresher(session("a", "a", T1), session("a", "a", T2))).toBe(true);
+    expect(isFresher(session("a", "a", T1), session("a", "a", T1))).toBe(true);
+    expect(isFresher(session("a", "a", T2), session("a", "a", T1))).toBe(false);
+  });
+
+  it("a missing timestamp on either side accepts the incoming copy", () => {
+    const unstamped = { id: "a" };
+    expect(isFresher(unstamped, session("a"))).toBe(true);
+    expect(isFresher(session("a"), unstamped)).toBe(true);
+    expect(isFresher(undefined, session("a"))).toBe(true);
+  });
+});
 
 describe("upsertList", () => {
   it("appends a new session at the end", () => {
@@ -30,10 +48,17 @@ describe("upsertList", () => {
   });
 
   it("replaces an existing session in place, keeping order", () => {
-    const list = [session("a"), session("b", "old"), session("c")];
-    const next = upsertList(list, session("b", "new"));
+    const list = [session("a"), session("b", "old", T1), session("c")];
+    const next = upsertList(list, session("b", "new", T2));
     expect(next.map((s) => s.id)).toEqual(["a", "b", "c"]);
     expect(next[1].name).toBe("new");
+  });
+
+  it("drops a STALE copy — the named regression: a cwd/status broadcast built from an old row must not roll back a rename", () => {
+    const list = [session("a", "renamed", T2)];
+    const next = upsertList(list, session("a", "old-name", T1));
+    expect(next[0].name).toBe("renamed");
+    expect(next).toBe(list); // untouched, no re-render churn
   });
 });
 
@@ -60,28 +85,48 @@ describe("pickPreviousSession", () => {
   });
 });
 
-describe("mergeInitialSessions", () => {
-  it("keeps a session created while the initial snapshot was loading", () => {
-    const snapshot: Row[] = [{ id: "old", name: "old" }];
-    const live: Row[] = [
-      { id: "old", name: "renamed-live" },
-      { id: "new", name: "new" },
-    ];
+describe("reconcileSnapshot (initial load AND rejoin refetch)", () => {
+  const none = new Set<string>();
 
-    expect(mergeInitialSessions(snapshot, live, new Set())).toEqual([
-      { id: "old", name: "renamed-live" },
-      { id: "new", name: "new" },
-    ]);
+  it("keeps a session created while the snapshot was loading", () => {
+    const snapshot = [session("old")];
+    const live = [session("old", "renamed-live", T2), session("new")];
+
+    const merged = reconcileSnapshot(snapshot, live, none, new Set(["new"]));
+    expect(merged.map((s) => s.id)).toEqual(["old", "new"]);
+    expect(merged[0].name).toBe("renamed-live");
   });
 
   it("does not resurrect a session deleted while the snapshot was loading", () => {
-    const snapshot: Row[] = [
-      { id: "kept", name: "kept" },
-      { id: "deleted", name: "stale" },
-    ];
+    const snapshot = [session("kept"), session("deleted", "stale")];
 
-    expect(mergeInitialSessions(snapshot, [], new Set(["deleted"]))).toEqual([
-      { id: "kept", name: "kept" },
-    ]);
+    expect(
+      reconcileSnapshot(snapshot, [], new Set(["deleted"]), none).map((s) => s.id),
+    ).toEqual(["kept"]);
+  });
+
+  it("rejoin: the snapshot corrects rows that went stale while offline", () => {
+    // A rename from another device happened while we were disconnected —
+    // the in-memory row is old, the snapshot is truth.
+    const live = [session("a", "stale-name", T1)];
+    const snapshot = [session("a", "renamed-elsewhere", T2)];
+
+    const merged = reconcileSnapshot(snapshot, live, none, none);
+    expect(merged[0].name).toBe("renamed-elsewhere");
+  });
+
+  it("rejoin: a broadcast that raced the fetch still wins over the snapshot", () => {
+    const snapshot = [session("a", "snapshot-copy", T1)];
+    const live = [session("a", "broadcast-during-fetch", T2)];
+
+    const merged = reconcileSnapshot(snapshot, live, none, none);
+    expect(merged[0].name).toBe("broadcast-during-fetch");
+  });
+
+  it("rejoin: ghost rows (deleted while offline, no broadcast seen) are dropped", () => {
+    const live = [session("a"), session("ghost")];
+    const snapshot = [session("a")];
+
+    expect(reconcileSnapshot(snapshot, live, none, none).map((s) => s.id)).toEqual(["a"]);
   });
 });

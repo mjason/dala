@@ -151,6 +151,78 @@ test.describe("Given 侧栏里有三个会话", () => {
     }
   });
 
+  test("重命名后 shell 的状态广播不再把旧名字顶回来（脏 struct 回归）", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await h.selectSession(page, id);
+      const row = h.sessionEntry(page, id);
+      await expect(row).toBeVisible();
+
+      // 就地重命名并确认已生效。
+      await page.keyboard.press("Control+Alt+R");
+      const input = page.locator(`[data-rename-session="${id}"]`);
+      await expect(input).toBeFocused();
+      await input.fill("sticky-name");
+      await input.press("Enter");
+      await expect(row).toContainText("sticky-name");
+
+      // 让 shell 退出：mark_exited 曾经拿服务端 spawn 时缓存的旧 struct
+      // 更新，session_updated 广播带着旧名字/旧位置，把所有侧栏顶回去。
+      await page.locator(".xterm").first().click();
+      await page.keyboard.type("exit");
+      await page.keyboard.press("Enter");
+
+      // 状态点变灰 = exited 的 session_updated 广播已经到达前端。
+      await expect(row.locator('span[class*="bg-fg-muted"]').first()).toBeVisible({
+        timeout: 15_000,
+      });
+      // 广播到达之后，名字元素必须还是新名字（行里另有 cwd 列，含默认名，
+      // 不能用整行断言）。
+      await expect(row.locator("div.font-mono.text-sm").first()).toHaveText("sticky-name");
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("用户实锤复现：重命名后一 cd 目录，名字立刻变回默认——cwd 轮询广播不得回滚名字", async ({ page }) => {
+    await h.gotoApp(page);
+    let id;
+    const cdTarget = fs.mkdtempSync(`${os.tmpdir()}/dala-e2e-cdtarget-`);
+    try {
+      id = await h.createSession(page, cwd);
+      await h.selectSession(page, id);
+      const row = h.sessionEntry(page, id);
+      const nameEl = row.locator("div.font-mono.text-sm").first();
+
+      // 就地重命名。
+      await page.keyboard.press("Control+Alt+R");
+      const input = page.locator(`[data-rename-session="${id}"]`);
+      await expect(input).toBeFocused();
+      await input.fill("sticky-cd");
+      await input.press("Enter");
+      await expect(nameEl).toHaveText("sticky-cd");
+
+      // 用户的复现步骤：在终端里换目录。服务端 2s 一轮的 cwd 轮询会发现并
+      // update_cwd —— 曾经拿 spawn 时缓存的旧 struct 更新，session_updated
+      // 广播带旧名字，名字当场变回默认。
+      await page.locator(".xterm").first().click();
+      await page.keyboard.type(`cd ${cdTarget}`);
+      await page.keyboard.press("Enter");
+
+      // 行里 cwd 列出现新目录名 = update_cwd 的广播已经到达并被应用。
+      const target = require("node:path").basename(cdTarget);
+      await expect(row).toContainText(target, { timeout: 15_000 });
+
+      // 广播应用之后，名字必须原地不动。
+      await expect(nameEl).toHaveText("sticky-cd");
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+      fs.rmSync(cdTarget, { recursive: true, force: true });
+    }
+  });
+
   test("只有 handle 禁用触摸平移，列表本身仍可滚动", async ({ page }) => {
     // 真实的移动端滚动断言需要一个溢出的长列表（几十个会话），太重且易
     // flaky；退而断言约束本身：touch-action:none 只落在 handle 上，
