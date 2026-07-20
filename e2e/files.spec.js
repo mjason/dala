@@ -177,6 +177,37 @@ test.describe("Given 打开文件抽屉的用户", () => {
     }
   });
 
+  test("路径浮层不再钉在全屏预览上：hover 出浮层后原地点击打开文件，浮层必须消失", async ({ page }) => {
+    const file = path.join(cwd, "hover-then-open.txt");
+    fs.writeFileSync(file, "看我一眼就够了\n");
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    try {
+      await h.selectSession(page, id);
+      await h.openDrawer(page);
+      const row = page.locator(`[data-path="${file}"]`);
+      await expect(row).toBeVisible();
+
+      // hover 到浮层弹出（350ms 延迟）。
+      await row.hover();
+      const tooltip = page.locator("[data-file-path-tooltip]");
+      await expect(tooltip).toBeVisible();
+
+      // 原地点击打开预览：指针不动，被盖住的行永远等不到 mouseleave ——
+      // 回归场景：浮层曾钉在预览上，滚动或 Esc 之前赶不走。
+      await row.click();
+      await expect(page.locator("#file-preview")).toBeVisible();
+      await expect(tooltip).toHaveCount(0);
+
+      // 预览打开期间继续挪鼠标也不会再冒出来。
+      await page.mouse.move(400, 400);
+      await page.waitForTimeout(500);
+      await expect(tooltip).toHaveCount(0);
+    } finally {
+      await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
   test("大 CSV 使用虚拟表格完整搜索，DOM 只保留可视行", async ({ page }) => {
     const csvPath = path.join(cwd, "large.csv");
     const rows = ["id,name,team"];

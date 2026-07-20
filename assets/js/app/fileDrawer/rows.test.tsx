@@ -110,4 +110,59 @@ describe("Row path tooltip", () => {
     fireEvent.blur(row);
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
+
+  it("a press ANYWHERE cancels a pending tip — the stuck-over-preview regression", () => {
+    vi.useFakeTimers();
+    const { row } = renderRow();
+
+    // Hover arms the 350ms timer; clicking the row opens a full-screen
+    // preview over a stationary pointer (no mouseleave ever follows). The
+    // press must cancel the timer or the tip pops on top of the preview.
+    fireEvent.mouseEnter(row);
+    fireEvent.pointerDown(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("a press anywhere also closes an already-open tip", () => {
+    vi.useFakeTimers();
+    const { row } = renderRow();
+
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("pointer hovering anything OUTSIDE the row closes the tip; inside keeps it", () => {
+    vi.useFakeTimers();
+    const { row } = renderRow();
+
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    // Moving across the row's own children keeps the tip up.
+    fireEvent.pointerOver(row.querySelector("span")!);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    // First pointer contact with anything else (an overlay that swallowed
+    // the mouseleave, the table under it, …) dismisses immediately.
+    fireEvent.pointerOver(document.body);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("re-hovering after a press-cancel arms the tip again", () => {
+    vi.useFakeTimers();
+    const { row } = renderRow();
+
+    fireEvent.mouseEnter(row);
+    fireEvent.pointerDown(row);
+    fireEvent.mouseLeave(row);
+
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  });
 });

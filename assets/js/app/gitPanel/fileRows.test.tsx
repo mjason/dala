@@ -67,4 +67,29 @@ describe("GitPanel status theme tokens", () => {
     );
     vi.useRealTimers();
   });
+
+  it("the git row shares the drawer's dismissal guards: a press or off-row hover closes the tip", () => {
+    vi.useFakeTimers();
+    const file = { path: "lib/guarded.ex", status: " M", staged: false, unstaged: true };
+    const { container } = render(
+      <FileRow file={file} root="/repo" busy={null} onOpen={vi.fn()} actions={[]} />,
+    );
+    const row = container.firstElementChild!;
+
+    // A press anywhere closes an open tip (opening a diff covers the row).
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(document.querySelector("[data-file-path-tooltip]")).not.toBeNull();
+    fireEvent.pointerDown(row);
+    expect(document.querySelector("[data-file-path-tooltip]")).toBeNull();
+
+    // Hovering anything outside the row closes it too.
+    fireEvent.mouseLeave(row);
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(350));
+    expect(document.querySelector("[data-file-path-tooltip]")).not.toBeNull();
+    fireEvent.pointerOver(document.body);
+    expect(document.querySelector("[data-file-path-tooltip]")).toBeNull();
+    vi.useRealTimers();
+  });
 });

@@ -131,15 +131,26 @@ export function PathTooltip({
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onDismiss();
     };
+    // The row's own mouseleave is NOT enough to close: when an overlay
+    // (file preview) opens over a stationary pointer, no leave event ever
+    // fires and the tip would sit on top of the overlay forever. Watching
+    // where the pointer actually IS closes it the moment it hovers
+    // anything outside the anchor row.
+    const dismissOffAnchor = (event: PointerEvent) => {
+      const anchorElement = anchor.current;
+      if (!anchorElement?.contains(event.target as Node)) onDismiss();
+    };
     window.addEventListener("scroll", onDismiss, true);
     window.addEventListener("resize", onDismiss);
     window.addEventListener("keydown", dismissOnEscape);
+    window.addEventListener("pointerover", dismissOffAnchor, true);
     return () => {
       window.removeEventListener("scroll", onDismiss, true);
       window.removeEventListener("resize", onDismiss);
       window.removeEventListener("keydown", dismissOnEscape);
+      window.removeEventListener("pointerover", dismissOffAnchor, true);
     };
-  }, [onDismiss]);
+  }, [onDismiss, anchor]);
 
   return createPortal(
     <div
@@ -178,25 +189,45 @@ export function usePathTooltip() {
   const anchorRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
   const timerRef = useRef<number | null>(null);
+  const detachPressRef = useRef<(() => void) | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
   const hideTooltip = useCallback(() => {
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
+    detachPressRef.current?.();
+    detachPressRef.current = null;
     setTooltipOpen(false);
   }, []);
 
   const showTooltipSoon = useCallback(() => {
     if (tooltipOpen || timerRef.current != null) return;
+    // A press ANYWHERE cancels both the pending timer and an open tip: a
+    // click either opens the row's target (often a full-screen preview
+    // that covers the stationary pointer, so no mouseleave ever follows —
+    // the armed timer would pop the tip on top of it) or interacts
+    // somewhere else. Either way the tip is stale from that moment.
+    if (!detachPressRef.current) {
+      const cancelOnPress = () => hideTooltip();
+      window.addEventListener("pointerdown", cancelOnPress, true);
+      detachPressRef.current = () =>
+        window.removeEventListener("pointerdown", cancelOnPress, true);
+    }
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       setTooltipOpen(true);
     }, TOOLTIP_DELAY_MS);
-  }, [tooltipOpen]);
+  }, [tooltipOpen, hideTooltip]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      // Also NULL the ref: `detachPressRef.current` non-null must always
+      // mean "listener attached", or a remounted instance (StrictMode)
+      // would skip re-attaching and silently lose press-cancel.
+      detachPressRef.current?.();
+      detachPressRef.current = null;
     };
   }, []);
 
