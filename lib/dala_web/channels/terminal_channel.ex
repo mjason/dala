@@ -2,12 +2,12 @@ defmodule DalaWeb.TerminalChannel do
   @moduledoc """
   Per-session terminal channel.
 
-  On join, the client receives a synthesized repaint (history tail + current
-  screen + terminal modes) rendered by the session's holder-side emulator —
-  the tmux attach model — as `replay` events. For sessions that are no longer
-  running, the holder's final screen file is served instead. Live output
-  arrives as `output` broadcasts from `Dala.Terminal.Server`; overlap with
-  the repaint is deduplicated client-side via `seq`.
+  On join, the client receives a fast synthesized repaint of the current
+  screen and terminal modes rendered by the holder-side emulator. Scrollback
+  is fetched only when requested. For sessions that are no longer running,
+  the holder's final screen file is served instead. Live output arrives as
+  `output` broadcasts from `Dala.Terminal.Server`; overlap with the repaint is
+  deduplicated client-side via `seq`.
   """
 
   use Phoenix.Channel
@@ -92,6 +92,7 @@ defmodule DalaWeb.TerminalChannel do
           |> assign(:session_id, session.id)
           |> assign(:client_id, client_id)
           |> assign(:device_id, device_id)
+          |> assign(:visible, true)
           |> assign(:fc, %{
             enabled: false,
             alt: false,
@@ -175,7 +176,7 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
-  def handle_info({:repaint, data, seq}, socket) do
+  def handle_info({:repaint, data, seq, history_loaded}, socket) do
     fc = socket.assigns.fc
 
     cond do
@@ -184,7 +185,7 @@ defmodule DalaWeb.TerminalChannel do
         # (handle_in "repaint"); either way the client resets and continues
         # from seq. One snapshot settles both: it replaces the screen AND
         # clears any in-flight skip state.
-        socket = push_replay(socket, data, seq, true)
+        socket = push_replay(socket, data, seq, true, history_loaded)
         # sent counts the snapshot too — the client acks those bytes as it
         # parses them, keeping the cumulative ledger consistent.
         fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
@@ -194,17 +195,17 @@ defmodule DalaWeb.TerminalChannel do
         {:noreply, socket}
 
       true ->
-        {:noreply, push_replay(socket, data, seq)}
+        {:noreply, push_replay(socket, data, seq, false, history_loaded)}
     end
   end
 
-  def handle_info({:repaint_reset, data, seq}, socket) do
+  def handle_info({:repaint_reset, data, seq, history_loaded}, socket) do
     # Size-ownership takeover rewrapped the PTY: replace this client's screen
     # with the fresh snapshot unconditionally (reset replay). The flow ledger
     # counts the snapshot like a flow-control repaint, and any in-flight skip
     # state is settled by it.
     fc = socket.assigns.fc
-    socket = push_replay(socket, data, seq, true)
+    socket = push_replay(socket, data, seq, true, history_loaded)
     fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
     {:noreply, assign(socket, :fc, fc)}
   end
@@ -253,11 +254,11 @@ defmodule DalaWeb.TerminalChannel do
     # Order matters: the resize reaches the holder (reflow) before the
     # repaint request on the same FIFO socket. (If another client owns the
     # size it is ignored — followers attach at the PTY's size anyway.)
-    resize_with_correction(socket, rows, cols)
+    resize_with_correction(socket, rows, cols, initial_attach?: true)
 
     if Dala.Terminal.Server.alive?(id) and not socket.assigns[:replayed] and
          not Map.get(socket.assigns, :repaint_requested, false) do
-      Dala.Terminal.Server.request_repaint(id, self())
+      Dala.Terminal.Server.request_repaint(id, self(), history: :screen)
     end
 
     {:noreply, assign(socket, :repaint_requested, true)}
@@ -330,6 +331,45 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
+  # Cold attach intentionally omits scrollback. The browser asks for the
+  # bounded full snapshot only when the user scrolls upward or searches.
+  def handle_in("load_history", _payload, socket) do
+    id = socket.assigns.session_id
+    fc = socket.assigns.fc
+
+    if Dala.Terminal.Server.alive?(id) and not fc.repaint_requested do
+      Dala.Terminal.Server.request_repaint(id, self())
+      {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # A pooled hidden terminal that dropped its bounded local delta needs only
+  # the latest viewport when revealed, not another scrollback transfer.
+  def handle_in("catch_up", _payload, socket) do
+    id = socket.assigns.session_id
+    fc = socket.assigns.fc
+
+    if Dala.Terminal.Server.alive?(id) and not fc.repaint_requested do
+      Dala.Terminal.Server.request_repaint(id, self(), history: :screen)
+      {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_in("visibility", %{"visible" => visible}, socket) when is_boolean(visible) do
+    Dala.Terminal.Server.set_visibility(
+      socket.assigns.session_id,
+      self(),
+      socket.assigns.client_id,
+      visible
+    )
+
+    {:noreply, assign(socket, :visible, visible)}
+  end
+
   def handle_in("ack", %{"bytes" => bytes} = payload, socket) when is_integer(bytes) do
     fc = socket.assigns.fc
 
@@ -357,15 +397,29 @@ defmodule DalaWeb.TerminalChannel do
   # believed it was the driver (stale role after a lost/gapped broadcast)
   # re-enters follower mode instead of rendering a grid the PTY does not
   # have.
-  defp resize_with_correction(socket, rows, cols) do
-    case Dala.Terminal.Server.resize(
-           socket.assigns.session_id,
-           self(),
-           socket.assigns.client_id,
-           socket.assigns.device_id,
-           rows,
-           cols
-         ) do
+  defp resize_with_correction(socket, rows, cols, opts \\ []) do
+    result =
+      if opts[:initial_attach?] do
+        Dala.Terminal.Server.attach(
+          socket.assigns.session_id,
+          self(),
+          socket.assigns.client_id,
+          socket.assigns.device_id,
+          rows,
+          cols
+        )
+      else
+        Dala.Terminal.Server.resize(
+          socket.assigns.session_id,
+          self(),
+          socket.assigns.client_id,
+          socket.assigns.device_id,
+          rows,
+          cols
+        )
+      end
+
+    case result do
       {:ignored, %{owner: _owner} = snapshot} ->
         push(socket, "size_owner", snapshot)
 
@@ -398,7 +452,8 @@ defmodule DalaWeb.TerminalChannel do
     drained = fc.sent - fc.acked <= @low_water
 
     if fc.skipping and not fc.repaint_requested and (drained or opts[:force]) do
-      Dala.Terminal.Server.request_repaint(socket.assigns.session_id, self())
+      history = if socket.assigns[:visible] == false, do: :screen, else: :full
+      Dala.Terminal.Server.request_repaint(socket.assigns.session_id, self(), history: history)
       assign(socket, :fc, %{fc | repaint_requested: true})
     else
       socket
@@ -410,7 +465,7 @@ defmodule DalaWeb.TerminalChannel do
   # uncover and re-enable input. `reset` marks a mid-session flow-control
   # snapshot: the client must clear the screen first (a join-time replay
   # resets implicitly).
-  defp push_replay(socket, data, seq, reset \\ false) do
+  defp push_replay(socket, data, seq, reset \\ false, history_loaded \\ true) do
     chunks = chunk_binary(data, @replay_batch_bytes)
 
     chunks
@@ -420,7 +475,8 @@ defmodule DalaWeb.TerminalChannel do
         data: Base.encode64(chunk),
         seq: seq,
         done: index == length(chunks),
-        reset: reset
+        reset: reset,
+        historyLoaded: history_loaded
       })
     end)
 

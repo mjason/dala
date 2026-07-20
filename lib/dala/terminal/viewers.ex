@@ -11,7 +11,7 @@ defmodule Dala.Terminal.Viewers do
 
   @doc "Detach all other clients of the zellij/tmux session under `shell_pid`."
   def kick_others(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
-    procs = list_procs()
+    procs = Dala.Terminal.ProcessSnapshot.refresh()
     subtree = descendants(procs, shell_pid)
 
     case find_client(procs, subtree) do
@@ -29,7 +29,7 @@ defmodule Dala.Terminal.Viewers do
   polling to ask the multiplexer (instead of /proc) where the user is.
   """
   def find_mux(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
-    procs = list_procs()
+    procs = Dala.Terminal.ProcessSnapshot.snapshot()
 
     case find_client(procs, descendants(procs, shell_pid)) do
       {:zellij, name, _own_pid} -> {:zellij, name}
@@ -159,16 +159,6 @@ defmodule Dala.Terminal.Viewers do
   end
 
   defp kill(pid), do: System.cmd("kill", [Integer.to_string(pid)], stderr_to_stdout: true)
-
-  defp list_procs do
-    {out, 0} = System.cmd("ps", ["-eo", "pid=,ppid=,args="])
-
-    for line <- String.split(out, "\n", trim: true),
-        [pid, ppid | args] = String.split(String.trim(line), " ", trim: true),
-        args != [] do
-      {String.to_integer(pid), String.to_integer(ppid), Enum.join(args, " ")}
-    end
-  end
 
   # The shell's pid plus every (transitive) child.
   defp descendants(procs, root) do

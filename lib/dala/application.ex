@@ -15,6 +15,7 @@ defmodule Dala.Application do
       {DNSCluster, query: Application.get_env(:dala, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Dala.PubSub},
       {Registry, keys: :unique, name: Dala.Terminal.Registry},
+      Dala.Terminal.ProcessSnapshot,
       Dala.Terminal.WaiterLimiter,
       Dala.Terminal.Attachments,
       Dala.Lsp.Debug,

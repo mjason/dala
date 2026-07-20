@@ -38,7 +38,7 @@ defmodule Dala.Terminal.SessionTest do
     Server.request_repaint(session_id, self())
 
     receive do
-      {:repaint, data, _seq} -> data
+      {:repaint, data, _seq, _history_loaded} -> data
     after
       5_000 -> flunk("no repaint from holder")
     end
@@ -88,7 +88,10 @@ defmodule Dala.Terminal.SessionTest do
         System.cmd("zellij", ["delete-session", mux, "--force"], stderr_to_stdout: true)
       end)
 
+      Server.set_visibility(session.id, self(), "session-test", true)
       Server.input(session.id, "zellij attach --create #{mux}\r")
+      Process.sleep(500)
+      Dala.Terminal.ProcessSnapshot.refresh()
 
       # zellij takes a moment to come up; keep issuing cd until the poll
       # (2s cadence) reports the inner pane's directory.

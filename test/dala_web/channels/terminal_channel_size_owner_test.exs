@@ -435,6 +435,11 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
     unless done, do: drain_reset_replay!()
   end
 
+  defp drain_replay! do
+    assert_push "replay", %{done: done}, 8_000
+    unless done, do: drain_replay!()
+  end
+
   test "after join the channel re-pushes the current ownership (join-gap re-sync)" do
     session = create_session!()
 
@@ -516,6 +521,30 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
 
     assert Server.viewport(session.id) == {30, 90}
     assert_push "replay", %{reset: true}, 8_000
+  end
+
+  test "an initial attach that resizes a shared PTY repaints existing viewers" do
+    session = create_session!()
+
+    assert {:ok, _reply, owner} = join!(session.id, "dev-a")
+    push(owner, "attach", %{"rows" => 40, "cols" => 100})
+    sync!(owner, session.id)
+    drain_replay!()
+
+    assert {:ok, _reply, follower} = join!(session.id, "dev-b")
+    push(follower, "attach", %{"rows" => 40, "cols" => 100})
+    sync!(follower, session.id)
+    drain_replay!()
+
+    # A new window from the remembered owner device can re-own during its
+    # initial attach. Because the follower already renders the old grid, the
+    # optimization must retain the all-client full repaint in this case.
+    assert {:ok, _reply, reconnect} = join!(session.id, "dev-a")
+    push(reconnect, "attach", %{"rows" => 30, "cols" => 90})
+    sync!(reconnect, session.id)
+
+    assert Server.viewport(session.id) == {30, 90}
+    assert_push "replay", %{reset: true, historyLoaded: true}, 8_000
   end
 
   test "a same-device re-claim at the current dims skips the repaint fan-out" do

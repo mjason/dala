@@ -45,7 +45,7 @@ use std::thread;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 
-use crate::screen::Screen;
+use crate::screen::{Screen, REPAINT_HISTORY_BUDGET};
 
 /// Hard bounds on PTY/emulator dimensions, mirroring the server's clamp.
 /// The emulator allocates rows×cols cells on resize — a stray 65535×65535
@@ -116,9 +116,10 @@ struct Shared {
     exit_status: Option<u32>,
     /// Server-side emulator: grid + scrollback + modes.
     screen: Screen,
-    /// Repaints requested by the client (each with the requester's column
-    /// count, 0 = unknown), served once the ring is drained.
-    repaint_pending: VecDeque<u16>,
+    /// Repaints requested by the client: requester columns plus the maximum
+    /// scrollback bytes to synthesize. Zero history is a viewport-only fast
+    /// attach; old clients omit the budget and retain the bounded default.
+    repaint_pending: VecDeque<(u16, usize)>,
     /// Machine-readable snapshots requested by the BEAM, each carrying
     /// {logical line limit, UTF-8 byte limit}.
     text_snapshot_pending: VecDeque<(usize, usize)>,
@@ -323,12 +324,19 @@ fn main() {
                             gen,
                         )
                     } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
-                        let cols = shared.repaint_pending.pop_front().unwrap_or(0);
+                        let (cols, history_budget) = shared
+                            .repaint_pending
+                            .pop_front()
+                            .unwrap_or((0, REPAINT_HISTORY_BUDGET));
                         // Soft wraps are only correct when the requester's
                         // width matches the grid; anything else gets hard
                         // line breaks so the layout cannot shear.
                         let soft = cols as usize == shared.screen.columns();
-                        (Job::Repaint(shared.screen.repaint(soft)), stream, gen)
+                        (
+                            Job::Repaint(shared.screen.repaint_with_history(soft, history_budget)),
+                            stream,
+                            gen,
+                        )
                     } else if shared.client.is_some() && !shared.text_snapshot_pending.is_empty() {
                         let (lines, bytes) = shared.text_snapshot_pending.pop_front().unwrap();
                         let snapshot = shared.screen.text_snapshot(lines, bytes);
@@ -381,7 +389,7 @@ fn main() {
         let Ok(mut stream) = stream else { continue };
 
         let hello = format!(
-            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":4}}",
+            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":5}}",
             shell_pid, config.rows, config.cols
         );
         if write_frame(&mut stream, T_HELLO, hello.as_bytes()).is_err() {
@@ -435,13 +443,9 @@ fn main() {
                         });
                     }
                     Ok((T_REPAINT_REQ, data)) => {
-                        let cols = if data.len() >= 2 {
-                            u16::from_be_bytes([data[0], data[1]])
-                        } else {
-                            0
-                        };
+                        let (cols, history_budget) = parse_repaint_request(&data);
                         let mut shared = state.shared.lock().unwrap();
-                        shared.repaint_pending.push_back(cols);
+                        shared.repaint_pending.push_back((cols, history_budget));
                         state.cond.notify_all();
                     }
                     Ok((T_TEXT_SNAPSHOT_REQ, data)) if data.len() == 8 => {
@@ -468,6 +472,20 @@ fn main() {
             }
         });
     }
+}
+
+fn parse_repaint_request(data: &[u8]) -> (u16, usize) {
+    let cols = if data.len() >= 2 {
+        u16::from_be_bytes([data[0], data[1]])
+    } else {
+        0
+    };
+    let history_budget = if data.len() >= 6 {
+        u32::from_be_bytes(data[2..6].try_into().unwrap()) as usize
+    } else {
+        REPAINT_HISTORY_BUDGET
+    };
+    (cols, history_budget.min(REPAINT_HISTORY_BUDGET))
 }
 
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
@@ -722,6 +740,25 @@ mod frame_tests {
         let (ty, payload) = read_frame(&mut Cursor::new(buf)).unwrap();
         assert_eq!(ty, T_INPUT);
         assert_eq!(payload, b"echo hello\n");
+    }
+
+    #[test]
+    fn repaint_request_supports_fast_screen_and_legacy_clients() {
+        assert_eq!(
+            parse_repaint_request(&80u16.to_be_bytes()),
+            (80, REPAINT_HISTORY_BUDGET)
+        );
+
+        let mut fast = 120u16.to_be_bytes().to_vec();
+        fast.extend(0u32.to_be_bytes());
+        assert_eq!(parse_repaint_request(&fast), (120, 0));
+
+        let mut oversized = 90u16.to_be_bytes().to_vec();
+        oversized.extend(u32::MAX.to_be_bytes());
+        assert_eq!(
+            parse_repaint_request(&oversized),
+            (90, REPAINT_HISTORY_BUDGET)
+        );
     }
 
     #[test]

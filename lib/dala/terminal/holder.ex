@@ -19,6 +19,7 @@ defmodule Dala.Terminal.Holder do
   @type_kill 0x13
   @type_repaint_req 0x14
   @type_text_snapshot_req 0x15
+  @repaint_history_budget 512 * 1024
 
   @connect_attempts 40
   @connect_delay_ms 25
@@ -131,12 +132,17 @@ defmodule Dala.Terminal.Holder do
   def send_kill(socket), do: :gen_tcp.send(socket, <<@type_kill>>)
 
   @doc """
-  Ask the holder for a synthesized full repaint (answered as a REPAINT
-  frame). `cols` is the requesting viewer's width: the holder soft-wraps
-  only when it matches the grid, hard-breaking otherwise.
+  Ask the holder for a synthesized repaint (answered as a REPAINT frame).
+  `cols` is the requesting viewer's width: the holder soft-wraps only when it
+  matches the grid, hard-breaking otherwise. `history_budget` bounds the
+  included scrollback bytes; zero renders only the current viewport.
   """
-  def send_repaint_req(socket, cols),
-    do: :gen_tcp.send(socket, <<@type_repaint_req, cols::16>>)
+  def repaint_history_budget, do: @repaint_history_budget
+
+  def send_repaint_req(socket, cols, history_budget \\ @repaint_history_budget) do
+    budget = history_budget |> max(0) |> min(@repaint_history_budget)
+    :gen_tcp.send(socket, <<@type_repaint_req, cols::16, budget::32>>)
+  end
 
   @doc "Ask the holder for a bounded plain-text JSON snapshot."
   def send_text_snapshot_req(socket, lines, max_bytes),

@@ -2,7 +2,7 @@ defmodule Dala.Terminal.ViewersTest do
   # Shadows `ps`/`kill` with fake executables via PATH (process-global) — never async.
   use ExUnit.Case, async: false
 
-  alias Dala.Terminal.Viewers
+  alias Dala.Terminal.{ProcessSnapshot, Viewers}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "viewers-#{System.unique_integer([:positive])}")
@@ -30,6 +30,22 @@ defmodule Dala.Terminal.ViewersTest do
     table_file = Path.join(dir, "ps-table.txt")
     File.write!(table_file, table)
     fake_bin(dir, "ps", ~s(cat "#{table_file}"\n))
+    ProcessSnapshot.refresh()
+  end
+
+  test "reuses one process snapshot across repeated mux lookups", %{dir: dir} do
+    calls = Path.join(dir, "ps-calls.txt")
+
+    fake_bin(
+      dir,
+      "ps",
+      ~s(echo call >> "#{calls}"\nprintf '100 1 -zsh\\n200 100 tmux attach\\n')
+    )
+
+    ProcessSnapshot.refresh()
+    assert Viewers.find_mux(100) == {:tmux, 200}
+    assert Viewers.find_mux(100) == {:tmux, 200}
+    assert File.read!(calls) |> String.split("\n", trim: true) |> length() == 1
   end
 
   describe "find_mux/1 zellij client arg parsing" do

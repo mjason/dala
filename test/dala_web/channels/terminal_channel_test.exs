@@ -39,7 +39,7 @@ defmodule DalaWeb.TerminalChannelTest do
     assert {:ok, %{status: :running}, socket} = join!(session.id)
     attach!(socket)
 
-    assert_replay_containing("repaint-me-42")
+    assert_replay_containing("repaint-me-42", false)
   end
 
   test "join on an exited session serves the final screen file" do
@@ -58,14 +58,95 @@ defmodule DalaWeb.TerminalChannelTest do
     assert_replay_containing("final-words")
   end
 
-  defp assert_replay_containing(text, acc \\ "") do
-    assert_push "replay", %{data: data, done: done}, 5_000
+  defp assert_replay_containing(text, expected_history \\ nil, acc \\ "") do
+    assert_push "replay", %{data: data, done: done} = payload, 5_000
+    if expected_history != nil, do: assert(payload.historyLoaded == expected_history)
     acc = acc <> Base.decode64!(data)
 
     cond do
       acc =~ text -> :ok
       done -> flunk("replay finished without containing #{inspect(text)}")
-      true -> assert_replay_containing(text, acc)
+      true -> assert_replay_containing(text, expected_history, acc)
+    end
+  end
+
+  test "cold attach paints the current screen first and loads scrollback on demand" do
+    session = create_session!()
+    id = to_string(session.id)
+
+    Server.input(
+      id,
+      "echo OLDEST_MARK; for i in {1..80}; do echo history-$i; done; echo CURRENT_MARK\r"
+    )
+
+    Process.sleep(500)
+
+    assert {:ok, _reply, socket} = join!(id)
+    # Browser pools report visibility around attach. The new client must not
+    # count as an existing viewer and accidentally trigger a full repaint.
+    push(socket, "visibility", %{"visible" => true})
+    attach!(socket, 8, 80)
+
+    {initial, initial_history} = collect_replay()
+    assert initial_history == false
+    assert initial =~ "CURRENT_MARK"
+    refute initial =~ "OLDEST_MARK"
+
+    push(socket, "load_history", %{})
+    {full, full_history} = collect_replay()
+    assert full_history == true
+    assert full =~ "OLDEST_MARK"
+    assert full =~ "CURRENT_MARK"
+  end
+
+  test "a dirty hidden viewer can catch up with a viewport-only repaint" do
+    session = create_session!()
+    id = to_string(session.id)
+    Server.input(id, "echo VIEWPORT_CATCH_UP\r")
+    Process.sleep(200)
+
+    assert {:ok, _reply, socket} = join!(id)
+    attach!(socket, 8, 80)
+    {_initial, false} = collect_replay()
+
+    push(socket, "catch_up", %{})
+    {repaint, history_loaded} = collect_replay()
+
+    assert history_loaded == false
+    assert repaint =~ "VIEWPORT_CATCH_UP"
+  end
+
+  test "viewer visibility is tracked by the terminal server" do
+    session = create_session!()
+    id = to_string(session.id)
+    assert {:ok, _reply, socket} = join!(id)
+    attach!(socket)
+    collect_replay()
+
+    push(socket, "visibility", %{"visible" => false})
+    eventually(fn -> MapSet.size(:sys.get_state(Server.whereis(id)).visible_clients) == 0 end)
+
+    push(socket, "visibility", %{"visible" => true})
+    eventually(fn -> MapSet.size(:sys.get_state(Server.whereis(id)).visible_clients) == 1 end)
+  end
+
+  defp collect_replay(acc \\ "", history \\ nil) do
+    assert_push "replay", %{data: data, done: done, historyLoaded: loaded}, 5_000
+    acc = acc <> Base.decode64!(data)
+    history = if history == nil, do: loaded, else: history
+    assert loaded == history
+    if done, do: {acc, history}, else: collect_replay(acc, history)
+  end
+
+  defp eventually(fun, attempts \\ 50)
+  defp eventually(fun, 0), do: assert(fun.())
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
     end
   end
 

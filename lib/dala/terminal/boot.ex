@@ -20,10 +20,46 @@ defmodule Dala.Terminal.Boot do
   end
 
   def run do
-    Dala.Terminal.Session
-    |> Ash.Query.filter(status == :running)
-    |> Ash.read!()
-    |> Enum.each(&reconcile/1)
+    sessions =
+      Dala.Terminal.Session
+      |> Ash.Query.filter(status == :running)
+      |> Ash.read!()
+
+    run_bounded(sessions, &reconcile/1, max_concurrency: 4)
+  end
+
+  @doc false
+  def run_bounded(items, fun, opts \\ []) when is_function(fun, 1) do
+    max_concurrency = Keyword.get(opts, :max_concurrency, 4)
+
+    items
+    |> Task.async_stream(
+      fn item ->
+        try do
+          fun.(item)
+          :ok
+        rescue
+          error -> {:error, Exception.format(:error, error, __STACKTRACE__)}
+        catch
+          kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
+        end
+      end,
+      max_concurrency: max_concurrency,
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Enum.each(fn
+      {:ok, :ok} ->
+        :ok
+
+      {:ok, {:error, formatted}} ->
+        Logger.error("terminal boot reconciliation failed:\n#{formatted}")
+
+      {:exit, reason} ->
+        Logger.error("terminal boot reconciliation exited: #{inspect(reason)}")
+    end)
+
+    :ok
   end
 
   defp reconcile(session) do

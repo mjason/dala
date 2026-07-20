@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -36,6 +36,8 @@ import { isMac } from "./shortcuts";
 import { getDeviceId } from "./deviceId";
 import { sizeRole, type SizeRole } from "./sizeRole";
 import { useI18n } from "./i18n";
+import { createHiddenOutputBuffer } from "./hiddenOutputBuffer";
+import { createLazyHistory, type HistoryIntent } from "./lazyHistory";
 
 // Wait for the bundled font faces (the guaranteed fallback of every stack)
 // before the terminal measures its cell size — measuring against a fallback
@@ -121,6 +123,7 @@ const reflowTipSeen = new Set<string>();
 
 // How long the width-change tip stays up (visible countdown, then gone).
 const REFLOW_TIP_SECONDS = 5;
+const HIDDEN_OUTPUT_LIMIT = 128 * 1024;
 
 export default function TerminalView({
   sessionId,
@@ -139,6 +142,8 @@ export default function TerminalView({
   visibleRef.current = visible;
   const localActionsRef = useRef<TerminalActions | null>(null);
   const relayoutRef = useRef<((force?: boolean) => void) | null>(null);
+  const visibilityActionRef = useRef<(nextVisible: boolean) => void>(() => {});
+  const loadHistoryRef = useRef<(intent: HistoryIntent) => boolean>(() => false);
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
@@ -174,6 +179,8 @@ export default function TerminalView({
   const findInputRef = useRef<HTMLInputElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
+  const findQueryRef = useRef(findQuery);
+  findQueryRef.current = findQuery;
   const [findCount, setFindCount] = useState<{ index: number; count: number }>({
     index: -1,
     count: 0,
@@ -182,6 +189,7 @@ export default function TerminalView({
   // always sees the latest React setters.
   const openFindRef = useRef(() => {});
   openFindRef.current = () => {
+    loadHistoryRef.current("find");
     setFindOpen(true);
     requestAnimationFrame(() => findInputRef.current?.select());
   };
@@ -492,6 +500,17 @@ export default function TerminalView({
         device_id: deviceId,
       });
       const channel = phxChannel as unknown as TerminalChannel;
+      const lazyHistory = createLazyHistory();
+      const hiddenOutput = createHiddenOutputBuffer(HIDDEN_OUTPUT_LIMIT);
+      let viewerVisible = visibleRef.current && document.visibilityState === "visible";
+
+      const requestHistory = (intent: HistoryIntent) => {
+        if (!lazyHistory.request(intent)) return false;
+        setReplaying(true);
+        phxChannel.push("load_history", {});
+        return true;
+      };
+      loadHistoryRef.current = requestHistory;
 
       // See streamGate.ts for the replay/dedup/input-guard invariants.
       const gate = createStreamGate();
@@ -502,15 +521,17 @@ export default function TerminalView({
       // server can bound the in-flight backlog per client (and skip-to-
       // repaint on slow links). Counting parsed bytes — not received ones —
       // also covers renderer backpressure.
-      const flowStats = ((window as unknown as Record<string, unknown>).__dalaFlow = {
+      const flowStats = {
         acked: 0,
         resets: 0,
-      });
+      };
       // Debug/e2e handle: WebGL leaves no text in the DOM, so tests read the
       // emulator buffer through this instead of scraping HTML. Only the main
       // session view (debugHandle) binds it — see the Props doc.
       if (debugHandle && visibleRef.current) {
-        (window as unknown as Record<string, unknown>).__dalaTerm = term;
+        const debugWindow = window as unknown as Record<string, unknown>;
+        debugWindow.__dalaTerm = term;
+        debugWindow.__dalaFlow = flowStats;
       }
       const ackCounter = createAckCounter((bytes, alt) => {
         flowStats.acked += bytes;
@@ -553,17 +574,43 @@ export default function TerminalView({
         });
       };
 
+      visibilityActionRef.current = (nextVisible) => {
+        if (viewerVisible === nextVisible) return;
+        viewerVisible = nextVisible;
+        phxChannel.push("visibility", { visible: nextVisible });
+        if (!nextVisible) return;
+        if (debugHandle) {
+          (window as unknown as Record<string, unknown>).__dalaFlow = flowStats;
+        }
+
+        if (hiddenOutput.isDirty()) {
+          setReplaying(true);
+          phxChannel.push("catch_up", {});
+          return;
+        }
+
+        const pending = hiddenOutput.drain();
+        if (pending.byteLength > 0) {
+          writeCounted(typeahead.reconcile(pending));
+        }
+      };
+
       const refs = onTerminalChannelMessages(channel, {
         replay: (payload) => {
           // reset flag = mid-session flow-control snapshot: treat it as a
           // fresh join so the screen clears and the seq baseline moves.
-          if ((payload as { reset?: boolean }).reset) {
+          if (payload.reset) {
             gate.joined();
             flowStats.resets += 1;
           }
           const { reset, release } = gate.replayBatch(payload.seq, payload.done);
           if (reset) {
             typeahead.abandon();
+            ackCounter.consumed(
+              hiddenOutput.byteLength(),
+              term.buffer.active.type === "alternate",
+            );
+            hiddenOutput.reset();
             term.reset();
             setReplaying(true);
           }
@@ -574,6 +621,11 @@ export default function TerminalView({
               gate.replayParsed();
               term.scrollToBottom();
               setReplaying(false);
+              const intent = lazyHistory.finishReplay(payload.historyLoaded);
+              if (intent === "scroll") term.scrollLines(-term.rows);
+              if (intent === "find" && findQueryRef.current) {
+                runFind(1, findQueryRef.current, true);
+              }
             });
           } else {
             writeCounted(data);
@@ -581,7 +633,13 @@ export default function TerminalView({
         },
         output: (payload) => {
           if (!gate.acceptOutput(payload.seq)) return;
-          writeCounted(typeahead.reconcile(base64ToBytes(payload.data)));
+          const data = base64ToBytes(payload.data);
+          if (!viewerVisible) {
+            const buffered = hiddenOutput.push(data);
+            ackCounter.consumed(buffered.droppedBytes, term.buffer.active.type === "alternate");
+            return;
+          }
+          writeCounted(typeahead.reconcile(data));
         },
         cwd: (payload) => {
           cwdChangeRef.current?.(payload.cwd);
@@ -943,6 +1001,7 @@ export default function TerminalView({
       };
       const reset = () => {
         term.reset();
+        setReplaying(true);
         refit();
         // Ask the server for a fresh holder snapshot, delivered to this
         // client as a reset replay. (A \f keystroke would only redraw a bare
@@ -1004,7 +1063,6 @@ export default function TerminalView({
               // first `ls` renders at the default 80-col size until a later
               // resize/repaint corrects it).
               fit.fit();
-              pushResize();
               // Report the settled viewport; the server resizes the PTY
               // first and only then renders the attach repaint, so its soft
               // wraps match this exact width.
@@ -1016,6 +1074,10 @@ export default function TerminalView({
               window.setTimeout(() => relayout(true), 120);
               window.setTimeout(() => relayout(true), 600);
             }
+            // Attach first: otherwise this new viewer looks like an existing
+            // client during its initial resize and can trigger an unnecessary
+            // full-history repaint ahead of the viewport-only repaint.
+            phxChannel.push("visibility", { visible: viewerVisible });
           },
         )
         .receive("error", () => {
@@ -1133,9 +1195,20 @@ export default function TerminalView({
       };
       const scrollRoute = () =>
         touchScrollRoute(term.buffer.active.type, term.modes.mouseTrackingMode);
+      const onHistoryWheel = (event: WheelEvent) => {
+        if (event.deltaY >= 0 || scrollRoute() !== "lines" || lazyHistory.isLoaded()) return;
+        requestHistory("scroll");
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      container.addEventListener("wheel", onHistoryWheel, { capture: true, passive: false });
       const applyPanLines = (lines: number, clientX: number, clientY: number) => {
         if (lines === 0) return;
         if (scrollRoute() === "lines") {
+          if (lines < 0 && !lazyHistory.isLoaded()) {
+            requestHistory("scroll");
+            return;
+          }
           term.scrollLines(lines);
           return;
         }
@@ -1234,7 +1307,9 @@ export default function TerminalView({
       // (via window resize on most browsers), and the tab becoming visible.
       const onWindowResize = () => relayout();
       const onVisibilityChange = () => {
-        if (document.visibilityState === "visible") relayout(true);
+        const pageVisible = document.visibilityState === "visible";
+        visibilityActionRef.current(visibleRef.current && pageVisible);
+        if (pageVisible) relayout(true);
       };
       window.addEventListener("resize", onWindowResize);
       document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1243,10 +1318,13 @@ export default function TerminalView({
         if (actionsRef && actionsRef.current === localActionsRef.current) actionsRef.current = null;
         localActionsRef.current = null;
         relayoutRef.current = null;
+        visibilityActionRef.current = () => {};
+        loadHistoryRef.current = () => false;
         // Only drop the debug handle when it is still OURS — a newer view
         // (session switch) may have rebound it already.
         const w = window as unknown as Record<string, unknown>;
         if (w.__dalaTerm === term) delete w.__dalaTerm;
+        if (w.__dalaFlow === flowStats) delete w.__dalaFlow;
         claimSizeRef.current = null;
         setSizeFollower(false);
         hideReflowTip();
@@ -1258,6 +1336,7 @@ export default function TerminalView({
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd);
         container.removeEventListener("touchcancel", onTouchCancel);
+        container.removeEventListener("wheel", onHistoryWheel, true);
         observer.disconnect();
         canvasObserver?.disconnect();
         window.clearTimeout(coverTimer);
@@ -1294,7 +1373,8 @@ export default function TerminalView({
   // Pooled visibility: on reveal, this instance claims the shared action/
   // debug handles, re-checks layout (a window resize may have landed while
   // hidden) and takes focus; hiding releases the claims to the next view.
-  useEffect(() => {
+  useLayoutEffect(() => {
+    visibilityActionRef.current(visible && document.visibilityState === "visible");
     if (!visible) return;
     if (actionsRef && localActionsRef.current) actionsRef.current = localActionsRef.current;
     if (debugHandle && termRef.current) {

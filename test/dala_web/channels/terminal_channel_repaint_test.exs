@@ -49,7 +49,10 @@ defmodule DalaWeb.TerminalChannelRepaintTest do
   # Collects one full replay (until done: true) and returns its decoded bytes
   # plus the reset flag of the first batch.
   defp collect_replay(timeout \\ 8_000, acc \\ "", reset \\ nil) do
-    assert_push "replay", %{done: done, reset: batch_reset, data: data}, timeout
+    assert_push "replay",
+                %{done: done, reset: batch_reset, data: data, historyLoaded: true},
+                timeout
+
     acc = acc <> Base.decode64!(data)
     reset = if is_nil(reset), do: batch_reset, else: reset
     if done, do: {acc, reset}, else: collect_replay(timeout, acc, reset)

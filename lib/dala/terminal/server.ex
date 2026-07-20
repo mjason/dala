@@ -18,7 +18,8 @@ defmodule Dala.Terminal.Server do
 
   alias Dala.Terminal.Holder
 
-  @cwd_poll_ms 2_000
+  @cwd_poll_visible_ms 2_000
+  @cwd_poll_hidden_ms 30_000
   @force_stop_ms 5_000
   # Hard bounds on the PTY size, applied at the single choke point every
   # resize funnels through (apply_size/4). The channel clamps its inputs too,
@@ -63,6 +64,12 @@ defmodule Dala.Terminal.Server do
 
   @doc "Write keyboard input (raw bytes) to the PTY."
   def input(id, data), do: cast_if_alive(id, {:input, data})
+
+  @doc "Track whether a channel is actively visible to its user."
+  def set_visibility(id, client, client_ref, visible)
+      when is_pid(client) and is_boolean(visible) do
+    cast_if_alive(id, {:set_visibility, client, client_ref, visible})
+  end
 
   @doc """
   Enqueue one complete rich-input delivery. Frames from separate callers are
@@ -112,6 +119,14 @@ defmodule Dala.Terminal.Server do
     case whereis(id) do
       nil -> :ok
       pid -> GenServer.call(pid, {:resize, client, client_ref, device_id, rows, cols})
+    end
+  end
+
+  @doc "Initial viewport report; resizes without an extra repaint fan-out."
+  def attach(id, client, client_ref, device_id, rows, cols) when is_pid(client) do
+    case whereis(id) do
+      nil -> :ok
+      pid -> GenServer.call(pid, {:attach, client, client_ref, device_id, rows, cols})
     end
   end
 
@@ -171,11 +186,18 @@ defmodule Dala.Terminal.Server do
 
   @doc """
   Asks the holder for a synthesized repaint and delivers it to `client` as a
-  `{:repaint, data, seq}` message. `seq` is the seq of the last output the
-  repaint covers, so the client can deduplicate the live stream against it.
+  `{:repaint, data, seq, history_loaded}` message. `seq` is the seq of the
+  last output the repaint covers, so the client can deduplicate the live
+  stream against it.
   """
-  def request_repaint(id, client) when is_pid(client),
-    do: cast_if_alive(id, {:request_repaint, client})
+  def request_repaint(id, client, opts \\ []) when is_pid(client) do
+    history_budget =
+      if Keyword.get(opts, :history, :full) == :screen,
+        do: 0,
+        else: Holder.repaint_history_budget()
+
+    cast_if_alive(id, {:request_repaint, client, history_budget})
+  end
 
   @doc "A bounded machine-readable plain-text snapshot of the terminal."
   def snapshot(id, opts \\ []) do
@@ -350,6 +372,10 @@ defmodule Dala.Terminal.Server do
           input_active: nil,
           # Monitored client channel pids -> their public client_ref.
           clients: %{},
+          # Visible viewers need responsive cwd updates. Warm pooled viewers
+          # stay attached but use the much slower background cadence.
+          visible_clients: MapSet.new(),
+          cwd_poll_timer: nil,
           # The LIVE size owner as {pid, client_ref}, or nil. Only the
           # owner's resize reaches the PTY.
           owner: nil,
@@ -383,8 +409,7 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_continue(:post_init, state) do
     state = %{state | session: Dala.Terminal.mark_running!(refresh_session(state))}
-    Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
-    {:noreply, state}
+    {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
   end
 
   @impl true
@@ -465,6 +490,15 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_call({:resize, client, client_ref, device_id, rows, cols}, _from, state) do
+    handle_resize(client, client_ref, device_id, rows, cols, false, state)
+  end
+
+  def handle_call({:attach, client, client_ref, device_id, rows, cols}, _from, state) do
+    handle_resize(client, client_ref, device_id, rows, cols, true, state)
+  end
+
+  defp handle_resize(client, client_ref, device_id, rows, cols, initial_attach?, state) do
+    had_other_clients? = Enum.any?(state.clients, fn {pid, _ref} -> pid != client end)
     state = track_client(state, client, client_ref)
 
     cond do
@@ -496,7 +530,11 @@ defmodule Dala.Terminal.Server do
           |> remember_device(device_id)
           |> become_owner(client, client_ref, rows, cols)
 
-        state = if state.size == old_size, do: state, else: request_repaint_all(state)
+        state =
+          if state.size == old_size or (initial_attach? and not had_other_clients?),
+            do: state,
+            else: request_repaint_all(state)
+
         {:reply, :claimed, state}
 
       true ->
@@ -524,6 +562,28 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_cast({:input, data}, state) do
     _ = Holder.send_input(state.socket, data)
+    {:noreply, state}
+  end
+
+  def handle_cast({:set_visibility, client, client_ref, visible}, state) do
+    had_visible? = MapSet.size(state.visible_clients) > 0
+    state = track_client(state, client, client_ref)
+
+    visible_clients =
+      if visible,
+        do: MapSet.put(state.visible_clients, client),
+        else: MapSet.delete(state.visible_clients, client)
+
+    state = %{state | visible_clients: visible_clients}
+    has_visible? = MapSet.size(visible_clients) > 0
+
+    state =
+      cond do
+        not had_visible? and has_visible? -> schedule_cwd_poll(state, 0)
+        had_visible? and not has_visible? -> schedule_cwd_poll(state, @cwd_poll_hidden_ms)
+        true -> state
+      end
+
     {:noreply, state}
   end
 
@@ -555,19 +615,20 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  def handle_cast({:request_repaint, client}, state) do
+  def handle_cast({:request_repaint, client, history_budget}, state) do
     # Every client renders the grid at the PTY's actual size (the owner
     # drives it, followers mirror it), so the repaint's soft wraps must be
     # generated at exactly that width.
     cols = elem(state.size, 1)
 
-    case Holder.send_repaint_req(state.socket, cols) do
+    case Holder.send_repaint_req(state.socket, cols, history_budget) do
       :ok ->
-        {:noreply, %{state | pending_repaints: :queue.in(client, state.pending_repaints)}}
+        pending = :queue.in({client, history_budget}, state.pending_repaints)
+        {:noreply, %{state | pending_repaints: pending}}
 
       {:error, _reason} ->
         # Holder unreachable — answer empty so the client is not left covered.
-        send(client, {:repaint, "", state.seq})
+        send(client, {:repaint, "", state.seq, true})
         {:noreply, state}
     end
   end
@@ -599,7 +660,18 @@ defmodule Dala.Terminal.Server do
     # ownership WITHOUT resizing — but keep the device memory: the PTY
     # keeps its dimensions and stays reserved for the remembered device
     # until it reconnects or another device explicitly claims.
-    state = %{state | clients: Map.delete(state.clients, pid)}
+    was_visible? = MapSet.member?(state.visible_clients, pid)
+
+    state = %{
+      state
+      | clients: Map.delete(state.clients, pid),
+        visible_clients: MapSet.delete(state.visible_clients, pid)
+    }
+
+    state =
+      if was_visible? and MapSet.size(state.visible_clients) == 0,
+        do: schedule_cwd_poll(state, @cwd_poll_hidden_ms),
+        else: state
 
     case state.owner do
       {^pid, _client_ref} ->
@@ -654,20 +726,22 @@ defmodule Dala.Terminal.Server do
 
   def handle_info({:input_frame, _stale_ref}, state), do: {:noreply, state}
 
-  def handle_info(:poll_cwd, state) do
+  def handle_info({:poll_cwd, ref}, %{cwd_poll_timer: {ref, _timer}} = state) do
+    state = %{state | cwd_poll_timer: nil}
     {state, cwd} = poll_cwd_once(state)
     state = if cwd, do: apply_cwd(state, cwd), else: state
 
-    Process.send_after(self(), :poll_cwd, @cwd_poll_ms)
-    {:noreply, state}
+    {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
   end
+
+  def handle_info({:poll_cwd, _stale_ref}, state), do: {:noreply, state}
 
   # zellij/tmux never forward their panes' OSC 7 and their shells live under
   # a detached server invisible to /proc — while a multiplexer client runs in
   # this session, ask the multiplexer itself for the focused pane's cwd.
-  # Detection (one ps scan) runs every tick while no mux is known, so
-  # entering zellij/tmux is picked up within a poll interval; a failing query
-  # (the mux session died) falls back to detection on the next tick.
+  # Detection reads the shared short-lived process snapshot while no mux is
+  # known, so all sessions amortize one `ps` scan; a failing mux query falls
+  # back to detection on the next tick.
   defp poll_cwd_once(%{mux: nil} = state) do
     case Dala.Terminal.Viewers.find_mux(state.shell_pid) do
       nil ->
@@ -725,17 +799,22 @@ defmodule Dala.Terminal.Server do
         # The socket is FIFO: every output the repaint covers has already
         # been processed, so state.seq is exactly the repaint's watermark.
         case :queue.out(state.pending_repaints) do
-          {{:value, :all_clients}, rest} ->
+          {{:value, {:all_clients, history_budget}}, rest} ->
             # Ownership takeover: every attached client replaces its screen
             # with this snapshot (reset replay), not just one requester.
             Enum.each(Map.keys(state.clients), fn client ->
-              send(client, {:repaint_reset, payload, state.seq})
+              send(client, {
+                :repaint_reset,
+                payload,
+                state.seq,
+                history_loaded?(state, history_budget)
+              })
             end)
 
             {:noreply, %{state | pending_repaints: rest}}
 
-          {{:value, client}, rest} ->
-            send(client, {:repaint, payload, state.seq})
+          {{:value, {client, history_budget}}, rest} ->
+            send(client, {:repaint, payload, state.seq, history_loaded?(state, history_budget)})
             {:noreply, %{state | pending_repaints: rest}}
 
           {:empty, _queue} ->
@@ -844,6 +923,23 @@ defmodule Dala.Terminal.Server do
     end
   end
 
+  defp cwd_poll_interval(state) do
+    if MapSet.size(state.visible_clients) > 0,
+      do: @cwd_poll_visible_ms,
+      else: @cwd_poll_hidden_ms
+  end
+
+  defp schedule_cwd_poll(state, delay) do
+    if state.cwd_poll_timer do
+      {_message_ref, timer} = state.cwd_poll_timer
+      Process.cancel_timer(timer)
+    end
+
+    message_ref = make_ref()
+    timer = Process.send_after(self(), {:poll_cwd, message_ref}, delay)
+    %{state | cwd_poll_timer: {message_ref, timer}}
+  end
+
   # Monitor each client the first time we hear from it, so ownership is
   # released when its channel process exits.
   defp track_client(state, client, client_ref) do
@@ -905,10 +1001,25 @@ defmodule Dala.Terminal.Server do
   defp request_repaint_all(state) do
     cols = elem(state.size, 1)
 
-    case Holder.send_repaint_req(state.socket, cols) do
-      :ok -> %{state | pending_repaints: :queue.in(:all_clients, state.pending_repaints)}
-      {:error, _reason} -> state
+    history_budget = Holder.repaint_history_budget()
+
+    case Holder.send_repaint_req(state.socket, cols, history_budget) do
+      :ok ->
+        %{
+          state
+          | pending_repaints: :queue.in({:all_clients, history_budget}, state.pending_repaints)
+        }
+
+      {:error, _reason} ->
+        state
     end
+  end
+
+  # Protocol v5 is the first holder that honors the extended repaint budget.
+  # An old holder ignores the extra four bytes and returns its normal full
+  # snapshot, so report that conservative truth to the browser.
+  defp history_loaded?(%{holder_proto: proto}, history_budget) do
+    history_budget > 0 or not (is_integer(proto) and proto >= 5)
   end
 
   # Sizes the PTY to the owner's viewport. No-op when unchanged (unless

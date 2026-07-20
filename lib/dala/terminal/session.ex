@@ -350,10 +350,14 @@ defmodule Dala.Terminal.Session do
         fields: [
           data: [type: :string, allow_nil?: false],
           seq: [type: :integer, allow_nil?: false],
-          done: [type: :boolean, allow_nil?: false]
+          done: [type: :boolean, allow_nil?: false],
+          reset: [type: :boolean, allow_nil?: false],
+          historyLoaded: [type: :boolean, allow_nil?: false]
         ]
       ],
-      transform: fn _notification -> %{data: "", seq: 0, done: true} end
+      transform: fn _notification ->
+        %{data: "", seq: 0, done: true, reset: false, historyLoaded: true}
+      end
   end
 
   attributes do

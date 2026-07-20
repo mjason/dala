@@ -35,6 +35,7 @@ import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
 import { planDelivery, resolveApp } from "./agentDelivery";
 import LeaderMenu from "./LeaderMenu";
+import { nextWarmSession, terminalWarmLimit, touchTerminalPool } from "./terminalPool";
 
 type Toast = { id: number; message: string };
 
@@ -539,26 +540,64 @@ export default function App() {
 
   const [leaderOpen, setLeaderOpen] = useState(false);
 
-  // MRU terminal pool: the last few sessions keep their TerminalView alive
+  // MRU terminal pool: common desktop workspaces stay warm, while touch and
+  // low-memory devices retain conservative caps. Cold sessions are mounted
+  // one at a time during idle periods so startup remains interactive.
   // (visibility:hidden) — switching back skips the teardown/rebuild/repaint
   // cycle entirely and shows the live screen instantly. Hidden views keep
   // real layout dimensions, so resizes/streams stay correct while parked.
-  const TERM_POOL_SIZE = 3;
-  const [termPool, setTermPool] = useState<string[]>([]);
+  const termPoolLimit = terminalWarmLimit({
+    coarsePointer,
+    deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+  });
+  const [termPool, setTermPool] = useState<string[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("dala:terminal-pool") || "[]");
+      return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   useEffect(() => {
     if (!active?.id) return;
-    setTermPool((prev) =>
-      [active.id, ...prev.filter((id) => id !== active.id)].slice(0, TERM_POOL_SIZE),
-    );
+    setTermPool((prev) => touchTerminalPool(prev, active.id, termPoolLimit));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id]);
+  }, [active?.id, termPoolLimit]);
   // Deleted sessions leave the pool (their channel/process is gone).
   useEffect(() => {
+    if (!connected) return;
     setTermPool((prev) => {
-      const alive = prev.filter((id) => sessions.some((s) => s.id === id));
+      const alive = prev
+        .filter((id) => sessions.some((s) => s.id === id))
+        .slice(0, termPoolLimit);
       return alive.length === prev.length ? prev : alive;
     });
-  }, [sessions]);
+  }, [connected, sessions, termPoolLimit]);
+  useEffect(() => {
+    localStorage.setItem("dala:terminal-pool", JSON.stringify(termPool));
+  }, [termPool]);
+  useEffect(() => {
+    if (!connected || termPool.length >= termPoolLimit) return;
+    const preferred = ordered.map((session) => session.id);
+    const warm = () => {
+      setTermPool((prev) => {
+        const candidate = nextWarmSession(prev, preferred, termPoolLimit);
+        return candidate ? [...prev, candidate] : prev;
+      });
+    };
+
+    const idleWindow = window as Window & {
+      requestIdleCallback?: typeof window.requestIdleCallback;
+      cancelIdleCallback?: typeof window.cancelIdleCallback;
+    };
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const id = idleWindow.requestIdleCallback(warm, { timeout: 1_500 });
+      return () => idleWindow.cancelIdleCallback?.(id);
+    }
+
+    const id = globalThis.setTimeout(warm, 250);
+    return () => globalThis.clearTimeout(id);
+  }, [connected, ordered, termPool, termPoolLimit]);
 
   // Leader-menu executor: every which-key leaf lands here.
   const runLeaderAction = (action: string) => {

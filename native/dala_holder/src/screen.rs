@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 /// parses the whole repaint synchronously; ~512 KiB is tens of milliseconds
 /// of xterm parsing (thousands of ordinary lines) — a snappy attach — while
 /// the full history could reach many megabytes under a chatty AI TUI.
-const REPAINT_HISTORY_BUDGET: usize = 512 * 1024;
+pub const REPAINT_HISTORY_BUDGET: usize = 512 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,6 +138,14 @@ impl Screen {
     /// client rebuilds logical lines — only valid when the client's width
     /// matches this grid; otherwise hard breaks keep the layout intact.
     pub fn repaint(&self, soft_wrap: bool) -> Vec<u8> {
+        self.repaint_with_history(soft_wrap, REPAINT_HISTORY_BUDGET)
+    }
+
+    /// Repaint with a caller-selected scrollback byte budget. A zero budget
+    /// paints only the current viewport, which keeps cold session switches
+    /// interactive while the holder retains full history for an on-demand
+    /// repaint later.
+    pub fn repaint_with_history(&self, soft_wrap: bool, history_budget: usize) -> Vec<u8> {
         let term = &self.term;
         let grid = term.grid();
         let mode = *term.mode();
@@ -168,9 +176,16 @@ impl Screen {
                 let line = Line(i as i32 - history as i32);
                 let mut scratch: Vec<u8> = Vec::with_capacity(64);
                 let mut scratch_pen = Pen::default();
-                let wrapped = render_row(&mut scratch, &mut scratch_pen, grid, line, columns, soft_wrap);
+                let wrapped = render_row(
+                    &mut scratch,
+                    &mut scratch_pen,
+                    grid,
+                    line,
+                    columns,
+                    soft_wrap,
+                );
                 let row_len = scratch.len() + if wrapped { 0 } else { 2 };
-                if used + row_len > REPAINT_HISTORY_BUDGET {
+                if used + row_len > history_budget {
                     break;
                 }
                 used += row_len;
@@ -182,7 +197,9 @@ impl Screen {
             while first > 0 && first < history {
                 let prev = Line(first as i32 - 1 - history as i32);
                 let prev_wraps = columns > 0
-                    && grid[prev][Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+                    && grid[prev][Column(columns - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE);
                 if prev_wraps {
                     first += 1;
                 } else {
@@ -752,6 +769,20 @@ mod tests {
         let out = text(&screen.repaint(true));
         assert!(out.contains("line-0"));
         assert!(out.contains("line-9"));
+    }
+
+    #[test]
+    fn screen_only_repaint_excludes_scrollback_but_keeps_the_viewport() {
+        let mut screen = Screen::new(3, 20, 100);
+        for i in 0..10 {
+            screen.advance(format!("history-{i}\r\n").as_bytes());
+        }
+        screen.advance(b"visible-marker");
+
+        let out = text(&screen.repaint_with_history(true, 0));
+
+        assert!(!out.contains("history-0"));
+        assert!(out.contains("visible-marker"));
     }
 
     #[test]
