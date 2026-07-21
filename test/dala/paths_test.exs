@@ -5,9 +5,11 @@ defmodule Dala.PathsTest do
 
   defp tmp_dir!(context) do
     base =
-      Path.join(
-        System.tmp_dir!(),
-        "dala-paths-#{context}-#{System.unique_integer([:positive])}"
+      Dala.TestPlatform.normalize_path(
+        Path.join(
+          System.tmp_dir!(),
+          "dala-paths-#{context}-#{System.unique_integer([:positive])}"
+        )
       )
 
     File.mkdir_p!(base)
@@ -17,11 +19,14 @@ defmodule Dala.PathsTest do
 
   describe "expand_user/1" do
     test "expands a bare ~ to the home directory" do
-      assert Paths.expand_user("~") == System.user_home()
+      assert Dala.TestPlatform.same_path?(Paths.expand_user("~"), System.user_home())
     end
 
     test "expands ~/rest against the home directory" do
-      assert Paths.expand_user("~/some/dir") == Path.join(System.user_home(), "some/dir")
+      assert Dala.TestPlatform.same_path?(
+               Paths.expand_user("~/some/dir"),
+               Path.join(System.user_home(), "some/dir")
+             )
     end
 
     test "expands relative paths to absolute ones" do
@@ -30,7 +35,7 @@ defmodule Dala.PathsTest do
     end
 
     test "normalizes absolute paths" do
-      assert Paths.expand_user("/tmp/a/../b/.") == "/tmp/b"
+      assert Paths.expand_user("/tmp/a/../b/.") == Path.expand("/tmp/b")
     end
   end
 
@@ -70,7 +75,7 @@ defmodule Dala.PathsTest do
           if File.regular?(path), do: path
         end)
 
-      assert found == Path.join(base, "a/marker")
+      assert Dala.TestPlatform.same_path?(found, Path.join(base, "a/marker"))
     end
 
     test "checks the starting directory itself" do
@@ -102,7 +107,32 @@ defmodule Dala.PathsTest do
           if File.regular?(Path.join(dir, "marker")), do: dir
         end)
 
-      assert found == Paths.git_toplevel(repo)
+      assert File.regular?(Path.join(found, "marker"))
+      assert File.dir?(Path.join(found, ".git"))
+    end
+
+    @tag skip: not Dala.TestPlatform.windows?()
+    test "recognizes the git boundary across Windows short and long path aliases" do
+      base =
+        Path.join([
+          System.fetch_env!("LOCALAPPDATA"),
+          "Temp",
+          "dala-paths-walk-git-short-path-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(base)
+      on_exit(fn -> File.rm_rf!(base) end)
+      File.write!(Path.join(base, "marker"), "")
+      repo = Path.join(base, "repository-long-name")
+      File.mkdir_p!(Path.join(repo, "sub"))
+      {_, 0} = System.cmd("git", ["init", "--quiet", repo])
+
+      command = "for %I in (\"#{repo}\") do @echo %~sI"
+      {short_repo, 0} = System.cmd("cmd.exe", ["/D", "/S", "/C", command])
+
+      assert Paths.walk_up(Path.join(String.trim(short_repo), "sub"), fn dir ->
+               if File.regular?(Path.join(dir, "marker")), do: dir
+             end) == nil
     end
 
     test "returns nil at the filesystem root when nothing matches" do

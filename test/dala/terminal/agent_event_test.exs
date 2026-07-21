@@ -109,4 +109,49 @@ defmodule Dala.Terminal.AgentEventTest do
       end
     end
   end
+
+  describe "foreground_from_processes/1" do
+    test "recognizes Tier 1 native executables and npm shims" do
+      cases = [
+        {"C:\\Tools\\claude.exe", [], "claude"},
+        {"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", [], "codex"},
+        {"C:\\Tools\\opencode.exe", [], "opencode"},
+        {"C:\\Program Files\\nodejs\\node.exe",
+         [
+           "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js"
+         ], "gemini"}
+      ]
+
+      for {executable, argv, expected} <- cases do
+        process = %{"pid" => 2, "parent_pid" => 1, "executable" => executable, "argv" => argv}
+        assert %{app: ^expected} = AgentEvent.foreground_from_processes([process])
+      end
+    end
+
+    test "known agent ancestor wins while it runs a git child" do
+      processes = [
+        %{"pid" => 10, "parent_pid" => 1, "executable" => "claude.exe", "argv" => []},
+        %{"pid" => 11, "parent_pid" => 10, "executable" => "git.exe", "argv" => ["status"]}
+      ]
+
+      assert %{app: "claude"} = AgentEvent.foreground_from_processes(processes)
+    end
+
+    test "project directory names do not masquerade as agents" do
+      processes = [
+        %{
+          "pid" => 2,
+          "parent_pid" => 1,
+          "executable" => "C:\\Windows\\System32\\git.exe",
+          "argv" => ["-C", "C:\\src\\codex-dashboard", "status"]
+        }
+      ]
+
+      assert %{app: "unknown"} = AgentEvent.foreground_from_processes(processes)
+    end
+
+    test "empty process tree is the shell" do
+      assert AgentEvent.foreground_from_processes([]) == %{app: "shell", cmdline: ""}
+    end
+  end
 end

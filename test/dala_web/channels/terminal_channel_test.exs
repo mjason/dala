@@ -4,7 +4,7 @@ defmodule DalaWeb.TerminalChannelTest do
   alias Dala.Terminal.{Holder, Server}
 
   defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
+    session = Dala.Terminal.create_session!(%{shell: Dala.TestPlatform.shell()})
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -29,11 +29,19 @@ defmodule DalaWeb.TerminalChannelTest do
     socket
   end
 
+  defp history_command do
+    if Dala.TestPlatform.windows?() do
+      "echo OLDEST_MARK & (for /L %i in (1,1,80) do @echo history-%i) & echo CURRENT_MARK\r"
+    else
+      "echo OLDEST_MARK; for i in {1..80}; do echo history-$i; done; echo CURRENT_MARK\r"
+    end
+  end
+
   test "join delivers the holder's synthesized repaint and reports status" do
     session = create_session!()
 
     # Put something on the screen, then join fresh: the repaint must carry it.
-    Server.input(session.id, "echo repaint-me-$((40 + 2))\r")
+    Server.input(session.id, Dala.TestPlatform.echo("repaint-me-42"))
     Process.sleep(300)
 
     assert {:ok, %{status: :running}, socket} = join!(session.id)
@@ -140,10 +148,7 @@ defmodule DalaWeb.TerminalChannelTest do
     session = create_session!()
     id = to_string(session.id)
 
-    Server.input(
-      id,
-      "echo OLDEST_MARK; for i in {1..80}; do echo history-$i; done; echo CURRENT_MARK\r"
-    )
+    Server.input(id, history_command())
 
     Process.sleep(500)
 
@@ -279,7 +284,7 @@ defmodule DalaWeb.TerminalChannelTest do
     assert Server.alive?(id)
 
     # The reattached shell still works end to end.
-    push(socket, "input", %{"data" => "echo reattached-$((3 * 14))\r"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.echo("reattached-42")})
     assert_output_containing("reattached-42")
   end
 
@@ -295,8 +300,7 @@ defmodule DalaWeb.TerminalChannelTest do
 
     # Kill the detached holder too: its shell exits, the holder removes its
     # socket and leaves an exit file behind.
-    {:ok, holder} = Dala.Terminal.Holder.connect(id)
-    :ok = Dala.Terminal.Holder.send_kill(holder)
+    :ok = Dala.Terminal.Holder.kill(id)
     wait_until(fn -> not Dala.Terminal.Holder.exists?(id) end)
 
     assert {:ok, %{status: :exited}, _socket} = join!(id)
@@ -310,7 +314,7 @@ defmodule DalaWeb.TerminalChannelTest do
     attach!(socket)
     assert_push "replay", %{done: true}
 
-    push(socket, "input", %{"data" => "MARKER=survives-$((10 * 4 + 2))\r"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.set_env("MARKER", "survives-42")})
     push(socket, "input", %{"data" => "echo set-done\r"})
     assert_output_containing("set-done")
 
@@ -326,7 +330,7 @@ defmodule DalaWeb.TerminalChannelTest do
     assert {:ok, _pid} = Server.ensure_started(session)
     assert {:ok, _reply, socket} = join!(id)
     attach!(socket)
-    push(socket, "input", %{"data" => "echo got-$MARKER\r"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.echo_env("got-", "MARKER")})
     assert_output_containing("got-survives-42")
   end
 
@@ -350,7 +354,7 @@ defmodule DalaWeb.TerminalChannelTest do
     attach!(socket)
     assert_push "replay", %{done: true}
 
-    push(socket, "input", %{"data" => "echo channel-$((2 * 21))\r"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.echo("channel-42")})
 
     assert_output_containing("channel-42")
   end
@@ -360,7 +364,7 @@ defmodule DalaWeb.TerminalChannelTest do
     assert {:ok, _reply, socket} = join!(session.id)
 
     push(socket, "resize", %{"rows" => 40, "cols" => 120})
-    push(socket, "input", %{"data" => "tput cols\r"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.columns()})
 
     assert_output_containing("120")
   end

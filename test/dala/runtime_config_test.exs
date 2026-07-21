@@ -103,7 +103,10 @@ defmodule Dala.RuntimeConfigTest do
 
       path = Path.join(tmp, "secrets.json")
       assert File.exists?(path)
-      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+
+      unless Dala.TestPlatform.windows?() do
+        assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+      end
 
       # A second named secret joins the same file without clobbering.
       other = RuntimeConfig.secret(cfg, "DALA_TEST_SECRET_X", "tokenSigningSecret")
@@ -134,8 +137,15 @@ defmodule Dala.RuntimeConfigTest do
 
     with_env(%{"DALA_DATA_DIR" => "/tmp/env-wins"}, fn ->
       # File present → env ignored, even for the data dir.
-      assert RuntimeConfig.data_dir(%{"dataDir" => "/tmp/file"}) == "/tmp/file"
-      assert RuntimeConfig.data_dir(%{}) == "/tmp/env-wins"
+      assert Dala.TestPlatform.same_path?(
+               RuntimeConfig.data_dir(%{"dataDir" => "/tmp/file"}),
+               Path.expand("/tmp/file")
+             )
+
+      assert Dala.TestPlatform.same_path?(
+               RuntimeConfig.data_dir(%{}),
+               Path.expand("/tmp/env-wins")
+             )
     end)
 
     assert RuntimeConfig.data_dir(%{}) =~ ~r{/dala$}

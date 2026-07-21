@@ -183,7 +183,8 @@ defmodule Dala.Terminal.SessionReorderTest do
     test "new sessions append at the end even after reordering" do
       seed!("z-first", 5.0, at(0))
 
-      session = Dala.Terminal.create_session!(%{shell: "/bin/bash", name: "fresh"})
+      session =
+        Dala.Terminal.create_session!(%{shell: Dala.TestPlatform.shell(), name: "fresh"})
 
       on_exit(fn ->
         Server.shutdown_and_wait(session.id)

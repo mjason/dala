@@ -96,7 +96,10 @@ config :dala, DalaWeb.Endpoint,
 # Configure LiveView
 config :phoenix_live_view,
   # the attribute set on all root tags. Used for Phoenix.LiveView.ColocatedCSS.
-  root_tag_attribute: "phx-r"
+  root_tag_attribute: "phx-r",
+  # Dala has no colocated assets importing from assets/node_modules. Windows
+  # cannot create the compiler's convenience symlink as a normal user.
+  colocated_assets: [disable_symlink_warning: match?({:win32, _}, :os.type())]
 
 # Configure the mailer
 #
@@ -122,7 +125,7 @@ config :esbuild,
             Path.expand(Mix.Project.build_path()),
             Path.expand("../_build/dev", __DIR__)
           ],
-          ":"
+          if(match?({:win32, _}, :os.type()), do: ";", else: ":")
         )
     }
   ]
@@ -144,7 +147,7 @@ config :tailwind,
             Path.expand(Mix.Project.build_path()),
             Path.expand("../_build/dev", __DIR__)
           ],
-          ":"
+          if(match?({:win32, _}, :os.type()), do: ";", else: ":")
         )
     }
   ]

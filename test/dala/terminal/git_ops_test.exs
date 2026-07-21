@@ -11,6 +11,7 @@ defmodule Dala.Terminal.GitOpsTest do
     git!(dir, ["init", "-q", "-b", "main"])
     git!(dir, ["config", "user.email", "test@dala.dev"])
     git!(dir, ["config", "user.name", "Dala Test"])
+    git!(dir, ["config", "core.autocrlf", "false"])
 
     File.write!(Path.join(dir, "a.txt"), "line one\nline two\n")
     git!(dir, ["add", "."])

@@ -37,13 +37,20 @@ defmodule Dala.Terminal.AttachmentsTest do
     regular = Path.join(root, "regular.txt")
     link = Path.join(root, "link.txt")
     File.write!(regular, "x")
-    File.ln_s!(regular, link)
 
-    assert {:ok, ^regular} = Dala.Terminal.Attachments.validate_path(regular)
+    assert {:ok, validated} = Dala.Terminal.Attachments.validate_path(regular)
+    assert Dala.TestPlatform.same_path?(validated, regular)
     assert {:error, directory_error} = Dala.Terminal.Attachments.validate_path(root)
     assert directory_error =~ "not a regular file"
-    assert {:error, link_error} = Dala.Terminal.Attachments.validate_path(link)
-    assert link_error =~ "not a regular file"
+
+    case File.ln_s(regular, link) do
+      :ok ->
+        assert {:error, link_error} = Dala.Terminal.Attachments.validate_path(link)
+        assert link_error =~ "not a regular file"
+
+      {:error, reason} when reason in [:eperm, :eacces] ->
+        assert Dala.TestPlatform.windows?()
+    end
   end
 
   test "browser uploads enforce per-file and managed-storage quotas", %{root: root} do

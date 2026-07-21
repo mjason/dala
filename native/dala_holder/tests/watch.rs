@@ -174,7 +174,7 @@ fn announces_the_root_once_the_watch_is_established() {
 #[test]
 fn emits_containing_dir_for_nested_changes() {
     let root = temp_root("nested");
-    let deep = root.join("sub/deep");
+    let deep = root.join("sub").join("deep");
     std::fs::create_dir_all(&deep).unwrap();
 
     let mut proc = WatchProc::spawn();
@@ -205,7 +205,7 @@ fn dirs_created_after_the_watch_are_covered() {
     proc.watch_root(&root);
     proc.wait_established(&root);
 
-    let fresh = root.join("brand/new");
+    let fresh = root.join("brand").join("new");
     std::fs::create_dir_all(&fresh).unwrap();
     proc.drain(Duration::from_millis(600));
     std::fs::write(fresh.join("inside.txt"), "x").unwrap();
@@ -217,8 +217,8 @@ fn dirs_created_after_the_watch_are_covered() {
 #[test]
 fn excluded_dirs_are_silent() {
     let root = temp_root("excl");
-    let nm = root.join("node_modules/pkg");
-    let build = root.join("_build/test");
+    let nm = root.join("node_modules").join("pkg");
+    let build = root.join("_build").join("test");
     std::fs::create_dir_all(&nm).unwrap();
     std::fs::create_dir_all(&build).unwrap();
 
@@ -244,14 +244,14 @@ fn excluded_dirs_are_silent() {
 fn git_head_is_visible_but_object_churn_is_not() {
     let root = temp_root("git");
     let git = root.join(".git");
-    std::fs::create_dir_all(git.join("objects/ab")).unwrap();
-    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    std::fs::create_dir_all(git.join("objects").join("ab")).unwrap();
+    std::fs::create_dir_all(git.join("refs").join("heads")).unwrap();
 
     let mut proc = WatchProc::spawn();
     proc.watch_root(&root);
     proc.wait_established(&root);
 
-    std::fs::write(git.join("objects/ab/cdef"), "blob").unwrap();
+    std::fs::write(git.join("objects").join("ab").join("cdef"), "blob").unwrap();
     std::fs::write(git.join("index"), "idx").unwrap();
     std::fs::write(git.join("HEAD"), "ref: refs/heads/main").unwrap();
     let seen = proc.expect_dir(&git, Duration::from_secs(2));
@@ -260,8 +260,8 @@ fn git_head_is_visible_but_object_churn_is_not() {
     }
 
     // Branch tips under refs/ are visible as well.
-    std::fs::write(git.join("refs/heads/main"), "sha").unwrap();
-    proc.expect_dir(&git.join("refs/heads"), Duration::from_secs(2));
+    std::fs::write(git.join("refs").join("heads").join("main"), "sha").unwrap();
+    proc.expect_dir(&git.join("refs").join("heads"), Duration::from_secs(2));
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -363,7 +363,7 @@ fn root_inside_an_excluded_name_still_emits() {
     // a drawer rooted inside node_modules) must still report: exclusion is
     // relative to the root, not absolute.
     let base = temp_root("excl-root");
-    let root = base.join("node_modules/myproject");
+    let root = base.join("node_modules").join("myproject");
     std::fs::create_dir_all(&root).unwrap();
 
     let mut proc = WatchProc::spawn();
@@ -380,7 +380,7 @@ fn root_inside_an_excluded_name_still_emits() {
 fn renamed_in_trees_are_covered() {
     let base = temp_root("rename-in");
     let root = base.join("root");
-    let outside = base.join("outside/tree/deep");
+    let outside = base.join("outside").join("tree").join("deep");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
 
@@ -391,7 +391,7 @@ fn renamed_in_trees_are_covered() {
     // Move a whole tree in; its dirs must be registered dynamically.
     std::fs::rename(base.join("outside"), root.join("moved")).unwrap();
     proc.drain(Duration::from_millis(600));
-    let deep = root.join("moved/tree/deep");
+    let deep = root.join("moved").join("tree").join("deep");
     std::fs::write(deep.join("inside.txt"), "x").unwrap();
     proc.expect_dir(&deep, Duration::from_secs(2));
 
@@ -426,8 +426,12 @@ fn home_root_prints_the_fallback_sentinel() {
 
 #[test]
 fn slash_root_prints_the_fallback_sentinel() {
+    let mut root = std::env::current_dir().unwrap();
+    while let Some(parent) = root.parent() {
+        root = parent.to_path_buf();
+    }
     let mut proc = WatchProc::spawn();
-    proc.watch_root(Path::new("/"));
+    proc.watch_root(&root);
     proc.expect_line_starting("!fallback", Duration::from_secs(5));
 }
 

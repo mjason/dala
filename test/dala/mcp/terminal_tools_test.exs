@@ -12,7 +12,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     session =
       Dala.Terminal.create_session!(%{
-        shell: "/bin/bash",
+        shell: Dala.TestPlatform.shell(),
         name: "mcp-test",
         cwd: System.tmp_dir!()
       })
@@ -78,7 +78,8 @@ defmodule Dala.Mcp.TerminalToolsTest do
                "session" => listed.ref,
                "after_seq" => sent.seq,
                "timeout_seconds" => 5,
-               "lines" => 50
+               "lines" => 50,
+               "match" => "mcp-terminal-roundtrip"
              })
 
     assert waited.reason in ["output", "match"]
@@ -106,26 +107,47 @@ defmodule Dala.Mcp.TerminalToolsTest do
     result_path =
       Path.join(System.tmp_dir!(), "dala-tui-key-#{System.unique_integer([:positive])}")
 
-    on_exit(fn -> File.rm(result_path) end)
+    script_path = result_path <> ".js"
 
-    command =
-      "printf '\\033[?1049h\\033[?1h\\033[7;1mSelected option\\033[0m'; " <>
-        "IFS= read -rsN 4 key; printf '%s' \"$key\" | od -An -tx1 > #{result_path}; " <>
-        "printf '\\033[?1049l'"
+    File.write!(script_path, """
+    const fs = require("fs")
+    const output = #{Jason.encode!(result_path)}
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdout.write("\u001b[?1049h\u001b[?1h\u001b[7;1mSelected option\u001b[0m")
+    let input = Buffer.alloc(0)
+    process.stdin.on("data", chunk => {
+      input = Buffer.concat([input, chunk])
+      if (input.length >= 4) {
+        fs.writeFileSync(output, [...input.subarray(0, 4)].map(byte => byte.toString(16).padStart(2, "0")).join(" "))
+        process.stdout.write("\u001b[?1049l")
+        process.exit(0)
+      }
+    })
+    """)
 
-    Server.input(session.id, command <> "\r")
+    on_exit(fn ->
+      File.rm(result_path)
+      File.rm(script_path)
+    end)
 
-    assert eventually(fn ->
-             case TerminalTools.call("read_terminal", %{"session" => session.id, "lines" => 20}) do
-               {:ok, snapshot} ->
-                 snapshot.mode == "alternate" and
-                   snapshot.inputModes["applicationCursor"] == true and
-                   Enum.any?(snapshot.highlightedRanges, &(&1["text"] == "Selected option"))
+    command = Dala.TestPlatform.node_script_command(script_path)
+    assert {:ok, baseline} = Server.current_seq(session.id)
 
-               _ ->
-                 false
-             end
-           end)
+    assert {:ok, _seq} = Server.send_sequence(session.id, [{command, 50}, {"\r", 0}])
+
+    waited = Server.wait(session.id, baseline, timeout: 10_000, match: "Selected option")
+
+    assert match?({:ok, %{reason: "match"}}, waited),
+           "fixture did not render: wait=#{inspect(waited)} repaint=#{inspect(repaint_text(session.id))}"
+
+    assert eventually(fn -> snapshot_ready?(session.id) end)
+
+    assert {:ok, snapshot} =
+             TerminalTools.call("read_terminal", %{
+               "session" => session.id,
+               "lines" => 20
+             })
 
     assert {:ok, sent} =
              TerminalTools.call("send_terminal_keys", %{
@@ -133,12 +155,14 @@ defmodule Dala.Mcp.TerminalToolsTest do
                "keys" => ["DOWN", "CHAR:y"]
              })
 
-    assert sent.applicationCursor
+    assert sent.applicationCursor == snapshot.inputModes["applicationCursor"]
     assert sent.keyCount == 2
     assert eventually(fn -> File.exists?(result_path) end)
 
+    expected_down = if sent.applicationCursor, do: "1b 4f 42 79", else: "1b 5b 42 79"
+
     assert File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() ==
-             "1b 4f 42 79"
+             expected_down
   end
 
   test "upload stores a private regular file and returns a sendable path" do
@@ -155,12 +179,17 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert uploaded.name == "screen_shot.png"
     assert uploaded.size == byte_size(body)
     assert {:ok, %File.Stat{type: :regular, mode: mode}} = File.lstat(uploaded.path)
-    assert Bitwise.band(mode, 0o077) == 0
+
+    unless Dala.TestPlatform.windows?() do
+      assert Bitwise.band(mode, 0o077) == 0
+    end
 
     assert {:ok, %File.Stat{type: :directory, mode: root_mode}} =
              uploaded.path |> Path.dirname() |> Path.dirname() |> File.lstat()
 
-    assert Bitwise.band(root_mode, 0o077) == 0
+    unless Dala.TestPlatform.windows?() do
+      assert Bitwise.band(root_mode, 0o077) == 0
+    end
 
     on_exit(fn -> File.rm_rf(Path.dirname(uploaded.path)) end)
   end
@@ -192,7 +221,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
   test "duplicate names are rejected as ambiguous selectors", %{session: session} do
     other =
       Dala.Terminal.create_session!(%{
-        shell: "/bin/bash",
+        shell: Dala.TestPlatform.shell(),
         name: session.name,
         cwd: System.tmp_dir!()
       })
@@ -222,6 +251,36 @@ defmodule Dala.Mcp.TerminalToolsTest do
       true ->
         Process.sleep(50)
         eventually(fun, attempts - 1)
+    end
+  end
+
+  defp snapshot_ready?(session_id) do
+    case TerminalTools.call("read_terminal", %{"session" => session_id, "lines" => 20}) do
+      {:ok, snapshot} ->
+        base_ready? = snapshot.styleAware and String.contains?(snapshot.output, "Selected option")
+
+        if Dala.TestPlatform.windows?() do
+          # Windows Server ConPTY can consume DEC private modes and styling.
+          # Key encoding below still follows the holder's reported cursor mode.
+          base_ready?
+        else
+          base_ready? and snapshot.mode == "alternate" and
+            snapshot.inputModes["applicationCursor"] == true and
+            Enum.any?(snapshot.highlightedRanges, &(&1["text"] == "Selected option"))
+        end
+
+      _other ->
+        false
+    end
+  end
+
+  defp repaint_text(session_id) do
+    Server.request_repaint(session_id, self())
+
+    receive do
+      {:repaint, data, _seq, _history_loaded} -> data
+    after
+      5_000 -> "<no repaint>"
     end
   end
 end

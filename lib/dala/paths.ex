@@ -18,6 +18,18 @@ defmodule Dala.Paths do
   def home(rel), do: Path.join(System.user_home() || "/", rel)
 
   @doc """
+  Returns an absolute path in the host platform's comparison form.
+
+  Windows paths are case-insensitive and may arrive with either slash style,
+  so comparison keys use forward slashes and lowercase. Unix paths preserve
+  case.
+  """
+  def comparison_key(path) when is_binary(path) do
+    normalized = path |> Path.expand() |> String.replace("\\", "/")
+    if match?({:win32, _}, :os.type()), do: String.downcase(normalized), else: normalized
+  end
+
+  @doc """
   The toplevel of the git work tree containing `dir`, or `nil` when the
   directory is outside any repository (or `git` itself is unavailable).
   """
@@ -46,12 +58,23 @@ defmodule Dala.Paths do
         result = fun.(current) ->
           {:halt, result}
 
-        current == top or current == home or Path.dirname(current) == current ->
+        git_boundary?(current, top) or same_path?(current, home) or
+            same_path?(Path.dirname(current), current) ->
           {:halt, nil}
 
         true ->
           {:cont, nil}
       end
     end)
+  end
+
+  defp git_boundary?(path, top) do
+    File.exists?(Path.join(path, ".git")) or same_path?(path, top)
+  end
+
+  defp same_path?(_path, nil), do: false
+
+  defp same_path?(left, right) do
+    comparison_key(left) == comparison_key(right)
   end
 end

@@ -5,6 +5,14 @@ defmodule Dala.Terminal.ViewersTest do
   alias Dala.Terminal.{ProcessSnapshot, Viewers}
 
   setup do
+    if Dala.TestPlatform.windows?() do
+      {:ok, dir: nil}
+    else
+      setup_fake_bins()
+    end
+  end
+
+  defp setup_fake_bins do
     dir = Path.join(System.tmp_dir!(), "viewers-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     old_path = System.get_env("PATH")
@@ -33,6 +41,7 @@ defmodule Dala.Terminal.ViewersTest do
     ProcessSnapshot.refresh()
   end
 
+  @tag skip: Dala.TestPlatform.windows?()
   test "reuses one process snapshot across repeated mux lookups", %{dir: dir} do
     calls = Path.join(dir, "ps-calls.txt")
 
@@ -49,6 +58,8 @@ defmodule Dala.Terminal.ViewersTest do
   end
 
   describe "find_mux/1 zellij client arg parsing" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     for {args, session} <- [
           {"zellij attach mysess", "mysess"},
           {"zellij a mysess", "mysess"},
@@ -96,6 +107,8 @@ defmodule Dala.Terminal.ViewersTest do
   end
 
   describe "find_mux/1 tmux and process-tree walking" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     test "any tmux process inside the subtree is the client", %{dir: dir} do
       fake_ps(dir, """
         100     1 -zsh
@@ -133,6 +146,8 @@ defmodule Dala.Terminal.ViewersTest do
   end
 
   describe "kick_others/1" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     test "kills every other zellij client of the same session, and only those", %{dir: dir} do
       kill_log = Path.join(dir, "kill.log")
       fake_bin(dir, "kill", ~s(echo "$@" >> "#{kill_log}"\n))
@@ -171,6 +186,17 @@ defmodule Dala.Terminal.ViewersTest do
       assert Viewers.foreground_cmdline(999_999_999) == nil
       assert Viewers.foreground_cmdline(nil) == nil
       assert Viewers.foreground_cmdline(-5) == nil
+    end
+  end
+
+  describe "Windows multiplexer policy" do
+    @describetag skip: not Dala.TestPlatform.windows?()
+
+    test "zellij/tmux discovery and viewer management are explicitly unavailable" do
+      assert Viewers.find_mux(System.pid() |> String.to_integer()) == nil
+
+      assert {:error, "zellij/tmux viewer management is unavailable on Windows"} =
+               Viewers.kick_others(System.pid() |> String.to_integer())
     end
   end
 end

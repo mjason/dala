@@ -11,13 +11,17 @@ defmodule Dala.Terminal.Viewers do
 
   @doc "Detach all other clients of the zellij/tmux session under `shell_pid`."
   def kick_others(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
-    procs = Dala.Terminal.ProcessSnapshot.refresh()
-    subtree = descendants(procs, shell_pid)
+    if windows?() do
+      {:error, "zellij/tmux viewer management is unavailable on Windows"}
+    else
+      procs = Dala.Terminal.ProcessSnapshot.refresh()
+      subtree = descendants(procs, shell_pid)
 
-    case find_client(procs, subtree) do
-      {:zellij, name, own_pid} -> kick_zellij(procs, subtree, name, own_pid)
-      {:tmux, own_pid} -> kick_tmux(own_pid)
-      nil -> {:error, "no zellij/tmux client is running in this session"}
+      case find_client(procs, subtree) do
+        {:zellij, name, own_pid} -> kick_zellij(procs, subtree, name, own_pid)
+        {:tmux, own_pid} -> kick_tmux(own_pid)
+        nil -> {:error, "no zellij/tmux client is running in this session"}
+      end
     end
   end
 
@@ -29,12 +33,16 @@ defmodule Dala.Terminal.Viewers do
   polling to ask the multiplexer (instead of /proc) where the user is.
   """
   def find_mux(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
-    procs = Dala.Terminal.ProcessSnapshot.snapshot()
+    if windows?() do
+      nil
+    else
+      procs = Dala.Terminal.ProcessSnapshot.snapshot()
 
-    case find_client(procs, descendants(procs, shell_pid)) do
-      {:zellij, name, _own_pid} -> {:zellij, name}
-      {:tmux, own_pid} -> {:tmux, own_pid}
-      nil -> nil
+      case find_client(procs, descendants(procs, shell_pid)) do
+        {:zellij, name, _own_pid} -> {:zellij, name}
+        {:tmux, own_pid} -> {:tmux, own_pid}
+        nil -> nil
+      end
     end
   end
 
@@ -175,4 +183,6 @@ defmodule Dala.Terminal.Viewers do
 
     walk.(walk, root, MapSet.new())
   end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 end

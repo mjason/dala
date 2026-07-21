@@ -56,7 +56,7 @@ defmodule Dala.Terminal.FileSystem do
                 {entry.type != "directory", String.downcase(entry.name)}
               end)
 
-            parent = if path == "/", do: nil, else: Path.dirname(path)
+            parent = if Path.dirname(path) == path, do: nil, else: Path.dirname(path)
             {:ok, %{path: path, parent: parent, entries: entries}}
 
           {:error, reason} ->
@@ -490,8 +490,16 @@ defmodule Dala.Terminal.FileSystem do
   # Give a slow git (cold network filesystem, gigantic index) a bounded
   # budget before falling back to the manual walk.
   @git_files_timeout_ms 3_000
-  defp git_files_timeout_ms,
-    do: Application.get_env(:dala, :list_files_git_timeout_ms, @git_files_timeout_ms)
+  @windows_git_files_timeout_ms 10_000
+
+  defp git_files_timeout_ms do
+    default =
+      if match?({:win32, _}, :os.type()),
+        do: @windows_git_files_timeout_ms,
+        else: @git_files_timeout_ms
+
+    Application.get_env(:dala, :list_files_git_timeout_ms, default)
+  end
 
   # Inside a git work tree the index is the authority — `.gitignore`
   # respected, no junk eating the cap, deterministic order. Everywhere else

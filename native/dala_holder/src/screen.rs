@@ -17,6 +17,7 @@ use alacritty_terminal::vte::ansi::{
 };
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 /// Byte budget for the scrollback portion of an attach repaint. The client
 /// parses the whole repaint synchronously; ~512 KiB is tens of milliseconds
@@ -74,11 +75,20 @@ pub struct HighlightedRange {
 
 const MAX_HIGHLIGHT_RANGES: usize = 256;
 
-#[derive(Clone)]
-struct Quiet;
+#[derive(Clone, Default)]
+struct TerminalEvents {
+    pty_writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
+}
 
-impl EventListener for Quiet {
-    fn send_event(&self, _event: Event) {}
+impl EventListener for TerminalEvents {
+    fn send_event(&self, event: Event) {
+        if let Event::PtyWrite(reply) = event {
+            self.pty_writes
+                .lock()
+                .unwrap()
+                .push_back(reply.into_bytes());
+        }
+    }
 }
 
 struct Size {
@@ -101,13 +111,14 @@ impl Dimensions for Size {
 }
 
 pub struct Screen {
-    term: Term<Quiet>,
+    term: Term<TerminalEvents>,
     parser: Processor,
     scroll_tracker: ScrollTracker,
     scroll_parser: Processor,
     alt_tracker: AltTracker,
     alt_parser: alacritty_terminal::vte::Parser,
     normal_grid: Grid<Cell>,
+    pty_writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 /// Alacritty keeps DECSTBM private to `Term`, and RIS/resize reset it without
@@ -287,7 +298,8 @@ impl Screen {
             lines: rows.max(1) as usize,
             columns: cols.max(1) as usize,
         };
-        let term = Term::new(config, &size, Quiet);
+        let events = TerminalEvents::default();
+        let term = Term::new(config, &size, events.clone());
         let normal_grid = term.grid().clone();
         Screen {
             term,
@@ -297,6 +309,7 @@ impl Screen {
             alt_tracker: AltTracker::default(),
             alt_parser: alacritty_terminal::vte::Parser::new(),
             normal_grid,
+            pty_writes: events.pty_writes,
         }
     }
 
@@ -366,6 +379,10 @@ impl Screen {
         {
             self.scroll_parser.stop_sync(&mut self.scroll_tracker);
         }
+    }
+
+    pub fn take_pty_writes(&self) -> Vec<Vec<u8>> {
+        self.pty_writes.lock().unwrap().drain(..).collect()
     }
 
     pub fn columns(&self) -> usize {
@@ -960,7 +977,7 @@ fn render_hyperlink(out: &mut Vec<u8>, hyperlink: Option<&Hyperlink>) {
     }
 }
 
-fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
+fn render_palette(out: &mut Vec<u8>, term: &Term<TerminalEvents>) {
     for index in 0..alacritty_terminal::term::color::COUNT {
         let Some(color) = term.colors()[index] else {
             continue;
@@ -986,7 +1003,7 @@ fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
     }
 }
 
-fn render_modes(out: &mut Vec<u8>, term: &Term<Quiet>, mode: &TermMode) {
+fn render_modes(out: &mut Vec<u8>, term: &Term<TerminalEvents>, mode: &TermMode) {
     let mut set = |flag: TermMode, seq: &[u8]| {
         if mode.contains(flag) {
             out.extend_from_slice(seq);

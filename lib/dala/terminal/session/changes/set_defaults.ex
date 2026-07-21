@@ -6,8 +6,7 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
   def change(changeset, _opts, _context) do
     shell =
       argument_or_nil(changeset, :shell) ||
-        System.get_env("SHELL") ||
-        "/bin/bash"
+        Dala.Terminal.Shell.default_shell()
 
     cwd = argument_or_nil(changeset, :cwd) || System.user_home() || "/"
     name = argument_or_nil(changeset, :name) || default_name(cwd)

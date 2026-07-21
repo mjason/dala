@@ -18,8 +18,16 @@ concurrency:
 
 jobs:
   elixir:
-    name: Elixir（覆盖率门槛 75%）
-    runs-on: ubuntu-latest
+    name: Elixir（${{ matrix.label }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux，覆盖率门槛 75%
+          - os: windows-2022
+            label: Windows，覆盖率门槛 75%
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
@@ -27,6 +35,10 @@ jobs:
           otp-version: "28"
           elixir-version: "1.19"
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
       - uses: actions/cache@v4
         with:
           path: |
@@ -43,6 +55,7 @@ jobs:
       # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
       # app 的 _build 强制重编，自愈而不是再红一轮。
       - name: guard against BEAM-without-NIF poisoned cache
+        if: runner.os == 'Linux'
         run: |
           for env in dev test; do
             if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
@@ -52,13 +65,23 @@ jobs:
           done
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
+        if: runner.os == 'Linux'
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
-      - run: mix test --cover
+      - name: Run tests with coverage
+        run: mix test --cover
 
   frontend:
-    name: 前端（vitest 分层门槛 + typecheck）
-    runs-on: ubuntu-latest
+    name: 前端（${{ matrix.label }}，vitest 分层门槛 + typecheck）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       # phoenix/phoenix_html/phoenix_live_view 的 JS 是 file:../deps 链接，
@@ -97,21 +120,72 @@ jobs:
         working-directory: clients/desktop
 
   rust:
-    name: Rust holder + theme renderer（cargo test）
-    runs-on: ubuntu-latest
+    name: Rust native crates（${{ matrix.label }}，cargo test）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
       - uses: actions/cache@v4
         with:
           path: |
             native/dala_holder/target
+            native/dala_git/target
             native/dala_theme_renderer/target
-          key: rust-native-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock', 'native/dala_theme_renderer/Cargo.lock') }}
+          key: rust-native-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock', 'native/dala_git/Cargo.lock', 'native/dala_theme_renderer/Cargo.lock') }}
       - run: cargo test
         working-directory: native/dala_holder
       - run: cargo test
+        working-directory: native/dala_git
+      - run: cargo test
         working-directory: native/dala_theme_renderer
+
+  windows-release:
+    name: Windows release smoke test
+    runs-on: windows-2022
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          mix deps.get --only prod
+          npm ci --prefix assets
+      - name: Build and smoke-test the Windows release
+        shell: pwsh
+        run: |
+          mix compile --warnings-as-errors
+          mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+          Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
+          ./ci/windows-release-smoke.ps1
 
   e2e:
     name: BDD e2e（Playwright 8 场景）

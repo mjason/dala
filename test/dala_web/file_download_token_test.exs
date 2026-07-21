@@ -11,6 +11,20 @@ defmodule DalaWeb.FileDownloadTokenTest do
     refute FileDownloadToken.valid_for?(token, "/etc/passwd")
   end
 
+  test "path spelling is normalized using host filesystem semantics" do
+    path = Path.join(System.tmp_dir!(), "Dala Token/report.csv")
+    token = FileDownloadToken.sign(path)
+    alternate_slashes = String.replace(path, "\\", "/")
+
+    assert FileDownloadToken.valid_for?(token, alternate_slashes)
+
+    if Dala.TestPlatform.windows?() do
+      assert FileDownloadToken.valid_for?(token, String.upcase(alternate_slashes))
+    else
+      refute FileDownloadToken.valid_for?(token, String.upcase(alternate_slashes))
+    end
+  end
+
   test "a tampered or non-token string never validates" do
     refute FileDownloadToken.valid_for?("garbage", "/home/me/report.csv")
     refute FileDownloadToken.valid_for?("", "/home/me/report.csv")

@@ -126,7 +126,8 @@ defmodule DalaWeb.TerminalChannel do
            cols: cols,
            owner: owner,
            owner_device: owner_device,
-           client_id: client_id
+           client_id: client_id,
+           platform: platform_name()
          }, socket}
 
       {:error, _error} ->
@@ -162,6 +163,14 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   defp reconcile_status(session), do: session
+
+  defp platform_name do
+    case :os.type() do
+      {:win32, _} -> "windows"
+      {:unix, :darwin} -> "macos"
+      _ -> "linux"
+    end
+  end
 
   @impl true
   def handle_info(:after_join, socket) do

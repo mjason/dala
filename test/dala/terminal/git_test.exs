@@ -20,6 +20,7 @@ defmodule Dala.Terminal.GitTest do
     git!(dir, ["init", "-q", "-b", "main"])
     git!(dir, ["config", "user.email", "test@dala.dev"])
     git!(dir, ["config", "user.name", "Dala Test"])
+    git!(dir, ["config", "core.autocrlf", "false"])
 
     File.write!(Path.join(dir, "a.txt"), @initial_content)
     git!(dir, ["add", "."])
@@ -291,8 +292,8 @@ defmodule Dala.Terminal.GitTest do
                run!(:git_status, %{path: dir})
 
       # only hunk 1 made it into the index
-      {staged_diff, 0} =
-        System.cmd("git", ["-C", dir, "diff", "--cached", "--", "big.txt"])
+      %{diff: staged_diff} =
+        run!(:git_diff, %{path: dir, file: "big.txt", staged: true})
 
       assert staged_diff =~ "+line 1 CHANGED"
       refute staged_diff =~ "line 20 CHANGED"

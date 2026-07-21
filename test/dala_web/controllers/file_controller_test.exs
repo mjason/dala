@@ -201,7 +201,11 @@ defmodule DalaWeb.FileControllerTest do
 
     assert File.read!(path) == <<1, 2, 3>>
     assert {:ok, %File.Stat{mode: mode, type: :regular}} = File.lstat(path)
-    assert Bitwise.band(mode, 0o077) == 0
+
+    unless Dala.TestPlatform.windows?() do
+      assert Bitwise.band(mode, 0o077) == 0
+    end
+
     on_exit(fn -> File.rm_rf(Path.dirname(path)) end)
   end
 

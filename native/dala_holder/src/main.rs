@@ -40,6 +40,7 @@ mod watch;
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::exit;
@@ -47,8 +48,20 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::net::{TcpListener, TcpStream};
+
+#[cfg(unix)]
+type LocalListener = UnixListener;
+#[cfg(unix)]
+type LocalStream = UnixStream;
+#[cfg(windows)]
+type LocalListener = TcpListener;
+#[cfg(windows)]
+type LocalStream = TcpStream;
+
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::screen::{Screen, REPAINT_HISTORY_BUDGET};
 
@@ -77,11 +90,14 @@ const T_REPAINT: u8 = 0x04;
 const T_CWD: u8 = 0x05;
 const T_AGENT: u8 = 0x06;
 const T_TEXT_SNAPSHOT: u8 = 0x07;
+const T_PROCESSES: u8 = 0x08;
+const T_AUTH: u8 = 0x10;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
 const T_REPAINT_REQ: u8 = 0x14;
 const T_TEXT_SNAPSHOT_REQ: u8 = 0x15;
+const T_PROCESSES_REQ: u8 = 0x16;
 
 /// Transit-queue cap between the PTY reader and the socket writer. The
 /// emulator is the durable history; this only smooths bursts to an attached
@@ -112,9 +128,11 @@ const MAX_AGENT_REPORTS: usize = 256;
 // terminal cancellation byte and returns both parsers to ground safely.
 const PARSER_TOKEN_MAX: usize = 2 * 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Config {
     socket: String,
+    #[serde(default)]
+    token: String,
     shell: String,
     #[serde(default)]
     args: Vec<String>,
@@ -128,6 +146,20 @@ struct Config {
     cols: u16,
     #[serde(default = "default_history_lines")]
     history_lines: usize,
+}
+
+#[derive(Deserialize)]
+struct ExecConfig {
+    command: Vec<String>,
+    stderr: String,
+}
+
+#[derive(Serialize)]
+struct ProcessInfo {
+    pid: u32,
+    parent_pid: Option<u32>,
+    executable: String,
+    argv: Vec<String>,
 }
 
 fn default_history_lines() -> usize {
@@ -427,11 +459,12 @@ fn write_input_if_current<W: Write + ?Sized>(
 
 struct Shared {
     transit: TransitQueue,
-    client: Option<UnixStream>,
+    client: Option<LocalStream>,
     /// Bumped per accepted connection so stale threads/writes can tell they
     /// lost the client race and must not clear a newer connection.
     client_gen: u64,
     exit_status: Option<u32>,
+    pty_done: bool,
     /// Server-side emulator: grid + scrollback + modes.
     screen: Screen,
     /// Repaint requests, each held behind the exact output position that was
@@ -452,6 +485,7 @@ struct Shared {
     /// Structured agent notifications (OSC 777 warp://cli-agent, OSC 9),
     /// pending delivery as T_AGENT frames: `title \x1f body`.
     agent_reports: VecDeque<Vec<u8>>,
+    process_reports: VecDeque<Vec<u8>>,
     /// Carry-over so OSC sequences split across reads are still found.
     osc_tail: Vec<u8>,
 }
@@ -498,12 +532,37 @@ fn queue_text_snapshot_request(
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| usage());
+    if arg == "exec" {
+        let config = std::env::args().nth(2).unwrap_or_else(|| usage());
+        run_exec_proxy(&config);
+    }
     // Second personality: `dala_holder watch` — the file drawer's
     // recursive filesystem watcher (see watch.rs). Never returns.
     if arg == "watch" {
         watch::run();
     }
-    let mut config: Config = serde_json::from_str(&arg).unwrap_or_else(|e| {
+
+    #[cfg(windows)]
+    if arg == "--holder-config" {
+        let path = std::env::args().nth(2).unwrap_or_else(|| usage());
+        let config = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("dala_holder: read launch config {path}: {e}");
+            exit(2);
+        });
+        let _ = std::fs::remove_file(&path);
+        run_holder(&config);
+        exit(0);
+    }
+
+    #[cfg(windows)]
+    spawn_windows_child(&arg);
+
+    #[cfg(not(windows))]
+    run_holder(&arg);
+}
+
+fn run_holder(arg: &str) {
+    let mut config: Config = serde_json::from_str(arg).unwrap_or_else(|e| {
         eprintln!("dala_holder: bad config json: {e}");
         exit(2);
     });
@@ -515,9 +574,13 @@ fn main() {
     if let Some(dir) = socket_path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    let _session_lock = acquire_session_lock(&socket_path).unwrap_or_else(|e| {
+        eprintln!("dala_holder: lock {}: {e}", socket_path.display());
+        exit(3);
+    });
     // A live holder for this session means we must not double-spawn; a stale
     // socket is the spawner's job to clear before launching us.
-    let listener = match UnixListener::bind(&socket_path) {
+    let listener = match bind_local(&socket_path, &config.token) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("dala_holder: bind {}: {e}", socket_path.display());
@@ -566,9 +629,10 @@ fn main() {
         .master
         .take_writer()
         .unwrap_or_else(|e| fatal(&socket_path, &format!("take writer: {e}")));
-    let pty_writer = Arc::new(Mutex::new(pty_writer));
+    let pty_writer = Arc::new(Mutex::new(Some(pty_writer)));
     // Kept for resize; unix PTY masters are fd wrappers, access is serialized.
-    let master: Arc<Mutex<SendMaster>> = Arc::new(Mutex::new(SendMaster(pair.master)));
+    let master: Arc<Mutex<Option<SendMaster>>> =
+        Arc::new(Mutex::new(Some(SendMaster(pair.master))));
 
     let state = Arc::new(State {
         input_generation: Mutex::new(0),
@@ -577,20 +641,40 @@ fn main() {
             client: None,
             client_gen: 0,
             exit_status: None,
+            pty_done: false,
             screen: Screen::new(config.rows, config.cols, config.history_lines),
             repaint_pending: VecDeque::new(),
             repaint_frozen: false,
             text_snapshot_pending: VecDeque::new(),
             cwd_report: None,
             agent_reports: VecDeque::new(),
+            process_reports: VecDeque::new(),
             osc_tail: Vec::new(),
         }),
         cond: Condvar::new(),
     });
 
+    // Wait independently from the output reader. ConPTY keeps its output pipe
+    // open until the pseudoconsole handles are dropped, so waiting for reader
+    // EOF before child.wait() deadlocks on Windows.
+    {
+        let state = Arc::clone(&state);
+        let pty_writer = Arc::clone(&pty_writer);
+        let master = Arc::clone(&master);
+        thread::spawn(move || {
+            let status = child.wait().map(|s| s.exit_code()).unwrap_or(0);
+            pty_writer.lock().unwrap().take();
+            master.lock().unwrap().take();
+            let mut shared = state.shared.lock().unwrap();
+            shared.exit_status = Some(status);
+            state.cond.notify_all();
+        });
+    }
+
     // PTY -> ring.
     {
         let state = Arc::clone(&state);
+        let pty_writer = Arc::clone(&pty_writer);
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut parser_safe_output = ParserSafeOutput::default();
@@ -613,6 +697,7 @@ fn main() {
                         }
 
                         shared.screen.advance(&complete);
+                        let pty_replies = shared.screen.take_pty_writes();
                         {
                             let mut out = OscOut::default();
                             let mut tail = std::mem::take(&mut shared.osc_tail);
@@ -629,15 +714,27 @@ fn main() {
                             shared.transit.push_bounded(&complete, RING_MAX);
                         }
                         state.cond.notify_all();
+                        drop(shared);
+
+                        if !pty_replies.is_empty() {
+                            let mut writer = pty_writer.lock().unwrap();
+                            if let Some(writer) = writer.as_mut() {
+                                for reply in pty_replies {
+                                    if writer.write_all(&reply).is_err() {
+                                        break;
+                                    }
+                                }
+                                let _ = writer.flush();
+                            }
+                        }
                     }
                     // EIO once the child side is gone.
                     Err(_) => break,
                 }
             }
 
-            let status = child.wait().map(|s| s.exit_code()).unwrap_or(0);
             let mut shared = state.shared.lock().unwrap();
-            shared.exit_status = Some(status);
+            shared.pty_done = true;
             state.cond.notify_all();
         });
     }
@@ -653,6 +750,7 @@ fn main() {
                 TextSnapshot(Vec<u8>),
                 Cwd(String),
                 Agent(Vec<u8>),
+                Processes(Vec<u8>),
                 Exit(u32, Vec<u8>, Vec<u8>),
             }
 
@@ -675,8 +773,18 @@ fn main() {
                             && !shared.text_snapshot_pending.is_empty();
                         let cwd = attached && shared.cwd_report.is_some();
                         let agent = attached && !shared.agent_reports.is_empty();
-                        let done = shared.exit_status.is_some() && shared.transit.is_empty();
-                        if drainable || repaint || text_snapshot || cwd || agent || done {
+                        let processes = attached && !shared.process_reports.is_empty();
+                        let done = shared.exit_status.is_some()
+                            && shared.pty_done
+                            && shared.transit.is_empty();
+                        if drainable
+                            || repaint
+                            || text_snapshot
+                            || cwd
+                            || agent
+                            || processes
+                            || done
+                        {
                             break;
                         }
                         shared = state.cond.wait(shared).unwrap();
@@ -716,6 +824,12 @@ fn main() {
                             stream,
                             gen,
                         )
+                    } else if shared.client.is_some() && !shared.process_reports.is_empty() {
+                        (
+                            Job::Processes(shared.process_reports.pop_front().unwrap()),
+                            stream,
+                            gen,
+                        )
                     } else if shared.client.is_some() && !shared.text_snapshot_pending.is_empty() {
                         let (lines, bytes) = shared.text_snapshot_pending.pop_front().unwrap();
                         let snapshot = shared.screen.text_snapshot(lines, bytes);
@@ -742,6 +856,9 @@ fn main() {
                     Job::Output(chunk) => send_or_drop(&state, stream, gen, T_OUTPUT, &chunk),
                     Job::Cwd(cwd) => send_or_drop(&state, stream, gen, T_CWD, cwd.as_bytes()),
                     Job::Agent(payload) => send_or_drop(&state, stream, gen, T_AGENT, &payload),
+                    Job::Processes(payload) => {
+                        send_or_drop(&state, stream, gen, T_PROCESSES, &payload)
+                    }
                     Job::Repaint(repaint) => {
                         send_or_drop(&state, stream, gen, T_REPAINT, &repaint);
                         finish_repaint(&state, gen);
@@ -770,6 +887,10 @@ fn main() {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         if configure_client_stream(&stream).is_err() {
+            continue;
+        }
+
+        if !authenticate_client(&mut stream, &config.token) {
             continue;
         }
 
@@ -810,6 +931,9 @@ fn main() {
                 match read_frame(&mut stream) {
                     Ok((T_INPUT, data)) => {
                         let mut writer = pty_writer.lock().unwrap();
+                        let Some(writer) = writer.as_mut() else {
+                            break;
+                        };
                         match write_input_if_current(
                             &state.input_generation,
                             my_gen,
@@ -824,7 +948,6 @@ fn main() {
                         let rows = u16::from_be_bytes([data[0], data[1]]);
                         let cols = u16::from_be_bytes([data[2], data[3]]);
                         let (rows, cols) = clamp_dims(rows, cols);
-
                         let mut shared = state.shared.lock().unwrap();
                         while shared.client_gen == my_gen && shared.repaint_frozen {
                             shared = state.cond.wait(shared).unwrap();
@@ -834,12 +957,14 @@ fn main() {
                         }
 
                         shared.screen.resize(rows, cols);
-                        let _ = master.lock().unwrap().0.resize(PtySize {
-                            rows,
-                            cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
+                        if let Some(master) = master.lock().unwrap().as_mut() {
+                            let _ = master.0.resize(PtySize {
+                                rows,
+                                cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
                     }
                     Ok((T_REPAINT_REQ, data)) => {
                         let (cols, history_budget) = parse_repaint_request(&data);
@@ -868,6 +993,13 @@ fn main() {
                             TextSnapshotRequestResult::Stale
                             | TextSnapshotRequestResult::Overloaded => break,
                         }
+                    }
+                    Ok((T_PROCESSES_REQ, _)) => {
+                        let payload = serde_json::to_vec(&process_tree(shell_pid))
+                            .unwrap_or_else(|_| b"[]".to_vec());
+                        let mut shared = state.shared.lock().unwrap();
+                        shared.process_reports.push_back(payload);
+                        state.cond.notify_all();
                     }
                     Ok((T_KILL, _)) => {
                         let shared = state.shared.lock().unwrap();
@@ -900,8 +1032,22 @@ fn parse_repaint_request(data: &[u8]) -> (u16, usize) {
     (cols, history_budget.min(REPAINT_HISTORY_BUDGET))
 }
 
-fn configure_client_stream(stream: &UnixStream) -> std::io::Result<()> {
+fn configure_client_stream(stream: &LocalStream) -> std::io::Result<()> {
     stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+}
+
+#[cfg(all(test, unix))]
+fn local_stream_pair() -> std::io::Result<(LocalStream, LocalStream)> {
+    UnixStream::pair()
+}
+
+#[cfg(all(test, windows))]
+fn local_stream_pair() -> std::io::Result<(LocalStream, LocalStream)> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    let address = listener.local_addr()?;
+    let peer = TcpStream::connect(address)?;
+    let (accepted, _) = listener.accept()?;
+    Ok((accepted, peer))
 }
 
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
@@ -963,14 +1109,8 @@ fn scan_osc(tail: &mut Vec<u8>, chunk: &[u8], out: &mut OscOut) {
         let body = &hay[body_start..end];
         if let Some(url) = body.strip_prefix(b"7;") {
             if let Ok(url) = std::str::from_utf8(url) {
-                if let Some(path) = url.strip_prefix("file://") {
-                    let path = match path.find('/') {
-                        Some(i) => &path[i..],
-                        None => "/",
-                    };
-                    if let Some(decoded) = percent_decode(path) {
-                        out.cwd = Some(decoded);
-                    }
+                if let Some(path) = osc_file_path(url) {
+                    out.cwd = Some(path);
                 }
             }
         } else if let Some(rest) = body.strip_prefix(b"777;notify;") {
@@ -1028,8 +1168,229 @@ fn percent_decode(path: &str) -> Option<String> {
 struct SendMaster(Box<dyn MasterPty>);
 unsafe impl Send for SendMaster {}
 
+#[cfg(windows)]
+fn process_tree(root_pid: u32) -> Vec<ProcessInfo> {
+    use std::collections::HashSet;
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    let mut descendants = HashSet::from([root_pid]);
+
+    loop {
+        let before = descendants.len();
+        for (pid, process) in system.processes() {
+            if process
+                .parent()
+                .is_some_and(|parent| descendants.contains(&parent.as_u32()))
+            {
+                descendants.insert(pid.as_u32());
+            }
+        }
+        if descendants.len() == before {
+            break;
+        }
+    }
+
+    let mut processes: Vec<ProcessInfo> = system
+        .processes()
+        .iter()
+        .filter(|(pid, _)| pid.as_u32() != root_pid && descendants.contains(&pid.as_u32()))
+        .map(|(pid, process)| ProcessInfo {
+            pid: pid.as_u32(),
+            parent_pid: process.parent().map(|parent| parent.as_u32()),
+            executable: process
+                .exe()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| process.name().to_string_lossy().into_owned()),
+            argv: process
+                .cmd()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+        })
+        .collect();
+    processes.sort_by_key(|process| process.pid);
+    processes
+}
+
+fn osc_file_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    let (host, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
+    let decoded = percent_decode(path)?;
+
+    #[cfg(windows)]
+    {
+        let normalized = if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+            if decoded.as_bytes().get(2) == Some(&b':') && decoded.starts_with('/') {
+                decoded[1..].to_owned()
+            } else {
+                decoded
+            }
+        } else {
+            format!("//{host}{decoded}")
+        };
+        Some(normalized.replace('/', "\\"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = host;
+        Some(decoded)
+    }
+}
+
+#[cfg(not(windows))]
+fn process_tree(_root_pid: u32) -> Vec<ProcessInfo> {
+    Vec::new()
+}
+
+fn run_exec_proxy(raw: &str) -> ! {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let config: ExecConfig = serde_json::from_str(raw).unwrap_or_else(|e| {
+        eprintln!("dala_holder exec: bad config json: {e}");
+        exit(2);
+    });
+    let Some((program, args)) = config.command.split_first() else {
+        eprintln!("dala_holder exec: command must not be empty");
+        exit(2);
+    };
+
+    let stderr = if config.stderr == "/dev/null" {
+        Stdio::null()
+    } else {
+        let path = PathBuf::from(&config.stderr);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap_or_else(|e| {
+                eprintln!("dala_holder exec: stderr: {e}");
+                exit(1);
+            });
+        Stdio::from(file)
+    };
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("dala_holder exec: spawn {program}: {e}");
+            exit(1);
+        });
+
+    #[cfg(windows)]
+    let _job = WindowsJob::assign(&child).ok();
+
+    let mut child_stdin = child.stdin.take().unwrap();
+    let mut child_stdout = child.stdout.take().unwrap();
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut child_stdin);
+        let _ = child_stdin.flush();
+        let _ = eof_tx.send(());
+    });
+    let output = thread::spawn(move || {
+        let _ = std::io::copy(&mut child_stdout, &mut std::io::stdout().lock());
+        let _ = std::io::stdout().flush();
+    });
+
+    let mut eof_at = None;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None)
+                if eof_at.is_some_and(|at: Instant| at.elapsed() >= Duration::from_millis(100)) =>
+            {
+                let _ = child.kill();
+                break child.wait().unwrap_or_else(|e| {
+                    eprintln!("dala_holder exec: wait: {e}");
+                    exit(1);
+                });
+            }
+            Ok(None) => {
+                if eof_at.is_none() && eof_rx.try_recv().is_ok() {
+                    eof_at = Some(Instant::now());
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                eprintln!("dala_holder exec: wait: {e}");
+                exit(1);
+            }
+        }
+    };
+    let _ = output.join();
+    exit(status.code().unwrap_or(1));
+}
+
+#[cfg(windows)]
+struct WindowsJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn assign(child: &std::process::Child) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const std::ffi::c_void,
+                std::mem::size_of_val(&limits) as u32,
+            ) == 0
+                || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0
+            {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self(job))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
 fn usage() -> ! {
-    eprintln!("usage: dala_holder '<config json>' | dala_holder watch");
+    eprintln!(
+        "usage: dala_holder '<config json>' | dala_holder watch | dala_holder exec '<config json>'"
+    );
     exit(2);
 }
 
@@ -1057,8 +1418,181 @@ fn fatal(socket_path: &std::path::Path, msg: &str) -> ! {
     exit(1);
 }
 
+#[cfg(unix)]
+fn bind_local(path: &std::path::Path, _token: &str) -> std::io::Result<LocalListener> {
+    UnixListener::bind(path)
+}
+
+#[cfg(windows)]
+fn bind_local(path: &std::path::Path, token: &str) -> std::io::Result<LocalListener> {
+    if token.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "an authentication token is required",
+        ));
+    }
+
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    let port = listener.local_addr()?.port();
+    let endpoint = serde_json::json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": token,
+    });
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}.tmp", std::process::id()));
+    let temporary = PathBuf::from(temporary);
+    std::fs::write(&temporary, serde_json::to_vec(&endpoint)?)?;
+    let _ = std::fs::remove_file(path);
+    std::fs::rename(temporary, path)?;
+    Ok(listener)
+}
+
+#[cfg(unix)]
+fn authenticate_client(_stream: &mut LocalStream, _token: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn authenticate_client(stream: &mut LocalStream, token: &str) -> bool {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let authenticated =
+        matches!(read_frame(stream), Ok((T_AUTH, supplied)) if supplied == token.as_bytes());
+    let _ = stream.set_read_timeout(None);
+    authenticated
+}
+
+#[cfg(unix)]
+fn acquire_session_lock(_path: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn acquire_session_lock(path: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
+    use fs2::FileExt;
+
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(lock_path))?;
+    file.try_lock_exclusive()?;
+    Ok(Some(file))
+}
+
+#[cfg(windows)]
+fn spawn_windows_child(config: &str) -> ! {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut parsed: Config = serde_json::from_str(config).unwrap_or_else(|e| {
+        eprintln!("dala_holder: bad config json: {e}");
+        exit(2);
+    });
+    merge_windows_launch_env(&mut parsed);
+    let socket_path = PathBuf::from(&parsed.socket);
+    if let Some(dir) = socket_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let executable = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("dala_holder: current executable: {e}");
+        exit(1);
+    });
+
+    let mut config_path = socket_path.as_os_str().to_owned();
+    config_path.push(".launch.json");
+    let config_path = PathBuf::from(config_path);
+    let launch_config = serde_json::to_vec(&parsed).unwrap_or_else(|error| {
+        eprintln!("dala_holder: serialize launch config: {error}");
+        exit(1);
+    });
+    if let Err(error) = std::fs::write(&config_path, launch_config) {
+        eprintln!("dala_holder: write launch config: {error}");
+        exit(1);
+    }
+
+    // Erlang Port programs run in a kill-on-close Job Object. WMI creates the
+    // real holder from the system provider process, outside that Job, so the
+    // PTY and shell survive a BEAM restart. The command line contains only a
+    // config-file path; the authentication token never appears in process args.
+    let command_line = format!(
+        "{} --holder-config {}",
+        quote_windows_arg(&executable),
+        quote_windows_arg(&config_path)
+    );
+    let script = concat!(
+        "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly ",
+        "-Property @{ShowWindow=[uint16]0}; ",
+        "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create ",
+        "-Arguments @{CommandLine=$env:DALA_HOLDER_COMMAND_LINE; ",
+        "ProcessStartupInformation=$startup}; ",
+        "if ($null -eq $r -or $r.ReturnValue -ne 0) { ",
+        "Write-Error ('Win32_Process.Create failed: ' + $r.ReturnValue); exit 1 }"
+    );
+
+    let result = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("DALA_HOLDER_COMMAND_LINE", command_line)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => exit(0),
+        Ok(output) => {
+            let _ = std::fs::remove_file(&config_path);
+            let error = String::from_utf8_lossy(&output.stderr);
+            eprintln!("dala_holder: WMI launch failed: {}", error.trim());
+            exit(1);
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&config_path);
+            eprintln!("dala_holder: start Windows process broker: {error}");
+            exit(1);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn merge_windows_launch_env(config: &mut Config) {
+    use std::collections::{BTreeMap, HashSet};
+
+    let removed: HashSet<String> = config
+        .env_remove
+        .iter()
+        .map(|key| key.to_lowercase())
+        .collect();
+    let mut merged = BTreeMap::new();
+
+    for (key, value) in std::env::vars_os() {
+        let (Ok(key), Ok(value)) = (key.into_string(), value.into_string()) else {
+            continue;
+        };
+        let comparison_key = key.to_lowercase();
+        if !removed.contains(&comparison_key) {
+            merged.insert(comparison_key, (key, value));
+        }
+    }
+
+    for (key, value) in std::mem::take(&mut config.env) {
+        merged.insert(key.to_lowercase(), (key, value));
+    }
+
+    config.env = merged.into_values().collect();
+}
+
+#[cfg(windows)]
+fn quote_windows_arg(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
 /// The BEAM ignores SIGCHLD (and that survives exec), which breaks child-exit
 /// detection in anything it spawns — restore defaults before doing any work.
+#[cfg(unix)]
 fn reset_signals() {
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_DFL);
@@ -1074,6 +1608,7 @@ fn reset_signals() {
 /// Detach from the spawning BEAM: fork (parent exits so dala's spawn returns),
 /// new session, stdio to a per-session log next to the socket. Single-threaded
 /// at this point, so the fork is safe.
+#[cfg(unix)]
 fn daemonize(socket_path: &std::path::Path) {
     unsafe {
         match libc::fork() {
@@ -1113,7 +1648,7 @@ fn daemonize(socket_path: &std::path::Path) {
 /// generation, so a newer client is never clobbered by a stale write.
 fn send_or_drop(
     state: &State,
-    stream: Option<UnixStream>,
+    stream: Option<LocalStream>,
     gen: u64,
     frame_type: u8,
     payload: &[u8],
@@ -1325,7 +1860,7 @@ mod frame_tests {
 
     #[test]
     fn client_writer_clones_inherit_a_finite_write_timeout() {
-        let (accepted, _peer) = UnixStream::pair().unwrap();
+        let (accepted, _peer) = local_stream_pair().unwrap();
 
         configure_client_stream(&accepted).unwrap();
         let writer = accepted.try_clone().unwrap();
@@ -1378,6 +1913,7 @@ mod client_generation_tests {
                 client: None,
                 client_gen: generation,
                 exit_status: None,
+                pty_done: false,
                 screen: Screen::new(24, 80, 100),
                 repaint_pending: VecDeque::from([PendingRepaint {
                     barrier: 0,
@@ -1388,6 +1924,7 @@ mod client_generation_tests {
                 text_snapshot_pending: VecDeque::from([(10, 1024)]),
                 cwd_report: None,
                 agent_reports: VecDeque::new(),
+                process_reports: VecDeque::new(),
                 osc_tail: Vec::new(),
             }),
             cond: Condvar::new(),
@@ -1413,7 +1950,7 @@ mod client_generation_tests {
     #[test]
     fn active_detach_shuts_down_every_clone_of_the_client_socket() {
         let state = frozen_state(7);
-        let (holder, mut peer) = UnixStream::pair().unwrap();
+        let (holder, mut peer) = local_stream_pair().unwrap();
         let _control_thread_clone = holder.try_clone().unwrap();
         peer.set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
@@ -1509,6 +2046,35 @@ mod client_generation_tests {
 
         assert!(!write_input_if_current(&generation, 8, &mut bytes, b"stale input").unwrap());
         assert!(bytes.is_empty());
+    }
+}
+
+#[cfg(windows)]
+fn daemonize(_socket_path: &std::path::Path) {}
+
+#[cfg(windows)]
+fn reset_signals() {}
+
+#[cfg(all(test, windows))]
+mod windows_transport_tests {
+    use super::*;
+
+    #[test]
+    fn bind_local_publishes_authenticated_loopback_endpoint() {
+        let dir = std::env::temp_dir().join(format!("dala-holder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = dir.join("session.sock");
+
+        let listener = bind_local(&endpoint, "test-token").unwrap();
+        let published: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&endpoint).unwrap()).unwrap();
+
+        assert_eq!(published["host"], "127.0.0.1");
+        assert!(published["port"].as_u64().unwrap() > 0);
+        assert_eq!(published["token"], "test-token");
+
+        drop(listener);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -1970,6 +2536,16 @@ mod config_tests {
 mod scan_tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn expected_host_path(path: &str) -> String {
+        path.to_owned()
+    }
+
+    #[cfg(windows)]
+    fn expected_host_path(path: &str) -> String {
+        format!("\\\\host{}", path.replace('/', "\\"))
+    }
+
     fn run(chunks: &[&[u8]]) -> (Option<String>, Vec<Vec<u8>>) {
         let mut tail = Vec::new();
         let mut out = OscOut::default();
@@ -1981,8 +2557,24 @@ mod scan_tests {
 
     #[test]
     fn parses_osc7_cwd() {
-        let (cwd, _) = run(&[b"junk\x1b]7;file://host/tmp/x\x07more"]);
+        let (cwd, _) = run(&[b"junk\x1b]7;file://localhost/tmp/x\x07more"]);
+        #[cfg(unix)]
         assert_eq!(cwd.as_deref(), Some("/tmp/x"));
+        #[cfg(windows)]
+        assert_eq!(cwd.as_deref(), Some("\\tmp\\x"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_drive_and_unc_osc7_paths() {
+        assert_eq!(
+            osc_file_path("file:///C:/Users/Sea%20So/project").as_deref(),
+            Some("C:\\Users\\Sea So\\project")
+        );
+        assert_eq!(
+            osc_file_path("file://server/share/project").as_deref(),
+            Some("\\\\server\\share\\project")
+        );
     }
 
     #[test]
@@ -2020,16 +2612,16 @@ mod scan_tests {
             b"\x1b]7;file://host/bad\x18ignored",
             b"\x1b]7;file://host/good\x07",
         ]);
-        assert_eq!(cwd.as_deref(), Some("/good"));
+        assert_eq!(cwd, Some(expected_host_path("/good")));
 
         let (cwd, _) = run(&[b"\x1b]7;file://host/bad\x1bx\x1b]7;file://host/escaped\x07"]);
-        assert_eq!(cwd.as_deref(), Some("/escaped"));
+        assert_eq!(cwd, Some(expected_host_path("/escaped")));
     }
 
     #[test]
     fn bare_escape_terminator_can_also_start_the_next_osc_report() {
         let (cwd, _) = run(&[b"\x1b]7;file://host/old\x1b]7;file://host/new\x07"]);
-        assert_eq!(cwd.as_deref(), Some("/new"));
+        assert_eq!(cwd, Some(expected_host_path("/new")));
     }
 
     #[test]

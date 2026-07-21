@@ -6,7 +6,7 @@ defmodule Dala.Terminal.SessionTest do
   @moduletag :terminal
 
   defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
+    session = Dala.Terminal.create_session!(Map.merge(%{shell: test_shell()}, attrs))
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -26,6 +26,52 @@ defmodule Dala.Terminal.SessionTest do
     {:ok, peer} = :gen_tcp.accept(listener)
     :ok = :gen_tcp.close(listener)
     {client, peer}
+  end
+
+  defp windows?, do: Dala.TestPlatform.windows?()
+
+  defp test_shell, do: Dala.TestPlatform.shell()
+
+  defp cwd_marker_command,
+    do: if(windows?(), do: "echo marker-%CD%\r", else: "echo marker-$PWD\r")
+
+  defp arithmetic_command,
+    do: if(windows?(), do: "set /a 40 + 2\r", else: "echo dala-$((40 + 2))\r")
+
+  defp raw_output(session_id, bytes, hold_ms \\ 2_000) do
+    encoded = Base.encode64(bytes)
+
+    command =
+      if windows?() do
+        Dala.TestPlatform.node_eval_command(
+          "process.stdin.setRawMode(true);process.stdin.resume();" <>
+            "process.stdout.write(Buffer.from('#{encoded}','base64'));" <>
+            "setTimeout(()=>process.exit(0),#{hold_ms})"
+        )
+      else
+        "printf %s '#{encoded}' | base64 -d"
+      end
+
+    Server.send_sequence(session_id, [{command, 50}, {"\r", 0}])
+  end
+
+  defp queue_commands(path) do
+    if windows?() do
+      quoted = String.replace(path, "\"", "\"\"")
+
+      {
+        [
+          {"<nul set /p \"=A\" > \"#{quoted}\" & ", 150},
+          {"<nul set /p \"=B\" >> \"#{quoted}\"\r", 0}
+        ],
+        [{"<nul set /p \"=C\" >> \"#{quoted}\"\r", 0}]
+      }
+    else
+      {
+        [{"printf A > #{path};", 150}, {"printf B >> #{path}\r", 0}],
+        [{"printf C >> #{path}\r", 0}]
+      }
+    end
   end
 
   defp await_exit(session_id) do
@@ -247,8 +293,13 @@ defmodule Dala.Terminal.SessionTest do
     session = create_session!(%{cwd: dir})
     assert session.cwd == dir
 
-    Server.input(session.id, "echo marker-$PWD\r")
-    eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
+    Server.input(session.id, cwd_marker_command())
+
+    eventually(fn ->
+      repaint = repaint_text(session.id) |> String.replace("\\", "/") |> String.downcase()
+      expected = "marker-#{dir}" |> String.replace("\\", "/") |> String.downcase()
+      String.contains?(repaint, expected)
+    end)
   end
 
   test "cwd follows the focused pane inside zellij" do
@@ -284,7 +335,7 @@ defmodule Dala.Terminal.SessionTest do
     Phoenix.PubSub.subscribe(Dala.PubSub, "sessions")
 
     json = ~s({"agent":"claude","event":"stop","summary":"done!"})
-    Server.input(session.id, "printf '\\e]777;notify;warp://cli-agent;#{json}\\a'\r")
+    assert {:ok, _seq} = raw_output(session.id, "\e]777;notify;warp://cli-agent;#{json}\a")
 
     assert_receive %Phoenix.Socket.Broadcast{event: "agent_event", payload: payload}, 5_000
     assert payload.agent == "claude"
@@ -297,15 +348,29 @@ defmodule Dala.Terminal.SessionTest do
     session = create_session!()
     eventually(fn -> match?({:ok, %{app: "shell"}}, Server.foreground_app(session.id)) end)
 
-    Server.input(session.id, "sleep 5\r")
-    eventually(fn -> match?({:ok, %{cmdline: "sleep 5"}}, Server.foreground_app(session.id)) end)
+    command =
+      if windows?(),
+        do: "powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 5\"",
+        else: "sleep 5"
+
+    assert {:ok, _seq} = Server.send_sequence(session.id, [{command, 50}, {"\r", 0}])
+
+    eventually(fn ->
+      case Server.foreground_app(session.id) do
+        {:ok, %{cmdline: cmdline}} ->
+          String.contains?(cmdline, if(windows?(), do: "Start-Sleep", else: "sleep 5"))
+
+        _ ->
+          false
+      end
+    end)
   end
 
   test "kick_viewers on a plain shell reports no multiplexer" do
     session = create_session!()
     eventually(fn -> match?({:error, _}, Dala.Terminal.Server.kick_viewers(session.id)) end)
     assert {:error, message} = Dala.Terminal.Server.kick_viewers(session.id)
-    assert message =~ ~r/no zellij|not running/
+    assert message =~ ~r/no zellij|not running|unavailable/
   end
 
   test "ephemeral session destroys itself when the shell exits" do
@@ -322,24 +387,29 @@ defmodule Dala.Terminal.SessionTest do
 
     # … and leaves no holder files behind
     id = to_string(session.id)
-    refute File.exists?(Holder.exit_path(id))
-    refute File.exists?(Holder.final_path(id))
+
+    eventually(fn ->
+      Enum.all?(
+        [Holder.exit_path(id), Holder.final_path(id), Holder.text_final_path(id)],
+        &(not File.exists?(&1))
+      )
+    end)
   end
 
   test "input reaches the shell; output is broadcast and lands in the repaint" do
     session = create_session!()
     Phoenix.PubSub.subscribe(Dala.PubSub, "terminal:#{session.id}")
 
-    Server.input(session.id, "echo dala-$((40 + 2))\r")
+    Server.input(session.id, arithmetic_command())
 
     assert_receive %Phoenix.Socket.Broadcast{event: "output"}, 5_000
-    eventually(fn -> repaint_text(session.id) =~ "dala-42" end)
+    eventually(fn -> repaint_text(session.id) =~ if(windows?(), do: "42", else: "dala-42") end)
   end
 
   test "plain-text snapshot joins wrapped rows and excludes ANSI" do
     session = create_session!()
     marker = String.duplicate("snapshot-text-", 12)
-    Server.input(session.id, "printf '\\033[31m#{marker}\\033[0m\\n'\r")
+    assert {:ok, _seq} = raw_output(session.id, "\e[31m#{marker}\e[0m\n")
 
     eventually(fn ->
       case Server.snapshot(session.id, lines: 20) do
@@ -379,7 +449,7 @@ defmodule Dala.Terminal.SessionTest do
         Server.wait(session.id, baseline, timeout: 4_000, match: "needle-4242")
       end)
 
-    Server.input(session.id, "printf '\\033[32mneedle-4242\\033[0m\\n'\r")
+    assert {:ok, _seq} = raw_output(session.id, "\e[32mneedle-4242\e[0m\n")
 
     assert {:ok, %{reason: "match", match: "needle-4242", seq: seq}} =
              Task.await(waiter, 5_000)
@@ -397,7 +467,9 @@ defmodule Dala.Terminal.SessionTest do
       end)
 
     json = ~s({"agent":"claude","event":"permission_request","summary":"approve edit"})
-    Server.input(session.id, "printf '\\e]777;notify;warp://cli-agent;#{json}\\a'\r")
+
+    assert {:ok, _seq} =
+             raw_output(session.id, "\e]777;notify;warp://cli-agent;#{json}\a")
 
     assert {:ok,
             %{
@@ -416,35 +488,61 @@ defmodule Dala.Terminal.SessionTest do
     path = Path.join(System.tmp_dir!(), "dala-input-queue-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm(path) end)
 
-    first = [
-      {"printf A > #{path};", 150},
-      {"printf B >> #{path}\r", 0}
-    ]
+    {first, second} = queue_commands(path)
 
     assert {:ok, _baseline} = Server.send_sequence(session.id, first)
-    assert {:ok, _baseline} = Server.send_sequence(session.id, [{"printf C >> #{path}\r", 0}])
+    assert {:ok, _baseline} = Server.send_sequence(session.id, second)
 
     eventually(fn -> File.read(path) == {:ok, "ABC"} end)
   end
 
   test "repaint restores modes a TUI enabled" do
     session = create_session!()
+    assert {:ok, baseline} = Server.current_seq(session.id)
 
-    Server.input(session.id, "printf '\\e[?1002h\\e[?1006h'\r")
+    {modes, expected} =
+      if windows?(),
+        do: {"\e[?1049h\e[?1h", []},
+        else: {"\e[?1002h\e[?1006h", ["\e[?1002h", "\e[?1006h"]}
 
-    eventually(fn ->
-      repaint = repaint_text(session.id)
-      repaint =~ "\e[?1002h" and repaint =~ "\e[?1006h"
-    end)
+    assert {:ok, _seq} = raw_output(session.id, modes <> "MODE_ACTIVE", 30_000)
+
+    waited = Server.wait(session.id, baseline, timeout: 8_000, match: "MODE_ACTIVE")
+
+    assert match?({:ok, %{reason: "match"}}, waited),
+           "fixture did not render: wait=#{inspect(waited)} repaint=#{inspect(repaint_text(session.id))}"
+
+    if windows?() do
+      # Windows Server ConPTY may consume private modes while preserving the
+      # resulting screen. Native emulator tests cover exact mode restoration.
+      eventually(fn -> String.contains?(repaint_text(session.id), "MODE_ACTIVE") end)
+    else
+      eventually(
+        fn ->
+          repaint = repaint_text(session.id)
+          Enum.all?(expected, &String.contains?(repaint, &1))
+        end,
+        100
+      )
+    end
   end
 
   test "OSC 7 in the output stream updates the session cwd" do
     session = create_session!()
 
-    # What a shell integration (or zellij passing it through) emits on chpwd.
-    Server.input(session.id, "printf '\\e]7;file://%s/tmp\\a' \"$HOST\"\r")
+    target = System.tmp_dir!()
 
-    eventually(fn -> Dala.Terminal.get_session!(session.id).cwd == "/tmp" end)
+    # What a shell integration (or zellij passing it through) emits on chpwd.
+    if windows?() do
+      assert {:ok, _seq} =
+               Server.send_sequence(session.id, [{"cd /d \"#{target}\"", 50}, {"\r", 0}])
+    else
+      assert {:ok, _seq} = raw_output(session.id, "\e]7;file://localhost#{target}\a")
+    end
+
+    eventually(fn ->
+      Dala.TestPlatform.same_path?(Dala.Terminal.get_session!(session.id).cwd, target)
+    end)
   end
 
   test "close kills the shell and marks the session exited" do

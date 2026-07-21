@@ -6,7 +6,11 @@ defmodule Dala.Terminal.AgentCommandsTest do
   alias Dala.Terminal.AgentCommands
 
   setup do
-    cwd = Path.join(System.tmp_dir!(), "agent-cmds-#{System.unique_integer([:positive])}")
+    cwd =
+      Dala.TestPlatform.normalize_path(
+        Path.join(System.tmp_dir!(), "agent-cmds-#{System.unique_integer([:positive])}")
+      )
+
     File.mkdir_p!(cwd)
     on_exit(fn -> File.rm_rf!(cwd) end)
     {:ok, cwd: cwd}

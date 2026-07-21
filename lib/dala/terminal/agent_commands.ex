@@ -157,13 +157,13 @@ defmodule Dala.Terminal.AgentCommands do
 
   # commands/a.md → /a; commands/git/pr.md → /git:pr (Claude's namespacing).
   defp command_files(dir) do
-    for path <- Path.wildcard(Path.join(dir, "**/*.md")) do
+    for path <- Path.wildcard(Path.join([dir, "**", "*.md"])) do
       name =
         "/" <>
           (path
            |> Path.relative_to(dir)
            |> String.replace_suffix(".md", "")
-           |> String.replace("/", ":"))
+           |> String.replace(["/", "\\"], ":"))
 
       %{name: name, description: frontmatter_description(path)}
     end
@@ -172,12 +172,12 @@ defmodule Dala.Terminal.AgentCommands do
   # skills/name.md and skills/name/SKILL.md both define skill "name".
   defp skills(dir) do
     flat =
-      for path <- Path.wildcard(Path.join(dir, "*.md")) do
+      for path <- Path.wildcard(Path.join([dir, "*.md"])) do
         %{name: "/" <> Path.basename(path, ".md"), description: frontmatter_description(path)}
       end
 
     nested =
-      for path <- Path.wildcard(Path.join(dir, "*/SKILL.md")) do
+      for path <- Path.wildcard(Path.join([dir, "*", "SKILL.md"])) do
         %{
           name: "/" <> (path |> Path.dirname() |> Path.basename()),
           description: frontmatter_description(path)
@@ -191,12 +191,12 @@ defmodule Dala.Terminal.AgentCommands do
     cache = home(".claude/plugins/cache")
 
     commands =
-      for path <- Path.wildcard(Path.join(cache, "*/commands/**/*.md")) do
+      for path <- Path.wildcard(Path.join([cache, "*", "commands", "**", "*.md"])) do
         %{name: "/" <> Path.basename(path, ".md"), description: frontmatter_description(path)}
       end
 
     plugin_skills =
-      for path <- Path.wildcard(Path.join(cache, "*/skills/*/SKILL.md")) do
+      for path <- Path.wildcard(Path.join([cache, "*", "skills", "*", "SKILL.md"])) do
         %{
           name: "/" <> (path |> Path.dirname() |> Path.basename()),
           description: frontmatter_description(path)

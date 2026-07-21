@@ -326,11 +326,7 @@ defmodule Dala.Terminal.Server do
   # Best-effort kill of a holder no server is attached to (session destroy
   # while dala never reattached after a restart).
   defp kill_detached_holder(id) do
-    with {:ok, socket} <- Holder.connect(id) do
-      Holder.send_kill(socket)
-      :gen_tcp.close(socket)
-    end
-
+    _ = Holder.kill(id)
     :ok
   end
 
@@ -339,19 +335,23 @@ defmodule Dala.Terminal.Server do
   @impl true
   def init(session) do
     id = to_string(session.id)
+    shell = Dala.Terminal.Shell.normalize_executable(session.shell)
+    shell_options = Dala.Terminal.Shell.spawn_options(shell)
 
     opts = [
-      shell: session.shell,
+      shell: shell,
+      args: shell_options[:args],
       cwd: session.cwd,
-      env: [
-        {"TERM", "xterm-256color"},
-        {"COLORTERM", "truecolor"},
-        # Advertise Warp's open cli-agent notification protocol: the agent
-        # plugins (claude-code-warp, opencode-warp, …) emit OSC 777 events
-        # only when these are present.
-        {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
-        {"WARP_CLIENT_VERSION", "dala"}
-      ],
+      env:
+        [
+          {"TERM", "xterm-256color"},
+          {"COLORTERM", "truecolor"},
+          # Advertise Warp's open cli-agent notification protocol: the agent
+          # plugins (claude-code-warp, opencode-warp, …) emit OSC 777 events
+          # only when these are present.
+          {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
+          {"WARP_CLIENT_VERSION", "dala"}
+        ] ++ shell_options[:env],
       rows: 24,
       cols: 80,
       history_lines: Dala.Terminal.Session.history_lines(session.scrollback_limit)
@@ -380,6 +380,7 @@ defmodule Dala.Terminal.Server do
           deferred_all_client_repaint: false,
           # Machine snapshots use the holder's FIFO response queue.
           pending_text_snapshots: :queue.new(),
+          pending_foregrounds: :queue.new(),
           holder_proto: nil,
           # Bounded long polls used by MCP. Waiters hold GenServer.from values
           # and are released by output, agent events, exit, timeout or caller
@@ -502,21 +503,33 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
-  def handle_call(:foreground_app, _from, state) do
-    cmdline =
-      case state.mux do
-        nil ->
-          Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
+  def handle_call(:foreground_app, from, state) do
+    if windows?() do
+      case Holder.send_processes_req(state.socket) do
+        :ok ->
+          pending = :queue.in(from, state.pending_foregrounds)
+          {:noreply, %{state | pending_foregrounds: pending}}
 
-        mux ->
-          case Dala.Terminal.MuxCwd.focused_command(mux) do
-            {:ok, command} -> command
-            :error -> nil
-          end
+        {:error, _reason} ->
+          {:reply, {:ok, %{app: "unknown", cmdline: ""}}, state}
       end
+    else
+      cmdline =
+        case state.mux do
+          nil ->
+            Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
 
-    {:reply,
-     {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}}, state}
+          mux ->
+            case Dala.Terminal.MuxCwd.focused_command(mux) do
+              {:ok, command} -> command
+              :error -> nil
+            end
+        end
+
+      {:reply,
+       {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}},
+       state}
+    end
   end
 
   @impl true
@@ -950,6 +963,25 @@ defmodule Dala.Terminal.Server do
       frame_type == Holder.type_agent() ->
         {:noreply, broadcast_agent_event(state, payload)}
 
+      frame_type == Holder.type_processes() ->
+        case :queue.out(state.pending_foregrounds) do
+          {{:value, from}, rest} ->
+            result =
+              case Jason.decode(payload) do
+                {:ok, processes} when is_list(processes) ->
+                  Dala.Terminal.AgentEvent.foreground_from_processes(processes)
+
+                _other ->
+                  %{app: "unknown", cmdline: ""}
+              end
+
+            GenServer.reply(from, {:ok, result})
+            {:noreply, %{state | pending_foregrounds: rest}}
+
+          {:empty, _queue} ->
+            {:noreply, state}
+        end
+
       frame_type == Holder.type_repaint() ->
         state = flush_now(state)
 
@@ -1114,6 +1146,8 @@ defmodule Dala.Terminal.Server do
     timer = Process.send_after(self(), {:poll_cwd, message_ref}, delay)
     %{state | cwd_poll_timer: {message_ref, timer}}
   end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   # Monitor each client the first time we hear from it, so ownership is
   # released when its channel process exits.

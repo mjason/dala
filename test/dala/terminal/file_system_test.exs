@@ -2,7 +2,11 @@ defmodule Dala.Terminal.FileSystemTest do
   use ExUnit.Case, async: true
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "dala-fs-test-#{System.unique_integer([:positive])}")
+    dir =
+      Dala.TestPlatform.normalize_path(
+        Path.join(System.tmp_dir!(), "dala-fs-test-#{System.unique_integer([:positive])}")
+      )
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{dir: dir}
@@ -103,7 +107,11 @@ defmodule Dala.Terminal.FileSystemTest do
     assert {:ok, %{path: weird}} = save_pasted_file("../../etc/passwd", Base.encode64("x"))
     on_exit(fn -> File.rm(weird) end)
     assert Path.extname(weird) == ".png"
-    assert Path.dirname(weird) == Path.join(System.tmp_dir!(), "dala-paste")
+
+    assert Dala.TestPlatform.same_path?(
+             Path.dirname(weird),
+             Path.join(System.tmp_dir!(), "dala-paste")
+           )
   end
 
   test "save_pasted_file rejects invalid base64 and oversized payloads" do
@@ -202,7 +210,12 @@ defmodule Dala.Terminal.FileSystemTest do
     File.write!(dir <> "/bad_" <> <<0xFF>> <> ".txt", "x")
 
     assert {:ok, %{files: files}} = list_files(dir)
-    assert files == ["ok.txt"]
+
+    if Dala.TestPlatform.windows?() do
+      assert files == ["bad_ÿ.txt", "ok.txt"]
+    else
+      assert files == ["ok.txt"]
+    end
   end
 
   test "list_files from a subdirectory of a repo returns paths relative to it", %{dir: dir} do
