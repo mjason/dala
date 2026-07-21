@@ -213,9 +213,63 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
+  windows:
+    name: Build windows-x86_64 server
+    runs-on: windows-2022
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          mix deps.get --only prod
+          npm ci --prefix assets
+      - name: Compile server and assets
+        shell: pwsh
+        run: |
+          mix compile --warnings-as-errors
+          mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+      - name: Smoke-test release installation layout
+        shell: pwsh
+        run: |
+          Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
+          ./ci/windows-release-smoke.ps1
+      - name: Package release
+        shell: pwsh
+        run: |
+          $release = "_build/prod/rel/dala"
+          $out = "dala-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          Compress-Archive -Path "$release/*" -DestinationPath $out -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$out.sha256", "$hash  $out`n", [Text.UTF8Encoding]::new($false))
+          New-Item -ItemType Directory -Path artifacts | Out-Null
+          Move-Item $out, "$out.sha256" artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-windows-x86_64
+          path: artifacts/
+          if-no-files-found: error
+
   publish:
     name: Publish server release
-    needs: [linux, macos]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

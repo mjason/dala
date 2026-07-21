@@ -151,9 +151,19 @@ jobs:
       - run: cargo test
         working-directory: native/dala_theme_renderer
 
-  windows-release:
-    name: Windows release smoke test
-    runs-on: windows-2022
+  release-smoke:
+    name: Release smoke（${{ matrix.label }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux
+          - os: macos-14
+            label: macOS
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
     env:
       MIX_ENV: prod
     steps:
@@ -169,23 +179,30 @@ jobs:
           cache: npm
           cache-dependency-path: assets/package-lock.json
       - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
         with:
           arch: x64
       - name: Install dependencies
-        shell: pwsh
         run: |
           mix deps.get --only prod
           npm ci --prefix assets
-      - name: Build and smoke-test the Windows release
-        shell: pwsh
+      - name: Build release
         run: |
           mix compile --warnings-as-errors
           mix tailwind.install --if-missing
           mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
+      - name: Smoke-test Windows installation lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
           ./ci/windows-release-smoke.ps1
+      - name: Smoke-test Unix release lifecycle
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./ci/unix-release-smoke.sh
 
   e2e:
     name: BDD e2e（Playwright 8 场景）

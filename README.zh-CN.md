@@ -29,7 +29,9 @@
 
 ![快速打开](docs/screenshots/quick-open.png)
 
-## 快速开始（Linux x86_64）
+## 快速开始
+
+Linux x86_64 / macOS arm64：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
@@ -38,10 +40,30 @@ curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 以 systemd **用户守护进程**安装预编译包，地址 `http://localhost:4400`。
 配置在 `~/.config/dala/dala.env`，数据在 `~/.local/share/dala`。
 
+Windows 10 1809+ / Windows 11 x64（PowerShell，无需管理员权限）：
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+原生服务以当前用户计划任务运行，地址同样是 `http://localhost:4400`。
+版本和数据位于 `%LOCALAPPDATA%\Dala`，配置位于
+`%APPDATA%\Dala\dala.env`。新会话依次选择 PowerShell 7、Windows
+PowerShell、CMD。Dala 重启和升级不会中断已有 shell；Windows 注销或重启
+后则不保证保留会话。终端 holder 通过 Windows 自带的 WMI 服务脱离服务器
+进程，无需管理员权限；系统需保持 Windows Management Instrumentation 服务
+可用。
+
 升级：点侧栏的升级按钮，或者：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
+```
+
+Windows 升级：
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/update.ps1 | iex
 ```
 
 ## 桌面客户端
@@ -117,7 +139,7 @@ Diff 窗口：`i` 单栏 · `s` 并排 · `l` 行选模式 · `Alt+Z` 折行。
   有冲突的脏工作区会安全报错不强切。
 - **历史** — 提交日志；多文件提交带文件栏，可逐文件审阅。
 
-### Agent 感知（Claude Code / opencode / Codex…）
+### Agent 感知（Claude Code / OpenCode / Codex / Gemini CLI）
 
 dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应
 插件后即可启用（一次性配置）：
@@ -137,6 +159,15 @@ dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应
 
 **Codex**：无需插件，原生通知即可。**Gemini CLI**：装
 `warpdotdev/gemini-cli-warp`（见其仓库 README）。
+
+这四个 agent 都属于原生 Windows Tier 1。Dala 会识别 `.exe`、npm `.cmd`
+启动器和 agent 进程树，但绝不会自动修改 agent 配置。Claude Code、
+OpenCode、Gemini 仍需安装上述 Warp OSC 777 集成；Codex 使用原生 OSC 9
+通知（若你的 Codex 配置覆盖了自动选择，可显式设置
+`notification_method = "osc9"`）。Windows 不支持 zellij/tmux 集成，
+相关 UI 会自动隐藏。
+固定版本会在每次变更中通过 Dala 的 ConPTY holder 执行；最新版本由夜间
+任务探测，完整的全屏交互和通知则由发布前的登录态认证清单覆盖。
 
 启用后：
 

@@ -22,9 +22,20 @@ defmodule Dala.Updater.Release do
       else: "unsupported"
   end
 
+  def platform({:win32, :nt}, architecture) do
+    if String.contains?(to_string(architecture), "x86_64"),
+      do: "windows-x86_64",
+      else: "unsupported"
+  end
+
   def platform(_os_type, _architecture), do: "unsupported"
 
-  def asset_suffix(platform \\ platform()), do: "#{platform}.tar.gz"
+  def asset_suffix(platform \\ platform())
+  def asset_suffix("windows-x86_64"), do: "windows-x86_64.zip"
+  def asset_suffix(platform), do: "#{platform}.tar.gz"
+
+  def release_executable("windows-x86_64"), do: "bin/dala.bat"
+  def release_executable(_platform), do: "bin/dala"
 
   @doc "True when `latest` and `current` parse as versions and `latest` is strictly newer."
   def newer?(latest, current) do
@@ -56,4 +67,39 @@ defmodule Dala.Updater.Release do
   end
 
   def asset_url(_release, _platform), do: {:error, "malformed release payload"}
+
+  @doc "Download URLs for a server archive and its published SHA-256 file."
+  def verified_asset_urls(release, platform \\ platform())
+
+  def verified_asset_urls(%{"assets" => assets, "tag_name" => tag}, platform)
+      when is_list(assets) do
+    suffix = asset_suffix(platform)
+
+    with %{"name" => name, "browser_download_url" => archive_url} <-
+           Enum.find(assets, &String.ends_with?(&1["name"] || "", suffix)),
+         %{"browser_download_url" => checksum_url} <-
+           Enum.find(assets, &(&1["name"] == name <> ".sha256")) do
+      {:ok, %{archive: archive_url, checksum: checksum_url}}
+    else
+      nil -> {:error, "release #{tag} is missing #{suffix} or its SHA-256 asset"}
+      _ -> {:error, "release #{tag} has malformed #{suffix} assets"}
+    end
+  end
+
+  def verified_asset_urls(_release, _platform), do: {:error, "malformed release payload"}
+
+  @doc "Parse the first lowercase or uppercase SHA-256 token from a checksum file."
+  def checksum_sha256(body) when is_binary(body) do
+    case body |> String.trim() |> String.split(~r/\s+/, parts: 2) do
+      [hash | _] when byte_size(hash) == 64 ->
+        if String.match?(hash, ~r/\A[0-9a-fA-F]{64}\z/),
+          do: {:ok, String.downcase(hash)},
+          else: {:error, "malformed SHA-256 checksum"}
+
+      _ ->
+        {:error, "malformed SHA-256 checksum"}
+    end
+  end
+
+  def checksum_sha256(_body), do: {:error, "malformed SHA-256 checksum"}
 end

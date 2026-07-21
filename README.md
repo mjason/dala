@@ -29,7 +29,9 @@
 
 ![Quick open](docs/screenshots/quick-open.png)
 
-## Quick start (Linux x86_64 / macOS arm64)
+## Quick start
+
+Linux x86_64 / macOS arm64:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
@@ -40,10 +42,31 @@ This installs a prebuilt native release as a **user daemon** on
 under launchd on Apple Silicon Macs.
 Config lives in `~/.config/dala/config.jsonc`, data in `~/.local/share/dala`.
 
+Windows 10 1809+ / Windows 11 x64 (PowerShell, no administrator required):
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+The native server runs as a current-user Scheduled Task at
+`http://localhost:4400`. Versions and data live under `%LOCALAPPDATA%\Dala`;
+configuration lives in `%APPDATA%\Dala\dala.env`. New sessions prefer
+PowerShell 7, then Windows PowerShell, then CMD. Existing shells survive Dala
+restarts and upgrades, but not a Windows sign-out or reboot. The standard
+Windows Management Instrumentation service must be available so terminal
+holders can outlive the server process; no administrator privileges are
+required.
+
 To update later — either click the sidebar update button, or:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
+```
+
+On Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/update.ps1 | iex
 ```
 
 ## Desktop client
@@ -133,7 +156,7 @@ Open it with `Ctrl+Shift+G` in any session whose directory is inside a git repo.
 - **History** — commit log; multi-file commits get a file rail so you can
   review file by file.
 
-### Agent awareness (Claude Code / opencode / Codex…)
+### Agent awareness (Claude Code / OpenCode / Codex / Gemini CLI)
 
 dala speaks Warp's open cli-agent protocol (OSC 777). Install the agent's
 plugin once and you get the integration:
@@ -153,6 +176,17 @@ plugin once and you get the integration:
 
 **Codex** needs no plugin (native notifications). **Gemini CLI**: install
 `warpdotdev/gemini-cli-warp` (see its README).
+
+All four are Tier 1 on native Windows. Dala recognizes their `.exe` and npm
+`.cmd` launchers and agent process trees; it never edits their configuration.
+Pinned versions are executed inside Dala's ConPTY holder on every change;
+current latest versions are probed nightly, with authenticated release checks
+covering full-screen interaction and notifications.
+Claude Code, OpenCode and Gemini still require the Warp OSC 777 integrations
+above. Codex uses its native OSC 9 notification path (set
+`notification_method = "osc9"` if your Codex configuration overrides the
+automatic method). zellij/tmux integration is unavailable on Windows; its UI
+is hidden there.
 
 With that in place:
 
