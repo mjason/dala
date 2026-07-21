@@ -8,7 +8,11 @@
  */
 export type AckCounter = {
   /** Bytes finished parsing; `alt` = terminal currently on the alt screen. */
-  consumed(bytes: number, alt: boolean): void;
+  consumed(bytes: number, alt: boolean, epoch?: number): void;
+  /** Current connection epoch, captured by asynchronous xterm writes. */
+  epoch(): number;
+  /** Starts a fresh Channel ledger and discards the prior epoch's tail. */
+  reset(): void;
   dispose(): void;
 };
 
@@ -20,6 +24,13 @@ export function createAckCounter(
   let pending = 0;
   let alt = false;
   let timer: number | undefined;
+  let epoch = 0;
+
+  const clear = () => {
+    window.clearTimeout(timer);
+    timer = undefined;
+    pending = 0;
+  };
 
   const flush = () => {
     window.clearTimeout(timer);
@@ -31,8 +42,8 @@ export function createAckCounter(
   };
 
   return {
-    consumed(bytes, altNow) {
-      if (bytes <= 0) return;
+    consumed(bytes, altNow, sourceEpoch = epoch) {
+      if (bytes <= 0 || sourceEpoch !== epoch) return;
       pending += bytes;
       alt = altNow;
       if (pending >= threshold) {
@@ -41,10 +52,14 @@ export function createAckCounter(
         timer = window.setTimeout(flush, idleMs);
       }
     },
+    epoch: () => epoch,
+    reset() {
+      epoch += 1;
+      clear();
+    },
     dispose() {
-      window.clearTimeout(timer);
-      timer = undefined;
-      pending = 0;
+      epoch += 1;
+      clear();
     },
   };
 }

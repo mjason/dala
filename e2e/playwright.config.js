@@ -10,6 +10,11 @@
 //   permission prompt (needed by voice.spec.js, harmless everywhere else).
 const { defineConfig } = require("@playwright/test");
 
+// The default suite runs with GPU disabled so it is reliable on headless CI.
+// Opt-in WebGL coverage uses Chromium's software rasterizer; this exercises
+// xterm's WebGL canvas and resize path without requiring a physical GPU.
+const webglE2e = process.env.DALA_E2E_WEBGL === "1";
+
 module.exports = defineConfig({
   testDir: ".",
   workers: 1,
@@ -29,7 +34,14 @@ module.exports = defineConfig({
         : { executablePath: process.env.CHROMIUM_BIN || "/usr/bin/chromium" }),
       args: [
         "--no-sandbox",
-        "--disable-gpu",
+        ...(webglE2e
+          ? [
+              "--use-gl=swiftshader",
+              "--use-angle=swiftshader",
+              "--enable-unsafe-swiftshader",
+              "--ignore-gpu-blocklist",
+            ]
+          : ["--disable-gpu"]),
         "--use-fake-device-for-media-stream",
         "--use-fake-ui-for-media-stream",
       ],

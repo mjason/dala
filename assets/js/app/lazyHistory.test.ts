@@ -26,4 +26,17 @@ describe("lazy terminal history", () => {
     expect(history.isLoaded()).toBe(false);
     expect(history.request("find")).toBe(true);
   });
+
+  it("keeps the original intent pending across a non-authoritative retry fallback", () => {
+    const history = createLazyHistory();
+
+    expect(history.request("scroll")).toBe(true);
+    expect(history.finishReplay(false, true)).toBeNull();
+    expect(history.isPending()).toBe(true);
+    expect(history.request("find")).toBe(false);
+
+    expect(history.finishReplay(true)).toBe("scroll");
+    expect(history.isPending()).toBe(false);
+    expect(history.isLoaded()).toBe(true);
+  });
 });

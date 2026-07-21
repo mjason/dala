@@ -38,6 +38,15 @@ import { sizeRole, type SizeRole } from "./sizeRole";
 import { useI18n } from "./i18n";
 import { createHiddenOutputBuffer } from "./hiddenOutputBuffer";
 import { createLazyHistory, type HistoryIntent } from "./lazyHistory";
+import { recoverOwnedWebglContext } from "./rendererLifecycle";
+import {
+  replayBatchPlan,
+  replayCoverTransition,
+  replayPresentation,
+  shouldDiscardHiddenOutput,
+  type ReplayPresentation,
+  type ReplayTrigger,
+} from "./replayPresentation";
 
 // Wait for the bundled font faces (the guaranteed fallback of every stack)
 // before the terminal measures its cell size — measuring against a fallback
@@ -147,6 +156,14 @@ export default function TerminalView({
   // Covered while the scrollback replay streams in, so attaching to a
   // session shows the settled screen instead of a visible scroll storm.
   const [replaying, setReplaying] = useState(true);
+  // A pooled view can already have a perfectly usable frame when a bounded
+  // catch-up is requested. Keep that frame visible while xterm parses the
+  // replacement snapshot; cold attaches and explicit resets still use the
+  // cover so partially rendered state is never exposed.
+  const hasRenderedFrameRef = useRef(false);
+  const replayTriggerRef = useRef<ReplayTrigger>("initial");
+  const replayPresentationRef = useRef<ReplayPresentation>("cover");
+  const flowStatsRef = useRef<object | null>(null);
   // Another DEVICE owns the PTY size: we render at its size scaled to fit,
   // and offer a takeover button in a slim banner. A sibling window of our
   // own device also renders scaled (soft follower) but WITHOUT the banner —
@@ -226,6 +243,14 @@ export default function TerminalView({
     const container = containerRef.current;
     if (!container) return;
 
+    // The effect is recreated for a new session id while the component is
+    // pooled. The old session's settled-frame state must never make the new
+    // session skip its cold-attach cover.
+    hasRenderedFrameRef.current = false;
+    replayTriggerRef.current = "initial";
+    replayPresentationRef.current = "cover";
+    setReplaying(true);
+
     let disposed = false;
     let cleanup: (() => void) | undefined;
 
@@ -260,30 +285,63 @@ export default function TerminalView({
       // Code), which keeps full-screen apps such as vim pixel-aligned. Fall
       // back to the DOM renderer when WebGL isn't available.
       let webgl: WebglAddon | undefined;
+      let webglGeneration = 0;
       let webglRetryTimer: number | undefined;
+      let canvasRefreshFrame: number | undefined;
+      let canvasObserver: ResizeObserver | undefined;
+      let observeWebglCanvas: (() => void) | undefined;
+      const rendererStats = {
+        kind: "dom" as "webgl" | "dom",
+        contextLosses: 0,
+        enableFailures: 0,
+        canvasMismatches: 0,
+        canvasResizes: 0,
+        lastContextLossAt: null as number | null,
+        canvas: null as
+          | { width: number; height: number; expectedWidth: number; expectedHeight: number }
+          | null,
+      };
       // Surfaced in the appearance settings: a silent DOM fallback is the
       // usual culprit when scrolling feels sluggish.
       const publishRenderer = () => {
-        document.documentElement.dataset.termRenderer = webgl ? "webgl" : "dom";
+        rendererStats.kind = webgl ? "webgl" : "dom";
+        document.documentElement.dataset.termRenderer = rendererStats.kind;
       };
       const enableWebgl = (retryOnLoss: boolean) => {
+        if (disposed) return;
+        const generation = ++webglGeneration;
         try {
           const addon = new WebglAddon();
           addon.onContextLoss(() => {
-            // GPU reset / OOM kill: drop to the DOM renderer right away so
-            // the terminal never sits on a dead black canvas, then try WebGL
-            // once more — the GPU process is usually back within seconds.
-            addon.dispose();
-            webgl = undefined;
-            publishRenderer();
-            term.refresh(0, term.rows - 1);
-            if (retryOnLoss) {
-              webglRetryTimer = window.setTimeout(() => enableWebgl(false), 3_000);
-            }
+            // A delayed loss event from a disposed addon must not tear down a
+            // newer renderer that was installed during recovery.
+            recoverOwnedWebglContext(generation, webglGeneration, () => {
+              // GPU reset / OOM kill: drop to the DOM renderer right away so
+              // the terminal never sits on a dead black canvas, then try WebGL
+              // once more — the GPU process is usually back within seconds.
+              rendererStats.contextLosses += 1;
+              rendererStats.lastContextLossAt = window.performance.now();
+              webglGeneration += 1;
+              canvasObserver?.disconnect();
+              addon.dispose();
+              webgl = undefined;
+              publishRenderer();
+              term.refresh(0, term.rows - 1);
+              if (retryOnLoss) {
+                webglRetryTimer = window.setTimeout(() => enableWebgl(false), 3_000);
+              }
+            });
           });
           term.loadAddon(addon);
           webgl = addon;
+          // The helper is initialized below, after xterm has opened its
+          // renderer internals. Queue the bind so retries observe the newly
+          // created canvas rather than the disposed renderer's old node.
+          window.setTimeout(() => {
+            if (!disposed) observeWebglCanvas?.();
+          }, 0);
         } catch {
+          rendererStats.enableFailures += 1;
           webgl = undefined;
         }
         publishRenderer();
@@ -438,10 +496,66 @@ export default function TerminalView({
           const canvas = renderer?._canvas;
           const device = renderer?.dimensions?.device?.canvas;
           if (!canvas || !device || device.width <= 0 || device.height <= 0) return;
+          rendererStats.canvas = {
+            width: canvas.width,
+            height: canvas.height,
+            expectedWidth: device.width,
+            expectedHeight: device.height,
+          };
           if (canvas.width !== device.width || canvas.height !== device.height) {
-            canvas.width = device.width;
-            canvas.height = device.height;
-            term.refresh(0, term.rows - 1);
+            rendererStats.canvasMismatches += 1;
+            rendererStats.canvasResizes += 1;
+            // Do not assign canvas.width/height here. That clears the drawing
+            // buffer without notifying WebglRenderer's glyph/rectangle layers
+            // and can leave normalized atlas coordinates pointing at stale
+            // texture dimensions (garbled glyphs and wrong colors). Ask the
+            // addon renderer to run its complete resize path instead.
+            const rendererApi = (
+              webgl as unknown as {
+                _renderer?: { handleResize?: (cols: number, rows: number) => void };
+              }
+            )._renderer;
+            let repaired = false;
+            try {
+              if (rendererApi?.handleResize) {
+                rendererApi.handleResize(term.cols, term.rows);
+                repaired = true;
+              }
+            } catch {
+              // A renderer from a mismatched addon build can throw while its
+              // atlas is being rebuilt. Fall back cleanly instead of leaving
+              // a half-resized WebGL canvas active.
+            }
+            if (!repaired) {
+              // Older addon builds expose no resize hook. Drop to xterm's DOM
+              // renderer rather than mutate a live WebGL drawing buffer.
+              rendererStats.enableFailures += 1;
+              webglGeneration += 1;
+              canvasObserver?.disconnect();
+              try {
+                webgl.dispose();
+              } catch {
+                // The terminal's own disposal path will finish releasing it.
+              }
+              webgl = undefined;
+              publishRenderer();
+            }
+            rendererStats.canvas = {
+              width: canvas.width,
+              height: canvas.height,
+              expectedWidth: device.width,
+              expectedHeight: device.height,
+            };
+            // The resize path clears the drawing buffer. Let xterm's own
+            // observer finish its dimension pass before repainting; an
+            // immediate refresh can race the addon's observer and leave a
+            // partially populated atlas/canvas for one or more frames.
+            if (canvasRefreshFrame == null) {
+              canvasRefreshFrame = requestAnimationFrame(() => {
+                canvasRefreshFrame = undefined;
+                if (!disposed) term.refresh(0, term.rows - 1);
+              });
+            }
           }
         } catch {
           // Private xterm internals moved — the addon then keeps sizing
@@ -451,8 +565,10 @@ export default function TerminalView({
       // The addon's own observer can overwrite the fix on any layout change;
       // watch its canvas and re-correct right after (created later than the
       // addon's observer, so it runs after it).
-      let canvasObserver: ResizeObserver | undefined;
-      {
+      observeWebglCanvas = () => {
+        canvasObserver?.disconnect();
+        canvasObserver = undefined;
+        if (!webgl) return;
         const canvas = (
           term as unknown as {
             _core?: { _renderService?: { _renderer?: { value?: { _canvas?: HTMLCanvasElement } } } };
@@ -462,7 +578,8 @@ export default function TerminalView({
           canvasObserver = new ResizeObserver(() => syncWebglCanvas());
           canvasObserver.observe(canvas);
         }
-      }
+      };
+      observeWebglCanvas();
 
       // Follower only: render at the owner's PTY size, then scale the whole
       // terminal down so the FULL grid — both dimensions — fits this screen
@@ -506,7 +623,10 @@ export default function TerminalView({
 
       const requestHistory = (intent: HistoryIntent) => {
         if (!lazyHistory.request(intent)) return false;
-        setReplaying(true);
+        // History loading is an explicit repaint: cover the terminal while
+        // the larger scrollback snapshot replaces its buffer.
+        gate.waitForReplay();
+        beginReplay("reset");
         phxChannel.push("load_history", {});
         return true;
       };
@@ -521,22 +641,87 @@ export default function TerminalView({
       // server can bound the in-flight backlog per client (and skip-to-
       // repaint on slow links). Counting parsed bytes — not received ones —
       // also covers renderer backpressure.
-      const flowStats = {
+      type ReplayTrace = {
+        trigger: ReplayTrigger;
+        presentation: ReplayPresentation;
+        startedAt: number;
+        firstBatchAt: number | null;
+        completedAt: number | null;
+      };
+      const flowStats: {
+        acked: number;
+        resets: number;
+        renderer: typeof rendererStats;
+        replay: ReplayTrace | null;
+        replayHistory: ReplayTrace[];
+      } = {
         acked: 0,
         resets: 0,
+        renderer: rendererStats,
+        replay: null,
+        replayHistory: [],
       };
+      // Keep trace ownership aligned with the wire replay, not merely with
+      // the latest UI request. A new replay can start while xterm is still
+      // parsing the tail of an older multi-batch replay.
+      let wireReplayTrace: ReplayTrace | null = null;
+      flowStatsRef.current = flowStats;
+      const debugWindow = window as unknown as Record<string, unknown>;
+      if (debugHandle) {
+        const debugTerms =
+          (debugWindow.__dalaTerms as Record<string, unknown> | undefined) ??
+          (debugWindow.__dalaTerms = {} as Record<string, unknown>);
+        debugTerms[sessionId] = term;
+      }
+      function beginReplay(trigger: ReplayTrigger) {
+        const presentation = replayPresentation(trigger, hasRenderedFrameRef.current);
+        replayTriggerRef.current = trigger;
+        replayPresentationRef.current = presentation;
+        const trace: ReplayTrace = {
+          trigger,
+          presentation,
+          startedAt: window.performance.now(),
+          firstBatchAt: null,
+          completedAt: null,
+        };
+        flowStats.replay = trace;
+        flowStats.replayHistory.push(trace);
+        // The debug trace is intentionally available to e2e diagnostics, but
+        // it must not become a per-session append-only allocation. Keep the
+        // most recent transitions; production behavior never depends on the
+        // history itself.
+        if (flowStats.replayHistory.length > 32) flowStats.replayHistory.shift();
+        // Keep the settled frame visible for warm catch-up/flow replays. A
+        // cold attach or explicit reset must remain covered until complete.
+        if (presentation === "cover") setReplaying(true);
+      }
+      // The first replay starts as soon as the channel is ready. Recording it
+      // here gives e2e tests a stable cold-attach event even when the server
+      // returns an empty snapshot.
+      beginReplay("initial");
       // Debug/e2e handle: WebGL leaves no text in the DOM, so tests read the
       // emulator buffer through this instead of scraping HTML. Only the main
       // session view (debugHandle) binds it — see the Props doc.
       if (debugHandle && visibleRef.current) {
-        const debugWindow = window as unknown as Record<string, unknown>;
         debugWindow.__dalaTerm = term;
         debugWindow.__dalaFlow = flowStats;
       }
+      let ackChannelJoined = false;
       const ackCounter = createAckCounter((bytes, alt) => {
+        // Phoenix queues pushes made while disconnected. An ack belongs only
+        // to the Channel generation whose bytes produced it; never carry an
+        // old ledger tail into the replacement server-side Channel process.
+        const joined = (phxChannel as unknown as { isJoined(): boolean }).isJoined();
+        if (!ackChannelJoined || !joined) return;
         flowStats.acked += bytes;
         phxChannel.push("ack", { bytes, alt });
       });
+      const invalidateAckEpoch = () => {
+        ackChannelJoined = false;
+        ackCounter.reset();
+      };
+      phxChannel.onError(invalidateAckEpoch);
+      phxChannel.onClose(invalidateAckEpoch);
       // A width change can trigger several ResizeObserver passes, while an
       // inline TUI may redraw only after handling SIGWINCH. If the viewport was
       // at the bottom, keep that intent across both phases: otherwise a second
@@ -565,11 +750,16 @@ export default function TerminalView({
           bottomPinUntil = 0;
         }, BOTTOM_PIN_MS);
       };
-      const writeCounted = (data: Uint8Array | string, done?: () => void) => {
+      const writeCounted = (
+        data: Uint8Array | string,
+        done?: () => void,
+        pinScroll = true,
+      ) => {
         const size = typeof data === "string" ? data.length : data.byteLength;
+        const ackEpoch = ackCounter.epoch();
         term.write(data, () => {
-          ackCounter.consumed(size, term.buffer.active.type === "alternate");
-          scrollPinnedBottom();
+          ackCounter.consumed(size, term.buffer.active.type === "alternate", ackEpoch);
+          if (pinScroll) scrollPinnedBottom();
           done?.();
         });
       };
@@ -580,11 +770,16 @@ export default function TerminalView({
         phxChannel.push("visibility", { visible: nextVisible });
         if (!nextVisible) return;
         if (debugHandle) {
-          (window as unknown as Record<string, unknown>).__dalaFlow = flowStats;
+          debugWindow.__dalaFlow = flowStats;
         }
 
         if (hiddenOutput.isDirty()) {
-          setReplaying(true);
+          // The server's screen-only repaint is a barrier over all output
+          // already in flight. Hold deltas until its first replay batch; the
+          // snapshot supersedes them, so parsing them into the old emulator
+          // would create a transient frame and waste renderer work.
+          gate.waitForReplay();
+          beginReplay("catch-up");
           phxChannel.push("catch_up", {});
           return;
         }
@@ -603,37 +798,121 @@ export default function TerminalView({
             gate.joined();
             flowStats.resets += 1;
           }
-          const { reset, release } = gate.replayBatch(payload.seq, payload.done);
+          const data = payload.data ? base64ToBytes(payload.data) : "";
+          const { reset, release, generation, firstBatch } = gate.replayBatch(
+            payload.seq,
+            payload.done,
+            payload.reset,
+          );
           if (reset) {
+            // Flow-control repaints arrive without a client-side trigger.
+            // Once a frame has been rendered, classify those as warm flow
+            // replays so the old frame remains visible during parsing. A
+            // catch-up/history/reset request already selected its trigger.
+            const trigger =
+              replayTriggerRef.current === "initial" && hasRenderedFrameRef.current
+                ? "flow"
+                : replayTriggerRef.current;
+            if (
+              flowStats.replay == null ||
+              flowStats.replay.completedAt != null ||
+              flowStats.replay.firstBatchAt != null ||
+              flowStats.replay.trigger !== trigger
+            ) {
+              beginReplay(trigger);
+            } else {
+              replayPresentationRef.current = replayPresentation(
+                trigger,
+                hasRenderedFrameRef.current,
+              );
+              if (replayPresentationRef.current === "cover") setReplaying(true);
+            }
+            const plan = replayBatchPlan(
+              replayPresentationRef.current,
+              reset,
+              payload.done,
+              data,
+            );
+            replayPresentationRef.current = plan.presentation;
+            if (flowStats.replay) flowStats.replay.presentation = plan.presentation;
+            if (plan.presentation === "cover") setReplaying(true);
             typeahead.abandon();
             ackCounter.consumed(
               hiddenOutput.byteLength(),
               term.buffer.active.type === "alternate",
             );
             hiddenOutput.reset();
-            term.reset();
-            setReplaying(true);
+            // A holder snapshot starts with in-band RIS. Let xterm process it
+            // in write order so a warm frame is not synchronously cleared one
+            // macrotask before the replacement bytes are parsed.
+            if (plan.resetBeforeWrite) term.reset();
           }
 
-          const data = payload.data ? base64ToBytes(payload.data) : "";
+          if (firstBatch) wireReplayTrace = flowStats.replay;
+          const replayTrace = wireReplayTrace;
+          if (replayTrace && replayTrace.firstBatchAt == null) {
+            replayTrace.firstBatchAt = window.performance.now();
+          }
+          const discardHiddenOutput = shouldDiscardHiddenOutput(
+            replayTrace?.trigger ?? "initial",
+            payload.reset,
+            payload.data === "",
+          );
+          if (release) wireReplayTrace = null;
           if (release) {
             writeCounted(data, () => {
-              gate.replayParsed();
+              // xterm parses writes asynchronously. A newer replay can start
+              // after this batch is queued but before this callback runs; in
+              // that case only its byte acknowledgement is still relevant.
+              if (!gate.replayParsed(generation)) return;
               term.scrollToBottom();
+              hasRenderedFrameRef.current = true;
+              if (replayTrace) {
+                replayTrace.completedAt = window.performance.now();
+              }
               setReplaying(false);
-              const intent = lazyHistory.finishReplay(payload.historyLoaded);
+              // An unmarked reset after this point is a flow repaint; leave
+              // the trigger ref in the initial state so the next reset is
+              // inferred from hasRenderedFrameRef rather than stale intent.
+              replayTriggerRef.current = "initial";
+              replayPresentationRef.current = "cover";
+              if (discardHiddenOutput) {
+                // A timeout fallback preserves the old frame and carries no
+                // authoritative snapshot. Drop bytes buffered while hidden,
+                // but acknowledge them so the server's flow ledger converges.
+                const hiddenBytes = hiddenOutput.byteLength();
+                if (hiddenBytes > 0) {
+                  ackCounter.consumed(
+                    hiddenBytes,
+                    term.buffer.active.type === "alternate",
+                  );
+                }
+                hiddenOutput.reset();
+              }
+              const intent = lazyHistory.finishReplay(payload.historyLoaded, payload.retrying);
               if (intent === "scroll") term.scrollLines(-term.rows);
               if (intent === "find" && findQueryRef.current) {
                 runFind(1, findQueryRef.current, true);
               }
-            });
+            }, false);
           } else {
-            writeCounted(data);
+            // Replay scrolling is settled only by the current generation's
+            // final callback. An older batch may finish parsing after a newer
+            // replay starts and must have no scroll side effects.
+            writeCounted(data, undefined, false);
           }
         },
         output: (payload) => {
-          if (!gate.acceptOutput(payload.seq)) return;
           const data = base64ToBytes(payload.data);
+          if (!gate.acceptOutput(payload.seq)) {
+            // Every received frame was counted by the channel. This includes
+            // output discarded behind a pending snapshot and a duplicate that
+            // arrives after the snapshot already established its seq baseline.
+            // Ack both so the sent-minus-acked ledger cannot drift upward and
+            // trigger a redundant skip/repaint cycle.
+            ackCounter.consumed(data.byteLength, term.buffer.active.type === "alternate");
+            return;
+          }
           if (!viewerVisible) {
             const buffered = hiddenOutput.push(data);
             ackCounter.consumed(buffered.droppedBytes, term.buffer.active.type === "alternate");
@@ -1000,8 +1279,11 @@ export default function TerminalView({
         if (takeover) term.focus();
       };
       const reset = () => {
-        term.reset();
-        setReplaying(true);
+        // Keep the settled frame in place until the holder confirms the
+        // reset. If the request times out, the empty non-reset fallback can
+        // then reveal the old frame instead of exposing a blank terminal.
+        gate.waitForReplay();
+        beginReplay("reset");
         refit();
         // Ask the server for a fresh holder snapshot, delivered to this
         // client as a reset replay. (A \f keystroke would only redraw a bare
@@ -1028,10 +1310,6 @@ export default function TerminalView({
       if (actionsRef && visibleRef.current) actionsRef.current = localActionsRef.current;
       relayoutRef.current = relayout;
 
-      // Fallback: a session with no replay (or a lost done frame) must not
-      // stay covered.
-      const coverTimer = window.setTimeout(() => setReplaying(false), 2500);
-
       phxChannel
         .join()
         .receive(
@@ -1043,7 +1321,17 @@ export default function TerminalView({
             owner_device?: string | null;
             client_id?: string;
           }) => {
+            // Every successful (re)join creates a fresh server-side Channel
+            // ledger. Rotate before any replay write callback can acknowledge
+            // bytes from the prior transport.
+            ackCounter.reset();
+            ackChannelJoined = true;
             gate.joined();
+            // A successful rejoin abandons any truncated wire replay from the
+            // previous transport. Its trace must not own the replacement
+            // connection's first batch or carry a stale explicit trigger.
+            wireReplayTrace = null;
+            replayTriggerRef.current = "initial";
             clientId = resp?.client_id ?? null;
             if (applyOwnership(resp ?? {}) !== "driver") {
               // Someone else drives the size — another device (hard
@@ -1081,7 +1369,9 @@ export default function TerminalView({
           },
         )
         .receive("error", () => {
-          term.writeln("\x1b[31mcould not attach to session\x1b[0m");
+          term.writeln("\x1b[31mcould not attach to session\x1b[0m", () => {
+            if (!disposed) setReplaying(false);
+          });
         });
 
       // Ownership changes at runtime: somebody claimed the size (maybe us,
@@ -1325,6 +1615,10 @@ export default function TerminalView({
         const w = window as unknown as Record<string, unknown>;
         if (w.__dalaTerm === term) delete w.__dalaTerm;
         if (w.__dalaFlow === flowStats) delete w.__dalaFlow;
+        if (flowStatsRef.current === flowStats) flowStatsRef.current = null;
+        if (w.__dalaTerms && typeof w.__dalaTerms === "object") {
+          delete (w.__dalaTerms as Record<string, unknown>)[sessionId];
+        }
         claimSizeRef.current = null;
         setSizeFollower(false);
         hideReflowTip();
@@ -1339,9 +1633,10 @@ export default function TerminalView({
         container.removeEventListener("wheel", onHistoryWheel, true);
         observer.disconnect();
         canvasObserver?.disconnect();
-        window.clearTimeout(coverTimer);
         window.clearTimeout(resizeTimer);
         window.clearTimeout(webglRetryTimer);
+        webglGeneration += 1;
+        if (canvasRefreshFrame != null) cancelAnimationFrame(canvasRefreshFrame);
         window.clearTimeout(bottomPinTimer);
         if (bottomPinFrame != null) cancelAnimationFrame(bottomPinFrame);
         window.clearInterval(idleTimer);
@@ -1379,6 +1674,9 @@ export default function TerminalView({
     if (actionsRef && localActionsRef.current) actionsRef.current = localActionsRef.current;
     if (debugHandle && termRef.current) {
       (window as unknown as Record<string, unknown>).__dalaTerm = termRef.current;
+      if (flowStatsRef.current) {
+        (window as unknown as Record<string, unknown>).__dalaFlow = flowStatsRef.current;
+      }
     }
     relayoutRef.current?.(true);
     termRef.current?.focus();
@@ -1386,7 +1684,10 @@ export default function TerminalView({
   }, [visible]);
 
   return (
-    <div className="relative h-full w-full [contain:layout_paint]">
+    <div
+      className="relative h-full w-full [contain:layout_paint]"
+      data-replay-state={replaying ? "cover" : "ready"}
+    >
       {/* Padding lives on .xterm (app.css), NOT here: the fit addon takes
           the parent's computed border-box height and only subtracts the
           terminal element's own padding — parent padding makes it overshoot
@@ -1504,9 +1805,8 @@ export default function TerminalView({
         </div>
       )}
       <div
-        className={`pointer-events-none absolute inset-0 bg-bg0 transition-opacity duration-150 ${
-          replaying ? "opacity-100" : "opacity-0"
-        }`}
+        data-replay-cover
+        className={`pointer-events-none absolute inset-0 bg-bg0 ${replayCoverTransition(replaying)}`}
       />
     </div>
   );

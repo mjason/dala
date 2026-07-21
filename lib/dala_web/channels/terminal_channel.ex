@@ -21,7 +21,7 @@ defmodule DalaWeb.TerminalChannel do
   # resumes — the backlog ahead of a keystroke echo stays bounded on slow
   # links (mosh's state-sync idea). Clients that never ack (older bundles)
   # get the full stream, exactly as before.
-  intercept ["output"]
+  intercept ["output", "exit"]
 
   # Alt screen (TUIs — no scrollback to lose): skip aggressively.
   @high_water_alt 128 * 1024
@@ -33,6 +33,10 @@ defmodule DalaWeb.TerminalChannel do
   @flow_deadline_ms 4_000
   # Client joined but never attached with its viewport: replay anyway.
   @repaint_timeout_ms 4_000
+  # A timeout fallback may reveal the last settled frame, but it is not an
+  # emulator baseline. Keep deltas gated and retry slowly until the holder can
+  # provide an authoritative snapshot.
+  @repaint_retry_ms 1_000
 
   # Keep pushed frames comfortably small; base64 inflates by 4/3.
   @replay_batch_bytes 192 * 1024
@@ -93,13 +97,25 @@ defmodule DalaWeb.TerminalChannel do
           |> assign(:client_id, client_id)
           |> assign(:device_id, device_id)
           |> assign(:visible, true)
+          |> assign(:initial_repaint_timed_out, false)
           |> assign(:fc, %{
             enabled: false,
             alt: false,
             sent: 0,
             acked: 0,
             skipping: false,
-            repaint_requested: false
+            repaint_requested: false,
+            pending_history: nil,
+            queued_history: nil,
+            # A holder repaint is asynchronous. The ref/generation pair lets
+            # us settle a lost request without allowing its late response to
+            # clear a newer request's state.
+            repaint_generation: 0,
+            repaint_ref: nil,
+            repaint_timer: nil,
+            repaint_retry_timer: nil,
+            repaint_timed_out: false,
+            repaint_fallback_sent: false
           })
 
         {:ok,
@@ -168,7 +184,10 @@ defmodule DalaWeb.TerminalChannel do
       # The repaint is deferred until the client's `attach` reports its true
       # viewport — sizing first lets the emulator reflow, so soft wraps match
       # the client's width. The timer covers clients that never attach.
-      Process.send_after(self(), :repaint_timeout, @repaint_timeout_ms)
+      # This is only the join-without-attach fallback. Attach requests use a
+      # generation-bound timer below so a stale timeout cannot settle a later
+      # repaint.
+      Process.send_after(self(), :initial_repaint_timeout, @repaint_timeout_ms)
       {:noreply, assign(socket, :replayed, false)}
     else
       # Not running: serve the final screen the holder left behind.
@@ -177,48 +196,155 @@ defmodule DalaWeb.TerminalChannel do
   end
 
   def handle_info({:repaint, data, seq, history_loaded}, socket) do
-    fc = socket.assigns.fc
+    handle_repaint(socket, data, seq, history_loaded, nil)
+  end
 
-    cond do
-      fc.repaint_requested ->
-        # Requested snapshot — flow-control skip or a user-initiated reset
-        # (handle_in "repaint"); either way the client resets and continues
-        # from seq. One snapshot settles both: it replaces the screen AND
-        # clears any in-flight skip state.
-        socket = push_replay(socket, data, seq, true, history_loaded)
-        # sent counts the snapshot too — the client acks those bytes as it
-        # parses them, keeping the cumulative ledger consistent.
-        fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
-        {:noreply, assign(socket, :fc, fc)}
-
-      socket.assigns[:replayed] ->
-        {:noreply, socket}
-
-      true ->
-        {:noreply, push_replay(socket, data, seq, false, history_loaded)}
-    end
+  def handle_info({:repaint, data, seq, history_loaded, repaint_ref}, socket) do
+    handle_repaint(socket, data, seq, history_loaded, repaint_ref)
   end
 
   def handle_info({:repaint_reset, data, seq, history_loaded}, socket) do
     # Size-ownership takeover rewrapped the PTY: replace this client's screen
-    # with the fresh snapshot unconditionally (reset replay). The flow ledger
-    # counts the snapshot like a flow-control repaint, and any in-flight skip
-    # state is settled by it.
+    # with the fresh snapshot unless a newer targeted request is pending. The
+    # holder and Server are FIFO, so an all-client response observed behind an
+    # active targeted barrier is necessarily older. Even pushing its done frame
+    # would let the browser uncover and send input before the repair arrives.
     fc = socket.assigns.fc
-    socket = push_replay(socket, data, seq, true, history_loaded)
-    fc = %{fc | skipping: false, repaint_requested: false, sent: fc.sent + byte_size(data)}
-    {:noreply, assign(socket, :fc, fc)}
+
+    if repaint_pending?(fc, socket) do
+      {:noreply, socket}
+    else
+      fc = clear_repaint(fc, reset?: true, bytes: byte_size(data))
+
+      {:noreply,
+       socket
+       |> push_replay(data, seq, true, history_loaded)
+       |> assign(:fc, fc)
+       |> assign(:repaint_requested, false)
+       |> assign(:initial_repaint_timed_out, false)}
+    end
   end
 
   def handle_info(:flow_repaint_deadline, socket) do
     {:noreply, maybe_flow_repaint(socket, force: true)}
   end
 
-  def handle_info(:repaint_timeout, socket) do
-    if socket.assigns[:replayed] do
+  def handle_info({:repaint_timeout, generation, repaint_ref}, socket) do
+    fc = socket.assigns.fc
+
+    if Map.get(fc, :repaint_generation, 0) == generation and
+         Map.get(fc, :repaint_ref) == repaint_ref and
+         not Map.get(fc, :repaint_timed_out, false) and
+         repaint_pending?(fc, socket) do
+      if Map.get(fc, :queued_history) == :full do
+        # The user's scroll/search request is stronger than the timed-out
+        # viewport catch-up. Replace the old generation with a full repaint
+        # and retain the visual/output barrier; revealing an empty fallback
+        # here would consume the browser's pending history intent.
+        {:noreply, request_queued_history(socket)}
+      else
+        # Reveal the last settled pixels, but do not resume deltas: the old
+        # emulator is missing every byte discarded behind this snapshot. A
+        # matching late response remains authoritative until the retry rotates
+        # the generation/ref.
+        {:noreply, defer_repaint(socket, keep_ref?: true)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:repaint_retry, generation}, socket) do
+    fc = socket.assigns.fc
+
+    if Map.get(fc, :repaint_generation, 0) == generation and
+         Map.get(fc, :repaint_timed_out, false) and
+         Map.get(fc, :pending_history) in [:screen, :full] do
+      history = Map.get(fc, :queued_history) || Map.get(fc, :pending_history)
+
+      socket =
+        assign(
+          socket,
+          :fc,
+          Map.merge(fc, %{queued_history: nil, repaint_retry_timer: nil})
+        )
+
+      {:noreply,
+       start_repaint(socket, history,
+         preserve_barrier?: true,
+         retry?: true,
+         skip?: true
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(:initial_repaint_timeout, socket) do
+    if socket.assigns[:replayed] or repaint_pending?(socket.assigns.fc, socket) do
       {:noreply, socket}
     else
-      {:noreply, push_replay(socket, "", 0)}
+      # No viewport arrived, so use the PTY's current size. An empty replay
+      # would let subsequent deltas build on an emulator with no baseline.
+      {:noreply, request_repaint_once(socket, :screen, initial?: true)}
+    end
+  end
+
+  defp handle_repaint(socket, data, seq, history_loaded, repaint_ref) do
+    fc = socket.assigns.fc
+
+    # A timed-out request may still be sitting in the server/holder FIFO. A
+    # response with a ref that is no longer pending belongs to that old
+    # generation and must not reset the current stream ledger.
+    if not repaint_response_matches?(fc, socket, repaint_ref) do
+      {:noreply, socket}
+    else
+      requested? =
+        Map.get(fc, :repaint_ref) != nil or Map.get(fc, :repaint_requested, false) or
+          Map.get(socket.assigns, :repaint_requested, false)
+
+      cond do
+        requested? and data == "" and history_loaded == false ->
+          # An empty, history-less response is the Server's holder-unavailable
+          # sentinel. Keep the last usable frame and its seq baseline while a
+          # generation-bound retry obtains the missing authoritative state.
+          {:noreply, defer_repaint(socket, keep_ref?: false)}
+
+        requested? and Map.get(fc, :queued_history) == :full and not history_loaded ->
+          # A viewport request was already in flight when the browser asked
+          # for scrollback. Do not reveal the incomplete snapshot: retain the
+          # existing cover/skip barrier and atomically replace this generation
+          # with a full-history request.
+          {:noreply, request_queued_history(socket)}
+
+        requested? ->
+          # Requested snapshot — flow-control skip or a user-initiated reset
+          # (handle_in "repaint"); either way the client resets and continues
+          # from seq. Initial attach is the one pending request that should
+          # keep reset=false; its top-level flag distinguishes it below.
+          # An initial request is normally non-reset because the browser's join
+          # gate supplies that edge. Once an empty fallback has consumed the
+          # gate, the later authority must carry reset on the wire so seq and
+          # emulator baselines are replaced together.
+          reset? = fc.repaint_requested or Map.get(fc, :repaint_fallback_sent, false)
+          socket = push_replay(socket, data, seq, reset?, history_loaded)
+          # sent counts the snapshot too — the client acks those bytes as it
+          # parses them, keeping the cumulative ledger consistent.
+          fc = clear_repaint(fc, reset?: true, bytes: byte_size(data))
+
+          {:noreply,
+           socket
+           |> assign(:fc, fc)
+           |> assign(:repaint_requested, false)
+           |> assign(:initial_repaint_timed_out, false)}
+
+        socket.assigns[:replayed] ->
+          {:noreply, socket}
+
+        true ->
+          socket = push_replay(socket, data, seq, false, history_loaded)
+          {:noreply, assign(socket, :repaint_requested, false)}
+      end
     end
   end
 
@@ -228,12 +354,18 @@ defmodule DalaWeb.TerminalChannel do
     size = decoded_size(encoded)
 
     cond do
-      not fc.enabled ->
-        push(socket, "output", payload)
-        {:noreply, socket}
-
+      # A catch-up/flow snapshot is the authoritative screen baseline. Drop
+      # every incremental frame until it arrives, including legacy clients
+      # that have not enabled byte acknowledgements.
       fc.skipping ->
         {:noreply, socket}
+
+      not fc.enabled ->
+        push(socket, "output", payload)
+        # The first browser ack enables flow control and may cover output sent
+        # before that ack. Charge these bytes now so activation cannot begin
+        # with acked > sent and a negative backlog.
+        {:noreply, assign(socket, :fc, %{fc | sent: fc.sent + size})}
 
       fc.sent - fc.acked + size > high_water(fc) ->
         Process.send_after(self(), :flow_repaint_deadline, @flow_deadline_ms)
@@ -245,10 +377,18 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
+  def handle_out("exit", payload, socket) do
+    push(socket, "exit", payload)
+
+    {:noreply,
+     socket
+     |> assign(:fc, clear_repaint(socket.assigns.fc, reset?: true))
+     |> assign(:repaint_requested, false)}
+  end
+
   @impl true
   def handle_in("attach", %{"rows" => rows, "cols" => cols}, socket)
       when is_integer(rows) and is_integer(cols) do
-    id = socket.assigns.session_id
     {rows, cols} = clamp_dims(rows, cols)
 
     # Order matters: the resize reaches the holder (reflow) before the
@@ -256,12 +396,27 @@ defmodule DalaWeb.TerminalChannel do
     # size it is ignored — followers attach at the PTY's size anyway.)
     resize_with_correction(socket, rows, cols, initial_attach?: true)
 
-    if Dala.Terminal.Server.alive?(id) and not socket.assigns[:replayed] and
-         not Map.get(socket.assigns, :repaint_requested, false) do
-      Dala.Terminal.Server.request_repaint(id, self(), history: :screen)
-    end
+    fc = socket.assigns.fc
 
-    {:noreply, assign(socket, :repaint_requested, true)}
+    socket =
+      cond do
+        repaint_pending?(fc, socket) ->
+          socket
+
+        socket.assigns[:initial_repaint_timed_out] ->
+          # The join-without-attach fallback revealed an empty frame. A late
+          # viewport report must still fetch an authoritative reset snapshot;
+          # otherwise `replayed=true` would leave the session blank forever.
+          request_repaint_once(socket, :screen)
+
+        not socket.assigns[:replayed] ->
+          request_repaint_once(socket, :screen, initial?: true)
+
+        true ->
+          socket
+      end
+
+    {:noreply, socket}
   end
 
   def handle_in("input", %{"data" => data}, socket) when is_binary(data) do
@@ -315,9 +470,15 @@ defmodule DalaWeb.TerminalChannel do
       not Dala.Terminal.Server.alive?(id) ->
         # Session no longer running: re-serve the final screen the holder
         # left behind (the client just blanked itself locally).
-        {:noreply, push_replay(socket, Holder.read_final(id), 0, true)}
+        fc = clear_repaint(fc, reset?: true)
 
-      fc.repaint_requested ->
+        {:noreply,
+         socket
+         |> push_replay(Holder.read_final(id), 0, true)
+         |> assign(:fc, fc)
+         |> assign(:repaint_requested, false)}
+
+      repaint_pending?(fc, socket) ->
         # A snapshot is already in flight for this client (the flow-control
         # skip path) — it lands as a reset replay, which is exactly what
         # this reset wants. Requesting another would double-repaint.
@@ -326,37 +487,20 @@ defmodule DalaWeb.TerminalChannel do
       true ->
         # Mark it in the flow ledger so a concurrent skip drain reuses this
         # snapshot instead of requesting its own (see maybe_flow_repaint).
-        Dala.Terminal.Server.request_repaint(id, self())
-        {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
+        {:noreply, request_repaint_once(socket, :full)}
     end
   end
 
   # Cold attach intentionally omits scrollback. The browser asks for the
   # bounded full snapshot only when the user scrolls upward or searches.
   def handle_in("load_history", _payload, socket) do
-    id = socket.assigns.session_id
-    fc = socket.assigns.fc
-
-    if Dala.Terminal.Server.alive?(id) and not fc.repaint_requested do
-      Dala.Terminal.Server.request_repaint(id, self())
-      {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
-    else
-      {:noreply, socket}
-    end
+    {:noreply, request_repaint_once(socket, :full, upgrade?: true)}
   end
 
   # A pooled hidden terminal that dropped its bounded local delta needs only
   # the latest viewport when revealed, not another scrollback transfer.
   def handle_in("catch_up", _payload, socket) do
-    id = socket.assigns.session_id
-    fc = socket.assigns.fc
-
-    if Dala.Terminal.Server.alive?(id) and not fc.repaint_requested do
-      Dala.Terminal.Server.request_repaint(id, self(), history: :screen)
-      {:noreply, assign(socket, :fc, %{fc | repaint_requested: true})}
-    else
-      {:noreply, socket}
-    end
+    {:noreply, request_repaint_once(socket, :screen, skip?: true)}
   end
 
   def handle_in("visibility", %{"visible" => visible}, socket) when is_boolean(visible) do
@@ -373,10 +517,14 @@ defmodule DalaWeb.TerminalChannel do
   def handle_in("ack", %{"bytes" => bytes} = payload, socket) when is_integer(bytes) do
     fc = socket.assigns.fc
 
+    # A reconnect can deliver a stale queued ack from the prior Channel
+    # generation. Never let it create negative backlog in this fresh ledger.
+    acked = min(fc.acked + max(bytes, 0), fc.sent)
+
     fc = %{
       fc
       | enabled: true,
-        acked: fc.acked + max(bytes, 0),
+        acked: acked,
         alt: payload["alt"] == true
     }
 
@@ -451,12 +599,178 @@ defmodule DalaWeb.TerminalChannel do
     fc = socket.assigns.fc
     drained = fc.sent - fc.acked <= @low_water
 
-    if fc.skipping and not fc.repaint_requested and (drained or opts[:force]) do
-      history = if socket.assigns[:visible] == false, do: :screen, else: :full
-      Dala.Terminal.Server.request_repaint(socket.assigns.session_id, self(), history: history)
-      assign(socket, :fc, %{fc | repaint_requested: true})
+    if fc.skipping and not repaint_pending?(fc, socket) and (drained or opts[:force]) do
+      # Flow recovery is always a viewport repaint. Scrollback remains lazy
+      # and can be fetched later through `load_history`.
+      request_repaint_once(socket, :screen)
     else
       socket
+    end
+  end
+
+  # Queue at most one holder snapshot for this channel. The generation-bound
+  # timer makes a lost holder response recoverable without unblocking a stale
+  # response into a later request.
+  defp request_repaint_once(socket, history, opts \\ []) do
+    fc = socket.assigns.fc
+
+    cond do
+      opts[:upgrade?] == true and history == :full and
+        Map.get(fc, :pending_history) == :screen and
+          repaint_pending?(fc, socket) ->
+        assign(socket, :fc, Map.put(fc, :queued_history, :full))
+
+      repaint_pending?(fc, socket) ->
+        socket
+
+      true ->
+        start_repaint(socket, history, opts)
+    end
+  end
+
+  defp request_queued_history(socket) do
+    fc = socket.assigns.fc
+    if timer = Map.get(fc, :repaint_timer), do: Process.cancel_timer(timer)
+    if timer = Map.get(fc, :repaint_retry_timer), do: Process.cancel_timer(timer)
+
+    socket
+    |> assign(
+      :fc,
+      Map.merge(fc, %{queued_history: nil, repaint_timer: nil, repaint_retry_timer: nil})
+    )
+    |> start_repaint(:full, preserve_barrier?: true)
+  end
+
+  defp start_repaint(socket, history, opts) do
+    fc = socket.assigns.fc
+    if timer = Map.get(fc, :repaint_timer), do: Process.cancel_timer(timer)
+    if timer = Map.get(fc, :repaint_retry_timer), do: Process.cancel_timer(timer)
+
+    generation = Map.get(fc, :repaint_generation, 0) + 1
+    repaint_ref = make_ref()
+
+    repaint_requested =
+      if opts[:preserve_barrier?], do: fc.repaint_requested, else: opts[:initial?] != true
+
+    initial_requested =
+      if opts[:preserve_barrier?],
+        do: Map.get(socket.assigns, :repaint_requested, false),
+        else: opts[:initial?] == true
+
+    fc =
+      Map.merge(fc, %{
+        repaint_requested: repaint_requested,
+        skipping: fc.skipping or opts[:skip?] == true,
+        pending_history: history,
+        queued_history: nil,
+        repaint_generation: generation,
+        repaint_ref: repaint_ref,
+        repaint_timer: nil,
+        repaint_retry_timer: nil,
+        repaint_timed_out: false,
+        repaint_fallback_sent:
+          if(opts[:retry?], do: Map.get(fc, :repaint_fallback_sent, false), else: false)
+      })
+
+    socket =
+      socket
+      |> assign(:fc, fc)
+      |> assign(:repaint_requested, initial_requested)
+
+    case Dala.Terminal.Server.request_repaint(
+           socket.assigns.session_id,
+           self(),
+           history: history,
+           ref: repaint_ref
+         ) do
+      :ok ->
+        timer =
+          Process.send_after(
+            self(),
+            {:repaint_timeout, generation, repaint_ref},
+            @repaint_timeout_ms
+          )
+
+        assign(socket, :fc, %{fc | repaint_timer: timer})
+
+      {:error, :not_running} ->
+        defer_repaint(socket, keep_ref?: false)
+    end
+  end
+
+  defp repaint_pending?(fc, socket),
+    do:
+      Map.get(fc, :repaint_ref) != nil or Map.get(fc, :repaint_retry_timer) != nil or
+        Map.get(fc, :repaint_requested, false) or
+        Map.get(socket.assigns, :repaint_requested, false)
+
+  defp repaint_response_matches?(fc, socket, nil) do
+    # Four-tuple responses are from pre-ref servers. Accept them only while a
+    # request is pending; once a timed-out generation was settled, a late old
+    # response must not be interpreted as a fresh replay.
+    is_nil(Map.get(fc, :repaint_ref)) and is_nil(Map.get(fc, :repaint_retry_timer)) and
+      repaint_pending?(fc, socket)
+  end
+
+  defp repaint_response_matches?(fc, _socket, repaint_ref),
+    do: is_reference(Map.get(fc, :repaint_ref)) and Map.get(fc, :repaint_ref) == repaint_ref
+
+  defp clear_repaint(fc, opts) do
+    if timer = Map.get(fc, :repaint_timer), do: Process.cancel_timer(timer)
+    if timer = Map.get(fc, :repaint_retry_timer), do: Process.cancel_timer(timer)
+
+    bytes = Keyword.get(opts, :bytes, 0)
+
+    Map.merge(fc, %{
+      skipping: false,
+      repaint_requested: false,
+      pending_history: nil,
+      queued_history: nil,
+      repaint_ref: nil,
+      repaint_timer: nil,
+      repaint_retry_timer: nil,
+      repaint_timed_out: false,
+      repaint_fallback_sent: false,
+      sent: fc.sent + bytes
+    })
+  end
+
+  defp defer_repaint(socket, opts) do
+    fc = socket.assigns.fc
+    if timer = Map.get(fc, :repaint_timer), do: Process.cancel_timer(timer)
+    if timer = Map.get(fc, :repaint_retry_timer), do: Process.cancel_timer(timer)
+
+    history = Map.get(fc, :queued_history) || Map.get(fc, :pending_history) || :screen
+    generation = Map.get(fc, :repaint_generation, 0)
+    retry_timer = Process.send_after(self(), {:repaint_retry, generation}, @repaint_retry_ms)
+
+    initial? =
+      Map.get(socket.assigns, :initial_repaint_timed_out, false) or
+        (Map.get(socket.assigns, :repaint_requested, false) and not fc.repaint_requested)
+
+    fc =
+      Map.merge(fc, %{
+        skipping: true,
+        pending_history: history,
+        queued_history: nil,
+        repaint_ref: if(opts[:keep_ref?], do: fc.repaint_ref, else: nil),
+        repaint_timer: nil,
+        repaint_retry_timer: retry_timer,
+        repaint_timed_out: true
+      })
+
+    socket =
+      socket
+      |> assign(:fc, fc)
+      |> assign(:repaint_requested, false)
+      |> assign(:initial_repaint_timed_out, initial?)
+
+    if Map.get(fc, :repaint_fallback_sent, false) do
+      socket
+    else
+      socket
+      |> push_replay("", 0, false, false, true)
+      |> assign(:fc, %{fc | repaint_fallback_sent: true})
     end
   end
 
@@ -465,7 +779,14 @@ defmodule DalaWeb.TerminalChannel do
   # uncover and re-enable input. `reset` marks a mid-session flow-control
   # snapshot: the client must clear the screen first (a join-time replay
   # resets implicitly).
-  defp push_replay(socket, data, seq, reset \\ false, history_loaded \\ true) do
+  defp push_replay(
+         socket,
+         data,
+         seq,
+         reset \\ false,
+         history_loaded \\ true,
+         retrying \\ false
+       ) do
     chunks = chunk_binary(data, @replay_batch_bytes)
 
     chunks
@@ -475,8 +796,12 @@ defmodule DalaWeb.TerminalChannel do
         data: Base.encode64(chunk),
         seq: seq,
         done: index == length(chunks),
-        reset: reset,
-        historyLoaded: history_loaded
+        # Reset is an edge, not a property of every batch. Repeating it would
+        # make the browser clear xterm before each chunk and retain only the
+        # tail of snapshots larger than @replay_batch_bytes.
+        reset: reset and index == 1,
+        historyLoaded: history_loaded,
+        retrying: retrying
       })
     end)
 

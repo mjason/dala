@@ -18,6 +18,16 @@ defmodule Dala.Terminal.SessionTest do
     session
   end
 
+  defp tcp_pair do
+    opts = [:binary, active: false, packet: 4]
+    {:ok, listener} = :gen_tcp.listen(0, opts ++ [reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listener)
+    {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, opts)
+    {:ok, peer} = :gen_tcp.accept(listener)
+    :ok = :gen_tcp.close(listener)
+    {client, peer}
+  end
+
   defp await_exit(session_id) do
     ref = Process.monitor(Server.whereis(session_id))
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 8_000
@@ -52,6 +62,169 @@ defmodule Dala.Terminal.SessionTest do
     assert session.cwd != nil
     assert session.scrollback_limit == 10_000
     assert Server.alive?(session.id)
+  end
+
+  test "a full repaint queue rejects targeted and all-client work without shifting FIFO" do
+    session = create_session!()
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {fake_socket, peer} = tcp_pair()
+    request_ref = make_ref()
+
+    full_queue =
+      Enum.reduce(1..64, :queue.new(), fn _index, queue ->
+        :queue.in({:all_clients, 0}, queue)
+      end)
+
+    :ok = :inet.setopts(original_socket, active: false)
+
+    :sys.replace_state(server, fn state ->
+      %{state | socket: fake_socket, pending_repaints: full_queue}
+    end)
+
+    try do
+      assert :ok = Server.request_repaint(session.id, self(), history: :screen, ref: request_ref)
+      _ = Server.size_info(session.id)
+
+      assert_receive {:repaint, "", _seq, false, ^request_ref}, 1_000
+      assert :queue.len(:sys.get_state(server).pending_repaints) == 64
+
+      # A takeover normally requests one all-client snapshot. At the same hard
+      # limit it must not write another holder frame or grow the BEAM queue.
+      Server.claim_size(session.id, self(), "queue-test", "queue-device", 24, 80)
+      _ = Server.size_info(session.id)
+
+      assert :queue.len(:sys.get_state(server).pending_repaints) == 64
+      assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
+    after
+      if Process.alive?(server) do
+        :sys.replace_state(server, fn state ->
+          %{state | socket: original_socket, pending_repaints: :queue.new()}
+        end)
+
+        :ok = :inet.setopts(original_socket, active: true)
+      end
+
+      :gen_tcp.close(fake_socket)
+      :gen_tcp.close(peer)
+    end
+  end
+
+  test "a full repaint queue coalesces resize repairs and sends one when a slot opens" do
+    session = create_session!()
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {fake_socket, peer} = tcp_pair()
+
+    full_queue =
+      Enum.reduce(1..64, :queue.new(), fn _index, queue ->
+        :queue.in({:all_clients, 0}, queue)
+      end)
+
+    :ok = :inet.setopts(original_socket, active: false)
+
+    :sys.replace_state(server, fn state ->
+      %{state | socket: fake_socket, pending_repaints: full_queue}
+    end)
+
+    try do
+      Server.claim_size(session.id, self(), "queue-test", "queue-device", 25, 81)
+      Server.claim_size(session.id, self(), "queue-test", "queue-device", 26, 82)
+      _ = Server.size_info(session.id)
+
+      assert {:ok, <<0x12, 25::16, 81::16>>} = :gen_tcp.recv(peer, 0, 1_000)
+      assert {:ok, <<0x12, 26::16, 82::16>>} = :gen_tcp.recv(peer, 0, 1_000)
+      assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
+
+      saturated = :sys.get_state(server)
+      assert :queue.len(saturated.pending_repaints) == 64
+      assert Map.get(saturated, :deferred_all_client_repaint) == true
+
+      # Completing any older request opens one FIFO slot. The latest resize
+      # needs exactly one coalesced all-client repaint in that slot.
+      send(server, {:tcp, fake_socket, <<Holder.type_repaint(), "OLD">>})
+      _ = Server.size_info(session.id)
+
+      history_budget = Holder.repaint_history_budget()
+      assert {:ok, <<0x14, 82::16, ^history_budget::32>>} = :gen_tcp.recv(peer, 0, 1_000)
+      assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
+
+      repaired = :sys.get_state(server)
+      assert :queue.len(repaired.pending_repaints) == 64
+
+      assert List.last(:queue.to_list(repaired.pending_repaints)) ==
+               {:all_clients, history_budget}
+
+      refute Map.get(repaired, :deferred_all_client_repaint)
+    after
+      if Process.alive?(server) do
+        :sys.replace_state(server, fn state ->
+          state
+          |> Map.merge(%{socket: original_socket, pending_repaints: :queue.new()})
+          |> Map.put(:deferred_all_client_repaint, false)
+        end)
+
+        :ok = :inet.setopts(original_socket, active: true)
+      end
+
+      :gen_tcp.close(fake_socket)
+      :gen_tcp.close(peer)
+    end
+  end
+
+  test "the 65th concurrent text snapshot is rejected before the holder socket" do
+    session = create_session!()
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {fake_socket, peer} = tcp_pair()
+
+    :ok = :inet.setopts(original_socket, active: false)
+
+    :sys.replace_state(server, fn state ->
+      %{state | socket: fake_socket, pending_text_snapshots: :queue.new()}
+    end)
+
+    tasks =
+      for _index <- 1..65 do
+        Task.async(fn -> Server.snapshot(session.id, lines: 1) end)
+      end
+
+    try do
+      eventually(fn -> :queue.len(:sys.get_state(server).pending_text_snapshots) >= 64 end)
+
+      completed =
+        tasks
+        |> Task.yield_many(1_000)
+        |> Enum.flat_map(fn
+          {_task, {:ok, result}} -> [result]
+          {_task, nil} -> []
+        end)
+
+      assert completed == [{:error, "too many pending terminal snapshot requests"}]
+      assert :queue.len(:sys.get_state(server).pending_text_snapshots) == 64
+      assert Process.alive?(server)
+
+      max_bytes = 64 * 1024
+
+      for _index <- 1..64 do
+        assert {:ok, <<0x15, 1::32, ^max_bytes::32>>} = :gen_tcp.recv(peer, 0, 1_000)
+      end
+
+      assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
+    after
+      Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
+
+      if Process.alive?(server) do
+        :sys.replace_state(server, fn state ->
+          %{state | socket: original_socket, pending_text_snapshots: :queue.new()}
+        end)
+
+        :ok = :inet.setopts(original_socket, active: true)
+      end
+
+      :gen_tcp.close(fake_socket)
+      :gen_tcp.close(peer)
+    end
   end
 
   test "default names come from cwd and receive a readable duplicate suffix" do

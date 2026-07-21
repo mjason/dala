@@ -42,6 +42,72 @@ defmodule DalaWeb.TerminalChannelTest do
     assert_replay_containing("repaint-me-42", false)
   end
 
+  test "the initial timeout requests the current screen instead of revealing an empty stream" do
+    session = create_session!()
+    Server.input(session.id, "echo LATE-ATTACH-SCREEN\r")
+    Process.sleep(300)
+
+    assert {:ok, _reply, socket} = join!(session.id)
+    _ = :sys.get_state(socket.channel_pid)
+    send(socket.channel_pid, :initial_repaint_timeout)
+
+    assert_push "replay",
+                %{data: data, reset: false, historyLoaded: false, done: true},
+                5_000
+
+    timed_out = Phoenix.Channel.Server.socket(socket.channel_pid)
+    refute timed_out.assigns.initial_repaint_timed_out
+    assert Base.decode64!(data) =~ "LATE-ATTACH-SCREEN"
+
+    # A viewport report can still resize ownership, but the timeout repaint is
+    # already authoritative and attach must not start a duplicate generation.
+    attach!(socket)
+    refute_push "replay", %{}, 100
+  end
+
+  test "a late initial snapshot resets the stream after its timeout fallback" do
+    session = create_session!()
+    assert {:ok, _reply, socket} = join!(session.id)
+    # Ensure :after_join has completed before suspending the Server it queries.
+    _ = :sys.get_state(socket.channel_pid)
+    server = Server.whereis(session.id)
+    :ok = :sys.suspend(server)
+
+    try do
+      send(socket.channel_pid, :initial_repaint_timeout)
+      _ = :sys.get_state(socket.channel_pid)
+
+      pending = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
+
+      send(
+        socket.channel_pid,
+        {:repaint_timeout, pending.repaint_generation, pending.repaint_ref}
+      )
+
+      assert_push "replay",
+                  %{data: "", reset: false, retrying: true, done: true},
+                  2_000
+
+      send(socket.channel_pid, {
+        :repaint,
+        "INITIAL-AUTHORITY",
+        42,
+        false,
+        pending.repaint_ref
+      })
+
+      assert_push "replay",
+                  %{data: "SU5JVElBTC1BVVRIT1JJVFk=", seq: 42, reset: true, retrying: false},
+                  2_000
+
+      settled = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
+      refute settled.skipping
+      assert is_nil(settled.repaint_retry_timer)
+    after
+      if Process.alive?(server), do: :ok = :sys.resume(server)
+    end
+  end
+
   test "join on an exited session serves the final screen file" do
     session = create_session!()
     id = to_string(session.id)
@@ -114,6 +180,45 @@ defmodule DalaWeb.TerminalChannelTest do
 
     assert history_loaded == false
     assert repaint =~ "VIEWPORT_CATCH_UP"
+  end
+
+  test "catch-up pauses output until its viewport repaint arrives" do
+    session = create_session!()
+    id = to_string(session.id)
+
+    assert {:ok, _reply, socket} = join!(id)
+    attach!(socket, 8, 80)
+    {_initial, false} = collect_replay()
+
+    # Hold the session server just after the channel queues the repaint. This
+    # makes the in-flight window deterministic: output arriving in this
+    # window must be dropped rather than racing the snapshot to the client.
+    server = Server.whereis(id)
+    :ok = :sys.suspend(server)
+
+    try do
+      push(socket, "catch_up", %{})
+      _ = :sys.get_state(socket.channel_pid)
+
+      channel_socket = Phoenix.Channel.Server.socket(socket.channel_pid)
+      assert channel_socket.assigns.fc.skipping
+      assert channel_socket.assigns.fc.repaint_requested
+
+      for seq <- 91_001..91_005 do
+        DalaWeb.Endpoint.broadcast("terminal:#{id}", "output", %{
+          data: Base.encode64("catch-up-race"),
+          seq: seq
+        })
+      end
+
+      _ = :sys.get_state(socket.channel_pid)
+      refute_push "output", %{seq: 91_001}, 100
+    after
+      :ok = :sys.resume(server)
+    end
+
+    {_repaint, history_loaded} = collect_replay()
+    assert history_loaded == false
   end
 
   test "viewer visibility is tracked by the terminal server" do

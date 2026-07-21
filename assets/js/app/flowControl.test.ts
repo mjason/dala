@@ -44,4 +44,20 @@ describe("createAckCounter", () => {
     vi.advanceTimersByTime(1000);
     expect(sent).toEqual([]);
   });
+
+  it("drops pending and late acknowledgements from an older connection epoch", () => {
+    const sent: [number, boolean][] = [];
+    const counter = createAckCounter((bytes, alt) => sent.push([bytes, alt]), 100, 300);
+    const staleEpoch = counter.epoch();
+
+    counter.consumed(60, false, staleEpoch);
+    counter.reset();
+    vi.advanceTimersByTime(1_000);
+    counter.consumed(100, false, staleEpoch);
+
+    expect(sent).toEqual([]);
+
+    counter.consumed(100, true, counter.epoch());
+    expect(sent).toEqual([[100, true]]);
+  });
 });

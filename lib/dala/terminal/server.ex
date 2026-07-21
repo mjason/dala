@@ -37,6 +37,10 @@ defmodule Dala.Terminal.Server do
   # MCP wraps this text in JSON and then in an MCP text content string, so a
   # 64 KiB UTF-8 payload keeps the final wire response bounded after escaping.
   @snapshot_max_bytes 64 * 1024
+  # The holder applies the same hard limit. Refuse before writing so its reply
+  # FIFO and this process's request FIFO can never diverge under overload.
+  @max_pending_repaints 64
+  @max_pending_text_snapshots 64
   @wait_timeout_max_ms 25_000
   @waiters_per_session 8
   @match_buffer_bytes 128 * 1024
@@ -186,9 +190,11 @@ defmodule Dala.Terminal.Server do
 
   @doc """
   Asks the holder for a synthesized repaint and delivers it to `client` as a
-  `{:repaint, data, seq, history_loaded}` message. `seq` is the seq of the
-  last output the repaint covers, so the client can deduplicate the live
-  stream against it.
+  `{:repaint, data, seq, history_loaded, request_ref}` message. `seq` is the
+  seq of the last output the repaint covers, so the client can deduplicate the
+  live stream against it. The ref is echoed only for targeted requests and
+  lets a channel accept a matching late response after timeout while rejecting
+  one superseded by a newer request.
   """
   def request_repaint(id, client, opts \\ []) when is_pid(client) do
     history_budget =
@@ -196,7 +202,20 @@ defmodule Dala.Terminal.Server do
         do: 0,
         else: Holder.repaint_history_budget()
 
-    cast_if_alive(id, {:request_repaint, client, history_budget})
+    case whereis(id) do
+      nil ->
+        {:error, :not_running}
+
+      pid ->
+        GenServer.cast(pid, {
+          :request_repaint,
+          client,
+          history_budget,
+          Keyword.get(opts, :ref)
+        })
+
+        :ok
+    end
   end
 
   @doc "A bounded machine-readable plain-text snapshot of the terminal."
@@ -290,7 +309,7 @@ defmodule Dala.Terminal.Server do
 
   def whereis(id) do
     case Registry.lookup(Dala.Terminal.Registry, to_string(id)) do
-      [{pid, _value}] -> pid
+      [{pid, _value}] -> if(Process.alive?(pid), do: pid, else: nil)
       [] -> nil
     end
   end
@@ -356,6 +375,9 @@ defmodule Dala.Terminal.Server do
           # Channels waiting for a holder repaint, in request order (the
           # holder answers over the same FIFO socket).
           pending_repaints: :queue.new(),
+          # Resize/takeover repairs coalesce while the bounded holder FIFO is
+          # saturated, then append as soon as any response opens a slot.
+          deferred_all_client_repaint: false,
           # Machine snapshots use the holder's FIFO response queue.
           pending_text_snapshots: :queue.new(),
           holder_proto: nil,
@@ -376,6 +398,10 @@ defmodule Dala.Terminal.Server do
           # stay attached but use the much slower background cadence.
           visible_clients: MapSet.new(),
           cwd_poll_timer: nil,
+          # CWD discovery may invoke a multiplexer CLI with a hard 1.5s
+          # timeout. Keep that work out of this GenServer so synchronous
+          # calls (attach, resize and size_info) remain responsive.
+          cwd_poll_task: nil,
           # The LIVE size owner as {pid, client_ref}, or nil. Only the
           # owner's resize reaches the PTY.
           owner: nil,
@@ -386,9 +412,15 @@ defmodule Dala.Terminal.Server do
           # Once the stream reports cwd via OSC 7, /proc polling stops: the
           # top-level shell's cwd is stale inside zellij/tmux.
           osc7_cwd?: false,
+          # While a mux is active its top-level OSC 7 is only a candidate.
+          # Retain it so a poll that observes mux exit can apply it at once.
+          osc7_cwd_candidate: nil,
           # zellij/tmux client detected under the shell — cwd then comes
           # from the multiplexer itself (focused pane), not OSC 7 or /proc.
           mux: nil,
+          # A failed mux CLI query is not proof that the mux exited. Keep OSC
+          # 7 as a candidate until the next process-discovery pass confirms it.
+          mux_recheck?: false,
           # Output micro-batching: the first chunk after idle is emitted
           # immediately (keystroke echo pays no extra latency); chunks that
           # land within the 5ms window after it — TUI redraw storms — are
@@ -430,13 +462,17 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_call({:text_snapshot, lines, max_bytes}, from, state) do
-    case Holder.send_text_snapshot_req(state.socket, lines, max_bytes) do
-      :ok ->
-        pending = :queue.in({:caller, from}, state.pending_text_snapshots)
-        {:noreply, %{state | pending_text_snapshots: pending}}
+    if text_snapshot_queue_full?(state) do
+      {:reply, {:error, "too many pending terminal snapshot requests"}, state}
+    else
+      case Holder.send_text_snapshot_req(state.socket, lines, max_bytes) do
+        :ok ->
+          pending = :queue.in({:caller, from}, state.pending_text_snapshots)
+          {:noreply, %{state | pending_text_snapshots: pending}}
 
-      {:error, _reason} ->
-        {:reply, {:error, "terminal holder is unavailable"}, state}
+        {:error, _reason} ->
+          {:reply, {:error, "terminal holder is unavailable"}, state}
+      end
     end
   end
 
@@ -552,6 +588,7 @@ defmodule Dala.Terminal.Server do
     # Deliberately leaves the holder (and thus the shell) running: surviving
     # BEAM shutdowns and code reloads is the point of the holder split.
     # Explicit kills go through handle_cast(:shutdown) instead.
+    cancel_cwd_poll(state)
     if state.socket, do: :gen_tcp.close(state.socket)
     Enum.each(state.waiters, fn _entry -> Dala.Terminal.WaiterLimiter.release(self()) end)
     :ok
@@ -615,21 +652,36 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  def handle_cast({:request_repaint, client, history_budget}, state) do
+  # Keep the three-tuple form for callers compiled against the pre-ref API.
+  def handle_cast({:request_repaint, client, history_budget}, state),
+    do: handle_cast({:request_repaint, client, history_budget, nil}, state)
+
+  def handle_cast({:request_repaint, client, history_budget, request_ref}, state) do
     # Every client renders the grid at the PTY's actual size (the owner
     # drives it, followers mirror it), so the repaint's soft wraps must be
     # generated at exactly that width.
     cols = elem(state.size, 1)
 
-    case Holder.send_repaint_req(state.socket, cols, history_budget) do
-      :ok ->
-        pending = :queue.in({client, history_budget}, state.pending_repaints)
-        {:noreply, %{state | pending_repaints: pending}}
+    if repaint_queue_full?(state) do
+      # The request never reached the holder. Settle it with the same sentinel
+      # used for an unavailable holder so a Channel does not wait until its
+      # timeout, and echo the ref so only this generation accepts it.
+      send_repaint(client, "", state.seq, false, request_ref)
+      {:noreply, state}
+    else
+      case Holder.send_repaint_req(state.socket, cols, history_budget) do
+        :ok ->
+          pending = :queue.in({client, history_budget, request_ref}, state.pending_repaints)
+          {:noreply, %{state | pending_repaints: pending}}
 
-      {:error, _reason} ->
-        # Holder unreachable — answer empty so the client is not left covered.
-        send(client, {:repaint, "", state.seq, true})
-        {:noreply, state}
+        {:error, _reason} ->
+          # Holder unreachable — answer empty so the client is not left covered.
+          # Empty data never contains history; reporting true would prevent the
+          # browser from retrying a full-history request.
+          send_repaint(client, "", state.seq, false, request_ref)
+
+          {:noreply, state}
+      end
     end
   end
 
@@ -652,6 +704,21 @@ defmodule Dala.Terminal.Server do
 
   def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state) do
     exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
+  end
+
+  # CWD poll workers are monitored separately from channel and waiter
+  # monitors. This clause must precede the generic DOWN handlers below.
+  def handle_info(
+        {:DOWN, monitor, :process, pid, reason},
+        %{cwd_poll_task: %{monitor: monitor, pid: pid}} = state
+      ) do
+    # A worker that exits before returning a result (for example, an
+    # exception in process discovery) must not stop the terminal server.
+    if reason not in [:normal, :shutdown],
+      do: Logger.debug("cwd poll task exited for #{state.id}: #{inspect(reason)}")
+
+    state = %{state | cwd_poll_task: nil}
+    {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
@@ -728,13 +795,53 @@ defmodule Dala.Terminal.Server do
 
   def handle_info({:poll_cwd, ref}, %{cwd_poll_timer: {ref, _timer}} = state) do
     state = %{state | cwd_poll_timer: nil}
-    {state, cwd} = poll_cwd_once(state)
-    state = if cwd, do: apply_cwd(state, cwd), else: state
+    {:noreply, start_cwd_poll(state)}
+  end
+
+  def handle_info({:poll_cwd, _stale_ref}, state), do: {:noreply, state}
+
+  # A worker sends its result before the monitor DOWN signal. The ref guard is
+  # important: a canceled/old query must never overwrite a newer mux detection
+  # result (or a cwd reported by OSC 7 in the meantime).
+  def handle_info(
+        {task_ref,
+         {:cwd_poll_result, %{status: status, mux: mux, cwd: cwd, osc7_cwd?: queried_osc7?}}},
+        %{cwd_poll_task: %{ref: task_ref, monitor: monitor}} = state
+      ) do
+    Process.demonitor(monitor, [:flush])
+
+    state =
+      state
+      |> Map.put(:cwd_poll_task, nil)
+      |> Map.put(:mux, mux)
+      |> Map.put(:mux_recheck?, status == :mux_query_failed)
+
+    # A mux result remains authoritative because panes do not forward OSC 7.
+    # Only process discovery can confirm that the mux disappeared; a CLI
+    # timeout/query failure merely forces discovery again on the next tick.
+    state =
+      cond do
+        status == :mux && mux != nil && cwd ->
+          apply_cwd(state, cwd)
+
+        status == :confirmed_no_mux &&
+            is_binary(Map.get(state, :osc7_cwd_candidate)) ->
+          apply_cwd(state, state.osc7_cwd_candidate)
+
+        status == :confirmed_no_mux && cwd &&
+            not (state.osc7_cwd? && not queried_osc7?) ->
+          apply_cwd(state, cwd)
+
+        true ->
+          state
+      end
 
     {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
   end
 
-  def handle_info({:poll_cwd, _stale_ref}, state), do: {:noreply, state}
+  def handle_info({task_ref, {:cwd_poll_result, _stale_result}}, state)
+      when is_reference(task_ref),
+      do: {:noreply, state}
 
   # zellij/tmux never forward their panes' OSC 7 and their shells live under
   # a detached server invisible to /proc — while a multiplexer client runs in
@@ -742,24 +849,71 @@ defmodule Dala.Terminal.Server do
   # Detection reads the shared short-lived process snapshot while no mux is
   # known, so all sessions amortize one `ps` scan; a failing mux query falls
   # back to detection on the next tick.
-  defp poll_cwd_once(%{mux: nil} = state) do
-    case Dala.Terminal.Viewers.find_mux(state.shell_pid) do
+  # Start at most one query at a time. A query captures only the small set of
+  # values it needs; never hand the mutable GenServer state to the task.
+  defp start_cwd_poll(state) do
+    if is_nil(Map.get(state, :cwd_poll_task)) do
+      query = %{shell_pid: state.shell_pid, mux: state.mux, osc7_cwd?: state.osc7_cwd?}
+      owner = self()
+      task_ref = make_ref()
+
+      {pid, monitor} =
+        spawn_monitor(fn ->
+          send(owner, {task_ref, {:cwd_poll_result, poll_cwd_once(query)}})
+        end)
+
+      Map.put(state, :cwd_poll_task, %{pid: pid, ref: task_ref, monitor: monitor})
+    else
+      state
+    end
+  end
+
+  # Runs entirely in the task process. The returned map is deliberately
+  # detached from the server state so a late result can be rejected by ref.
+  defp poll_cwd_once(%{mux: nil, shell_pid: shell_pid, osc7_cwd?: osc7_cwd?}) do
+    case Dala.Terminal.Viewers.find_mux(shell_pid) do
       nil ->
-        {state, if(state.osc7_cwd?, do: nil, else: current_cwd(state.shell_pid))}
+        %{
+          status: :confirmed_no_mux,
+          mux: nil,
+          cwd: if(osc7_cwd?, do: nil, else: current_cwd(shell_pid)),
+          osc7_cwd?: osc7_cwd?
+        }
 
       mux ->
         case Dala.Terminal.MuxCwd.cwd(mux) do
-          {:ok, cwd} -> {%{state | mux: mux}, cwd}
-          :error -> {state, nil}
+          {:ok, cwd} ->
+            %{status: :mux, mux: mux, cwd: cwd, osc7_cwd?: osc7_cwd?}
+
+          :error ->
+            %{status: :mux_query_failed, mux: nil, cwd: nil, osc7_cwd?: osc7_cwd?}
         end
     end
   end
 
-  defp poll_cwd_once(%{mux: mux} = state) do
+  defp poll_cwd_once(%{mux: mux, osc7_cwd?: osc7_cwd?}) do
     case Dala.Terminal.MuxCwd.cwd(mux) do
-      {:ok, cwd} -> {state, cwd}
-      :error -> {%{state | mux: nil}, nil}
+      {:ok, cwd} -> %{status: :mux, mux: mux, cwd: cwd, osc7_cwd?: osc7_cwd?}
+      :error -> %{status: :mux_query_failed, mux: nil, cwd: nil, osc7_cwd?: osc7_cwd?}
     end
+  end
+
+  defp cancel_cwd_poll(state) do
+    if cwd_poll_timer = Map.get(state, :cwd_poll_timer) do
+      {_message_ref, timer} = cwd_poll_timer
+      Process.cancel_timer(timer)
+    end
+
+    case Map.get(state, :cwd_poll_task) do
+      %{pid: pid, monitor: monitor} ->
+        Process.demonitor(monitor, [:flush])
+        Process.exit(pid, :kill)
+
+      nil ->
+        :ok
+    end
+
+    :ok
   end
 
   defp apply_cwd(state, cwd) when cwd == state.cwd, do: state
@@ -783,11 +937,14 @@ defmodule Dala.Terminal.Server do
       frame_type == Holder.type_cwd() ->
         # OSC 7 from the stream. While a multiplexer runs, only its own
         # top-level shell can reach us (panes are not forwarded), so its
-        # report would be stale — the mux poll is authoritative then.
-        if state.mux do
-          {:noreply, %{state | osc7_cwd?: true}}
+        # report is only a candidate. If an in-flight query discovers that the
+        # mux exited, the result handler promotes this value immediately.
+        state = Map.merge(state, %{osc7_cwd?: true, osc7_cwd_candidate: payload})
+
+        if state.mux || Map.get(state, :mux_recheck?, false) do
+          {:noreply, state}
         else
-          {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
+          {:noreply, apply_cwd(state, payload)}
         end
 
       frame_type == Holder.type_agent() ->
@@ -811,14 +968,32 @@ defmodule Dala.Terminal.Server do
               })
             end)
 
-            {:noreply, %{state | pending_repaints: rest}}
+            state = %{state | pending_repaints: rest}
+            {:noreply, maybe_request_deferred_all_client_repaint(state)}
 
+          {{:value, {client, history_budget, request_ref}}, rest} ->
+            send_repaint(
+              client,
+              payload,
+              state.seq,
+              history_loaded?(state, history_budget),
+              request_ref
+            )
+
+            state = %{state | pending_repaints: rest}
+            {:noreply, maybe_request_deferred_all_client_repaint(state)}
+
+          # A queue entry created before the ref extension may still be
+          # present during a hot code upgrade. Treat it as an untagged reply;
+          # current channels will reject it when no matching request exists.
           {{:value, {client, history_budget}}, rest} ->
-            send(client, {:repaint, payload, state.seq, history_loaded?(state, history_budget)})
-            {:noreply, %{state | pending_repaints: rest}}
+            send_repaint(client, payload, state.seq, history_loaded?(state, history_budget), nil)
+
+            state = %{state | pending_repaints: rest}
+            {:noreply, maybe_request_deferred_all_client_repaint(state)}
 
           {:empty, _queue} ->
-            {:noreply, state}
+            {:noreply, maybe_request_deferred_all_client_repaint(state)}
         end
 
       frame_type == Holder.type_text_snapshot() ->
@@ -999,21 +1174,41 @@ defmodule Dala.Terminal.Server do
   # FIFO ordering guarantees the holder has already applied any resize sent
   # before this request, so the snapshot's wraps match the new grid.
   defp request_repaint_all(state) do
-    cols = elem(state.size, 1)
+    if repaint_queue_full?(state) do
+      # Preserve one repair intent. Sending now would exceed the holder's same
+      # hard limit and silently shift the ref-less response FIFO; the first
+      # completed request below appends one repair for the latest size.
+      Map.put(state, :deferred_all_client_repaint, true)
+    else
+      cols = elem(state.size, 1)
+      history_budget = Holder.repaint_history_budget()
 
-    history_budget = Holder.repaint_history_budget()
-
-    case Holder.send_repaint_req(state.socket, cols, history_budget) do
-      :ok ->
-        %{
+      case Holder.send_repaint_req(state.socket, cols, history_budget) do
+        :ok ->
           state
-          | pending_repaints: :queue.in({:all_clients, history_budget}, state.pending_repaints)
-        }
+          |> Map.put(:deferred_all_client_repaint, false)
+          |> Map.put(
+            :pending_repaints,
+            :queue.in({:all_clients, history_budget}, state.pending_repaints)
+          )
 
-      {:error, _reason} ->
-        state
+        {:error, _reason} ->
+          Map.put(state, :deferred_all_client_repaint, true)
+      end
     end
   end
+
+  defp maybe_request_deferred_all_client_repaint(state) do
+    if Map.get(state, :deferred_all_client_repaint, false) and not repaint_queue_full?(state),
+      do: request_repaint_all(state),
+      else: state
+  end
+
+  defp repaint_queue_full?(state),
+    do: :queue.len(state.pending_repaints) >= @max_pending_repaints
+
+  defp text_snapshot_queue_full?(state),
+    do: :queue.len(state.pending_text_snapshots) >= @max_pending_text_snapshots
 
   # Protocol v5 is the first holder that honors the extended repaint budget.
   # An old holder ignores the extra four bytes and returns its normal full
@@ -1021,6 +1216,15 @@ defmodule Dala.Terminal.Server do
   defp history_loaded?(%{holder_proto: proto}, history_budget) do
     history_budget > 0 or not (is_integer(proto) and proto >= 5)
   end
+
+  # Preserve the pre-ref four-tuple for direct/legacy callers. Channel
+  # requests carry a reference and get the tagged form used for stale-reply
+  # suppression.
+  defp send_repaint(client, payload, seq, history_loaded, nil),
+    do: send(client, {:repaint, payload, seq, history_loaded})
+
+  defp send_repaint(client, payload, seq, history_loaded, request_ref),
+    do: send(client, {:repaint, payload, seq, history_loaded, request_ref})
 
   # Sizes the PTY to the owner's viewport. No-op when unchanged (unless
   # forced, e.g. to realign a reattached holder).

@@ -352,11 +352,19 @@ defmodule Dala.Terminal.Session do
           seq: [type: :integer, allow_nil?: false],
           done: [type: :boolean, allow_nil?: false],
           reset: [type: :boolean, allow_nil?: false],
-          historyLoaded: [type: :boolean, allow_nil?: false]
+          historyLoaded: [type: :boolean, allow_nil?: false],
+          retrying: [type: :boolean, allow_nil?: false]
         ]
       ],
       transform: fn _notification ->
-        %{data: "", seq: 0, done: true, reset: false, historyLoaded: true}
+        %{
+          data: "",
+          seq: 0,
+          done: true,
+          reset: false,
+          historyLoaded: true,
+          retrying: false
+        }
       end
   end
 

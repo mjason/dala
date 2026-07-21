@@ -22,14 +22,18 @@
 //! PTY output feeds a server-side grid + scrollback. REPAINT_REQ answers
 //! with a bounded synthesized repaint (history tail + screen + cursor +
 //! modes) — the tmux attach model — so clients never replay raw history.
-//! Ordering: pending OUTPUT is flushed before the REPAINT is generated, so a
-//! repaint always covers exactly the bytes already sent.
+//! Ordering: a repaint fixes an output-position barrier and briefly freezes
+//! PTY ingestion. OUTPUT through that barrier is sent first, then a fresh
+//! parser-safe repaint; ingestion resumes only after the frame is written.
+//! This keeps snapshots sequence-correct without letting continuous output
+//! starve or overtake them.
 //!
-//! One client at a time; a new connection kicks the old one. Output produced
-//! while no client is attached accumulates in a bounded ring and is flushed
-//! on (re)connect. When the shell exits the holder writes `{socket}.exit`
-//! with the status (for a dala that reconnects later), best-effort sends
-//! EXIT, unlinks the socket and exits.
+//! One client at a time; a new connection kicks the old one. The emulator
+//! retains output while detached; the bounded live ring exists only for the
+//! attached client, whose reconnect starts from a synthesized repaint. When
+//! the shell exits the holder writes `{socket}.exit` with the status (for a
+//! dala that reconnects later), best-effort sends EXIT, unlinks the socket
+//! and exits.
 
 mod screen;
 mod watch;
@@ -41,6 +45,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
@@ -84,6 +89,28 @@ const T_TEXT_SNAPSHOT_REQ: u8 = 0x15;
 /// repaint covers whatever was lost.
 const RING_MAX: usize = 1024 * 1024;
 const CHUNK: usize = 64 * 1024;
+// A stalled local client must not hold the sole socket writer forever. In
+// particular, repaint keeps PTY ingestion frozen until its frame is written;
+// this timeout fails that write and detaches the client before the BEAM's
+// four-second repaint timeout fires.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+// A well-behaved channel has at most one in-flight repaint. Leave room for
+// many attached clients, but bound work queued by a malformed/raw peer. New
+// requests are rejected at the limit so holder replies stay FIFO-aligned with
+// the BEAM's pending-request queue.
+const MAX_PENDING_REPAINTS: usize = 64;
+// TEXT_SNAPSHOT has no request id on the wire. Never evict or silently reject
+// an individual request: doing so would make every later response satisfy the
+// wrong BEAM caller. The control connection is detached on the first request
+// beyond this bound, clearing all pending requests together.
+const MAX_PENDING_TEXT_SNAPSHOTS: usize = 64;
+// Agent notifications are best-effort UI events. Keep the newest bounded tail
+// when a process emits them faster than the client can consume them.
+const MAX_AGENT_REPORTS: usize = 256;
+// Match alacritty's synchronized-update safety scale. An unterminated OSC/DCS
+// from a broken process must not grow one holder without bound; CAN is a valid
+// terminal cancellation byte and returns both parsers to ground safely.
+const PARSER_TOKEN_MAX: usize = 2 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Config {
@@ -107,8 +134,299 @@ fn default_history_lines() -> usize {
     10_000
 }
 
+#[derive(Default)]
+struct TransitQueue {
+    /// Every chunk starts and ends with the terminal parser in ground state.
+    /// Keeping those boundaries through eviction and socket writes ensures a
+    /// bounded-ring overflow can never expose the suffix of an ANSI token or
+    /// UTF-8 codepoint to the browser.
+    chunks: VecDeque<Vec<u8>>,
+    len: usize,
+    /// Absolute position of the first byte still queued. Bytes dequeued for an
+    /// in-flight socket write already count as passed: the sole writer cannot
+    /// select the following repaint until that write returns.
+    start: u64,
+    /// Absolute position immediately after the newest byte ever queued.
+    end: u64,
+}
+
+impl TransitQueue {
+    fn push_bounded(&mut self, data: &[u8], limit: usize) -> usize {
+        if data.is_empty() {
+            return 0;
+        }
+
+        self.chunks.push_back(data.to_vec());
+        self.len = self.len.saturating_add(data.len());
+        self.end = self.end.saturating_add(data.len() as u64);
+
+        let mut dropped = 0usize;
+        while self.len > limit {
+            let Some(chunk) = self.chunks.pop_front() else {
+                break;
+            };
+            self.len -= chunk.len();
+            dropped = dropped.saturating_add(chunk.len());
+            self.start = self.start.saturating_add(chunk.len() as u64);
+        }
+
+        dropped
+    }
+
+    fn end_position(&self) -> u64 {
+        self.end
+    }
+
+    fn reached(&self, barrier: u64) -> bool {
+        self.start >= barrier
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    /// Drain only output that existed at `barrier`. Newer bytes remain queued
+    /// until the associated repaint has been sent.
+    fn drain_before(&mut self, barrier: Option<u64>, max: usize) -> Vec<u8> {
+        let allowed_end = barrier.unwrap_or(self.end);
+        let mut output = Vec::new();
+
+        while let Some(chunk) = self.chunks.front() {
+            let chunk_end = self.start.saturating_add(chunk.len() as u64);
+            if chunk_end > allowed_end {
+                break;
+            }
+
+            // Never split a parser-safe chunk. A single chunk can exceed the
+            // preferred frame size only for a long control string; taking it
+            // whole is required to return the browser parser to ground.
+            if !output.is_empty() && output.len().saturating_add(chunk.len()) > max {
+                break;
+            }
+
+            let chunk = self.chunks.pop_front().unwrap();
+            self.len -= chunk.len();
+            self.start = self.start.saturating_add(chunk.len() as u64);
+            output.extend_from_slice(&chunk);
+        }
+
+        output
+    }
+
+    fn clear(&mut self) {
+        self.chunks.clear();
+        self.len = 0;
+        self.start = self.end;
+    }
+}
+
+/// Buffers only the unfinished tail of the terminal byte stream. A repaint
+/// starts with RIS (`ESC c`), which resets the browser parser; putting that
+/// reset between `ESC [` and its CSI final byte (or inside a UTF-8 codepoint)
+/// would turn the suffix into visible garbage. Feeding the emulator and live
+/// transit queue only at parser-ground boundaries makes every repaint barrier
+/// safe without delaying ordinary text.
+#[derive(Default)]
+struct ParserSafeOutput {
+    pending: Vec<u8>,
+    safe_len: usize,
+    state: BoundaryState,
+}
+
+#[derive(Clone, Copy, Default)]
+enum BoundaryState {
+    #[default]
+    Ground,
+    Utf8(u8),
+    Escape,
+    EscapeIntermediate,
+    Csi,
+    Osc,
+    Dcs,
+    ControlString,
+    StringEscape,
+}
+
+impl ParserSafeOutput {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        for &byte in bytes {
+            self.pending.push(byte);
+            self.advance(byte);
+            if matches!(self.state, BoundaryState::Ground) {
+                self.safe_len = self.pending.len();
+            } else if self.pending.len() >= PARSER_TOKEN_MAX && self.safe_len == 0 {
+                self.pending.push(0x18);
+                self.advance(0x18);
+                self.safe_len = self.pending.len();
+            }
+        }
+
+        if self.safe_len == 0 {
+            return Vec::new();
+        }
+
+        let tail = self.pending.split_off(self.safe_len);
+        let complete = std::mem::replace(&mut self.pending, tail);
+        self.safe_len = 0;
+        complete
+    }
+
+    fn advance(&mut self, byte: u8) {
+        let mut current = Some(byte);
+        while let Some(byte) = current.take() {
+            self.state = match self.state {
+                BoundaryState::Ground => match byte {
+                    0x1b => BoundaryState::Escape,
+                    // C1 control functions are valid 8-bit counterparts of
+                    // the 7-bit ESC-prefixed forms. They are recognized only
+                    // in ground state; bytes consumed by Utf8 below are
+                    // continuation bytes, never new control introducers.
+                    0x90 => BoundaryState::Dcs,
+                    0x98 | 0x9e | 0x9f => BoundaryState::ControlString,
+                    0x9b => BoundaryState::Csi,
+                    0x9d => BoundaryState::Osc,
+                    0xc2..=0xdf => BoundaryState::Utf8(1),
+                    0xe0..=0xef => BoundaryState::Utf8(2),
+                    0xf0..=0xf4 => BoundaryState::Utf8(3),
+                    _ => BoundaryState::Ground,
+                },
+                BoundaryState::Utf8(remaining) => {
+                    if (0x80..=0xbf).contains(&byte) {
+                        if remaining == 1 {
+                            BoundaryState::Ground
+                        } else {
+                            BoundaryState::Utf8(remaining - 1)
+                        }
+                    } else {
+                        // The VTE parser consumes an invalid partial codepoint
+                        // as a replacement character, then treats this byte as
+                        // the beginning of the next token.
+                        current = Some(byte);
+                        BoundaryState::Ground
+                    }
+                }
+                BoundaryState::Escape => match byte {
+                    b'[' => BoundaryState::Csi,
+                    b']' => BoundaryState::Osc,
+                    b'P' => BoundaryState::Dcs,
+                    b'X' | b'^' | b'_' => BoundaryState::ControlString,
+                    0x20..=0x2f => BoundaryState::EscapeIntermediate,
+                    0x30..=0x7e | 0x18 | 0x1a => BoundaryState::Ground,
+                    0x1b => BoundaryState::Escape,
+                    _ => BoundaryState::Escape,
+                },
+                BoundaryState::EscapeIntermediate => match byte {
+                    0x30..=0x7e | 0x18 | 0x1a => BoundaryState::Ground,
+                    0x1b => BoundaryState::Escape,
+                    _ => BoundaryState::EscapeIntermediate,
+                },
+                BoundaryState::Csi => match byte {
+                    0x40..=0x7e | 0x18 | 0x1a => BoundaryState::Ground,
+                    0x1b => BoundaryState::Escape,
+                    _ => BoundaryState::Csi,
+                },
+                BoundaryState::Osc => match byte {
+                    0x07 | 0x18 | 0x1a | 0x9c => BoundaryState::Ground,
+                    0x1b => BoundaryState::StringEscape,
+                    _ => BoundaryState::Osc,
+                },
+                BoundaryState::Dcs => match byte {
+                    0x18 | 0x1a | 0x9c => BoundaryState::Ground,
+                    0x1b => BoundaryState::StringEscape,
+                    _ => BoundaryState::Dcs,
+                },
+                BoundaryState::ControlString => match byte {
+                    0x18 | 0x1a | 0x9c => BoundaryState::Ground,
+                    0x1b => BoundaryState::StringEscape,
+                    _ => BoundaryState::ControlString,
+                },
+                BoundaryState::StringEscape => {
+                    // ESC already ended OSC/DCS/SOS in vte and put the
+                    // parser in Escape; process this same byte as the escape
+                    // final/intermediate rather than deferring it.
+                    current = Some(byte);
+                    BoundaryState::Escape
+                }
+            };
+        }
+    }
+}
+
+struct PendingRepaint {
+    barrier: u64,
+    cols: u16,
+    history_budget: usize,
+}
+
+impl PendingRepaint {
+    fn new(transit: &TransitQueue, cols: u16, history_budget: usize) -> Self {
+        Self {
+            barrier: transit.end_position(),
+            cols,
+            history_budget,
+        }
+    }
+}
+
+fn enqueue_repaint_bounded(
+    pending: &mut VecDeque<PendingRepaint>,
+    repaint: PendingRepaint,
+) -> bool {
+    if pending.len() >= MAX_PENDING_REPAINTS {
+        return false;
+    }
+
+    pending.push_back(repaint);
+    true
+}
+
+fn enqueue_text_snapshot_bounded(
+    pending: &mut VecDeque<(usize, usize)>,
+    request: (usize, usize),
+) -> bool {
+    if pending.len() >= MAX_PENDING_TEXT_SNAPSHOTS {
+        return false;
+    }
+
+    pending.push_back(request);
+    true
+}
+
+fn extend_agent_reports_bounded(
+    pending: &mut VecDeque<Vec<u8>>,
+    reports: impl IntoIterator<Item = Vec<u8>>,
+) {
+    for report in reports {
+        while pending.len() >= MAX_AGENT_REPORTS {
+            pending.pop_front();
+        }
+        pending.push_back(report);
+    }
+}
+
+/// The caller serializes writes with the PTY-writer mutex before entering
+/// here. Generation validation is intentionally released before the possibly
+/// blocking syscall: a frame that won the check may finish, while a handoff
+/// can immediately invalidate every writer still waiting behind it.
+fn write_input_if_current<W: Write + ?Sized>(
+    input_generation: &Mutex<u64>,
+    expected_generation: u64,
+    writer: &mut W,
+    data: &[u8],
+) -> std::io::Result<bool> {
+    let current = input_generation.lock().unwrap();
+    if *current != expected_generation {
+        return Ok(false);
+    }
+    drop(current);
+
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(true)
+}
+
 struct Shared {
-    ring: VecDeque<u8>,
+    transit: TransitQueue,
     client: Option<UnixStream>,
     /// Bumped per accepted connection so stale threads/writes can tell they
     /// lost the client race and must not clear a newer connection.
@@ -116,10 +434,13 @@ struct Shared {
     exit_status: Option<u32>,
     /// Server-side emulator: grid + scrollback + modes.
     screen: Screen,
-    /// Repaints requested by the client: requester columns plus the maximum
-    /// scrollback bytes to synthesize. Zero history is a viewport-only fast
-    /// attach; old clients omit the budget and retain the bounded default.
-    repaint_pending: VecDeque<(u16, usize)>,
+    /// Repaint requests, each held behind the exact output position that was
+    /// current when it arrived. Payloads are synthesized only when dequeued.
+    repaint_pending: VecDeque<PendingRepaint>,
+    /// PTY output is paused from request until the repaint frame has been
+    /// written. This bounds the barrier and prevents post-snapshot ring
+    /// overflow while a large repaint is in flight.
+    repaint_frozen: bool,
     /// Machine-readable snapshots requested by the BEAM, each carrying
     /// {logical line limit, UTF-8 byte limit}.
     text_snapshot_pending: VecDeque<(usize, usize)>,
@@ -136,8 +457,43 @@ struct Shared {
 }
 
 struct State {
+    /// Serializes connection handoff against a frame already read by the old
+    /// control thread. It is deliberately separate from `shared`: a large PTY
+    /// input write may backpressure, but must not block output/repaint state.
+    input_generation: Mutex<u64>,
     shared: Mutex<Shared>,
     cond: Condvar,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TextSnapshotRequestResult {
+    Queued,
+    Stale,
+    Overloaded,
+}
+
+fn queue_text_snapshot_request(
+    state: &State,
+    expected_gen: u64,
+    request: (usize, usize),
+) -> TextSnapshotRequestResult {
+    let result = {
+        let mut shared = state.shared.lock().unwrap();
+        if shared.client_gen != expected_gen {
+            TextSnapshotRequestResult::Stale
+        } else if enqueue_text_snapshot_bounded(&mut shared.text_snapshot_pending, request) {
+            state.cond.notify_all();
+            TextSnapshotRequestResult::Queued
+        } else {
+            TextSnapshotRequestResult::Overloaded
+        }
+    };
+
+    if result == TextSnapshotRequestResult::Overloaded {
+        detach_client_if_current(state, expected_gen);
+    }
+
+    result
 }
 
 fn main() {
@@ -215,13 +571,15 @@ fn main() {
     let master: Arc<Mutex<SendMaster>> = Arc::new(Mutex::new(SendMaster(pair.master)));
 
     let state = Arc::new(State {
+        input_generation: Mutex::new(0),
         shared: Mutex::new(Shared {
-            ring: VecDeque::new(),
+            transit: TransitQueue::default(),
             client: None,
             client_gen: 0,
             exit_status: None,
             screen: Screen::new(config.rows, config.cols, config.history_lines),
             repaint_pending: VecDeque::new(),
+            repaint_frozen: false,
             text_snapshot_pending: VecDeque::new(),
             cwd_report: None,
             agent_reports: VecDeque::new(),
@@ -235,30 +593,40 @@ fn main() {
         let state = Arc::clone(&state);
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
+            let mut parser_safe_output = ParserSafeOutput::default();
             loop {
                 match pty_reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let complete = parser_safe_output.push(&buf[..n]);
+                        if complete.is_empty() {
+                            continue;
+                        }
+
                         let mut shared = state.shared.lock().unwrap();
-                        shared.screen.advance(&buf[..n]);
+                        // A requested repaint freezes the emulator at its
+                        // parser-safe barrier. Bytes already read from the PTY
+                        // stay in this thread until the snapshot frame is on
+                        // the socket, applying natural PTY backpressure.
+                        while shared.repaint_frozen {
+                            shared = state.cond.wait(shared).unwrap();
+                        }
+
+                        shared.screen.advance(&complete);
                         {
                             let mut out = OscOut::default();
                             let mut tail = std::mem::take(&mut shared.osc_tail);
-                            scan_osc(&mut tail, &buf[..n], &mut out);
+                            scan_osc(&mut tail, &complete, &mut out);
                             shared.osc_tail = tail;
                             if out.cwd.is_some() {
                                 shared.cwd_report = out.cwd;
                             }
-                            shared.agent_reports.extend(out.agents);
+                            extend_agent_reports_bounded(&mut shared.agent_reports, out.agents);
                         }
                         // The emulator is the durable history; the ring only
                         // carries live bytes to the attached client.
                         if shared.client.is_some() {
-                            shared.ring.extend(&buf[..n]);
-                            let excess = shared.ring.len().saturating_sub(RING_MAX);
-                            if excess > 0 {
-                                shared.ring.drain(..excess);
-                            }
+                            shared.transit.push_bounded(&complete, RING_MAX);
                         }
                         state.cond.notify_all();
                     }
@@ -293,16 +661,21 @@ fn main() {
                     let mut shared = state.shared.lock().unwrap();
                     loop {
                         let attached = shared.client.is_some();
-                        let drainable = attached && !shared.ring.is_empty();
+                        let barrier = shared
+                            .repaint_pending
+                            .front()
+                            .map(|pending| pending.barrier);
                         let repaint = attached
-                            && shared.ring.is_empty()
-                            && !shared.repaint_pending.is_empty();
+                            && barrier.is_some_and(|position| shared.transit.reached(position));
+                        let drainable = attached
+                            && !shared.transit.is_empty()
+                            && barrier.is_none_or(|position| !shared.transit.reached(position));
                         let text_snapshot = attached
-                            && shared.ring.is_empty()
+                            && shared.transit.is_empty()
                             && !shared.text_snapshot_pending.is_empty();
                         let cwd = attached && shared.cwd_report.is_some();
                         let agent = attached && !shared.agent_reports.is_empty();
-                        let done = shared.exit_status.is_some() && shared.ring.is_empty();
+                        let done = shared.exit_status.is_some() && shared.transit.is_empty();
                         if drainable || repaint || text_snapshot || cwd || agent || done {
                             break;
                         }
@@ -312,28 +685,34 @@ fn main() {
                     let stream = shared.client.as_ref().and_then(|s| s.try_clone().ok());
                     let gen = shared.client_gen;
 
-                    if shared.client.is_some() && !shared.ring.is_empty() {
-                        let n = shared.ring.len().min(CHUNK);
-                        (Job::Output(shared.ring.drain(..n).collect()), stream, gen)
+                    let barrier = shared
+                        .repaint_pending
+                        .front()
+                        .map(|pending| pending.barrier);
+
+                    if shared.client.is_some()
+                        && !shared.transit.is_empty()
+                        && barrier.is_none_or(|position| !shared.transit.reached(position))
+                    {
+                        (
+                            Job::Output(shared.transit.drain_before(barrier, CHUNK)),
+                            stream,
+                            gen,
+                        )
+                    } else if shared.client.is_some()
+                        && barrier.is_some_and(|position| shared.transit.reached(position))
+                    {
+                        let pending = shared.repaint_pending.pop_front().unwrap();
+                        let soft = pending.cols as usize == shared.screen.columns();
+                        let repaint = shared
+                            .screen
+                            .repaint_with_history(soft, pending.history_budget);
+                        (Job::Repaint(repaint), stream, gen)
                     } else if shared.client.is_some() && shared.cwd_report.is_some() {
                         (Job::Cwd(shared.cwd_report.take().unwrap()), stream, gen)
                     } else if shared.client.is_some() && !shared.agent_reports.is_empty() {
                         (
                             Job::Agent(shared.agent_reports.pop_front().unwrap()),
-                            stream,
-                            gen,
-                        )
-                    } else if shared.client.is_some() && !shared.repaint_pending.is_empty() {
-                        let (cols, history_budget) = shared
-                            .repaint_pending
-                            .pop_front()
-                            .unwrap_or((0, REPAINT_HISTORY_BUDGET));
-                        // Soft wraps are only correct when the requester's
-                        // width matches the grid; anything else gets hard
-                        // line breaks so the layout cannot shear.
-                        let soft = cols as usize == shared.screen.columns();
-                        (
-                            Job::Repaint(shared.screen.repaint_with_history(soft, history_budget)),
                             stream,
                             gen,
                         )
@@ -363,7 +742,10 @@ fn main() {
                     Job::Output(chunk) => send_or_drop(&state, stream, gen, T_OUTPUT, &chunk),
                     Job::Cwd(cwd) => send_or_drop(&state, stream, gen, T_CWD, cwd.as_bytes()),
                     Job::Agent(payload) => send_or_drop(&state, stream, gen, T_AGENT, &payload),
-                    Job::Repaint(repaint) => send_or_drop(&state, stream, gen, T_REPAINT, &repaint),
+                    Job::Repaint(repaint) => {
+                        send_or_drop(&state, stream, gen, T_REPAINT, &repaint);
+                        finish_repaint(&state, gen);
+                    }
                     Job::TextSnapshot(snapshot) => {
                         send_or_drop(&state, stream, gen, T_TEXT_SNAPSHOT, &snapshot)
                     }
@@ -387,6 +769,9 @@ fn main() {
     // Accept loop: one client at a time, newest wins.
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
+        if configure_client_stream(&stream).is_err() {
+            continue;
+        }
 
         let hello = format!(
             "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":5}}",
@@ -397,17 +782,20 @@ fn main() {
         }
 
         let my_gen = {
+            let mut active_input_gen = state.input_generation.lock().unwrap();
             let mut shared = state.shared.lock().unwrap();
             if let Some(old) = shared.client.take() {
                 let _ = old.shutdown(std::net::Shutdown::Both);
             }
             // Bytes for the previous client are already folded into the
             // emulator; the new client starts from a repaint it requests.
-            shared.ring.clear();
+            shared.transit.clear();
             shared.repaint_pending.clear();
+            shared.repaint_frozen = false;
             shared.text_snapshot_pending.clear();
             shared.client = stream.try_clone().ok();
             shared.client_gen += 1;
+            *active_input_gen = shared.client_gen;
             state.cond.notify_all();
             shared.client_gen
         };
@@ -422,19 +810,30 @@ fn main() {
                 match read_frame(&mut stream) {
                     Ok((T_INPUT, data)) => {
                         let mut writer = pty_writer.lock().unwrap();
-                        if writer
-                            .write_all(&data)
-                            .and_then(|_| writer.flush())
-                            .is_err()
-                        {
-                            break;
+                        match write_input_if_current(
+                            &state.input_generation,
+                            my_gen,
+                            &mut **writer,
+                            &data,
+                        ) {
+                            Ok(true) => {}
+                            Ok(false) | Err(_) => break,
                         }
                     }
                     Ok((T_RESIZE, data)) if data.len() == 4 => {
                         let rows = u16::from_be_bytes([data[0], data[1]]);
                         let cols = u16::from_be_bytes([data[2], data[3]]);
                         let (rows, cols) = clamp_dims(rows, cols);
-                        state.shared.lock().unwrap().screen.resize(rows, cols);
+
+                        let mut shared = state.shared.lock().unwrap();
+                        while shared.client_gen == my_gen && shared.repaint_frozen {
+                            shared = state.cond.wait(shared).unwrap();
+                        }
+                        if shared.client_gen != my_gen {
+                            break;
+                        }
+
+                        shared.screen.resize(rows, cols);
                         let _ = master.lock().unwrap().0.resize(PtySize {
                             rows,
                             cols,
@@ -445,7 +844,18 @@ fn main() {
                     Ok((T_REPAINT_REQ, data)) => {
                         let (cols, history_budget) = parse_repaint_request(&data);
                         let mut shared = state.shared.lock().unwrap();
-                        shared.repaint_pending.push_back((cols, history_budget));
+                        if shared.client_gen != my_gen {
+                            break;
+                        }
+
+                        // Alacritty intentionally buffers synchronized-update
+                        // blocks. A repaint is itself an atomic visual update,
+                        // so materialize that block before freezing the grid.
+                        shared.screen.finish_synchronized_update();
+                        let pending = PendingRepaint::new(&shared.transit, cols, history_budget);
+                        if enqueue_repaint_bounded(&mut shared.repaint_pending, pending) {
+                            shared.repaint_frozen = true;
+                        }
                         state.cond.notify_all();
                     }
                     Ok((T_TEXT_SNAPSHOT_REQ, data)) if data.len() == 8 => {
@@ -453,11 +863,17 @@ fn main() {
                         let bytes = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
                         let lines = lines.min(50_000);
                         let bytes = bytes.clamp(1, 128 * 1024);
-                        let mut shared = state.shared.lock().unwrap();
-                        shared.text_snapshot_pending.push_back((lines, bytes));
-                        state.cond.notify_all();
+                        match queue_text_snapshot_request(&state, my_gen, (lines, bytes)) {
+                            TextSnapshotRequestResult::Queued => {}
+                            TextSnapshotRequestResult::Stale
+                            | TextSnapshotRequestResult::Overloaded => break,
+                        }
                     }
                     Ok((T_KILL, _)) => {
+                        let shared = state.shared.lock().unwrap();
+                        if shared.client_gen != my_gen {
+                            break;
+                        }
                         let _ = killer.lock().unwrap().kill();
                     }
                     Ok(_) => {}
@@ -465,11 +881,7 @@ fn main() {
                 }
             }
 
-            let mut shared = state.shared.lock().unwrap();
-            // Only clear if this connection is still the active one.
-            if shared.client_gen == my_gen {
-                shared.client = None;
-            }
+            detach_client_if_current(&state, my_gen);
         });
     }
 }
@@ -486,6 +898,10 @@ fn parse_repaint_request(data: &[u8]) -> (u16, usize) {
         REPAINT_HISTORY_BUDGET
     };
     (cols, history_budget.min(REPAINT_HISTORY_BUDGET))
+}
+
+fn configure_client_stream(stream: &UnixStream) -> std::io::Result<()> {
+    stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
 }
 
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
@@ -516,12 +932,26 @@ fn scan_osc(tail: &mut Vec<u8>, chunk: &[u8], out: &mut OscOut) {
     let mut search_from = 0;
     while let Some(start) = find(&hay[search_from..], PREFIX).map(|i| i + search_from) {
         let body_start = start + PREFIX.len();
-        // Terminator: BEL or ST (ESC \).
-        let end = hay[body_start..]
+        // VTE ends OSC on BEL, CAN, SUB or any ESC (ST consumes the following
+        // backslash too). Pick the earliest terminator; preferring a later BEL
+        // would accidentally swallow a valid OSC that follows a cancellation.
+        let body = &hay[body_start..];
+        let single = body
             .iter()
-            .position(|&b| b == 0x07)
-            .map(|i| (body_start + i, 1))
-            .or_else(|| find(&hay[body_start..], b"\x1b\\").map(|i| (body_start + i, 2)));
+            .position(|&b| matches!(b, 0x07 | 0x18 | 0x1a))
+            .map(|i| (body_start + i, 1));
+        let escape = body.iter().position(|&b| b == 0x1b).map(|i| {
+            let term_len = if body.get(i + 1) == Some(&b'\\') {
+                2
+            } else {
+                1
+            };
+            (body_start + i, term_len)
+        });
+        let end = match (single, escape) {
+            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+            (a, b) => a.or(b),
+        };
 
         let Some((end, term_len)) = end else {
             // Unterminated: keep from the sequence start for the next read.
@@ -557,7 +987,15 @@ fn scan_osc(tail: &mut Vec<u8>, chunk: &[u8], out: &mut OscOut) {
             payload.extend_from_slice(text);
             out.agents.push(payload);
         }
-        search_from = end + term_len;
+        // A bare ESC terminates the current OSC, but it may simultaneously
+        // be the introducer of the next `ESC ]` sequence. Re-scan from that
+        // byte so adjacent reports are not lost. BEL/CAN/SUB and the two-byte
+        // ST (`ESC \`) are fully consumed before the next search.
+        search_from = if term_len == 1 && hay.get(end) == Some(&0x1b) {
+            end
+        } else {
+            end + term_len
+        };
     }
 
     // Keep a tail in case a sequence starts at the very end of this chunk.
@@ -680,14 +1118,52 @@ fn send_or_drop(
     frame_type: u8,
     payload: &[u8],
 ) {
-    if let Some(mut stream) = stream {
-        if write_frame(&mut stream, frame_type, payload).is_err() {
-            let mut shared = state.shared.lock().unwrap();
-            if shared.client_gen == gen {
-                shared.client = None;
-            }
-        }
+    let delivered = stream
+        .map(|mut stream| write_frame(&mut stream, frame_type, payload).is_ok())
+        .unwrap_or(false);
+
+    if !delivered {
+        detach_client_if_current(state, gen);
     }
+}
+
+fn finish_repaint(state: &State, gen: u64) {
+    let mut shared = state.shared.lock().unwrap();
+    if shared.client_gen == gen && (shared.client.is_none() || shared.repaint_pending.is_empty()) {
+        shared.repaint_frozen = false;
+        state.cond.notify_all();
+    }
+}
+
+fn clear_client(shared: &mut Shared) {
+    if let Some(client) = shared.client.take() {
+        // UnixStream clones share one socket. Shutdown wakes the control
+        // reader and tells the BEAM immediately when the writer timed out.
+        let _ = client.shutdown(std::net::Shutdown::Both);
+    }
+    shared.transit.clear();
+    shared.repaint_pending.clear();
+    shared.repaint_frozen = false;
+    shared.text_snapshot_pending.clear();
+}
+
+/// Detaches only the expected connection generation. The input gate is
+/// acquired first everywhere that changes ownership, so a frame already read
+/// by the old control thread either finishes before detach or observes the new
+/// generation. Bumping both generations also invalidates every stale control
+/// thread before PTY ingestion is unfrozen.
+fn detach_client_if_current(state: &State, expected_gen: u64) -> bool {
+    let mut active_input_gen = state.input_generation.lock().unwrap();
+    let mut shared = state.shared.lock().unwrap();
+    if shared.client_gen != expected_gen {
+        return false;
+    }
+
+    clear_client(&mut shared);
+    shared.client_gen += 1;
+    *active_input_gen = shared.client_gen;
+    state.cond.notify_all();
+    true
 }
 
 fn write_frame(stream: &mut impl Write, frame_type: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -846,6 +1322,194 @@ mod frame_tests {
         assert_eq!(t2, T_EXIT);
         assert_eq!(u32::from_be_bytes(p2.try_into().unwrap()), 7);
     }
+
+    #[test]
+    fn client_writer_clones_inherit_a_finite_write_timeout() {
+        let (accepted, _peer) = UnixStream::pair().unwrap();
+
+        configure_client_stream(&accepted).unwrap();
+        let writer = accepted.try_clone().unwrap();
+
+        assert_eq!(
+            accepted.write_timeout().unwrap(),
+            Some(CLIENT_WRITE_TIMEOUT)
+        );
+        assert_eq!(writer.write_timeout().unwrap(), Some(CLIENT_WRITE_TIMEOUT));
+    }
+}
+
+#[cfg(test)]
+mod client_generation_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct BlockingWriter {
+        entered: mpsc::Sender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for BlockingWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let _ = self.entered.send(());
+            let (released, cond) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = cond.wait(released).unwrap();
+            }
+            self.bytes.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn frozen_state(generation: u64) -> State {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"pending output", RING_MAX);
+
+        State {
+            input_generation: Mutex::new(generation),
+            shared: Mutex::new(Shared {
+                transit,
+                client: None,
+                client_gen: generation,
+                exit_status: None,
+                screen: Screen::new(24, 80, 100),
+                repaint_pending: VecDeque::from([PendingRepaint {
+                    barrier: 0,
+                    cols: 80,
+                    history_budget: 0,
+                }]),
+                repaint_frozen: true,
+                text_snapshot_pending: VecDeque::from([(10, 1024)]),
+                cwd_report: None,
+                agent_reports: VecDeque::new(),
+                osc_tail: Vec::new(),
+            }),
+            cond: Condvar::new(),
+        }
+    }
+
+    #[test]
+    fn active_detach_invalidates_control_threads_and_unfreezes_ingestion() {
+        let state = frozen_state(7);
+
+        assert!(detach_client_if_current(&state, 7));
+
+        let active_input_gen = state.input_generation.lock().unwrap();
+        let shared = state.shared.lock().unwrap();
+        assert_eq!(*active_input_gen, 8);
+        assert_eq!(shared.client_gen, 8);
+        assert!(shared.transit.is_empty());
+        assert!(shared.repaint_pending.is_empty());
+        assert!(!shared.repaint_frozen);
+        assert!(shared.text_snapshot_pending.is_empty());
+    }
+
+    #[test]
+    fn active_detach_shuts_down_every_clone_of_the_client_socket() {
+        let state = frozen_state(7);
+        let (holder, mut peer) = UnixStream::pair().unwrap();
+        let _control_thread_clone = holder.try_clone().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        state.shared.lock().unwrap().client = Some(holder);
+
+        assert!(detach_client_if_current(&state, 7));
+
+        let mut byte = [0u8; 1];
+        assert_eq!(peer.read(&mut byte).unwrap(), 0);
+    }
+
+    #[test]
+    fn stale_detach_cannot_clear_the_current_connection_state() {
+        let state = frozen_state(11);
+
+        assert!(!detach_client_if_current(&state, 10));
+
+        let active_input_gen = state.input_generation.lock().unwrap();
+        let shared = state.shared.lock().unwrap();
+        assert_eq!(*active_input_gen, 11);
+        assert_eq!(shared.client_gen, 11);
+        assert!(!shared.transit.is_empty());
+        assert_eq!(shared.repaint_pending.len(), 1);
+        assert!(shared.repaint_frozen);
+        assert_eq!(shared.text_snapshot_pending.len(), 1);
+    }
+
+    #[test]
+    fn text_snapshot_overload_detaches_instead_of_shifting_ref_less_responses() {
+        let state = frozen_state(7);
+        {
+            let mut shared = state.shared.lock().unwrap();
+            shared.text_snapshot_pending = (0..MAX_PENDING_TEXT_SNAPSHOTS)
+                .map(|sequence| (sequence, 1024))
+                .collect();
+        }
+
+        assert_eq!(
+            queue_text_snapshot_request(&state, 7, (usize::MAX, 1024)),
+            TextSnapshotRequestResult::Overloaded
+        );
+
+        let active_input_gen = state.input_generation.lock().unwrap();
+        let shared = state.shared.lock().unwrap();
+        assert_eq!(*active_input_gen, 8);
+        assert_eq!(shared.client_gen, 8);
+        assert!(shared.text_snapshot_pending.is_empty());
+        assert!(!shared.repaint_frozen);
+    }
+
+    #[test]
+    fn blocked_input_write_does_not_hold_the_generation_gate() {
+        let generation = Arc::new(Mutex::new(7));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut writer = BlockingWriter {
+            entered: entered_tx,
+            release: Arc::clone(&release),
+            bytes: Arc::clone(&bytes),
+        };
+        let input_generation = Arc::clone(&generation);
+
+        let input = thread::spawn(move || {
+            write_input_if_current(&input_generation, 7, &mut writer, b"old input")
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let (handoff_tx, handoff_rx) = mpsc::channel();
+        let handoff_generation = Arc::clone(&generation);
+        let handoff = thread::spawn(move || {
+            *handoff_generation.lock().unwrap() = 8;
+            handoff_tx.send(()).unwrap();
+        });
+
+        handoff_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("PTY backpressure must not block a new connection handoff");
+
+        let (released, cond) = &*release;
+        *released.lock().unwrap() = true;
+        cond.notify_all();
+
+        assert!(input.join().unwrap().unwrap());
+        handoff.join().unwrap();
+        assert_eq!(&*bytes.lock().unwrap(), b"old input");
+    }
+
+    #[test]
+    fn stale_input_generation_never_reaches_the_pty_writer() {
+        let generation = Mutex::new(9);
+        let mut bytes = Vec::new();
+
+        assert!(!write_input_if_current(&generation, 8, &mut bytes, b"stale input").unwrap());
+        assert!(bytes.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -893,6 +1557,304 @@ mod clamp_dims_tests {
         screen.advance(b"settled");
         let out = String::from_utf8_lossy(&screen.repaint(true)).into_owned();
         assert!(out.contains("settled"));
+    }
+}
+
+#[cfg(test)]
+mod repaint_fairness_tests {
+    use super::*;
+
+    #[test]
+    fn repaint_barrier_holds_new_output_until_the_snapshot() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"before", 64);
+        let barrier = transit.end_position();
+        transit.push_bounded(b"after", 64);
+
+        assert_eq!(transit.drain_before(Some(barrier), CHUNK), b"before");
+        assert!(transit.reached(barrier));
+        assert_eq!(transit.drain_before(None, CHUNK), b"after");
+    }
+
+    #[test]
+    fn queued_repaints_each_get_a_fair_output_boundary() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"one", 64);
+        let first = transit.end_position();
+        transit.push_bounded(b"two", 64);
+        let second = transit.end_position();
+        transit.push_bounded(b"three", 64);
+
+        assert_eq!(transit.drain_before(Some(first), CHUNK), b"one");
+        assert!(transit.reached(first));
+        assert_eq!(transit.drain_before(Some(second), CHUNK), b"two");
+        assert!(transit.reached(second));
+        assert_eq!(transit.drain_before(None, CHUNK), b"three");
+    }
+
+    #[test]
+    fn output_selected_for_an_in_flight_write_stays_before_a_later_barrier() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"first-safe-frame", 128);
+
+        // The sole writer removes a whole parser-safe frame before releasing
+        // the shared lock, then performs the socket write without the lock.
+        let in_flight = transit.drain_before(None, CHUNK);
+        assert_eq!(in_flight, b"first-safe-frame");
+
+        // PTY ingestion can queue another safe frame while that write is in
+        // flight. A repaint requested now must wait only for this second
+        // frame; the already selected frame is ordered first by the sole
+        // writer and is not counted in the new barrier.
+        transit.push_bounded(b"second-safe-frame", 128);
+        let barrier = transit.end_position();
+        assert_eq!(
+            transit.drain_before(Some(barrier), CHUNK),
+            b"second-safe-frame"
+        );
+        assert!(transit.reached(barrier));
+    }
+
+    #[test]
+    fn overflow_advances_past_a_repaint_barrier_without_starving_it() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"old!", 8);
+        let barrier = transit.end_position();
+        assert_eq!(transit.push_bounded(b"new-data", 8), 4);
+
+        assert!(transit.reached(barrier));
+        assert_eq!(transit.drain_before(None, CHUNK), b"new-data");
+    }
+
+    #[test]
+    fn overflow_and_socket_chunking_preserve_parser_safe_boundaries() {
+        let mut parser = ParserSafeOutput::default();
+        let old = parser.push(b"old");
+        let ansi_utf8 = parser.push("\x1b[31m中\x1b[0m".as_bytes());
+        assert!(!old.is_empty());
+        assert!(!ansi_utf8.is_empty());
+
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(&old, ansi_utf8.len());
+        assert_eq!(transit.push_bounded(&ansi_utf8, ansi_utf8.len()), old.len());
+
+        // Even a preferred frame size inside the CSI/UTF-8 token may not
+        // split the safe chunk. The first retained frame is a complete token
+        // sequence that begins and ends in parser ground state.
+        assert_eq!(transit.drain_before(None, 2), ansi_utf8);
+        assert!(transit.is_empty());
+    }
+
+    #[test]
+    fn an_individually_oversized_safe_chunk_is_dropped_whole() {
+        let mut transit = TransitQueue::default();
+        let safe = b"complete-safe-chunk";
+
+        assert_eq!(transit.push_bounded(safe, safe.len() - 1), safe.len());
+        assert!(transit.is_empty());
+    }
+
+    #[test]
+    fn repaint_payload_is_generated_from_the_latest_frozen_screen() {
+        let mut screen = Screen::new(4, 80, 100);
+        let mut transit = TransitQueue::default();
+        screen.advance(b"BEFORE\r\n");
+        transit.push_bounded(b"BEFORE\r\n", 64);
+
+        let pending = PendingRepaint::new(&transit, 80, 0);
+        screen.advance(b"AFTER\r\n");
+        let soft = pending.cols as usize == screen.columns();
+        let payload = screen.repaint_with_history(soft, pending.history_budget);
+        let snapshot = String::from_utf8_lossy(&payload);
+        assert!(snapshot.contains("BEFORE"));
+        assert!(snapshot.contains("AFTER"));
+        assert_eq!(pending.barrier, b"BEFORE\r\n".len() as u64);
+    }
+
+    #[test]
+    fn repeated_overflow_never_moves_the_repaint_barrier() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"BEFORE\r\n", 64);
+        let pending = PendingRepaint::new(&transit, 80, 0);
+        let requested_at = pending.barrier;
+
+        for _ in 0..10 {
+            assert!(transit.push_bounded(b"01234567", 4) > 0);
+            assert_eq!(pending.barrier, requested_at);
+        }
+
+        assert!(transit.reached(pending.barrier));
+    }
+
+    #[test]
+    fn queued_repaint_stores_metadata_not_a_materialized_snapshot() {
+        assert!(std::mem::size_of::<PendingRepaint>() <= 32);
+    }
+
+    #[test]
+    fn repaint_queue_refuses_overload_without_shifting_fifo_responses() {
+        let mut pending = VecDeque::new();
+        for barrier in 0..MAX_PENDING_REPAINTS as u64 {
+            assert!(enqueue_repaint_bounded(
+                &mut pending,
+                PendingRepaint {
+                    barrier,
+                    cols: 80,
+                    history_budget: 0,
+                }
+            ));
+        }
+
+        assert!(!enqueue_repaint_bounded(
+            &mut pending,
+            PendingRepaint {
+                barrier: u64::MAX,
+                cols: 80,
+                history_budget: 0,
+            }
+        ));
+        assert_eq!(pending.len(), MAX_PENDING_REPAINTS);
+        assert_eq!(pending.front().unwrap().barrier, 0);
+        assert_eq!(
+            pending.back().unwrap().barrier,
+            MAX_PENDING_REPAINTS as u64 - 1
+        );
+    }
+
+    #[test]
+    fn text_snapshot_queue_has_a_hard_request_limit() {
+        let mut pending = VecDeque::new();
+        for sequence in 0..MAX_PENDING_TEXT_SNAPSHOTS {
+            assert!(enqueue_text_snapshot_bounded(
+                &mut pending,
+                (sequence, 1024)
+            ));
+        }
+
+        assert!(!enqueue_text_snapshot_bounded(
+            &mut pending,
+            (usize::MAX, 1024)
+        ));
+        assert_eq!(pending.len(), MAX_PENDING_TEXT_SNAPSHOTS);
+        assert_eq!(pending.front(), Some(&(0, 1024)));
+        assert_eq!(
+            pending.back(),
+            Some(&(MAX_PENDING_TEXT_SNAPSHOTS - 1, 1024))
+        );
+    }
+
+    #[test]
+    fn agent_queue_drops_oldest_reports_at_its_hard_limit() {
+        let mut pending = VecDeque::new();
+        let reports: Vec<_> = (0..MAX_AGENT_REPORTS + 3)
+            .map(|sequence| sequence.to_be_bytes().to_vec())
+            .collect();
+
+        extend_agent_reports_bounded(&mut pending, reports);
+
+        assert_eq!(pending.len(), MAX_AGENT_REPORTS);
+        assert_eq!(pending.front().unwrap(), &3usize.to_be_bytes());
+        assert_eq!(
+            pending.back().unwrap(),
+            &(MAX_AGENT_REPORTS + 2).to_be_bytes()
+        );
+    }
+}
+
+#[cfg(test)]
+mod parser_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn split_csi_is_not_exposed_before_its_final_byte() {
+        let mut output = ParserSafeOutput::default();
+
+        assert!(output.push(b"\x1b[").is_empty());
+        assert_eq!(output.push(b"31mRED\x1b[0m\r\n"), b"\x1b[31mRED\x1b[0m\r\n");
+    }
+
+    #[test]
+    fn split_utf8_codepoint_is_not_exposed_half_encoded() {
+        let mut output = ParserSafeOutput::default();
+
+        assert!(output.push(&[0xe4]).is_empty());
+        assert!(output.push(&[0xb8]).is_empty());
+        assert_eq!(output.push(&[0xad, b'\n']), "中\n".as_bytes());
+    }
+
+    #[test]
+    fn split_osc_and_dcs_wait_for_their_string_terminator() {
+        let mut output = ParserSafeOutput::default();
+
+        assert!(output.push(b"\x1b]0;partial").is_empty());
+        assert_eq!(output.push(b" title\x07ok"), b"\x1b]0;partial title\x07ok");
+
+        assert!(output.push(b"\x1bP$qpartial").is_empty());
+        assert_eq!(output.push(b"\x1b\\done"), b"\x1bP$qpartial\x1b\\done");
+
+        assert_eq!(output.push(b"\x1bPraw\x9cafter"), b"\x1bPraw\x9cafter");
+    }
+
+    #[test]
+    fn split_c1_control_sequences_wait_for_their_terminator() {
+        let mut output = ParserSafeOutput::default();
+
+        assert!(output.push(&[0x9b, b'3']).is_empty());
+        assert_eq!(output.push(b"1mred"), b"\x9b31mred");
+
+        assert!(output.push(&[0x9d, b'0', b';']).is_empty());
+        assert!(output.push(b"partial").is_empty());
+        assert_eq!(output.push(b"\x07ok"), b"\x9d0;partial\x07ok");
+
+        assert!(output.push(&[0x90, b'$', b'q']).is_empty());
+        assert!(output.push(b"partial").is_empty());
+        assert_eq!(
+            output.push(&[0x9c, b'd', b'o', b'n', b'e']),
+            b"\x90$qpartial\x9cdone"
+        );
+
+        for start in [0x98, 0x9e, 0x9f] {
+            let mut control = ParserSafeOutput::default();
+            assert!(control.push(&[start]).is_empty());
+            assert!(control.push(b"payload").is_empty());
+            assert_eq!(
+                control.push(b"\x9cX"),
+                [vec![start], b"payload".to_vec(), vec![0x9c, b'X']].concat()
+            );
+        }
+    }
+
+    #[test]
+    fn utf8_continuations_are_not_mistaken_for_c1_starts() {
+        let mut output = ParserSafeOutput::default();
+
+        // U+261B is E2 98 9B; its final byte is numerically the C1 CSI
+        // introducer, but remains part of the UTF-8 codepoint.
+        assert!(output.push(&[0xe2, 0x98]).is_empty());
+        assert_eq!(output.push(&[0x9b, b'X']), "☛X".as_bytes());
+    }
+
+    #[test]
+    fn escape_cancels_a_control_string_and_processes_its_final_byte() {
+        let mut output = ParserSafeOutput::default();
+
+        assert_eq!(
+            output.push(b"\x1b]unfinished\x1bx"),
+            b"\x1b]unfinished\x1bx"
+        );
+        assert_eq!(output.push(b"ground"), b"ground");
+    }
+
+    #[test]
+    fn unterminated_control_string_is_cancelled_at_the_memory_bound() {
+        let mut output = ParserSafeOutput::default();
+        let mut unterminated = b"\x1b]0;".to_vec();
+        unterminated.resize(PARSER_TOKEN_MAX, b'x');
+
+        let complete = output.push(&unterminated);
+        assert_eq!(complete.len(), PARSER_TOKEN_MAX + 1);
+        assert_eq!(complete.last(), Some(&0x18));
+        assert_eq!(output.push(b"ground"), b"ground");
     }
 }
 
@@ -1050,5 +2012,40 @@ mod scan_tests {
     fn body_may_contain_semicolons() {
         let (_, agents) = run(&[b"\x1b]777;notify;t;a;b;c\x07"]);
         assert_eq!(agents[0], b"t\x1fa;b;c".to_vec());
+    }
+
+    #[test]
+    fn cancelled_osc_does_not_swallow_the_next_report() {
+        let (cwd, _) = run(&[
+            b"\x1b]7;file://host/bad\x18ignored",
+            b"\x1b]7;file://host/good\x07",
+        ]);
+        assert_eq!(cwd.as_deref(), Some("/good"));
+
+        let (cwd, _) = run(&[b"\x1b]7;file://host/bad\x1bx\x1b]7;file://host/escaped\x07"]);
+        assert_eq!(cwd.as_deref(), Some("/escaped"));
+    }
+
+    #[test]
+    fn bare_escape_terminator_can_also_start_the_next_osc_report() {
+        let (cwd, _) = run(&[b"\x1b]7;file://host/old\x1b]7;file://host/new\x07"]);
+        assert_eq!(cwd.as_deref(), Some("/new"));
+    }
+
+    #[test]
+    fn adjacent_bare_escape_agent_reports_are_both_delivered() {
+        let (_, agents) = run(&[
+            b"\x1b]777;notify;warp://cli-agent;{\"event\":\"old\"}",
+            b"\x1b]777;notify;warp://cli-agent;{\"event\":\"new\"}\x07",
+        ]);
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            agents[0],
+            b"warp://cli-agent\x1f{\"event\":\"old\"}".to_vec()
+        );
+        assert_eq!(
+            agents[1],
+            b"warp://cli-agent\x1f{\"event\":\"new\"}".to_vec()
+        );
     }
 }
