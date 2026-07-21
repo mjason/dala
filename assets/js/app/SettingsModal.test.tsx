@@ -92,6 +92,23 @@ describe("SettingsModal tabs", () => {
     }
   });
 
+  it("switches tabs when the browser scrollTo API returns a promise", () => {
+    const scrollTo = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = vi.fn(() => Promise.resolve()) as typeof Element.prototype.scrollTo;
+
+    try {
+      const { container } = renderModal();
+
+      for (const key of ["appearance", "shortcuts", "voice", "mcp", "session"]) {
+        const tab = container.querySelector(`[data-settings-tab="${key}"]`) as HTMLElement;
+        fireEvent.click(tab);
+        expect(tab.getAttribute("aria-selected")).toBe("true");
+      }
+    } finally {
+      Element.prototype.scrollTo = scrollTo;
+    }
+  });
+
   it("selecting the MCP tab shows the MCP section", () => {
     const { container } = renderModal();
     fireEvent.click(container.querySelector('[data-settings-tab="mcp"]') as HTMLElement);

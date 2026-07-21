@@ -167,9 +167,7 @@ export default function McpSection({ onError }: { onError: (message: string) => 
 
   // Real token baked straight into every snippet's Bearer header, so each block
   // is copy-and-paste ready — no placeholder to hand-edit.
-  const claudeCli =
-    `claude mcp add --transport http dala ${url} \\\n` +
-    `  --header "Authorization: Bearer ${token}"`;
+  const claudeCli = `claude mcp add --transport http dala ${url} --header "Authorization: Bearer ${token}"`;
 
   const claudeJson =
     `{ "mcpServers": { "dala": {\n` +

@@ -17,6 +17,7 @@ import { useFileOps } from "./fileDrawer/useFileOps";
 import { useGitStatus } from "./hooks/useGitStatus";
 import { buildGitDecorations, gitDecorationForPath } from "./gitDecorations";
 import UploadProgressView from "./UploadProgressView";
+import { dirnameHost } from "./hostPath";
 
 export type { Entry } from "./fileDrawer/tree";
 
@@ -720,7 +721,7 @@ export default function FileDrawer({
             );
             // Refresh the file's directory (if loaded) so the tree shows the
             // new size.
-            const dir = savedPath.slice(0, savedPath.lastIndexOf("/")) || "/";
+            const dir = dirnameHost(savedPath);
             void refreshDir(dir);
           }}
         />

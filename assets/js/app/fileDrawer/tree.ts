@@ -1,4 +1,5 @@
 import type { MessageKey } from "../i18n";
+import { breadcrumbsHost, dirnameHost, joinHost, relativeHost } from "../hostPath";
 
 export type Entry = {
   name: string;
@@ -24,29 +25,16 @@ export type SelectableRow = Exclude<TreeRow, { kind: "note" }>;
 export type DeleteTarget = { path: string; isDir: boolean; parentDir: string };
 
 export function join(dir: string, name: string): string {
-  return `${dir === "/" ? "" : dir}/${name}`;
+  return joinHost(dir, name);
 }
 
 /** VS Code-style relative path from the drawer root to a target. */
 export function relativePath(from: string, to: string): string {
-  const f = from.split("/").filter(Boolean);
-  const s = to.split("/").filter(Boolean);
-  let i = 0;
-  while (i < f.length && i < s.length && f[i] === s[i]) i++;
-  const parts = [...Array(f.length - i).fill(".."), ...s.slice(i)];
-  return parts.length ? parts.join("/") : ".";
+  return relativeHost(from, to);
 }
 
 export function crumbs(path: string): { label: string; path: string }[] {
-  if (path === "/") return [{ label: "/", path: "/" }];
-  const parts = path.split("/").filter(Boolean);
-  const out = [{ label: "/", path: "/" }];
-  let acc = "";
-  for (const part of parts) {
-    acc += "/" + part;
-    out.push({ label: part, path: acc });
-  }
-  return out;
+  return breadcrumbsHost(path);
 }
 
 /** What the tree should do about a server-side change notification. */
@@ -71,8 +59,10 @@ export function routeChanged(
   if (loaded.has(dir)) return { kind: "invalidate", dir };
 
   let cursor = dir;
-  while (cursor !== "/" && cursor.includes("/")) {
-    cursor = cursor.slice(0, cursor.lastIndexOf("/")) || "/";
+  while (true) {
+    const parent = dirnameHost(cursor);
+    if (parent === cursor || parent === ".") break;
+    cursor = parent;
     if (expanded.has(cursor)) return { kind: "refresh", dir: cursor };
   }
   return { kind: "none" };

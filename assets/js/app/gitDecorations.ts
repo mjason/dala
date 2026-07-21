@@ -1,4 +1,5 @@
 import type { GitFile, Status } from "./gitPanel/types";
+import { dirnameHost, hostPathKey, joinHost } from "./hostPath";
 
 export type GitDecoration = {
   label: string;
@@ -44,22 +45,9 @@ export type GitDecorationIndex = {
   ignored: Set<string>;
 };
 
-function trimTrailingSlash(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
-}
-
-function join(root: string, relative: string): string {
-  const cleanRoot = trimTrailingSlash(root);
-  const cleanRelative = relative.replace(/^\/+/, "");
-  return cleanRoot === "/" ? `/${cleanRelative}` : `${cleanRoot}/${cleanRelative}`;
-}
-
 function parent(path: string): string | null {
-  const clean = trimTrailingSlash(path);
-  if (clean === "/") return null;
-  const index = clean.lastIndexOf("/");
-  if (index < 0) return null;
-  return index === 0 ? "/" : clean.slice(0, index);
+  const result = dirnameHost(path);
+  return hostPathKey(result) === hostPathKey(path) || result === "." ? null : result;
 }
 
 function fileDecoration(file: GitFile): GitDecoration {
@@ -90,27 +78,30 @@ export function buildGitDecorations(status: Status | null): GitDecorationIndex {
   const entries = new Map<string, GitDecoration>();
   const ignored = new Set<string>();
   if (!status?.repo || !status.root) return { entries, ignored };
-  const root = trimTrailingSlash(status.root);
+  const root = status.root.replace(/[\\/]+$/, "") || "/";
+  const rootKey = hostPathKey(root);
 
   for (const path of status.ignored) {
-    const absolute = join(root, path);
-    ignored.add(absolute);
-    entries.set(absolute, IGNORED_DECORATION);
+    const absolute = joinHost(root, path);
+    const key = hostPathKey(absolute);
+    ignored.add(key);
+    entries.set(key, IGNORED_DECORATION);
   }
 
   for (const file of status.files) {
-    const absolute = join(root, file.path);
+    const absolute = joinHost(root, file.path);
     const decoration = fileDecoration(file);
-    entries.set(absolute, decoration);
+    entries.set(hostPathKey(absolute), decoration);
 
     const summary = folderSummary(decoration.tone);
     let dir = parent(absolute);
-    while (dir && (dir === root || dir.startsWith(`${root}/`))) {
-      const existing = entries.get(dir);
+    while (dir && (hostPathKey(dir) === rootKey || hostPathKey(dir).startsWith(`${rootKey}/`))) {
+      const key = hostPathKey(dir);
+      const existing = entries.get(key);
       if (!existing || TONE_PRIORITY[decoration.tone] > TONE_PRIORITY[existing.tone]) {
-        entries.set(dir, summary);
+        entries.set(key, summary);
       }
-      if (dir === root) break;
+      if (key === rootKey) break;
       dir = parent(dir);
     }
   }
@@ -123,12 +114,12 @@ export function gitDecorationForPath(
   decorations: GitDecorationIndex,
   path: string,
 ): GitDecoration | undefined {
-  const exact = decorations.entries.get(trimTrailingSlash(path));
+  const exact = decorations.entries.get(hostPathKey(path));
   if (exact) return exact;
 
   let dir = parent(path);
   while (dir) {
-    if (decorations.ignored.has(dir)) return IGNORED_DECORATION;
+    if (decorations.ignored.has(hostPathKey(dir))) return IGNORED_DECORATION;
     dir = parent(dir);
   }
   return undefined;

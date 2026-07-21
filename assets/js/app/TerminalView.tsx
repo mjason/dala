@@ -105,6 +105,7 @@ type Props = {
   scrollbackLines?: number;
   onCwdChange?: (cwd: string) => void;
   onError?: (message: string) => void;
+  onPlatform?: (platform: "windows" | "macos" | "linux") => void;
   actionsRef?: React.MutableRefObject<TerminalActions | null>;
   /** Called instead of sending ESC to the shell — but only at a normal
    * prompt: full-screen programs (vim, htop, …) run on the alternate
@@ -139,6 +140,7 @@ export default function TerminalView({
   scrollbackLines,
   onCwdChange,
   onError,
+  onPlatform,
   actionsRef,
   onEscape,
   inputHookRef,
@@ -1320,6 +1322,7 @@ export default function TerminalView({
             owner?: string | null;
             owner_device?: string | null;
             client_id?: string;
+            platform?: "windows" | "macos" | "linux";
           }) => {
             // Every successful (re)join creates a fresh server-side Channel
             // ledger. Rotate before any replay write callback can acknowledge
@@ -1332,6 +1335,7 @@ export default function TerminalView({
             // connection's first batch or carry a stale explicit trigger.
             wireReplayTrace = null;
             replayTriggerRef.current = "initial";
+            if (resp?.platform) onPlatform?.(resp.platform);
             clientId = resp?.client_id ?? null;
             if (applyOwnership(resp ?? {}) !== "driver") {
               // Someone else drives the size — another device (hard

@@ -15,7 +15,7 @@ export type FuzzyMatch = {
   positions: number[];
 };
 
-const SEPARATORS = new Set(["/", "-", "_", ".", " "]);
+const SEPARATORS = new Set(["/", "\\", "-", "_", ".", " "]);
 
 // A scattered subsequence scores at most 13/char plus a 12-point span bonus,
 // so this guarantees exact substrings sort above every scattered match.
@@ -54,7 +54,7 @@ function matchNormalized(q: string, c: string): FuzzyMatch | null {
   if (q.length === 0) return { score: 0, positions: [] };
   if (q.length > c.length) return null;
 
-  const lastSlash = c.lastIndexOf("/");
+  const lastSlash = Math.max(c.lastIndexOf("/"), c.lastIndexOf("\\"));
 
   // Exact-substring fast path: a typed exact partial path must outrank any
   // scattered subsequence match.
@@ -123,9 +123,9 @@ export function fuzzyMatch(query: string, candidate: string): FuzzyMatch | null 
  * prefix, a leading `./`, and a leading `/`.
  */
 function normalizeQuery(query: string, root?: string): string {
-  let q = query.trim().normalize("NFC");
+  let q = query.trim().normalize("NFC").replaceAll("\\", "/");
   if (root) {
-    const r = root.normalize("NFC").replace(/\/+$/, "");
+    const r = root.normalize("NFC").replaceAll("\\", "/").replace(/\/+$/, "");
     if (r !== "") {
       // Case-sensitive first (the path as it exists on disk); the
       // case-insensitive retry covers macOS-style case-folding filesystems.

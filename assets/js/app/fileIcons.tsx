@@ -119,7 +119,7 @@ const BY_NAME: Record<string, IconSpec> = {
 export function fileIcon(name: string, isDir = false, isOpen = false): IconSpec {
   if (isDir) return isOpen ? FOLDER_OPEN : FOLDER;
 
-  const base = name.split("/").pop()?.toLowerCase() ?? "";
+  const base = basenameHost(name).toLowerCase();
   if (BY_NAME[base]) return BY_NAME[base];
 
   const ext = base.includes(".") ? base.split(".").pop()! : "";
@@ -146,3 +146,4 @@ export function FileTypeIcon({ name, isDir = false, isOpen = false, className = 
     </span>
   );
 }
+import { basenameHost } from "./hostPath";

@@ -5,6 +5,7 @@ import { rankFiles } from "./fuzzy";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
 import { KeyHint } from "./shortcuts";
+import { isAbsoluteHost, joinHost } from "./hostPath";
 
 type Props = {
   root: string;
@@ -57,11 +58,11 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   // directory is git-ignored. Shown as a trailing entry; when nothing fuzzy
   // matches (the ignored-file case) it is the only, auto-selected row.
   const trimmed = query.trim();
-  const directTarget = !trimmed.includes("/")
+  const directTarget = !/[\\/]/.test(trimmed)
     ? null
-    : trimmed.startsWith("/")
+    : isAbsoluteHost(trimmed)
       ? trimmed
-      : `${root === "/" ? "" : root}/${trimmed}`;
+      : joinHost(root, trimmed);
 
   const total = ranked.length + (directTarget ? 1 : 0);
   const active = Math.min(index, Math.max(0, total - 1));
@@ -76,7 +77,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   }, [index, ranked]);
 
   const pick = (relative: string) => {
-    onPick(`${root === "/" ? "" : root}/${relative}`);
+    onPick(joinHost(root, relative));
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -196,7 +197,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
 
 function HighlightedPath({ path, positions }: { path: string; positions: number[] }) {
   const marks = new Set(positions);
-  const slash = path.lastIndexOf("/");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
 
   // `positions` are code-unit indices (they come from indexOf), so iterate
   // code units — Array.from iterates code points and would shift everything

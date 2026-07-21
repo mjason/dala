@@ -71,4 +71,18 @@ describe("buildGitDecorations", () => {
     expect(gitDecorationForPath(decorations, "/repo/vendor/keep.txt")?.tone).toBe("modified");
     expect(gitDecorationForPath(decorations, "/repo/README.md")).toBeUndefined();
   });
+
+  it("matches Windows paths across separators and drive casing", () => {
+    const snapshot = status(
+      [{ path: "src/main.ts", status: " M", staged: false, unstaged: true }],
+      "C:\\Work\\Repo",
+    );
+    snapshot.ignored = ["build"];
+    const decorations = buildGitDecorations(snapshot);
+
+    expect(gitDecorationForPath(decorations, "c:/work/repo/src/main.ts")?.tone).toBe("modified");
+    expect(gitDecorationForPath(decorations, "C:\\WORK\\REPO\\build\\cache.bin")?.tone).toBe(
+      "ignored",
+    );
+  });
 });

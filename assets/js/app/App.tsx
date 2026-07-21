@@ -93,6 +93,7 @@ export default function App() {
     Record<string, { state: "working" | "attention" | "done"; at: number }>
   >({});
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
+  const [hostPlatform, setHostPlatform] = useState<"windows" | "macos" | "linux" | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
   const termActions = useRef<TerminalActions | null>(null);
@@ -917,9 +918,14 @@ export default function App() {
                       id="toolbar-tools"
                       className="absolute right-0 top-full z-40 mt-1.5 flex w-56 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
                     >
-                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), t("kickViewersHint"), null, () =>
-                        void kickOtherViewers(),
-                      )}
+                      {hostPlatform !== "windows" &&
+                        toolsItem(
+                          "kick-viewers-header-button",
+                          t("kickViewersAction"),
+                          t("kickViewersHint"),
+                          null,
+                          () => void kickOtherViewers(),
+                        )}
                       {toolsItem("terminal-refit-button", t("refitWidth"), t("refitDesc"), modShiftCombo("f"), () =>
                         termActions.current?.refit(true),
                       )}
@@ -974,9 +980,10 @@ export default function App() {
                       {overflowItem("overflow-quick-open", t("quickOpenTitle"), () =>
                         setQuickOpen(true),
                       )}
-                      {overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
-                        void kickOtherViewers(),
-                      )}
+                      {hostPlatform !== "windows" &&
+                        overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
+                          void kickOtherViewers(),
+                        )}
                       {overflowItem("overflow-refit", t("refitWidth"), () =>
                         termActions.current?.refit(true),
                       )}
@@ -1011,6 +1018,7 @@ export default function App() {
                       inputHookRef={termInputHookRef}
                       debugHandle
                       onError={toast}
+                      onPlatform={setHostPlatform}
                       onCwdChange={(cwd) => {
                         // Only the ACTIVE session drives the drawer path.
                         if (followCwd && id === activeIdRef.current) setDrawerPath(cwd);
@@ -1318,6 +1326,7 @@ export default function App() {
             if (activeId === settingsSession.id) setActiveId(null);
           }}
           onError={toast}
+          platform={hostPlatform}
         />
       )}
 

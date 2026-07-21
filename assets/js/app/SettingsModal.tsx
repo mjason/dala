@@ -28,11 +28,12 @@ type Props = {
   onClose: () => void;
   onDeleted: () => void;
   onError: (message: string) => void;
+  platform?: "windows" | "macos" | "linux" | null;
 };
 
 type SettingsTab = "session" | "appearance" | "shortcuts" | "voice" | "mcp";
 
-export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
+export default function SettingsModal({ session, onClose, onDeleted, onError, platform }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>("session");
   const [name, setName] = useState(session.name);
@@ -46,7 +47,9 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   // Each tab starts at the top: the scroll position of the (long) Shortcuts
   // tab must not carry over into the next one.
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => bodyRef.current?.scrollTo(0, 0), [tab]);
+  useEffect(() => {
+    bodyRef.current?.scrollTo(0, 0);
+  }, [tab]);
 
   const fail = (error: string) => onError(error || t("somethingWentWrong"));
 
@@ -358,7 +361,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                     </button>
                   )}
                 </div>
-                {running && (
+                {running && platform !== "windows" && (
                   <div className="flex items-center justify-between gap-3 border-t border-line/70 pt-2">
                     <div className="min-w-0">
                       <span className="block text-[13px] text-fg">{t("kickViewers")}</span>
