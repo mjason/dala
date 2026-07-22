@@ -549,13 +549,13 @@ defmodule Dala.Terminal.SessionTest do
 
     waiter =
       Task.async(fn ->
-        Server.wait(session.id, baseline, timeout: 4_000, match: "needle-4242")
+        Server.wait(session.id, baseline, timeout: raw_output_timeout(), match: "needle-4242")
       end)
 
     assert {:ok, _seq} = raw_output(session.id, "\e[32mneedle-4242\e[0m\n")
 
     assert {:ok, %{reason: "match", match: "needle-4242", seq: seq}} =
-             Task.await(waiter, 5_000)
+             Task.await(waiter, raw_output_timeout() + 1_000)
 
     assert seq > baseline
   end
@@ -566,7 +566,7 @@ defmodule Dala.Terminal.SessionTest do
 
     waiter =
       Task.async(fn ->
-        Server.wait(session.id, baseline, timeout: 4_000, events: ["permission"])
+        Server.wait(session.id, baseline, timeout: raw_output_timeout(), events: ["permission"])
       end)
 
     json = ~s({"agent":"claude","event":"permission_request","summary":"approve edit"})
@@ -581,7 +581,7 @@ defmodule Dala.Terminal.SessionTest do
               agent: "claude",
               summary: "approve edit",
               seq: seq
-            }} = Task.await(waiter, 5_000)
+            }} = Task.await(waiter, raw_output_timeout() + 1_000)
 
     assert seq > baseline
   end
