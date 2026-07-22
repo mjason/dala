@@ -167,6 +167,17 @@ function Get-ReleaseRelativeFiles([string]$Root) {
   @($files)
 }
 
+function Get-Sha256Hex([string]$Path) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+  } finally {
+    $stream.Dispose()
+    $algorithm.Dispose()
+  }
+}
+
 function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string]$Version) {
   try {
     if (-not (Test-CompleteDalaRelease $Source $Version) -or
@@ -180,7 +191,9 @@ function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string
     $sourceFiles = @(Get-ReleaseRelativeFiles $Source | Sort-Object)
     $candidateFiles = @(Get-ReleaseRelativeFiles $Candidate | Sort-Object)
 
-    if ($sourceFiles.Count -ne $candidateFiles.Count) { return $false }
+    if ($sourceFiles.Count -ne $candidateFiles.Count) {
+      return $false
+    }
 
     for ($index = 0; $index -lt $sourceFiles.Count; $index++) {
       $relative = [string]$sourceFiles[$index]
@@ -194,8 +207,7 @@ function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string
           (Get-Item -LiteralPath $candidateFile -ErrorAction Stop).Length) {
         return $false
       }
-      if ((Get-FileHash -Algorithm SHA256 -LiteralPath $sourceFile).Hash -cne
-          (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateFile).Hash) {
+      if ((Get-Sha256Hex $sourceFile) -ine (Get-Sha256Hex $candidateFile)) {
         return $false
       }
     }

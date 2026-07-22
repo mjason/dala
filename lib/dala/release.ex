@@ -318,10 +318,10 @@ defmodule Dala.Release do
         {output, status} ->
           case restore_windows_backup(backup, path) do
             :ok ->
-              raise "could not replace Dala install metadata (#{status}): #{output}"
+              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}"
 
             {:error, reason} ->
-              raise "could not replace Dala install metadata (#{status}): #{output}; " <>
+              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}; " <>
                       "backup recovery failed at #{backup}: #{inspect(reason)}"
           end
       end
