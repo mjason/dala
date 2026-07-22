@@ -14,6 +14,136 @@ function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
 }
 
+function Get-SmokeReleaseEnvironmentNames {
+  @(
+    "RELEASE_NAME", "RELEASE_VSN", "RELEASE_MODE", "RELEASE_NODE", "RELEASE_COOKIE",
+    "RELEASE_TMP", "RELEASE_VM_ARGS", "RELEASE_REMOTE_VM_ARGS", "RELEASE_DISTRIBUTION",
+    "RELEASE_BOOT_SCRIPT", "RELEASE_BOOT_SCRIPT_CLEAN", "RELEASE_SYS_CONFIG", "RELEASE_ROOT",
+    "RELEASE_COMMAND", "RELEASE_PROG", "RELEASE_MUTABLE_DIR", "RELEASE_READ_ONLY",
+    "ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS", "ERL_INETRC",
+    "ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK",
+    "ELIXIR_ERL_OPTIONS"
+  )
+}
+
+function Invoke-SmokeReleaseWithCleanEnvironment([scriptblock]$Action) {
+  $previous = @{}
+  $names = @(Get-SmokeReleaseEnvironmentNames)
+  try {
+    foreach ($name in $names) {
+      $previous[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+      [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    & $Action
+  } finally {
+    foreach ($name in $names) {
+      if ($previous.ContainsKey($name)) {
+        [Environment]::SetEnvironmentVariable($name, $previous[$name], "Process")
+      }
+    }
+  }
+}
+
+function Assert-SmokeReleaseEnvironmentIsolation {
+  $names = @(Get-SmokeReleaseEnvironmentNames)
+  $sentinel = "dala-smoke-ambient-" + [guid]::NewGuid().ToString("N")
+  $original = @{}
+  try {
+    foreach ($name in $names) {
+      $original[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+      [Environment]::SetEnvironmentVariable($name, $sentinel, "Process")
+    }
+
+    $observed = Invoke-SmokeReleaseWithCleanEnvironment {
+      [pscustomobject]@{
+        release_node = [Environment]::GetEnvironmentVariable("RELEASE_NODE", "Process")
+        release_cookie = [Environment]::GetEnvironmentVariable("RELEASE_COOKIE", "Process")
+        release_name = [Environment]::GetEnvironmentVariable("RELEASE_NAME", "Process")
+        erl_epmd_port = [Environment]::GetEnvironmentVariable("ERL_EPMD_PORT", "Process")
+        erl_flags = [Environment]::GetEnvironmentVariable("ERL_FLAGS", "Process")
+      }
+    }
+    foreach ($property in $observed.PSObject.Properties) {
+      Assert-True ([string]::IsNullOrEmpty([string]$property.Value)) `
+        "Smoke release environment was not cleared: $($property.Name)"
+    }
+    foreach ($name in $names) {
+      Assert-True ([Environment]::GetEnvironmentVariable($name, "Process") -ceq $sentinel) `
+        "Smoke release environment was not restored: $name"
+    }
+  } finally {
+    foreach ($name in $names) {
+      if ($original.ContainsKey($name)) {
+        [Environment]::SetEnvironmentVariable($name, $original[$name], "Process")
+      }
+    }
+  }
+}
+
+function Assert-ReleaseEnvironmentIsolationSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq "Invoke-ReleaseWithDefaultEpmdPort"
+    }, $true)
+  )
+  Assert-True ($definitions.Count -eq 1) "$ScriptPath must define exactly one release environment wrapper"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($definitions[0].Extent.Text))
+  $names = @(Get-SmokeReleaseEnvironmentNames)
+  $sentinel = "dala-production-ambient-" + [guid]::NewGuid().ToString("N")
+  $original = @{}
+  try {
+    foreach ($name in $names) {
+      $original[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+      [Environment]::SetEnvironmentVariable($name, $sentinel, "Process")
+    }
+
+    $observed = & $module {
+      param([string[]]$EnvironmentNames)
+      Invoke-ReleaseWithDefaultEpmdPort {
+        $values = @{}
+        foreach ($name in $EnvironmentNames) {
+          $values[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+        }
+        [pscustomobject]$values
+      }
+    } $names
+    foreach ($name in $names) {
+      $value = if ($observed -and $observed.PSObject.Properties[$name]) {
+        $observed.PSObject.Properties[$name].Value
+      }
+      Assert-True ([string]::IsNullOrEmpty([string]$value)) `
+        "$ScriptPath left ambient $name set inside its release command"
+      Assert-True ([Environment]::GetEnvironmentVariable($name, "Process") -ceq $sentinel) `
+        "$ScriptPath did not restore $name after a successful release command"
+    }
+
+    $thrown = $false
+    try {
+      & $module { Invoke-ReleaseWithDefaultEpmdPort { throw "environment probe" } }
+    } catch {
+      $thrown = $_.Exception.Message -match "environment probe"
+    }
+    Assert-True $thrown "$ScriptPath swallowed an exception from its release command"
+    foreach ($name in $names) {
+      Assert-True ([Environment]::GetEnvironmentVariable($name, "Process") -ceq $sentinel) `
+        "$ScriptPath did not restore $name after a failed release command"
+    }
+  } finally {
+    foreach ($name in $names) {
+      if ($original.ContainsKey($name)) {
+        [Environment]::SetEnvironmentVariable($name, $original[$name], "Process")
+      }
+    }
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $SmokeAttemptIds = @{}
 
 function New-SmokeAttemptId {
@@ -50,6 +180,11 @@ function Assert-ReleaseEpmdKillSemantics([string]$ScriptPath) {
   foreach ($name in $requiredFunctions) {
     Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
       "$ScriptPath must define exactly one $name function"
+  }
+  $scriptText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ScriptPath).Path)
+  foreach ($name in @("RELEASE_NODE", "RELEASE_COOKIE", "ERL_FLAGS", "ELIXIR_ERL_OPTIONS")) {
+    Assert-True ($scriptText -match [regex]::Escape($name)) `
+      "$ScriptPath does not clear the ambient $name release override"
   }
 
   $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
@@ -3184,7 +3319,7 @@ function Get-SmokeBeam([string]$InstallRoot) {
   $expectedErl = [IO.Path]::GetFullPath((Join-Path $release "erts-$($tokens[0])\bin\erl.exe"))
   $boot = [IO.Path]::GetFullPath((Join-Path $release "releases\$($tokens[1])\start"))
   $processes = @(
-    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
+    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop |
       Where-Object {
         $path = [string]$_.ExecutablePath
         if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-SamePath $path $expectedErl)) { return $false }
@@ -3202,12 +3337,34 @@ function Get-SmokeBeam([string]$InstallRoot) {
   $null
 }
 
-function Wait-NoSmokeBeam([string]$InstallRoot) {
+function Wait-NoSmokeBeam([string]$InstallRoot, [int]$Port = 0) {
   for ($attempt = 0; $attempt -lt 150; $attempt++) {
     if (-not (Get-SmokeBeam $InstallRoot)) { return }
     Start-Sleep -Milliseconds 100
   }
-  throw "Dala BEAM process did not stop under $InstallRoot"
+  $beam = $null
+  $queryError = $null
+  try { $beam = Get-SmokeBeam $InstallRoot } catch { $queryError = $_.Exception.Message }
+  $identity = if ($beam) {
+    "pid=$($beam.ProcessId); executable=$([string]$beam.ExecutablePath); command=$([string]$beam.CommandLine)"
+  } elseif ($queryError) {
+    "identity query failed=$queryError"
+  } else {
+    "identity query returned no matching process"
+  }
+  if ($Port -gt 0) {
+    try {
+      $listeners = @(
+        Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop |
+          ForEach-Object { "address=$($_.LocalAddress); owner=$($_.OwningProcess)" }
+      )
+      $listenerText = if ($listeners.Count) { $listeners -join "," } else { "none" }
+      $identity += "; listeners=$listenerText"
+    } catch {
+      $identity += "; listener query failed=$($_.Exception.Message)"
+    }
+  }
+  throw "Dala BEAM process did not stop under $InstallRoot ($identity)"
 }
 
 function Start-ForeignErl([string]$ReleaseDir, [string]$PathBait) {
@@ -3526,8 +3683,10 @@ function Set-SmokeTaskRunner(
   [string]$ExpectedVersion
 ) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  & $CurrentExecutable stop 2>$null | Out-Null
-  Wait-NoSmokeBeam $InstallRoot
+  Invoke-SmokeReleaseWithCleanEnvironment {
+    & $CurrentExecutable stop 2>$null | Out-Null
+  }
+  Wait-NoSmokeBeam $InstallRoot $Port
   $action = New-ScheduledTaskAction -Execute $Launcher -Argument "`"$Runner`" `"$LogFile`""
   Set-ScheduledTask -TaskName $TaskName -Action $action | Out-Null
   Start-ScheduledTask -TaskName $TaskName
@@ -3711,16 +3870,9 @@ $openConsolePidsBefore = @(
 
 $environmentNames = @(
   "APPDATA", "DALA_HOME", "DALA_DATA_DIR", "DALA_CONFIG", "DALA_SERVICE", "DALA_PORT", "DALA_REPO",
-  "RELEASE_NAME", "RELEASE_VSN", "RELEASE_MODE", "RELEASE_NODE", "RELEASE_COOKIE",
-  "RELEASE_TMP", "RELEASE_VM_ARGS", "RELEASE_REMOTE_VM_ARGS", "RELEASE_DISTRIBUTION",
-  "RELEASE_BOOT_SCRIPT", "RELEASE_BOOT_SCRIPT_CLEAN", "RELEASE_SYS_CONFIG", "RELEASE_ROOT",
-  "RELEASE_COMMAND", "RELEASE_PROG", "RELEASE_MUTABLE_DIR", "RELEASE_READ_ONLY",
-  "ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS", "ERL_INETRC",
-  "ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK",
-  "ELIXIR_ERL_OPTIONS",
-  "SECRET_KEY_BASE", "TOKEN_SIGNING_SECRET",
-  "DALA_SECRET_KEY_BASE", "DALA_TOKEN_SIGNING_SECRET"
+  "SECRET_KEY_BASE", "TOKEN_SIGNING_SECRET", "DALA_SECRET_KEY_BASE", "DALA_TOKEN_SIGNING_SECRET"
 )
+$environmentNames += @(Get-SmokeReleaseEnvironmentNames)
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
   $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
@@ -3740,6 +3892,10 @@ try {
   Assert-ReleaseEpmdKillSemantics $updateHelperSource
   Assert-ReleaseEpmdKillSemantics $restartHelperSource
   Assert-ReleaseEpmdKillSemantics $uninstall
+  Assert-SmokeReleaseEnvironmentIsolation
+  Assert-ReleaseEnvironmentIsolationSemantics $updateHelperSource
+  Assert-ReleaseEnvironmentIsolationSemantics $restartHelperSource
+  Assert-ReleaseEnvironmentIsolationSemantics $uninstall
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
   Assert-PublisherSafeRemovalSemantics $publishHelperSource $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
@@ -4584,8 +4740,10 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Wait-DalaVersion $port $oldVersion
 
   Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  & $oldBatch stop 2>$null | Out-Null
-  Wait-NoSmokeBeam $installRoot
+  Invoke-SmokeReleaseWithCleanEnvironment {
+    & $oldBatch stop 2>$null | Out-Null
+  }
+  Wait-NoSmokeBeam $installRoot $port
   $targetRunnerPath = Join-Path $newDir "run-dala.ps1"
   $targetRunnerBody = Get-Content -LiteralPath $targetRunnerPath -Raw
   Write-DummyReleaseRunner $targetRunnerPath $newTag

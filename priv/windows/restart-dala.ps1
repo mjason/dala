@@ -116,9 +116,17 @@ function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates
 }
 
 function Invoke-ReleaseWithDefaultEpmdPort([scriptblock]$Action) {
-  # run-dala strips EPMD overrides, so lifecycle commands must address the
-  # same default, non-relaxed daemon even when the caller has ambient state.
-  $names = @("ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK")
+  # run-dala strips release and Erlang overrides, so lifecycle commands must
+  # address the same default release even when the caller has ambient state.
+  $names = @(
+    "RELEASE_NAME", "RELEASE_VSN", "RELEASE_MODE", "RELEASE_NODE", "RELEASE_COOKIE",
+    "RELEASE_TMP", "RELEASE_VM_ARGS", "RELEASE_REMOTE_VM_ARGS", "RELEASE_DISTRIBUTION",
+    "RELEASE_BOOT_SCRIPT", "RELEASE_BOOT_SCRIPT_CLEAN", "RELEASE_SYS_CONFIG", "RELEASE_ROOT",
+    "RELEASE_COMMAND", "RELEASE_PROG", "RELEASE_MUTABLE_DIR", "RELEASE_READ_ONLY",
+    "ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS", "ERL_INETRC",
+    "ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK",
+    "ELIXIR_ERL_OPTIONS"
+  )
   $previous = @{}
   try {
     foreach ($name in $names) {
