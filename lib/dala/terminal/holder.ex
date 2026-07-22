@@ -26,9 +26,11 @@ defmodule Dala.Terminal.Holder do
   @repaint_history_budget 512 * 1024
   @type_processes_req 0x16
 
-  @connect_attempts 40
   @connect_delay_ms 25
   @kill_timeout_ms 5_000
+  @windows_hello_timeout_ms 5_000
+  @stale_holder_retry_ms 1_000
+  @attach_timeout_ms 30_000
 
   def type_hello, do: @type_hello
   def type_output, do: @type_output
@@ -99,30 +101,40 @@ defmodule Dala.Terminal.Holder do
   alive. Returns `{:ok, socket, reattached?}`.
   """
   def attach_or_spawn(id, opts) do
-    case connect(id) do
+    result = connect_existing(id, deadline_after(@windows_hello_timeout_ms))
+
+    case result do
       {:ok, socket} ->
         {:ok, socket, true}
 
-      {:error, _reason} ->
-        # Stale leftovers from a crashed holder must not block the bind, and a
-        # stale exit file must not shadow this fresh shell's eventual status.
-        _ = File.rm(socket_path(id))
-        _ = File.rm(exit_path(id))
-        _ = File.rm(final_path(id))
-        _ = File.rm(text_final_path(id))
+      {:error, reason} when reason in [:enoent, :econnrefused, :invalid_endpoint] ->
+        # Only an endpoint that is demonstrably stale may be removed. A live
+        # Windows listener that has not emitted HELLO yet must remain
+        # untouched; deleting its endpoint can strand the running PTY and a
+        # replacement cannot acquire its session lock.
+        remove_stale_holder_files(id)
+
+        spawn_deadline = deadline_after(@attach_timeout_ms)
 
         with :ok <- spawn_holder(id, opts),
-             {:ok, socket} <- connect_with_retry(id, @connect_attempts) do
+             {:ok, socket} <- connect_with_retry(id, spawn_deadline) do
           {:ok, socket, false}
         end
+
+      {:error, reason} ->
+        {:error, {:holder_attach_failed, reason}}
     end
   end
 
   def connect(id) do
+    connect(id, deadline_after(@windows_hello_timeout_ms))
+  end
+
+  defp connect(id, deadline) do
     path = socket_path(id)
 
     if File.exists?(path) do
-      connect_endpoint(path)
+      connect_endpoint(path, deadline)
     else
       {:error, :enoent}
     end
@@ -137,10 +149,10 @@ defmodule Dala.Terminal.Holder do
 
   @doc "Connect to a detached holder and wait until it has accepted a kill request."
   def kill(id, timeout \\ @kill_timeout_ms) when is_integer(timeout) and timeout > 0 do
-    case connect(id) do
-      {:ok, socket} ->
-        deadline = System.monotonic_time(:millisecond) + timeout
+    deadline = deadline_after(timeout)
 
+    case connect(id, deadline) do
+      {:ok, socket} ->
         try do
           with :ok <- await_hello(socket, deadline),
                :ok <- send_kill(socket) do
@@ -211,17 +223,66 @@ defmodule Dala.Terminal.Holder do
     end
   end
 
-  defp connect_with_retry(id, attempts) do
-    Enum.reduce_while(1..attempts, {:error, :enoent}, fn _n, _acc ->
-      case connect(id) do
-        {:ok, socket} ->
-          {:halt, {:ok, socket}}
+  defp connect_existing(id, deadline) do
+    case connect(id, deadline) do
+      {:error, reason} = error when reason in [:econnrefused, :closed] ->
+        retry_existing_connection(id, deadline_after(@stale_holder_retry_ms), error)
 
-        {:error, _reason} = error ->
-          Process.sleep(@connect_delay_ms)
-          {:cont, error}
+      result ->
+        result
+    end
+  end
+
+  defp retry_existing_connection(id, deadline, last_error) do
+    remaining = remaining_timeout(deadline)
+
+    if remaining == 0 do
+      last_error
+    else
+      Process.sleep(min(@connect_delay_ms, remaining))
+
+      case connect(id, deadline) do
+        {:ok, socket} ->
+          {:ok, socket}
+
+        {:error, :enoent} = error ->
+          error
+
+        {:error, reason} = error when reason in [:econnrefused, :closed] ->
+          retry_existing_connection(id, deadline, error)
+
+        result ->
+          result
       end
-    end)
+    end
+  end
+
+  defp connect_with_retry(id, deadline) do
+    case connect(id, deadline) do
+      {:ok, socket} ->
+        {:ok, socket}
+
+      {:error, reason} = error
+      when reason in [:enoent, :econnrefused, :closed, :timeout, :invalid_hello] ->
+        remaining = remaining_timeout(deadline)
+
+        if remaining == 0 do
+          error
+        else
+          Process.sleep(min(@connect_delay_ms, remaining))
+          connect_with_retry(id, deadline)
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp remove_stale_holder_files(id) do
+    _ = File.rm(socket_path(id))
+    _ = File.rm(exit_path(id))
+    _ = File.rm(final_path(id))
+    _ = File.rm(text_final_path(id))
   end
 
   defp binary_path do
@@ -229,29 +290,46 @@ defmodule Dala.Terminal.Holder do
     Path.join([:code.priv_dir(:dala), "bin", executable])
   end
 
-  defp connect_endpoint(path) do
-    if windows?(), do: connect_windows(path), else: connect_unix(path)
+  defp connect_endpoint(path, deadline) do
+    if windows?(), do: connect_windows(path, deadline), else: connect_unix(path, deadline)
   end
 
-  defp connect_unix(path) do
-    :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
-      :binary,
-      packet: 4,
-      active: true
-    ])
+  defp connect_unix(path, deadline) do
+    :gen_tcp.connect(
+      {:local, String.to_charlist(path)},
+      0,
+      [:binary, packet: 4, active: true],
+      remaining_timeout(deadline)
+    )
   end
 
-  defp connect_windows(path) do
+  defp connect_windows(path, deadline) do
     with {:ok, body} <- File.read(path),
          {:ok, %{"host" => "127.0.0.1", "port" => port, "token" => token}}
          when is_integer(port) and port in 1..65_535 and is_binary(token) and token != "" <-
            Jason.decode(body),
          {:ok, socket} <-
-           :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: 4, active: false]) do
+           :gen_tcp.connect(
+             {127, 0, 0, 1},
+             port,
+             [:binary, packet: 4, active: false],
+             remaining_timeout(deadline)
+           ) do
       result =
         with :ok <- :gen_tcp.send(socket, <<@type_auth, token::binary>>),
-             :ok <- :inet.setopts(socket, active: true),
-             do: :ok
+             {:ok, hello} <- :gen_tcp.recv(socket, 0, remaining_timeout(deadline)),
+             true <- match?(<<@type_hello, _payload::binary>>, hello) do
+          # Consume HELLO before returning so Windows callers cannot race PTY
+          # startup. Re-emit it through the normal active-socket mailbox
+          # contract expected by Server and the holder tests. Queue it while
+          # active mode is still disabled so frames already waiting in the TCP
+          # receive buffer cannot overtake HELLO when active mode is enabled.
+          send(self(), {:tcp, socket, hello})
+          :inet.setopts(socket, active: true)
+        else
+          false -> {:error, :invalid_hello}
+          {:error, reason} -> {:error, reason}
+        end
 
       case result do
         :ok ->
@@ -295,6 +373,8 @@ defmodule Dala.Terminal.Holder do
   defp remaining_timeout(deadline) do
     max(deadline - System.monotonic_time(:millisecond), 0)
   end
+
+  defp deadline_after(timeout), do: System.monotonic_time(:millisecond) + timeout
 
   defp windows?, do: match?({:win32, _}, :os.type())
 end

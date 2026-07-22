@@ -53,6 +53,103 @@ defmodule Dala.Terminal.HolderWindowsTest do
     assert Holder.exists?(id)
   end
 
+  test "kill timeout includes the authenticated HELLO handshake" do
+    id = Ash.UUID.generate()
+    token = "holder-kill-timeout-token"
+    File.mkdir_p!(Holder.dir())
+
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, packet: 4, active: false, ip: {127, 0, 0, 1}])
+
+    {:ok, {{127, 0, 0, 1}, port}} = :inet.sockname(listener)
+
+    File.write!(
+      Holder.socket_path(id),
+      Jason.encode!(%{"host" => "127.0.0.1", "port" => port, "token" => token})
+    )
+
+    on_exit(fn ->
+      File.rm(Holder.socket_path(id))
+      File.rm(Holder.socket_path(id) <> ".lock")
+      :gen_tcp.close(listener)
+    end)
+
+    parent = self()
+
+    stalled_holder =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener)
+        {:ok, auth} = :gen_tcp.recv(socket, 0, 1_000)
+        send(parent, {:authenticated, auth})
+        Process.sleep(10_000)
+      end)
+
+    assert_receive {:authenticated, <<0x10, ^token::binary>>}, 1_000
+
+    started_at = System.monotonic_time(:millisecond)
+    assert {:error, :timeout} = Holder.kill(id, 100)
+    elapsed = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed < 1_000
+
+    Task.shutdown(stalled_holder, :brutal_kill)
+  end
+
+  test "stale endpoint cleanup does not wait for the spawn timeout" do
+    id = Ash.UUID.generate()
+    File.mkdir_p!(Holder.dir())
+
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, packet: 4, active: false, ip: {127, 0, 0, 1}])
+
+    {:ok, {{127, 0, 0, 1}, port}} = :inet.sockname(listener)
+    :gen_tcp.close(listener)
+
+    File.write!(
+      Holder.socket_path(id),
+      Jason.encode!(%{"host" => "127.0.0.1", "port" => port, "token" => "stale-token"})
+    )
+
+    on_exit(fn ->
+      File.rm(Holder.socket_path(id))
+      File.rm(Holder.socket_path(id) <> ".lock")
+      File.rm(Holder.socket_path(id) <> ".log")
+      File.rm(Holder.exit_path(id))
+      File.rm(Holder.final_path(id))
+      File.rm(Holder.text_final_path(id))
+    end)
+
+    task =
+      Task.async(fn ->
+        Holder.attach_or_spawn(id,
+          shell: Path.join(System.tmp_dir!(), "dala-missing-shell.exe"),
+          args: [],
+          cwd: System.tmp_dir!(),
+          env: [],
+          env_remove: []
+        )
+      end)
+
+    result =
+      case Task.yield(task, 2_500) do
+        {:ok, value} ->
+          value
+
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          flunk("stale holder endpoint consumed the full attach timeout")
+      end
+
+    case result do
+      {:ok, socket, false} ->
+        :gen_tcp.close(socket)
+        assert :ok = Holder.kill(id)
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
   defp assert_output(socket, expected, acc \\ "") do
     assert {:ok, <<type, payload::binary>>} = :gen_tcp.recv(socket, 0, 5_000)
 

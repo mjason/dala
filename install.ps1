@@ -36,10 +36,12 @@ $LifecycleMutex = $null
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Green }
 
 function Read-InstallMetadata([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-
+  $metadataItem = $null
   try {
-    $metadata = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $metadataItem = Get-SafeInstallMetadataItem $Path
+    if ($null -eq $metadataItem) { return $null }
+
+    $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
     $required = @("schemaVersion", "root", "dataDir", "configFile", "taskName", "port", "repo", "platform")
     foreach ($name in $required) {
       if ($metadata.PSObject.Properties.Name -notcontains $name) { throw "required field '$name' is missing" }
@@ -54,6 +56,34 @@ function Read-InstallMetadata([string]$Path) {
   } catch {
     throw "Invalid Dala install metadata at $Path`: $($_.Exception.Message)"
   }
+}
+
+function Get-SafeInstallMetadataItem([string]$Path) {
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to read Dala install metadata through a reparse point: $Path"
+  }
+
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  } catch {
+    if ([string]$_.CategoryInfo.Category -ceq "ObjectNotFound") { return $null }
+    throw "Could not inspect Dala install metadata at $Path`: $($_.Exception.Message)"
+  }
+
+  try {
+    $attributes = [IO.File]::GetAttributes($Path)
+  } catch {
+    throw "Could not inspect Dala install metadata at $Path`: $($_.Exception.Message)"
+  }
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      $item.PSIsContainer -or
+      -not ($item -is [IO.FileInfo])) {
+    throw "Dala install metadata target must be a regular file: $Path"
+  }
+  $item
 }
 
 function ConvertFrom-DalaJsonc([string]$Body) {
@@ -288,11 +318,10 @@ function Invoke-RecoverableFileReplace(
 }
 
 function Write-TextAtomic([string]$Path, [string]$Body) {
-  if (-not (Test-NoReparseAncestors $Path)) {
-    throw "Refusing to write through a reparse point: $Path"
-  }
+  Assert-SafeMetadataTarget $Path
   $parent = Split-Path -Parent $Path
   if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  Assert-SafeMetadataTarget $Path
   $fresh = "$Path.new-$([guid]::NewGuid().ToString('N'))"
   [IO.File]::WriteAllText($fresh, $Body, [Text.UTF8Encoding]::new($false))
 
@@ -300,8 +329,10 @@ function Write-TextAtomic([string]$Path, [string]$Body) {
   try {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
       $helperOwnsFresh = $true
+      Assert-SafeMetadataTarget $Path
       Invoke-RecoverableFileReplace $fresh $Path
     } else {
+      Assert-SafeMetadataTarget $Path
       [IO.File]::Move($fresh, $Path)
     }
   } finally {
@@ -312,11 +343,10 @@ function Write-TextAtomic([string]$Path, [string]$Body) {
 }
 
 function Write-BytesAtomic([string]$Path, [byte[]]$Body) {
-  if (-not (Test-NoReparseAncestors $Path)) {
-    throw "Refusing to write through a reparse point: $Path"
-  }
+  Assert-SafeMetadataTarget $Path
   $parent = Split-Path -Parent $Path
   if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  Assert-SafeMetadataTarget $Path
   $fresh = "$Path.new-$([guid]::NewGuid().ToString('N'))"
   [IO.File]::WriteAllBytes($fresh, $Body)
 
@@ -324,8 +354,10 @@ function Write-BytesAtomic([string]$Path, [byte[]]$Body) {
   try {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
       $helperOwnsFresh = $true
+      Assert-SafeMetadataTarget $Path
       Invoke-RecoverableFileReplace $fresh $Path
     } else {
+      Assert-SafeMetadataTarget $Path
       [IO.File]::Move($fresh, $Path)
     }
   } finally {
@@ -348,6 +380,24 @@ function Write-JsonAtomic([string]$Path, $Value) {
   Write-TextAtomic $Path (($Value | ConvertTo-Json -Depth 8) + "`n")
 }
 
+function Assert-SafeMetadataTarget([string]$Path) {
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to write through a reparse point: $Path"
+  }
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+
+  try {
+    $attributes = [IO.File]::GetAttributes($Path)
+  } catch {
+    throw "Could not inspect metadata target: $Path"
+  }
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "Dala metadata target must be a regular file: $Path"
+  }
+}
+
 function Test-SamePath([string]$Left, [string]$Right) {
   $leftFull = [IO.Path]::GetFullPath($Left).TrimEnd([char[]]"\/")
   $rightFull = [IO.Path]::GetFullPath($Right).TrimEnd([char[]]"\/")
@@ -359,7 +409,23 @@ function Get-MetadataField($Metadata, [string]$Name) {
     return [pscustomobject]@{ Present = $false; Value = $null }
   }
 
-  $property = $Metadata.PSObject.Properties[$Name]
+  $property = $null
+  foreach ($candidate in $Metadata.PSObject.Properties) {
+    if ([string]$candidate.Name -ceq $Name) {
+      $property = $candidate
+      break
+    }
+  }
+  if ([string]$Name -ceq "discoveryFile") {
+    $discoveryProperties = @(
+      $Metadata.PSObject.Properties | Where-Object { [string]$_.Name -ieq $Name }
+    )
+    if ($discoveryProperties.Count -gt 1 -or
+        ($discoveryProperties.Count -eq 1 -and
+         [string]($discoveryProperties[0].Name) -cne $Name)) {
+      throw "Dala install metadata field 'discoveryFile' has invalid casing"
+    }
+  }
   if ($null -eq $property) {
     return [pscustomobject]@{ Present = $false; Value = $null }
   }
@@ -461,6 +527,7 @@ function Write-InstallMetadataPair(
 
   $snapshots = @()
   foreach ($path in @($RootPath, $DiscoveryPath)) {
+    Assert-SafeMetadataTarget $path
     if ((Test-Path -LiteralPath $path) -and -not (Test-Path -LiteralPath $path -PathType Leaf)) {
       throw "Dala install metadata target is not a regular file: $path"
     }
@@ -486,6 +553,7 @@ function Write-InstallMetadataPair(
         } else {
           $snapshotPath = [string]$snapshot.path
           if (Test-Path -LiteralPath $snapshotPath) {
+            Assert-SafeMetadataTarget $snapshotPath
             Remove-Item -LiteralPath $snapshotPath -Force -ErrorAction Stop
           }
           if (Test-Path -LiteralPath $snapshotPath) {
@@ -697,8 +765,13 @@ function Test-NoReparseAncestors([string]$Path) {
     foreach ($segment in @($remainder -split '[\\/]')) {
       if ([string]::IsNullOrEmpty($segment)) { continue }
       $current = Join-Path $current $segment
-      if (-not (Test-Path -LiteralPath $current)) { break }
-      if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      try {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+      } catch {
+        if ([string]$_.CategoryInfo.Category -ceq "ObjectNotFound") { break }
+        return $false
+      }
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         return $false
       }
     }

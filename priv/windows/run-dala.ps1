@@ -5,10 +5,11 @@ $Root = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]"\/")
 $MetadataFile = Join-Path $Root "install.json"
 
 function Read-InstallMetadata([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-
   try {
-    $value = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $metadataItem = Get-SafeInstallMetadataItem $Path
+    if ($null -eq $metadataItem) { return $null }
+
+    $value = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
     foreach ($name in @("schemaVersion", "root", "dataDir", "configFile", "taskName", "port", "repo", "platform")) {
       if ($value.PSObject.Properties.Name -notcontains $name) { throw "required field '$name' is missing" }
     }
@@ -32,11 +33,55 @@ function Read-InstallMetadata([string]$Path) {
   }
 }
 
+function Get-SafeInstallMetadataItem([string]$Path) {
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to read Dala install metadata through a reparse point: $Path"
+  }
+
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  } catch {
+    if ([string]$_.CategoryInfo.Category -ceq "ObjectNotFound") { return $null }
+    throw "Could not inspect Dala install metadata at $Path`: $($_.Exception.Message)"
+  }
+
+  try {
+    $attributes = [IO.File]::GetAttributes($Path)
+  } catch {
+    throw "Could not inspect Dala install metadata at $Path`: $($_.Exception.Message)"
+  }
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      $item.PSIsContainer -or
+      -not ($item -is [IO.FileInfo])) {
+    throw "Dala install metadata target must be a regular file: $Path"
+  }
+  $item
+}
+
 function Get-MetadataField($Metadata, [string]$Name) {
   if ($null -eq $Metadata) {
     return [pscustomobject]@{ Present = $false; Value = $null }
   }
-  $property = $Metadata.PSObject.Properties[$Name]
+  $property = $null
+  foreach ($candidate in $Metadata.PSObject.Properties) {
+    if ([string]$candidate.Name -ceq $Name) {
+      $property = $candidate
+      break
+    }
+  }
+  if ([string]$Name -ceq "discoveryFile") {
+    $discoveryProperties = @(
+      $Metadata.PSObject.Properties | Where-Object { [string]$_.Name -ieq $Name }
+    )
+    if ($discoveryProperties.Count -gt 1 -or
+        ($discoveryProperties.Count -eq 1 -and
+         [string]($discoveryProperties[0].Name) -cne $Name)) {
+      throw "Dala install metadata field 'discoveryFile' has invalid casing"
+    }
+  }
   if ($null -eq $property) {
     return [pscustomobject]@{ Present = $false; Value = $null }
   }
@@ -56,8 +101,13 @@ function Test-NoReparseAncestors([string]$Path) {
     foreach ($segment in @($remainder -split '[\\/]')) {
       if ([string]::IsNullOrEmpty($segment)) { continue }
       $current = Join-Path $current $segment
-      if (-not (Test-Path -LiteralPath $current)) { break }
-      if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      try {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+      } catch {
+        if ([string]$_.CategoryInfo.Category -ceq "ObjectNotFound") { break }
+        return $false
+      }
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         return $false
       }
     }
@@ -157,6 +207,9 @@ $ConfigFile = if ($metadata) {
   $env:DALA_CONFIG
 }
 if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
+  if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+    throw "Dala configuration is missing and APPDATA is not set"
+  }
   $ConfigFile = Join-Path $env:APPDATA "Dala\config.jsonc"
 }
 if (-not (Test-Path -LiteralPath $ConfigFile -PathType Leaf)) {

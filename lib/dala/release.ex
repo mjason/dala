@@ -31,7 +31,8 @@ defmodule Dala.Release do
 
   @doc false
   def sync_install_metadata(root_metadata_path, discovery_path, runtime, opts \\ []) do
-    discovery_path = Path.expand(discovery_path)
+    root_metadata_path = canonical_root_metadata_path!(root_metadata_path)
+    discovery_path = discovery_path |> Path.expand() |> normalize_windows_unc_path(discovery_path)
 
     with_metadata_pair_lock([root_metadata_path, discovery_path], fn ->
       sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts)
@@ -45,19 +46,25 @@ defmodule Dala.Release do
     env = Keyword.get(opts, :env, System.get_env())
 
     path =
-      case Map.fetch(metadata, @discovery_metadata_key) do
-        {:ok, value} -> value
-        :error -> Map.get(env, "DALA_DISCOVERY_FILE") || app_data_discovery_file(env)
+      case metadata_discovery_field!(metadata) do
+        value when is_binary(value) ->
+          value
+
+        :absent ->
+          case Map.get(env, "DALA_DISCOVERY_FILE") do
+            value when is_binary(value) and byte_size(value) > 0 ->
+              if String.trim(value) == "", do: app_data_discovery_file(env), else: value
+
+            _ ->
+              app_data_discovery_file(env)
+          end
       end
 
     canonical_discovery_file!(path, root_metadata_path)
   end
 
   defp sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts) do
-    metadata =
-      root_metadata_path
-      |> File.read!()
-      |> Jason.decode!()
+    metadata = read_root_metadata!(root_metadata_path)
 
     root = required_runtime!(runtime, :root)
 
@@ -84,7 +91,7 @@ defmodule Dala.Release do
         "port" => port,
         "repo" => required_runtime!(runtime, :repo),
         "platform" => "windows-x86_64",
-        @discovery_metadata_key => Path.expand(discovery_path)
+        @discovery_metadata_key => discovery_path
       })
 
     body = Jason.encode!(updated, pretty: true) <> "\n"
@@ -134,17 +141,18 @@ defmodule Dala.Release do
 
   defp sync_windows_install_metadata do
     root = Application.get_env(@app, :release_root)
-    root_metadata_path = is_binary(root) && Path.join(root, "install.json")
 
-    if Dala.Updater.Release.platform() == "windows-x86_64" and
-         is_binary(root_metadata_path) and File.regular?(root_metadata_path) do
+    root_metadata_path =
+      if is_binary(root),
+        do: canonical_root_metadata_path!(Path.join(root, "install.json"))
+
+    if Dala.Updater.Release.platform() == "windows-x86_64" and is_binary(root_metadata_path) and
+         regular_metadata_target?(root_metadata_path) do
       endpoint = Application.fetch_env!(@app, DalaWeb.Endpoint)
       http = Keyword.fetch!(endpoint, :http)
       port = Keyword.fetch!(http, :port)
-      metadata =
-        root_metadata_path
-        |> File.read!()
-        |> Jason.decode!()
+
+      metadata = read_root_metadata!(root_metadata_path)
 
       discovery_path = resolve_discovery_file(metadata, root_metadata_path: root_metadata_path)
 
@@ -168,11 +176,64 @@ defmodule Dala.Release do
   defp app_data_discovery_file(env) do
     base =
       case Map.get(env, "APPDATA") do
-        value when is_binary(value) and value != "" -> Path.join(value, "Dala")
-        _ -> :filename.basedir(:user_config, ~c"Dala") |> List.to_string()
+        value when is_binary(value) ->
+          if String.trim(value) == "",
+            do: fallback_user_config_dir(),
+            else: Path.join(value, "Dala")
+
+        _ ->
+          :filename.basedir(:user_config, ~c"Dala") |> List.to_string()
       end
 
     Path.join(base, "install.json")
+  end
+
+  defp fallback_user_config_dir, do: :filename.basedir(:user_config, ~c"Dala") |> List.to_string()
+
+  defp canonical_root_metadata_path!(path) do
+    unless is_binary(path) and String.trim(path) != "" do
+      raise "Dala root install metadata path is empty or invalid"
+    end
+
+    expanded = path |> Path.expand() |> normalize_windows_unc_path(path)
+
+    if String.downcase(Path.basename(expanded)) != "install.json" do
+      raise "Dala root metadata must name install.json"
+    end
+
+    expanded
+  end
+
+  defp regular_metadata_target?(path) do
+    ensure_safe_metadata_target!(path)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        true
+
+      {:error, :enoent} ->
+        false
+
+      {:ok, %File.Stat{type: type}} ->
+        raise "Dala root install metadata must be a regular file: #{path} (#{type})"
+
+      {:error, reason} ->
+        raise "could not inspect Dala root install metadata #{path}: #{inspect(reason)}"
+    end
+  end
+
+  defp read_root_metadata!(path) do
+    unless regular_metadata_target?(path) do
+      raise "Dala root install metadata is missing: #{path}"
+    end
+
+    case File.read(path) do
+      {:ok, body} ->
+        Jason.decode!(body)
+
+      {:error, reason} ->
+        raise "could not read Dala root install metadata #{path}: #{inspect(reason)}"
+    end
   end
 
   defp canonical_discovery_file!(path, _root_metadata_path) do
@@ -184,7 +245,12 @@ defmodule Dala.Release do
       raise "Dala discoveryFile must be an absolute path"
     end
 
-    expanded = Path.expand(path)
+    if windows?() and invalid_windows_discovery_path?(path) do
+      raise "Dala discoveryFile must be a normal Windows path"
+    end
+
+    expanded = path |> Path.expand() |> normalize_windows_unc_path(path)
+
     ensure_no_symlink_ancestors!(expanded)
 
     case File.lstat(expanded) do
@@ -212,6 +278,30 @@ defmodule Dala.Release do
     path
     |> Path.dirname()
     |> do_ensure_no_symlink_ancestors!()
+  end
+
+  defp ensure_safe_metadata_target!(path) do
+    ensure_no_symlink_ancestors!(path)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        raise "Dala install metadata target must not be a symbolic link: #{path}"
+
+      {:ok, %File.Stat{type: :directory}} ->
+        raise "Dala install metadata target must be a regular file: #{path}"
+
+      {:ok, %File.Stat{type: type}} ->
+        raise "Dala install metadata target must be a regular file: #{path} (#{type})"
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        raise "could not inspect Dala install metadata target #{path}: #{inspect(reason)}"
+    end
   end
 
   defp do_ensure_no_symlink_ancestors!(path) do
@@ -253,15 +343,21 @@ defmodule Dala.Release do
       {:ok, body} ->
         case Jason.decode(body) do
           {:ok, discovery_metadata} when is_map(discovery_metadata) ->
+            unless same_path?(discovery_metadata["root"], root_metadata["root"]) do
+              raise "Dala root and discovery metadata disagree on root"
+            end
+
             discovery_field = metadata_discovery_field!(discovery_metadata)
 
-            if (root_field == :absent) != (discovery_field == :absent) do
+            if root_field == :absent != (discovery_field == :absent) do
               raise "Dala root and discovery metadata disagree on discoveryFile"
             end
 
             if root_field != :absent and
-                 not same_path?(canonical_discovery_file!(root_field, root_metadata_path),
-                   canonical_discovery_file!(discovery_field, root_metadata_path)) do
+                 not same_path?(
+                   canonical_discovery_file!(root_field, root_metadata_path),
+                   canonical_discovery_file!(discovery_field, root_metadata_path)
+                 ) do
               raise "Dala root and discovery metadata disagree on discoveryFile"
             end
 
@@ -275,18 +371,32 @@ defmodule Dala.Release do
   end
 
   defp metadata_discovery_field!(metadata) when is_map(metadata) do
-    case Map.fetch(metadata, @discovery_metadata_key) do
-      :error -> :absent
+    keys =
+      metadata
+      |> Map.keys()
+      |> Enum.filter(fn key ->
+        is_binary(key) and String.downcase(key) == String.downcase(@discovery_metadata_key)
+      end)
 
-      {:ok, value} when is_binary(value) ->
+    case keys do
+      [] ->
+        :absent
+
+      [@discovery_metadata_key] ->
+        value = Map.fetch!(metadata, @discovery_metadata_key)
+
+        unless is_binary(value) do
+          raise "Dala discoveryFile metadata field is empty or invalid"
+        end
+
         if String.trim(value) == "" do
           raise "Dala discoveryFile metadata field is empty or invalid"
         end
 
         value
 
-      {:ok, _value} ->
-        raise "Dala discoveryFile metadata field is empty or invalid"
+      _ ->
+        raise "Dala discoveryFile metadata field has invalid casing"
     end
   end
 
@@ -322,6 +432,33 @@ defmodule Dala.Release do
       expanded
     end
   end
+
+  defp invalid_windows_discovery_path?(path) do
+    not normal_windows_discovery_root?(path) or
+      String.starts_with?(path, ["\\\\?\\", "\\\\.\\"]) or
+      (byte_size(path) > 2 and String.contains?(binary_part(path, 2, byte_size(path) - 2), ":"))
+  end
+
+  defp normal_windows_discovery_root?(<<drive, ?:, separator, _::binary>>)
+       when drive in ?A..?Z and separator in [?\\, ?/],
+       do: true
+
+  defp normal_windows_discovery_root?(<<drive, ?:, separator, _::binary>>)
+       when drive in ?a..?z and separator in [?\\, ?/],
+       do: true
+
+  defp normal_windows_discovery_root?(<<?\\, ?\\, _::binary>>), do: true
+  defp normal_windows_discovery_root?(_path), do: false
+
+  defp normalize_windows_unc_path(expanded, original) do
+    if windows?() and is_binary(original) and String.starts_with?(original, "\\\\") do
+      String.replace(expanded, "/", "\\")
+    else
+      expanded
+    end
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   # There is no filesystem primitive that atomically replaces two independent
   # files. Stage both payloads first, then replace them while retaining the
@@ -388,7 +525,9 @@ defmodule Dala.Release do
         fresh = metadata_temp_path(path, "new")
 
         try do
+          ensure_safe_metadata_target!(path)
           File.mkdir_p!(Path.dirname(path))
+          ensure_safe_metadata_target!(path)
           original = snapshot_metadata_target!(path)
           File.write!(fresh, body)
 
@@ -414,6 +553,7 @@ defmodule Dala.Release do
     result =
       Enum.reduce_while(staged, [], fn entry, replaced ->
         try do
+          ensure_safe_metadata_target!(entry.path)
           recovery = replace_fun.(entry.fresh, entry.path, :commit) |> normalize_recovery!()
           {:cont, [Map.put(entry, :recovery, recovery) | replaced]}
         rescue
@@ -448,10 +588,16 @@ defmodule Dala.Release do
   end
 
   defp restore_metadata_target(%{path: path, original: :absent} = entry, _replace, cleanup) do
-    case File.rm(path) do
-      :ok -> cleanup_metadata_recovery(entry.recovery, cleanup)
-      {:error, :enoent} -> cleanup_metadata_recovery(entry.recovery, cleanup)
-      {:error, reason} -> {:error, {path, reason}}
+    try do
+      ensure_safe_metadata_target!(path)
+
+      case File.rm(path) do
+        :ok -> cleanup_metadata_recovery(entry.recovery, cleanup)
+        {:error, :enoent} -> cleanup_metadata_recovery(entry.recovery, cleanup)
+        {:error, reason} -> {:error, {path, reason}}
+      end
+    rescue
+      error -> {:error, {path, {:unsafe_target, error}}}
     end
   end
 
@@ -466,6 +612,7 @@ defmodule Dala.Release do
       # Never make the only durable old-byte backup the source of a replace:
       # File.Replace can consume its source before reporting failure.
       File.cp!(backup, fresh)
+      ensure_safe_metadata_target!(path)
       recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
       cleanup_metadata_recovery(recovery, cleanup_fun)
       cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun)
@@ -487,6 +634,7 @@ defmodule Dala.Release do
 
     try do
       File.write!(fresh, body)
+      ensure_safe_metadata_target!(path)
       recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
       cleanup_metadata_recovery(recovery, cleanup_fun)
       cleanup_metadata_recovery(entry.recovery, cleanup_fun)
@@ -621,6 +769,7 @@ defmodule Dala.Release do
   defp replacement_error_recovery(_error), do: :unknown
 
   defp replace_file!(fresh, path, phase) when phase in [:commit, :rollback] do
+    ensure_safe_metadata_target!(path)
     windows? = match?({:win32, _}, :os.type())
 
     if windows? and phase == :commit do
