@@ -2036,9 +2036,17 @@ $version = __VERSION__
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
 $listener.Start()
 try {
-  $client = $listener.AcceptTcpClient()
+  # A fail-closed identity check may reject the release before it ever probes
+  # this foreign listener. Keep the decoy bounded so that cleanup cannot leave
+  # a PowerShell process blocked in AcceptTcpClient forever.
+  $accept = $listener.AcceptTcpClientAsync()
+  if (-not $accept.Wait(30000)) {
+    throw "version decoy did not receive a health request within 30 seconds"
+  }
+  $client = $accept.Result
   try {
     $stream = $client.GetStream()
+    $stream.ReadTimeout = 10000
     $buffer = [byte[]]::new(8192)
     $null = $stream.Read($buffer, 0, $buffer.Length)
     $body = [Text.Encoding]::UTF8.GetBytes($version)
@@ -2549,6 +2557,7 @@ try {
   $freshDecoyProcess = Start-VersionDecoy $freshDecoyPort $oldVersion
   $freshHealthRejected = $false
   $freshHealthMessage = $null
+  $freshDecoyWaitError = $null
   try {
     & $installer -Version $oldTag -ArchivePath $decoyArchive -ChecksumPath $decoyChecksum `
       -ExpectedVersion $oldVersion -HealthTimeoutSeconds 5
@@ -2558,10 +2567,19 @@ try {
   } finally {
     try {
       Wait-VersionDecoyExited $freshDecoyProcess "Fresh-install version decoy"
+    } catch {
+      # A fail-closed installer can legitimately finish without probing the
+      # foreign listener. Preserve that installer error for the assertions
+      # below; only surface a decoy cleanup failure when the installer itself
+      # unexpectedly succeeded.
+      $freshDecoyWaitError = $_
     } finally {
       Stop-VersionDecoy $freshDecoyProcess
       $freshDecoyProcess = $null
     }
+  }
+  if ($freshDecoyWaitError -and -not $freshHealthRejected) {
+    throw $freshDecoyWaitError
   }
 
   $freshTaskLeft = [bool](Get-ScheduledTask -TaskName $freshDecoyTask -ErrorAction SilentlyContinue)
@@ -3258,6 +3276,7 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   $updateDecoyProcess = Start-VersionDecoy $port $newVersion
   $healthDecoyAttemptId = New-SmokeAttemptId
   Remove-Item -LiteralPath $healthDecoyResultFile -Force -ErrorAction SilentlyContinue
+  $healthDecoyWaitError = $null
   try {
     $healthDecoyOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $newHelper `
       -InstallRoot $installRoot -TaskName $taskName -TargetTag $newTag -PreviousTag $oldTag `
@@ -3267,11 +3286,18 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   } finally {
     try {
       Wait-VersionDecoyExited $updateDecoyProcess "Update version decoy"
+    } catch {
+      # Keep the helper's own rejection output/status authoritative. A helper
+      # failure may happen before it probes the one-shot decoy.
+      $healthDecoyWaitError = $_
     } finally {
       Stop-VersionDecoy $updateDecoyProcess
       $updateDecoyProcess = $null
       [IO.File]::WriteAllText($targetRunnerPath, $targetRunnerBody, [Text.UTF8Encoding]::new($false))
     }
+  }
+  if ($healthDecoyWaitError -and $healthDecoyStatus -eq 0) {
+    throw $healthDecoyWaitError
   }
 
   $healthDecoyResult = Get-Content -LiteralPath $healthDecoyResultFile -Raw | ConvertFrom-Json
