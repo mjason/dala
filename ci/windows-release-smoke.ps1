@@ -3687,7 +3687,9 @@ function Assert-InstallContract(
 ) {
   $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
   Assert-True ($config.server -eq $true) "config.jsonc did not enable the server"
-  Assert-True ([int]$config.port -eq $Port) "config.jsonc has the wrong port"
+  $configuredPort = [int]$config.port
+  Assert-True ($configuredPort -eq $Port) `
+    "config.jsonc has the wrong port (actual=$configuredPort expected=$Port): $ConfigFile"
   Assert-True (Test-SamePath ([string]$config.dataDir) $DataDir) "config.jsonc has the wrong dataDir"
   Assert-True (Test-SamePath ([string]$config.releaseRoot) $InstallRoot) "config.jsonc has the wrong releaseRoot"
   Assert-True ([string]$config.serviceName -ceq $TaskName) "config.jsonc has the wrong serviceName"
@@ -3699,7 +3701,9 @@ function Assert-InstallContract(
     Assert-True (Test-SamePath ([string]$metadata.dataDir) $DataDir) "install.json has the wrong dataDir"
     Assert-True (Test-SamePath ([string]$metadata.configFile) $ConfigFile) "install.json has the wrong configFile"
     Assert-True ([string]$metadata.taskName -ceq $TaskName) "install.json has the wrong taskName"
-    Assert-True ([int]$metadata.port -eq $Port) "install.json has the wrong port"
+    $metadataPort = [int]$metadata.port
+    Assert-True ($metadataPort -eq $Port) `
+      "install metadata has the wrong port (actual=$metadataPort expected=$Port): $path"
     Assert-True ([string]$metadata.platform -ceq "windows-x86_64") "install.json has the wrong platform"
   }
 
