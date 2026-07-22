@@ -298,6 +298,15 @@ defmodule DalaWeb.FileWatchSocketTest do
     FileWatchSocket.terminate(:normal, state)
   end
 
+  @tag skip: not Dala.TestPlatform.windows?()
+  test "normalizes every Windows drive root as an absolute path" do
+    drive_root = System.fetch_env!("SystemDrive") <> "\\"
+    state = watch!(poll_state(), [drive_root], drive_root)
+
+    assert [normalized] = Map.keys(state.dirs)
+    assert normalized =~ ~r/^[a-zA-Z]:\/$/
+  end
+
   defp poll_state do
     %{
       backend: :poll,

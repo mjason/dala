@@ -41,12 +41,40 @@ defmodule Dala.Terminal.Updater do
     action :apply_update, :map do
       description "Download the latest release, switch to it and restart the daemon."
 
+      argument :attempt_id, :uuid, allow_nil?: false
+      argument :expected_target, :string, allow_nil?: false
+
       constraints fields: [
+                    attempt_id: [type: :string, allow_nil?: false],
+                    status: [type: :string, allow_nil?: false],
                     updated_to: [type: :string, allow_nil?: false]
                   ]
 
-      run fn _input, _context ->
-        Dala.Updater.apply_latest()
+      run fn input, _context ->
+        Dala.Updater.apply_latest(
+          input.arguments.attempt_id,
+          input.arguments.expected_target
+        )
+      end
+    end
+
+    action :update_status, :map do
+      description "Read one update attempt's authoritative background-helper result."
+
+      argument :attempt_id, :uuid, allow_nil?: false
+
+      constraints fields: [
+                    attempt_id: [type: :string],
+                    status: [type: :string, allow_nil?: false],
+                    target: [type: :string],
+                    message: [type: :string],
+                    rolled_back: [type: :boolean],
+                    started_at: [type: :string],
+                    completed_at: [type: :string]
+                  ]
+
+      run fn input, _context ->
+        Dala.Updater.update_result(Map.get(input.arguments, :attempt_id))
       end
     end
   end

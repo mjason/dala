@@ -49,10 +49,12 @@ defmodule Dala.Updater.Release do
   share the repo but use distinct tag prefixes (`v*` vs `client-v*`), and
   drafts/prereleases don't count.
   """
-  def server_release?(release) do
+  def server_release?(release) when is_map(release) do
     is_binary(release["tag_name"]) and release["tag_name"] =~ ~r/^v\d/ and
       release["draft"] != true and release["prerelease"] != true
   end
+
+  def server_release?(_release), do: false
 
   @doc "Download URL of the release's server tarball asset for this platform."
   def asset_url(release, platform \\ platform())
@@ -60,8 +62,11 @@ defmodule Dala.Updater.Release do
   def asset_url(%{"assets" => assets, "tag_name" => tag}, platform) when is_list(assets) do
     suffix = asset_suffix(platform)
 
-    case Enum.find(assets, &String.ends_with?(&1["name"] || "", suffix)) do
-      %{"browser_download_url" => url} -> {:ok, url}
+    case Enum.find(assets, fn asset ->
+           name = asset_name(asset)
+           is_binary(name) and String.ends_with?(name, suffix)
+         end) do
+      %{"browser_download_url" => url} when is_binary(url) -> {:ok, url}
       _ -> {:error, "release #{tag} has no #{suffix} asset"}
     end
   end
@@ -76,12 +81,18 @@ defmodule Dala.Updater.Release do
     suffix = asset_suffix(platform)
 
     with %{"name" => name, "browser_download_url" => archive_url} <-
-           Enum.find(assets, &String.ends_with?(&1["name"] || "", suffix)),
+           Enum.find(assets, fn asset ->
+             name = asset_name(asset)
+             is_binary(name) and String.ends_with?(name, suffix)
+           end),
+         true <- is_binary(archive_url),
          %{"browser_download_url" => checksum_url} <-
-           Enum.find(assets, &(&1["name"] == name <> ".sha256")) do
+           Enum.find(assets, fn asset -> asset_name(asset) == name <> ".sha256" end),
+         true <- is_binary(checksum_url) do
       {:ok, %{archive: archive_url, checksum: checksum_url}}
     else
       nil -> {:error, "release #{tag} is missing #{suffix} or its SHA-256 asset"}
+      false -> {:error, "release #{tag} has malformed #{suffix} assets"}
       _ -> {:error, "release #{tag} has malformed #{suffix} assets"}
     end
   end
@@ -102,4 +113,7 @@ defmodule Dala.Updater.Release do
   end
 
   def checksum_sha256(_body), do: {:error, "malformed SHA-256 checksum"}
+
+  defp asset_name(%{"name" => name}) when is_binary(name), do: name
+  defp asset_name(_asset), do: nil
 end

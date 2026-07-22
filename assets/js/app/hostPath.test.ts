@@ -36,6 +36,22 @@ describe("Windows host paths", () => {
     );
   });
 
+  it.each([
+    ["C:\\Work\\Repo", "c:/work/Repo/src/main.ts", "src/main.ts"],
+    ["C:/Work/Repo", "c:\\work\\Repo\\src\\main.ts", "src\\main.ts"],
+    ["\\\\Server\\Share\\Repo", "//server/share/Repo/src/a.ts", "src/a.ts"],
+    ["//Server/Share/Repo", "\\\\server\\share\\Repo\\src\\a.ts", "src\\a.ts"],
+  ])("builds relative paths across separator styles: %s -> %s", (from, to, expected) => {
+    expect(relativeHost(from, to)).toBe(expected);
+  });
+
+  it.each([
+    ["C:\\Work\\Repo", "D:/Work/Repo/src/main.ts"],
+    ["\\\\Server\\Share\\Repo", "//server/other/Repo/src/a.ts"],
+  ])("keeps targets on a different Windows root absolute: %s -> %s", (from, to) => {
+    expect(relativeHost(from, to)).toBe(to);
+  });
+
   it("encodes drive and UNC file URIs", () => {
     expect(toFileUri("C:\\Work Space\\中文.ts")).toBe(
       "file:///C:/Work%20Space/%E4%B8%AD%E6%96%87.ts",
@@ -48,6 +64,8 @@ describe("Windows host paths", () => {
   it("creates case-insensitive keys for Windows paths", () => {
     expect(hostPathKey("C:\\Work\\Dala\\")).toBe("c:/work/dala");
     expect(hostPathKey("c:/work/dala")).toBe("c:/work/dala");
+    expect(hostPathKey("C:\\")).toBe("c:/");
+    expect(hostPathKey("c:/")).toBe("c:/");
     expect(hostPathKey("/Work/Dala")).toBe("/Work/Dala");
   });
 });

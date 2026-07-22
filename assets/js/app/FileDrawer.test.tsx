@@ -22,6 +22,7 @@ const listDirectory = vi.fn();
 const readFile = vi.fn();
 const writeFile = vi.fn();
 const deleteEntry = vi.fn();
+const moveEntry = vi.fn();
 const gitStatus = vi.fn();
 const uploadMultipartFile = vi.fn();
 
@@ -31,6 +32,7 @@ vi.mock("../ash_rpc", () => ({
   readFile: (...args: unknown[]) => readFile(...args),
   writeFile: (...args: unknown[]) => writeFile(...args),
   deleteEntry: (...args: unknown[]) => deleteEntry(...args),
+  moveEntry: (...args: unknown[]) => moveEntry(...args),
   gitStatus: (...args: unknown[]) => gitStatus(...args),
 }));
 
@@ -76,6 +78,7 @@ beforeEach(() => {
   readFile.mockReset();
   writeFile.mockReset();
   deleteEntry.mockReset();
+  moveEntry.mockReset();
   gitStatus.mockReset();
   uploadMultipartFile.mockReset();
   uploadMultipartFile.mockResolvedValue({ path: "/uploaded/file", size: 1 });
@@ -536,6 +539,44 @@ describe("FileDrawer upload targeting", () => {
 
     fireEvent.click(document.querySelector("[data-cancel-upload]")!);
     await waitFor(() => expect(document.querySelector("[data-upload-progress]")).toBeNull());
+  });
+});
+
+describe("FileDrawer entry clipboard", () => {
+  it("refreshes both Windows directories after cutting an entry", async () => {
+    const source = "C:\\repo";
+    const target = "C:\\repo\\target";
+    const sourceFile = "C:\\repo\\a.txt";
+    listDirectory
+      .mockResolvedValueOnce(
+        listing(source, [entry("target", "directory"), entry("a.txt", "file")], "C:\\"),
+      )
+      .mockResolvedValueOnce(listing(source, [entry("target", "directory")], "C:\\"))
+      .mockResolvedValueOnce(listing(target, [entry("a.txt", "file")], source));
+    moveEntry.mockResolvedValueOnce({
+      success: true,
+      data: { path: "C:\\repo\\target\\a.txt" },
+    });
+
+    renderDrawer({ path: source });
+
+    const fileRow = (await screen.findByText("a.txt")).closest("[data-path]")!;
+    const targetRow = screen.getByText("target").closest("[data-path]")!;
+    fireEvent.contextMenu(fileRow, { clientX: 24, clientY: 32 });
+    fireEvent.click(document.querySelector('[data-ctx-item="cut-entry"]')!);
+    fireEvent.contextMenu(targetRow, { clientX: 24, clientY: 32 });
+    fireEvent.click(document.querySelector('[data-ctx-item="paste-entry"]')!);
+
+    await waitFor(() =>
+      expect(moveEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ input: { path: sourceFile, dir: target } }),
+      ),
+    );
+    await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(3));
+    expect(listDirectory.mock.calls.slice(1).map(([args]) => args.input.path)).toEqual([
+      source,
+      target,
+    ]);
   });
 });
 

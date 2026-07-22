@@ -214,7 +214,7 @@ defmodule DalaWeb.FileWatchSocket do
     |> String.replace("\\", "/")
     |> String.trim_trailing("/")
     |> case do
-      "C:" <> _ = drive when byte_size(drive) == 2 -> drive <> "/"
+      <<letter, ?:>> = drive when letter in ?A..?Z or letter in ?a..?z -> drive <> "/"
       "" -> "/"
       normalized -> normalized
     end

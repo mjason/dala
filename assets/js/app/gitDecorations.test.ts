@@ -85,4 +85,17 @@ describe("buildGitDecorations", () => {
       "ignored",
     );
   });
+
+  it("summarizes changed directories when the repository is a Windows drive root", () => {
+    const decorations = buildGitDecorations(
+      status(
+        [{ path: "src/main.ts", status: " M", staged: false, unstaged: true }],
+        "C:\\",
+      ),
+    );
+
+    expect(decorations.entries.get("c:/src/main.ts")?.tone).toBe("modified");
+    expect(decorations.entries.get("c:/src")?.tone).toBe("modified");
+    expect(decorations.entries.get("c:/")?.tone).toBe("modified");
+  });
 });

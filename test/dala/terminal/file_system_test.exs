@@ -254,15 +254,37 @@ defmodule Dala.Terminal.FileSystemTest do
       refute File.exists?(path)
     end
 
-    test "refuses collisions, slashes and dot names", %{dir: dir} do
+    test "refuses collisions", %{dir: dir} do
       path = Path.join(dir, "a.txt")
       File.write!(path, "hi")
       File.write!(Path.join(dir, "b.txt"), "there")
 
       assert {:error, _taken} = run(:rename_entry, %{path: path, name: "b.txt"})
-      assert {:error, _slash} = run(:rename_entry, %{path: path, name: "x/y"})
-      assert {:error, _dots} = run(:rename_entry, %{path: path, name: ".."})
       assert File.read!(path) == "hi"
+    end
+
+    test "refuses non-basename and NUL names on every host", %{dir: dir} do
+      invalid_names = ["x/y", ~S(x\y), ~S(..\outside), ".", "..", "bad\0name"]
+
+      for {name, index} <- Enum.with_index(invalid_names) do
+        path = Path.join(dir, "source-#{index}.txt")
+        File.write!(path, "hi")
+
+        assert {:error, _invalid} = run(:rename_entry, %{path: path, name: name})
+        assert File.read!(path) == "hi"
+      end
+    end
+
+    test "accepts Unicode and spaces in a basename", %{dir: dir} do
+      path = Path.join(dir, "a.txt")
+      File.write!(path, "hi")
+
+      dest = Path.join(dir, "\u9879\u76ee notes.txt")
+
+      assert {:ok, %{path: ^dest}} =
+               run(:rename_entry, %{path: path, name: "\u9879\u76ee notes.txt"})
+
+      assert File.read!(dest) == "hi"
     end
   end
 
@@ -317,6 +339,23 @@ defmodule Dala.Terminal.FileSystemTest do
       assert {:error, _taken} = run(:move_entry, %{path: path, dir: sub})
       assert {:error, _into_itself} = run(:move_entry, %{path: sub, dir: sub})
       assert File.read!(path) == "hi"
+    end
+
+    @tag skip: not Dala.TestPlatform.windows?()
+    test "refuses moving or copying into a differently-cased alias of its own descendant", %{
+      dir: dir
+    } do
+      source = Path.join(dir, "SourceCase")
+      nested = Path.join(source, "nested")
+      File.mkdir_p!(nested)
+
+      for action <- [:move_entry, :copy_entry] do
+        assert {:error, error} =
+                 run(action, %{path: String.upcase(source), dir: String.downcase(nested)})
+
+        assert Exception.message(error) =~ "a directory into itself"
+        assert File.dir?(source)
+      end
     end
   end
 end

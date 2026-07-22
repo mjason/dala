@@ -15,6 +15,8 @@ defmodule Dala.Terminal.Holder do
   @type_agent 0x06
   @type_text_snapshot 0x07
   @type_processes 0x08
+  # Protocol 7, bidirectional: request/ack payload is <<0 | 1>>.
+  @type_query_owner 0x17
   @type_auth 0x10
   @type_input 0x11
   @type_resize 0x12
@@ -36,6 +38,7 @@ defmodule Dala.Terminal.Holder do
   def type_agent, do: @type_agent
   def type_text_snapshot, do: @type_text_snapshot
   def type_processes, do: @type_processes
+  def type_query_owner, do: @type_query_owner
 
   def dir do
     base = System.get_env("XDG_RUNTIME_DIR") || System.tmp_dir!()
@@ -172,7 +175,13 @@ defmodule Dala.Terminal.Holder do
   def send_text_snapshot_req(socket, lines, max_bytes),
     do: :gen_tcp.send(socket, <<@type_text_snapshot_req, lines::32, max_bytes::32>>)
 
-  def send_processes_req(socket), do: :gen_tcp.send(socket, <<@type_processes_req>>)
+  def send_processes_req(socket, request_id)
+      when is_integer(request_id) and request_id >= 0 and request_id <= 0xFFFFFFFFFFFFFFFF,
+      do: :gen_tcp.send(socket, <<@type_processes_req, request_id::64>>)
+
+  @doc "Enable or disable holder-owned terminal query replies (protocol 7)."
+  def send_query_owner(socket, enabled) when is_boolean(enabled),
+    do: :gen_tcp.send(socket, <<@type_query_owner, if(enabled, do: 1, else: 0)>>)
 
   defp spawn_holder(id, opts) do
     binary = binary_path()

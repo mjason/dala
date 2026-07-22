@@ -37,8 +37,10 @@ Linux x86_64 / macOS arm64：
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 ```
 
-以 systemd **用户守护进程**安装预编译包，地址 `http://localhost:4400`。
-配置在 `~/.config/dala/dala.env`，数据在 `~/.local/share/dala`。
+预编译服务在 Linux 以 systemd user service 运行，在 macOS 以 launchd
+LaunchAgent 运行，地址 `http://localhost:4400`。
+配置在 `~/.config/dala/config.jsonc`，数据在 `~/.local/share/dala`；密钥由
+服务首次启动时写入数据目录下的 `secrets.json`。
 
 Windows 10 1809+ / Windows 11 x64（PowerShell，无需管理员权限）：
 
@@ -48,7 +50,8 @@ irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
 
 原生服务以当前用户计划任务运行，地址同样是 `http://localhost:4400`。
 版本和数据位于 `%LOCALAPPDATA%\Dala`，配置位于
-`%APPDATA%\Dala\dala.env`。新会话依次选择 PowerShell 7、Windows
+`%APPDATA%\Dala\config.jsonc`，自动生成的密钥只保存在
+`%LOCALAPPDATA%\Dala\data\secrets.json`。新会话依次选择 PowerShell 7、Windows
 PowerShell、CMD。Dala 重启和升级不会中断已有 shell；Windows 注销或重启
 后则不保证保留会话。终端 holder 通过 Windows 自带的 WMI 服务脱离服务器
 进程，无需管理员权限；系统需保持 Windows Management Instrumentation 服务
@@ -160,14 +163,14 @@ dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应
 **Codex**：无需插件，原生通知即可。**Gemini CLI**：装
 `warpdotdev/gemini-cli-warp`（见其仓库 README）。
 
-这四个 agent 都属于原生 Windows Tier 1。Dala 会识别 `.exe`、npm `.cmd`
-启动器和 agent 进程树，但绝不会自动修改 agent 配置。Claude Code、
+Dala 在原生 Windows 上会识别这四个 agent 的 `.exe`、npm `.cmd` 启动器和
+进程树，但绝不会自动修改 agent 配置。自动 CI 覆盖 ConPTY holder、进程识别、
+发布升级和 shell 重连；需要登录态的全屏交互与通知仍按
+`docs/windows-agent-certification.md` 在发布前手工认证。Claude Code、
 OpenCode、Gemini 仍需安装上述 Warp OSC 777 集成；Codex 使用原生 OSC 9
 通知（若你的 Codex 配置覆盖了自动选择，可显式设置
 `notification_method = "osc9"`）。Windows 不支持 zellij/tmux 集成，
 相关 UI 会自动隐藏。
-固定版本会在每次变更中通过 Dala 的 ConPTY holder 执行；最新版本由夜间
-任务探测，完整的全屏交互和通知则由发布前的登录态认证清单覆盖。
 
 启用后：
 
@@ -299,28 +302,30 @@ pyright 系就是这样接收 `python.pythonPath`、`venvPath` 的）：
 |---|---|
 | `~/.local/dala/versions/<tag>` | 解包后的各版本 |
 | `~/.local/dala/current` | 指向当前版本的符号链接 |
-| `~/.config/dala/dala.env` | 环境配置（密钥、端口、开关） |
+| `~/.config/dala/config.jsonc` | 服务配置（端口、监听地址、登录等） |
+| `~/.local/share/dala/secrets.json` | 首次启动自动生成的密钥（0600） |
+| `~/.config/dala/dala.env` | 旧版环境配置，仅为迁移兼容保留 |
 | `~/.config/systemd/user/dala.service` | 守护进程 unit |
 | `~/.local/share/dala` | SQLite 数据库、会话存储、滚动缓存 |
 
 unit 每次启动前先跑 `Dala.Release.migrate()`，升级自动迁移数据库；
 `KillMode=process` 保证服务重启时 PTY holder（以及你的 shell）不被杀。
 
-### 环境变量参考（`~/.config/dala/dala.env`）
+### 配置参考（`~/.config/dala/config.jsonc`）
 
-| 变量 | 默认 | 含义 |
+生产安装以配置文件为唯一来源，密钥不会写进配置或服务环境。编辑后重启服务。
+
+| 键 | 默认 | 含义 |
 |---|---|---|
-| `PORT` | `4400` | HTTP 端口 |
-| `DALA_LISTEN_IP` | `127.0.0.1` | 监听地址。**默认仅本机**——设 `0.0.0.0` 暴露局域网（务必同时开登录！） |
-| `DALA_AUTH_ENABLED` | `false` | 是否要求登录 |
-| `DALA_USERS` | — | 引导账号，`email:password[,email2:password2]`（密码至少 8 位）。**仅首次启动生效**：已存在的账号不会被改动——账号建好后请删除该行，别让明文密码留在配置里。忘记密码：临时加 `DALA_USERS_RESET=true` 重启一次 |
-| `PHX_HOST` / `PHX_SCHEME` / `PHX_URL_PORT` | `localhost` / `http` / 同 `PORT` | 对外 URL 组成（挂反代时设置） |
-| `PHX_CHECK_ORIGIN` | `false` | WebSocket 来源校验——固定域名的反代后面建议开 |
-| `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite 位置 |
-| `DALA_DATA_DIR` | `~/.local/share/dala` | 会话存储与滚动缓存 |
-| `DALA_RELEASE_ROOT` | install.sh 设置 | 存在时启用应用内升级 |
-| `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / `dala` | 升级源仓库 / systemd unit 名 |
-| `SECRET_KEY_BASE` / `TOKEN_SIGNING_SECRET` | 自动生成 | 会话/令牌密钥——注意保密 |
+| `port` | `4400` | HTTP 端口 |
+| `listenIp` | `"127.0.0.1"` | 监听地址。默认仅本机；设为 `"0.0.0.0"` 时务必开启登录 |
+| `auth.enabled` | `false` | 是否要求登录 |
+| `auth.users` | — | 首次启动引导账号；账号建好后删除明文值 |
+| `host` / `scheme` / `urlPort` | `"localhost"` / `"http"` / 同 `port` | 对外 URL |
+| `checkOrigin` | `false` | WebSocket 来源校验 |
+| `databasePath` | `<dataDir>/dala.db` | SQLite 位置 |
+| `dataDir` | `~/.local/share/dala` | 会话、滚动缓存与自动生成密钥 |
+| `releaseRoot` / `serviceName` | 安装器写入 | 启用应用内升级 |
 
 改完执行 `systemctl --user restart dala`（shell 存活）。
 
@@ -336,8 +341,9 @@ systemctl --user restart dala
 
 ### 局域网访问
 
-1. `dala.env` 里：`DALA_LISTEN_IP=0.0.0.0`、`DALA_AUTH_ENABLED=true`、
-   `DALA_USERS=you@example.com:yourpassword`，然后重启服务。能登录后**删掉 `DALA_USERS` 这一行**——账号已持久化，别把明文密码留在文件里。
+1. 在 `config.jsonc` 设置 `"listenIp": "0.0.0.0"` 和
+   `"auth": { "enabled": true, "users": "you@example.com:yourpassword" }`，
+   然后重启。能登录后删除 `users`，不要留下明文密码。
 2. 其他设备访问 `http://<机器IP>:<端口>`。
 3. **WSL2**：使用镜像网络（`.wslconfig` → `networkingMode=mirrored`），
    并放行 Hyper-V 防火墙端口（管理员 PowerShell）：
@@ -368,13 +374,15 @@ config :dala, DalaWeb.Endpoint,
   ]
 ```
 
-并在 `dala.env` 设置 `PHX_SCHEME=https`、`PHX_HOST=<域名>`、`PHX_CHECK_ORIGIN=true`。
+并在 `config.jsonc` 设置 `"scheme": "https"`、`"host": "<域名>"`、
+`"checkOrigin": true`。
 
 ### 发布与源码构建
 
 发布产物由 GitHub Actions 在打 `v*` tag 时自动构建
 （`.github/workflows/release.yml`）：生产前端（minify + digest）、Rust NIF、
-PTY holder，打包为 `dala-<tag>-linux-x86_64.tar.gz`。
+PTY holder，构建 Linux x86_64、macOS arm64 和 Windows x86_64 包。Windows ZIP
+会先通过真实安装/升级/回滚/卸载 smoke，随后上传同一份已测试文件。
 
 本地开发需要 Elixir 1.19+/OTP 28、Rust、Node 22：
 

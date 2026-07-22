@@ -5,6 +5,12 @@ server release. Automated project CI does not install third-party agents or
 exercise authenticated workflows, so record the exact agent version for every
 manual result.
 
+CI covers the native holder transport, ConPTY shell behavior, process-tree
+detection, packaged Scheduled Task installation, failed-update rollback,
+successful cross-version reattachment and purge uninstall. This checklist
+covers the third-party and authenticated behavior that automation deliberately
+does not claim.
+
 Record the Windows build, Dala commit, shell, agent version and result for each
 row. Test both PowerShell 7 (when installed) and CMD. Use a project path that
 contains spaces.

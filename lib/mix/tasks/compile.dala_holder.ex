@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Compile.DalaHolder do
   @moduledoc """
   Builds the `dala_holder` PTY holder and the Windows Scheduled Task launcher
   (plain cargo binaries, not Rustler NIFs), then installs them under `priv/bin`.
-  Skipped when the installed binaries are newer than every source file.
+  Skipped when the installed binaries are newer than every Cargo input.
   """
 
   use Mix.Task.Compiler
@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Compile.DalaHolder do
                  else: ["dala_holder"]
                )
   @targets Enum.map(@executables, &Path.join("priv/bin", &1))
+  @required_cargo_inputs ["Cargo.toml", "Cargo.lock"]
 
   @impl true
   def run(_args) do
@@ -43,10 +44,28 @@ defmodule Mix.Tasks.Compile.DalaHolder do
     {:ok, []}
   end
 
-  defp stale? do
-    sources = [Path.join(@crate, "Cargo.toml") | Path.wildcard(Path.join(@crate, "src/**/*.rs"))]
+  @doc false
+  def cargo_inputs do
+    required = @required_cargo_inputs
 
-    Enum.any?(@targets, fn target ->
+    optional =
+      ["build.rs", ".cargo/config", ".cargo/config.toml"] ++
+        Path.wildcard(Path.join(@crate, ".cargo/**/*"))
+
+    (required ++ optional)
+    |> Enum.map(&Path.join(@crate, &1))
+    |> Kernel.++(Path.wildcard(Path.join(@crate, "src/**/*.rs")))
+    |> Enum.uniq()
+  end
+
+  @doc false
+  def stale?(targets \\ @targets)
+
+  def stale?(targets) when is_list(targets), do: stale?(targets, cargo_inputs())
+
+  @doc false
+  def stale?(targets, sources) when is_list(targets) and is_list(sources) do
+    Enum.any?(targets, fn target ->
       case File.stat(target, time: :posix) do
         {:error, _reason} ->
           true
@@ -55,6 +74,11 @@ defmodule Mix.Tasks.Compile.DalaHolder do
           Enum.any?(sources, fn source ->
             case File.stat(source, time: :posix) do
               {:ok, %{mtime: changed_at}} -> changed_at > built_at
+              # Removing a required Cargo input changes the build contract
+              # and must force a fresh build. Optional paths are retained by
+              # cargo_inputs/0 so a newly added build script/config is
+              # detected; a missing optional path is benign.
+              {:error, :enoent} -> Path.basename(source) in @required_cargo_inputs
               {:error, _reason} -> false
             end
           end)

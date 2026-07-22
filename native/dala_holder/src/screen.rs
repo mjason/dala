@@ -1265,6 +1265,40 @@ mod tests {
     }
 
     #[test]
+    fn terminal_query_replies_are_captured_for_the_pty_owner() {
+        let mut screen = Screen::new(24, 80, 100);
+
+        screen.advance(b"\x1b[c");
+        assert_eq!(screen.take_pty_writes(), [b"\x1b[?6c".to_vec()]);
+
+        screen.advance(b"\x1b[>c");
+        let secondary = screen.take_pty_writes();
+        assert_eq!(secondary.len(), 1);
+        assert!(secondary[0].starts_with(b"\x1b[>0;"));
+        assert!(secondary[0].ends_with(b";1c"));
+
+        screen.advance(b"\x1b[5n\x1b[3;4H\x1b[6n");
+        assert_eq!(
+            screen.take_pty_writes(),
+            [b"\x1b[0n".to_vec(), b"\x1b[3;4R".to_vec()]
+        );
+
+        screen.advance(b"\x1b[4$p\x1b[?2004$p\x1b[18t");
+        assert_eq!(
+            screen.take_pty_writes(),
+            [
+                b"\x1b[4;2$y".to_vec(),
+                b"\x1b[?2004;2$y".to_vec(),
+                b"\x1b[8;24;80t".to_vec(),
+            ]
+        );
+
+        // Alacritty does not own DEC private DSR; xterm must still answer it.
+        screen.advance(b"\x1b[?6n");
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
     fn repaint_carries_screen_content_and_colors() {
         let mut screen = Screen::new(24, 80, 100);
         screen.advance(b"hello \x1b[31mred\x1b[0m plain\r\nsecond line");

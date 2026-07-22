@@ -81,7 +81,11 @@ export function basenameHost(path: string): string {
 }
 
 export function hostPathKey(path: string): string {
-  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "") || "/";
+  const slashNormalized = path.replaceAll("\\", "/");
+  if (/^[A-Za-z]:\/?$/.test(slashNormalized)) {
+    return `${slashNormalized[0].toLowerCase()}:/`;
+  }
+  const normalized = slashNormalized.replace(/\/+$/, "") || "/";
   return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//")
     ? normalized.toLowerCase()
     : normalized;
@@ -90,7 +94,13 @@ export function hostPathKey(path: string): string {
 export function relativeHost(from: string, to: string): string {
   const source = parse(from);
   const target = parse(to);
-  if (source.windows !== target.windows || source.root.toLowerCase() !== target.root.toLowerCase()) {
+  const sourceRoot = source.windows
+    ? source.root.replaceAll("\\", "/").toLowerCase()
+    : source.root;
+  const targetRoot = target.windows
+    ? target.root.replaceAll("\\", "/").toLowerCase()
+    : target.root;
+  if (source.windows !== target.windows || sourceRoot !== targetRoot) {
     return to;
   }
 

@@ -227,7 +227,7 @@ defmodule Dala.Terminal.FileSystem do
         name = input.arguments.name
 
         cond do
-          name == "" or String.contains?(name, "/") or name in [".", ".."] ->
+          not valid_entry_name?(name) ->
             {:error, "invalid name"}
 
           true ->
@@ -626,12 +626,23 @@ defmodule Dala.Terminal.FileSystem do
 
   defp expand(path), do: Dala.Paths.expand_user(path)
 
+  defp valid_entry_name?(name) do
+    name not in ["", ".", ".."] and
+      not String.contains?(name, ["/", "\\", <<0>>]) and
+      Path.basename(name) == name
+  end
+
   # lstat, so dangling symlinks count as existing (rename onto one would
   # clobber it).
   defp exists?(path), do: match?({:ok, _stat}, File.lstat(path))
 
   # Is `path` equal to or nested under `root`?
-  defp inside?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+  defp inside?(path, root) do
+    path_key = Dala.Paths.comparison_key(path)
+    root_key = Dala.Paths.comparison_key(root)
+    root_prefix = if String.ends_with?(root_key, "/"), do: root_key, else: root_key <> "/"
+    path_key == root_key or String.starts_with?(path_key, root_prefix)
+  end
 
   # First free destination name: "name", then "name copy", "name copy 2", …
   # File extensions stay at the end ("a.txt copy" would break the type):

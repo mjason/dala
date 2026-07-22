@@ -361,7 +361,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError, pl
                     </button>
                   )}
                 </div>
-                {running && platform !== "windows" && (
+                {running && platform != null && platform !== "windows" && (
                   <div className="flex items-center justify-between gap-3 border-t border-line/70 pt-2">
                     <div className="min-w-0">
                       <span className="block text-[13px] text-fg">{t("kickViewers")}</span>

@@ -182,30 +182,68 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
-      - name: Install dependencies
+      - name: Install dependencies (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
+          set -euo pipefail
           mix deps.get --only prod
           npm ci --prefix assets
-      - name: Build release
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          mix deps.get --only prod
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
           mix compile --warnings-as-errors
           mix tailwind.install --if-missing
           mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
+      - name: Build release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          mix compile --warnings-as-errors
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix tailwind.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix esbuild.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix assets.deploy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix release --overwrite
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke-test Windows installation lifecycle
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
-          ./ci/windows-release-smoke.ps1
+          $release = "_build/prod/rel/dala"
+          $archive = Join-Path $env:RUNNER_TEMP "dala-v0.0.0-ci-windows-x86_64.zip"
+          $checksum = "$archive.sha256"
+          Compress-Archive -Path "$release/*" -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($checksum, "$hash  $(Split-Path -Leaf $archive)`n", [Text.UTF8Encoding]::new($false))
+          ./ci/windows-release-smoke.ps1 -ArchivePath $archive -ChecksumPath $checksum
+          if (-not $?) { exit 1 }
       - name: Smoke-test Unix release lifecycle
         if: runner.os != 'Windows'
         shell: bash
         run: bash ./ci/unix-release-smoke.sh
 
   e2e:
-    name: BDD e2e（Playwright 8 场景）
+    name: BDD e2e（Playwright）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

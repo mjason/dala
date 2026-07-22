@@ -55,7 +55,8 @@ defmodule Dala.Updater.ReleaseTest do
         {%{"tag_name" => "version-1"}, false},
         {%{"tag_name" => "v"}, false},
         {%{"tag_name" => nil}, false},
-        {%{}, false}
+        {%{}, false},
+        {123, false}
       ]
 
       for {release, expected} <- cases do
@@ -124,6 +125,16 @@ defmodule Dala.Updater.ReleaseTest do
     test "tolerates assets without a name" do
       release = %{"tag_name" => "v1.2.3", "assets" => [%{}]}
       assert {:error, _message} = Release.asset_url(release)
+    end
+
+    test "tolerates malformed asset entries" do
+      release = %{
+        "tag_name" => "v1.2.3",
+        "assets" => [123, %{"name" => 42}, %{"name" => "readme.txt"}]
+      }
+
+      assert {:error, _message} = Release.asset_url(release)
+      assert {:error, _message} = Release.verified_asset_urls(release, "linux-x86_64")
     end
 
     test "errors on malformed payloads" do

@@ -25,8 +25,15 @@ defmodule Dala.Paths do
   case.
   """
   def comparison_key(path) when is_binary(path) do
-    normalized = path |> Path.expand() |> String.replace("\\", "/")
-    if match?({:win32, _}, :os.type()), do: String.downcase(normalized), else: normalized
+    path
+    |> Path.expand()
+    |> comparison_key_for_os(:os.type())
+  end
+
+  @doc false
+  def comparison_key_for_os(path, os_type) when is_binary(path) do
+    normalized = String.replace(path, "\\", "/")
+    if match?({:win32, _}, os_type), do: String.downcase(normalized), else: normalized
   end
 
   @doc """

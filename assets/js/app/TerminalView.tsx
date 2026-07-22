@@ -47,6 +47,12 @@ import {
   type ReplayPresentation,
   type ReplayTrigger,
 } from "./replayPresentation";
+import {
+  createHolderQueryNegotiator,
+  createTerminalWriteBarrier,
+  installHolderQueryOwnership,
+  type HolderQueryCapabilities,
+} from "./terminalQueryOwner";
 
 // Wait for the bundled font faces (the guaranteed fallback of every stack)
 // before the terminal measures its cell size — measuring against a fallback
@@ -275,6 +281,7 @@ export default function TerminalView({
         allowTransparency: false,
         allowProposedApi: true,
       });
+      const holderQueryOwnership = installHolderQueryOwnership(term);
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
@@ -617,8 +624,10 @@ export default function TerminalView({
       // carry the stable device id the size ownership sticks to.
       const phxChannel = getSocket().channel(`terminal:${sessionId}`, {
         device_id: deviceId,
+        terminal_query_owner: true,
       });
       const channel = phxChannel as unknown as TerminalChannel;
+      const terminalWriteBarrier = createTerminalWriteBarrier();
       const lazyHistory = createLazyHistory();
       const hiddenOutput = createHiddenOutputBuffer(HIDDEN_OUTPUT_LIMIT);
       let viewerVisible = visibleRef.current && document.visibilityState === "visible";
@@ -759,12 +768,39 @@ export default function TerminalView({
       ) => {
         const size = typeof data === "string" ? data.length : data.byteLength;
         const ackEpoch = ackCounter.epoch();
-        term.write(data, () => {
-          ackCounter.consumed(size, term.buffer.active.type === "alternate", ackEpoch);
-          if (pinScroll) scrollPinnedBottom();
-          done?.();
-        });
+        const finishWrite = terminalWriteBarrier.beginWrite();
+        try {
+          term.write(data, () => {
+            try {
+              ackCounter.consumed(size, term.buffer.active.type === "alternate", ackEpoch);
+              if (pinScroll) scrollPinnedBottom();
+              done?.();
+            } finally {
+              finishWrite();
+            }
+          });
+        } catch (error) {
+          finishWrite();
+          throw error;
+        }
       };
+
+      const waitForTerminalOutput = (callback: () => void) => {
+        // Hidden pooled terminals normally defer this bounded delta. At an
+        // ownership boundary it must be parsed under the old owner first;
+        // replaying it later under the new owner could create a stale second
+        // query reply (or suppress the only reply).
+        const hiddenPending = hiddenOutput.drain();
+        if (hiddenPending.byteLength > 0) {
+          writeCounted(typeahead.reconcile(hiddenPending), undefined, false);
+        }
+        terminalWriteBarrier.afterPendingWrites(callback);
+      };
+      const holderQueryNegotiator = createHolderQueryNegotiator(
+        holderQueryOwnership,
+        () => phxChannel.push("query_owner_ready", {}),
+        waitForTerminalOutput,
+      );
 
       visibilityActionRef.current = (nextVisible) => {
         if (viewerVisible === nextVisible) return;
@@ -1323,6 +1359,8 @@ export default function TerminalView({
             owner_device?: string | null;
             client_id?: string;
             platform?: "windows" | "macos" | "linux";
+            holder_query_owner?: boolean;
+            holder_query_owner_supported?: boolean;
           }) => {
             // Every successful (re)join creates a fresh server-side Channel
             // ledger. Rotate before any replay write callback can acknowledge
@@ -1336,6 +1374,11 @@ export default function TerminalView({
             wireReplayTrace = null;
             replayTriggerRef.current = "initial";
             if (resp?.platform) onPlatform?.(resp.platform);
+            // Keep xterm authoritative while asking the server to enable the
+            // holder. The holder holds post-transition output behind its ACK;
+            // `terminal_capabilities` then switches the parser handlers before
+            // that output reaches xterm. Older holders leave xterm in charge.
+            holderQueryNegotiator.joined(resp ?? {});
             clientId = resp?.client_id ?? null;
             if (applyOwnership(resp ?? {}) !== "driver") {
               // Someone else drives the size — another device (hard
@@ -1373,6 +1416,7 @@ export default function TerminalView({
           },
         )
         .receive("error", () => {
+          holderQueryNegotiator.disconnected();
           term.writeln("\x1b[31mcould not attach to session\x1b[0m", () => {
             if (!disposed) setReplaying(false);
           });
@@ -1393,6 +1437,11 @@ export default function TerminalView({
         }) => {
           applyOwnership(p);
         },
+      );
+
+      phxChannel.on(
+        "terminal_capabilities",
+        (capabilities: HolderQueryCapabilities) => holderQueryNegotiator.updated(capabilities),
       );
 
       // Follower: track the owner's PTY size instead of driving our own.
@@ -1649,6 +1698,8 @@ export default function TerminalView({
         container.removeEventListener("mouseup", onMouseUp);
         stopPrefsSync();
         stopThemeSync();
+        terminalWriteBarrier.dispose();
+        holderQueryOwnership.dispose();
         inputDisposable.dispose();
         typeahead.dispose();
         ackCounter.dispose();

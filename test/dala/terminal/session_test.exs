@@ -110,6 +110,63 @@ defmodule Dala.Terminal.SessionTest do
     assert Server.alive?(session.id)
   end
 
+  test "query-owner ACK flushes earlier batched output before capabilities" do
+    session = create_session!()
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {fake_socket, peer} = tcp_pair()
+    topic = "terminal:#{session.id}"
+
+    _ = Server.size_info(session.id)
+    :ok = :inet.setopts(original_socket, active: false)
+    Phoenix.PubSub.subscribe(Dala.PubSub, topic)
+
+    timer = Process.send_after(server, :flush_output, 60_000)
+
+    :sys.replace_state(server, fn state ->
+      if state.out_timer, do: Process.cancel_timer(state.out_timer)
+
+      %{
+        state
+        | socket: fake_socket,
+          holder_proto: 7,
+          query_owner_phase: :enabling,
+          query_owner_enabled?: false,
+          query_owner_negotiable?: true,
+          query_clients: %{},
+          out_buf: ["old-owner-query"],
+          out_timer: timer
+      }
+    end)
+
+    try do
+      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 1>>})
+      _ = Server.size_info(session.id)
+
+      assert_receive %Phoenix.Socket.Broadcast{} = first, 1_000
+      assert first.event == "output"
+      assert Base.decode64!(first.payload.data) == "old-owner-query"
+
+      assert_receive %Phoenix.Socket.Broadcast{} = second, 1_000
+      assert second.event == "terminal_capabilities"
+      assert second.payload.holder_query_owner
+    after
+      if Process.alive?(server) do
+        current = :sys.get_state(server)
+        if current.out_timer, do: Process.cancel_timer(current.out_timer)
+
+        :sys.replace_state(server, fn state ->
+          %{state | socket: original_socket, out_buf: [], out_timer: nil}
+        end)
+
+        :ok = :inet.setopts(original_socket, active: true)
+      end
+
+      :gen_tcp.close(fake_socket)
+      :gen_tcp.close(peer)
+    end
+  end
+
   test "a full repaint queue rejects targeted and all-client work without shifting FIFO" do
     session = create_session!()
     server = Server.whereis(session.id)
@@ -141,6 +198,9 @@ defmodule Dala.Terminal.SessionTest do
       _ = Server.size_info(session.id)
 
       assert :queue.len(:sys.get_state(server).pending_repaints) == 64
+      assert {:ok, <<0x17, 0>>} = :gen_tcp.recv(peer, 0, 1_000)
+      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 0>>})
+      _ = Server.size_info(session.id)
       assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
     after
       if Process.alive?(server) do
@@ -178,6 +238,9 @@ defmodule Dala.Terminal.SessionTest do
       Server.claim_size(session.id, self(), "queue-test", "queue-device", 26, 82)
       _ = Server.size_info(session.id)
 
+      assert {:ok, <<0x17, 0>>} = :gen_tcp.recv(peer, 0, 1_000)
+      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 0>>})
+      _ = Server.size_info(session.id)
       assert {:ok, <<0x12, 25::16, 81::16>>} = :gen_tcp.recv(peer, 0, 1_000)
       assert {:ok, <<0x12, 26::16, 82::16>>} = :gen_tcp.recv(peer, 0, 1_000)
       assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)

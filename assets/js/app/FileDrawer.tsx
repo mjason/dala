@@ -104,7 +104,7 @@ export default function FileDrawer({
     if (entry.op === "copy") {
       await copyEntryTo(entry.path, dir);
     } else {
-      const parentDir = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
+      const parentDir = dirnameHost(entry.path);
       const moved = await moveEntryTo(entry.path, parentDir, dir);
       // A cut is one-shot; a failed move keeps it for another try.
       if (moved) setClipboard(null);

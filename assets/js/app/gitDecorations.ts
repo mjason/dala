@@ -80,6 +80,7 @@ export function buildGitDecorations(status: Status | null): GitDecorationIndex {
   if (!status?.repo || !status.root) return { entries, ignored };
   const root = status.root.replace(/[\\/]+$/, "") || "/";
   const rootKey = hostPathKey(root);
+  const rootPrefix = rootKey.endsWith("/") ? rootKey : `${rootKey}/`;
 
   for (const path of status.ignored) {
     const absolute = joinHost(root, path);
@@ -95,7 +96,7 @@ export function buildGitDecorations(status: Status | null): GitDecorationIndex {
 
     const summary = folderSummary(decoration.tone);
     let dir = parent(absolute);
-    while (dir && (hostPathKey(dir) === rootKey || hostPathKey(dir).startsWith(`${rootKey}/`))) {
+    while (dir && (hostPathKey(dir) === rootKey || hostPathKey(dir).startsWith(rootPrefix))) {
       const key = hostPathKey(dir);
       const existing = entries.get(key);
       if (!existing || TONE_PRIORITY[decoration.tone] > TONE_PRIORITY[existing.tone]) {

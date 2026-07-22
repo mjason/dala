@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A developer shell can inherit these from an installed release. Letting them
+# leak into the fixture can make the generated launcher boot a different
+# version or touch production configuration instead of the isolated smoke root.
+while IFS= read -r variable; do
+  unset "$variable"
+done < <(compgen -e DALA_ || true)
+
+unset PHX_SERVER PORT PHX_HOST PHX_CHECK_ORIGIN DATABASE_PATH \
+  SECRET_KEY_BASE TOKEN_SIGNING_SECRET RELEASE_NAME RELEASE_VSN \
+  RELEASE_MODE RELEASE_NODE RELEASE_COOKIE RELEASE_TMP RELEASE_VM_ARGS \
+  RELEASE_REMOTE_VM_ARGS RELEASE_DISTRIBUTION RELEASE_BOOT_SCRIPT \
+  RELEASE_BOOT_SCRIPT_CLEAN RELEASE_SYS_CONFIG
+
 release_dir="${1:-_build/prod/rel/dala}"
 release_dir="$(cd "$release_dir" && pwd)"
 release_bin="$release_dir/bin/dala"
+release_version="$(awk '{print $2}' "$release_dir/releases/start_erl.data")"
+update_helper="$release_dir/lib/dala-$release_version/priv/unix/update-dala.sh"
 
 if [[ ! -x "$release_bin" ]]; then
   echo "Release is missing executable bin/dala: $release_dir" >&2
+  exit 1
+fi
+
+if [[ ! -x "$update_helper" ]]; then
+  echo "Release is missing executable Unix update helper: $update_helper" >&2
   exit 1
 fi
 
@@ -25,6 +45,7 @@ trap cleanup EXIT
 port="$(node -e 'const net=require("net");const s=net.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 mkdir -p "$smoke_root/data"
 
+export DALA_CONFIG="$smoke_root/config.jsonc"
 export PHX_SERVER=true
 export PORT="$port"
 export PHX_HOST=localhost

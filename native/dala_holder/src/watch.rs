@@ -197,7 +197,7 @@ pub fn run() -> ! {
     let mut _current: Option<Arc<Mutex<RecommendedWatcher>>> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
-        let root = PathBuf::from(line.trim());
+        let root = PathBuf::from(line);
         if root.as_os_str().is_empty() {
             continue;
         }
@@ -208,6 +208,7 @@ pub fn run() -> ! {
             // Tolerable: the drawer can navigate somewhere that just got
             // deleted; the next root replaces us anyway.
             eprintln!("dala_holder watch: {}: not a directory", root.display());
+            emit_sentinel(&format!("!fallback not a directory: {}", root.display()));
             continue;
         }
         if let Some(reason) = pathological_root(&root) {

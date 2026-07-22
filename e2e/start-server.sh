@@ -19,6 +19,13 @@ set -euo pipefail
 
 cd ..
 
+# An interactive shell opened by an installed Dala release carries its
+# production DALA_* configuration. The fixture defines its own values below;
+# remove everything else before Mix evaluates runtime configuration.
+while IFS= read -r variable; do
+  unset "$variable"
+done < <(compgen -e DALA_ || true)
+
 # Housekeeping: previous runs leave /tmp/dala-e2e-* workdirs behind (the
 # script is SIGKILLed by Playwright, so no exit trap can clean up). Reap
 # leftover e2e holder shells (ONLY ones whose socket lives under an e2e

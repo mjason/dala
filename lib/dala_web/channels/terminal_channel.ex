@@ -21,7 +21,10 @@ defmodule DalaWeb.TerminalChannel do
   # resumes — the backlog ahead of a keystroke echo stays bounded on slow
   # links (mosh's state-sync idea). Clients that never ack (older bundles)
   # get the full stream, exactly as before.
-  intercept ["output", "exit"]
+  # Capability transitions share the intercepted output path so Phoenix cannot
+  # fastlane them past an earlier output frame. The browser's xterm-write
+  # barrier relies on this transport order when query ownership changes.
+  intercept ["output", "exit", "terminal_capabilities"]
 
   # Alt screen (TUIs — no scrollback to lose): skip aggressively.
   @high_water_alt 128 * 1024
@@ -63,7 +66,6 @@ defmodule DalaWeb.TerminalChannel do
     case Dala.Terminal.get_session(session_id) do
       {:ok, session} ->
         session = reconcile_status(session)
-        send(self(), :after_join)
 
         client_id = Ash.UUID.generate()
 
@@ -80,59 +82,97 @@ defmodule DalaWeb.TerminalChannel do
             _other -> nil
           end
 
-        # The reply tells this client who holds the size — the live owner
-        # and the remembered owner device — plus its own client_id so it can
-        # recognize itself in `size_owner` broadcasts. A session that is not
-        # running reports NO owner device even when one is remembered: there
-        # is no live PTY to follow (or take over), so the client renders
-        # plainly — and a restart clears the memory anyway (the restarting
-        # device adopts fresh).
-        %{owner: owner, owner_device: owner_device, rows: rows, cols: cols} =
-          Dala.Terminal.Server.size_info(session_id) ||
-            %{owner: nil, owner_device: nil, rows: 24, cols: 80}
+        query_owner_supported? = payload["terminal_query_owner"] == true
 
-        socket =
-          socket
-          |> assign(:session_id, session.id)
-          |> assign(:client_id, client_id)
-          |> assign(:device_id, device_id)
-          |> assign(:visible, true)
-          |> assign(:initial_repaint_timed_out, false)
-          |> assign(:fc, %{
-            enabled: false,
-            alt: false,
-            sent: 0,
-            acked: 0,
-            skipping: false,
-            repaint_requested: false,
-            pending_history: nil,
-            queued_history: nil,
-            # A holder repaint is asynchronous. The ref/generation pair lets
-            # us settle a lost request without allowing its late response to
-            # clear a newer request's state.
-            repaint_generation: 0,
-            repaint_ref: nil,
-            repaint_timer: nil,
-            repaint_retry_timer: nil,
-            repaint_timed_out: false,
-            repaint_fallback_sent: false
-          })
+        # Register during join, before this channel can receive PTY output.
+        # Protocol-7 holders default to browser ownership. If another viewer
+        # had enabled holder ownership, Server waits for its disable ACK here
+        # so a legacy browser never enters with both responders active.
+        case Dala.Terminal.Server.register_query_client(
+               session_id,
+               self(),
+               client_id,
+               query_owner_supported?
+             ) do
+          {:ok, capabilities} ->
+            complete_join(
+              session,
+              client_id,
+              device_id,
+              query_owner_supported?,
+              capabilities,
+              socket
+            )
 
-        {:ok,
-         %{
-           status: session.status,
-           cwd: session.cwd,
-           rows: rows,
-           cols: cols,
-           owner: owner,
-           owner_device: owner_device,
-           client_id: client_id,
-           platform: platform_name()
-         }, socket}
+          {:error, _reason} ->
+            {:error, %{reason: "query_owner_unavailable"}}
+        end
 
       {:error, _error} ->
         {:error, %{reason: "not_found"}}
     end
+  end
+
+  defp complete_join(
+         session,
+         client_id,
+         device_id,
+         query_owner_supported?,
+         capabilities,
+         socket
+       ) do
+    session_id = to_string(session.id)
+
+    # The reply tells this client who holds the size — the live owner and the
+    # remembered owner device — plus its own client_id so it can recognize
+    # itself in `size_owner` broadcasts. Exited sessions report no live owner.
+    %{owner: owner, owner_device: owner_device, rows: rows, cols: cols} =
+      Dala.Terminal.Server.size_info(session_id) ||
+        %{owner: nil, owner_device: nil, rows: 24, cols: 80}
+
+    socket =
+      socket
+      |> assign(:session_id, session.id)
+      |> assign(:client_id, client_id)
+      |> assign(:device_id, device_id)
+      |> assign(:query_owner_supported, query_owner_supported?)
+      |> assign(:visible, true)
+      |> assign(:initial_repaint_timed_out, false)
+      |> assign(:fc, %{
+        enabled: false,
+        alt: false,
+        sent: 0,
+        acked: 0,
+        skipping: false,
+        repaint_requested: false,
+        pending_history: nil,
+        queued_history: nil,
+        # A holder repaint is asynchronous. The ref/generation pair lets us
+        # settle a lost request without allowing its late response to clear a
+        # newer request's state.
+        repaint_generation: 0,
+        repaint_ref: nil,
+        repaint_timer: nil,
+        repaint_retry_timer: nil,
+        repaint_timed_out: false,
+        repaint_fallback_sent: false
+      })
+
+    send(self(), :after_join)
+
+    {:ok,
+     %{
+       status: session.status,
+       cwd: session.cwd,
+       rows: rows,
+       cols: cols,
+       owner: owner,
+       owner_device: owner_device,
+       client_id: client_id,
+       platform: platform_name(),
+       holder_query_owner: capabilities.holder_query_owner,
+       holder_query_owner_supported: capabilities.holder_query_owner_supported
+     }, socket}
   end
 
   # A brutally-killed Terminal.Server (code-reload purge, VM crash mid-callback)
@@ -386,6 +426,11 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
+  def handle_out("terminal_capabilities", payload, socket) do
+    push(socket, "terminal_capabilities", payload)
+    {:noreply, socket}
+  end
+
   def handle_out("exit", payload, socket) do
     push(socket, "exit", payload)
 
@@ -430,6 +475,14 @@ defmodule DalaWeb.TerminalChannel do
 
   def handle_in("input", %{"data" => data}, socket) when is_binary(data) do
     Dala.Terminal.Server.input(socket.assigns.session_id, data)
+    {:noreply, socket}
+  end
+
+  def handle_in("query_owner_ready", _payload, socket) do
+    if socket.assigns.query_owner_supported do
+      Dala.Terminal.Server.query_client_ready(socket.assigns.session_id, self())
+    end
+
     {:noreply, socket}
   end
 

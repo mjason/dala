@@ -67,6 +67,10 @@ defmodule Dala.Terminal.Boot do
 
     with true <- Dala.Terminal.Holder.exists?(id),
          {:ok, _pid} <- Dala.Terminal.Server.ensure_started(session) do
+      # A full BEAM restart cannot retain Phoenix channel processes. Let the
+      # reattached holder answer terminal queries while no browser is present;
+      # Server still disables it before any later legacy channel joins.
+      Dala.Terminal.Server.allow_query_owner(id)
       Logger.info("reattached terminal session #{id}")
     else
       _no_holder_or_failed ->

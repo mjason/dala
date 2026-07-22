@@ -4,7 +4,7 @@ defmodule Dala.MixProject do
   def project do
     [
       app: :dala,
-      version: "0.25.16",
+      version: "0.25.17",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -236,9 +236,12 @@ defmodule Dala.MixProject do
     end
   end
 
-  defp wait_for_npm_status(_status_file, 0), do: Mix.raise("npm run check timed out")
+  @doc false
+  def wait_for_npm_status(_status_file, attempts) when attempts <= 0,
+    do: Mix.raise("npm run check timed out")
 
-  defp wait_for_npm_status(status_file, attempts) do
+  @doc false
+  def wait_for_npm_status(status_file, attempts) do
     case File.read(status_file) do
       {:ok, status} ->
         case Integer.parse(String.trim(status)) do

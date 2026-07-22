@@ -11,8 +11,29 @@ permissions:
   contents: write
 
 jobs:
+  validate-version:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - name: Require tag to match mix.exs version
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_version="$(elixir -e 'Mix.start(); Code.compile_file("mix.exs"); IO.write(Dala.MixProject.project()[:version])')"
+          expected_tag="v${project_version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match mix.exs version $project_version (expected $expected_tag)" >&2
+            exit 1
+          fi
+
   linux:
     name: Build linux-x86_64 server
+    needs: validate-version
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: prod
@@ -75,6 +96,7 @@ jobs:
 
   macos:
     name: Build and sign macos-arm64 server
+    needs: validate-version
     runs-on: macos-14
     env:
       MIX_ENV: prod
@@ -215,6 +237,7 @@ jobs:
 
   windows:
     name: Build windows-x86_64 server
+    needs: validate-version
     runs-on: windows-2022
     env:
       MIX_ENV: prod
@@ -236,24 +259,30 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           mix deps.get --only prod
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile server and assets
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           mix compile --warnings-as-errors
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mix tailwind.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mix esbuild.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mix assets.deploy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mix release --overwrite
-      - name: Smoke-test release installation layout
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package Windows release
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
-          ./ci/windows-release-smoke.ps1
-      - name: Package release
-        shell: pwsh
-        run: |
           $release = "_build/prod/rel/dala"
           $out = "dala-$env:GITHUB_REF_NAME-windows-x86_64.zip"
           Compress-Archive -Path "$release/*" -DestinationPath $out -CompressionLevel Optimal
@@ -261,6 +290,16 @@ jobs:
           [IO.File]::WriteAllText("$out.sha256", "$hash  $out`n", [Text.UTF8Encoding]::new($false))
           New-Item -ItemType Directory -Path artifacts | Out-Null
           Move-Item $out, "$out.sha256" artifacts/
+          "WINDOWS_ARCHIVE=artifacts/$out" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_CHECKSUM=artifacts/$out.sha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Smoke-test the packaged Windows release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./ci/windows-release-smoke.ps1 `
+            -ArchivePath $env:WINDOWS_ARCHIVE `
+            -ChecksumPath $env:WINDOWS_CHECKSUM
+          if (-not $?) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: server-windows-x86_64

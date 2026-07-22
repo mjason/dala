@@ -49,7 +49,7 @@ const session = {
   updatedAt: "2026-01-01T00:00:00.000000Z",
 };
 
-function renderModal() {
+function renderModal(platform?: "windows" | "macos" | "linux" | null) {
   return render(
     <I18nProvider>
       <SettingsModal
@@ -57,6 +57,7 @@ function renderModal() {
         onClose={() => {}}
         onDeleted={() => {}}
         onError={() => {}}
+        platform={platform}
       />
     </I18nProvider>,
   );
@@ -113,5 +114,18 @@ describe("SettingsModal tabs", () => {
     const { container } = renderModal();
     fireEvent.click(container.querySelector('[data-settings-tab="mcp"]') as HTMLElement);
     expect(container.querySelector("#mcp-section")).not.toBeNull();
+  });
+
+  it.each([undefined, null, "windows"] as const)(
+    "hides Unix viewer controls while the host platform is %s",
+    (platform) => {
+      const { container } = renderModal(platform);
+      expect(container.querySelector("#kick-viewers-button")).toBeNull();
+    },
+  );
+
+  it("shows viewer controls after a Unix host is known", () => {
+    const { container } = renderModal("linux");
+    expect(container.querySelector("#kick-viewers-button")).not.toBeNull();
   });
 });

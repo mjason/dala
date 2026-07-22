@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
@@ -86,6 +86,21 @@ fn wait_processes_exit(pids: &[Pid]) {
     }
 }
 
+fn wait_child_exit(child: &mut Child, timeout: Duration) -> ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child process did not exit within {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn detached_holder_does_not_show_a_host_console() {
     let root = temp_root();
@@ -119,6 +134,7 @@ fn detached_holder_does_not_show_a_host_console() {
     assert_eq!(kind, T_HELLO);
 
     let hello: serde_json::Value = serde_json::from_slice(&hello).unwrap();
+    assert_eq!(hello["proto"], 7);
     let shell_pid = Pid::from_u32(hello["pid"].as_u64().unwrap() as u32);
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::All, true);
@@ -255,14 +271,16 @@ fn detached_cmd_session_authenticates_and_round_trips_terminal_io() {
         b"powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 5\"\r\n",
     );
     std::thread::sleep(Duration::from_millis(300));
-    write_frame(&mut stream, T_PROCESSES_REQ, b"");
+    let request_id = 42_u64;
+    write_frame(&mut stream, T_PROCESSES_REQ, &request_id.to_be_bytes());
     let processes = loop {
         let (kind, payload) = read_frame(&mut stream).unwrap();
         if kind == T_PROCESSES {
             break payload;
         }
     };
-    let processes: serde_json::Value = serde_json::from_slice(&processes).unwrap();
+    assert_eq!(&processes[..8], &request_id.to_be_bytes());
+    let processes: serde_json::Value = serde_json::from_slice(&processes[8..]).unwrap();
     assert!(
         processes.as_array().unwrap().iter().any(|process| {
             process["argv"].as_array().is_some_and(|argv| {
@@ -272,6 +290,18 @@ fn detached_cmd_session_authenticates_and_round_trips_terminal_io() {
         }),
         "process tree did not include PowerShell: {processes}"
     );
+
+    // A rollback can reconnect an older BEAM to this protocol-7 holder. Its
+    // request has no correlation id and must receive the original plain JSON
+    // shape without disconnecting the surviving shell.
+    write_frame(&mut stream, T_PROCESSES_REQ, b"");
+    let legacy_processes = loop {
+        let (kind, payload) = read_frame(&mut stream).unwrap();
+        if kind == T_PROCESSES {
+            break payload;
+        }
+    };
+    assert!(serde_json::from_slice::<Vec<serde_json::Value>>(&legacy_processes).is_ok());
 
     write_frame(&mut stream, T_KILL, b"");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -316,6 +346,53 @@ fn exec_proxy_preserves_argv_stdout_and_redirects_stderr() {
     assert!(std::fs::read_to_string(&stderr_path)
         .unwrap()
         .contains("proxy-error"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn exec_proxy_closes_its_job_before_joining_stdout_from_cmd_descendants() {
+    let root = temp_root();
+    let wrapper_path = root.join("spawn-descendant.cmd");
+    let pid_path = root.join("descendant.pid");
+    let stderr_path = root.join("proxy.stderr");
+    std::fs::write(
+        &wrapper_path,
+        "@echo off\r\nstart \"\" /B powershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -NoNewline -Encoding ascii '%~dp0descendant.pid'; Start-Sleep -Seconds 60\"\r\n:wait_for_pid\r\nif not exist \"%~dp0descendant.pid\" (\r\n  ping -n 2 127.0.0.1 >nul\r\n  goto wait_for_pid\r\n)\r\nset /p DALA_UNUSED=\r\necho wrapper-out\r\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "command": [wrapper_path],
+        "stderr": stderr_path,
+    });
+
+    let mut proxy = Command::new(env!("CARGO_BIN_EXE_dala_holder"))
+        .arg("exec")
+        .arg(config.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let proxy_stdin = proxy.stdin.take().unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let descendant_pid = loop {
+        if let Ok(contents) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = contents.trim().parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            ".cmd descendant did not publish its pid"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    drop(proxy_stdin);
+    let status = wait_child_exit(&mut proxy, Duration::from_secs(5));
+    assert!(status.success(), "exec proxy failed: {status}");
+    wait_processes_exit(&[Pid::from_u32(descendant_pid)]);
+
     let _ = std::fs::remove_dir_all(root);
 }
 

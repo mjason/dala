@@ -628,7 +628,11 @@ fn checkout(path: String, name: String) -> Result<bool, String> {
     // branch that tracks it, like `git switch feature`.
     if let Ok(remote_ref) = repo.find_reference(&format!("refs/remotes/{name}")) {
         let commit = remote_ref.peel_to_commit().map_err(git_error)?;
-        let local_name = name.splitn(2, '/').nth(1).unwrap_or(&name).to_string();
+        let local_name = name
+            .split_once('/')
+            .map(|parts| parts.1)
+            .unwrap_or(&name)
+            .to_string();
 
         if repo.find_branch(&local_name, BranchType::Local).is_err() {
             let mut b = repo

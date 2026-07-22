@@ -45,6 +45,20 @@ defmodule Dala.PathsTest do
     end
   end
 
+  describe "comparison_key_for_os/2" do
+    test "normalizes Windows separators and case deterministically" do
+      assert Paths.comparison_key_for_os(~S(C:\Work\Project), {:win32, :nt}) ==
+               "c:/work/project"
+
+      assert Paths.comparison_key_for_os("c:/work/project", {:win32, :nt}) ==
+               "c:/work/project"
+    end
+
+    test "preserves case on Unix" do
+      assert Paths.comparison_key_for_os("/Work/Project", {:unix, :linux}) == "/Work/Project"
+    end
+  end
+
   describe "git_toplevel/1" do
     test "returns the repository toplevel from a nested directory" do
       repo = tmp_dir!("git")

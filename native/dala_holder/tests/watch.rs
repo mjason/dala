@@ -440,6 +440,7 @@ fn nonexistent_root_is_tolerated_and_replaceable() {
     let root = temp_root("recover");
     let mut proc = WatchProc::spawn();
     proc.watch_root(&root.join("does-not-exist"));
+    proc.expect_line_starting("!fallback", Duration::from_secs(5));
     // Still alive and able to take a valid root afterwards.
     proc.watch_root(&root);
     proc.wait_established(&root);
@@ -447,4 +448,18 @@ fn nonexistent_root_is_tolerated_and_replaceable() {
     proc.expect_dir(&root, Duration::from_secs(2));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn root_component_preserves_legal_leading_and_trailing_spaces() {
+    let base = temp_root("spaces");
+    let root = base.join("  legal root  ");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let mut proc = WatchProc::spawn();
+    proc.watch_root(&root);
+    proc.expect_dir(&root, Duration::from_secs(5));
+
+    let _ = std::fs::remove_dir_all(&base);
 }

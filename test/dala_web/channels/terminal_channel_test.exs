@@ -16,10 +16,30 @@ defmodule DalaWeb.TerminalChannelTest do
     session
   end
 
-  defp join!(session_id) do
+  defp join!(session_id, payload \\ %{}) do
     DalaWeb.UserSocket
     |> socket(nil, %{})
-    |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}")
+    |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}", payload)
+  end
+
+  defp tcp_pair do
+    opts = [:binary, active: false, packet: 4]
+    {:ok, listener} = :gen_tcp.listen(0, opts ++ [reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listener)
+    {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, opts)
+    {:ok, peer} = :gen_tcp.accept(listener)
+    :ok = :gen_tcp.close(listener)
+    {client, peer}
+  end
+
+  defp receive_protocol_push do
+    receive do
+      %Phoenix.Socket.Message{event: event} = message
+      when event in ["output", "terminal_capabilities"] ->
+        message
+    after
+      1_000 -> flunk("timed out waiting for terminal protocol push")
+    end
   end
 
   # The client reports its viewport after joining; only then is the repaint
@@ -48,6 +68,234 @@ defmodule DalaWeb.TerminalChannelTest do
     attach!(socket)
 
     assert_replay_containing("repaint-me-42", false)
+  end
+
+  test "query ownership requires a ready protocol-7 browser" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner_supported end)
+
+    assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: true}, socket} =
+             join!(session.id, %{"terminal_query_owner" => true})
+
+    refute Server.capabilities(session.id).holder_query_owner
+
+    push(socket, "query_owner_ready", %{})
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+  end
+
+  test "query ownership capabilities cannot overtake preceding output" do
+    assert "terminal_capabilities" in DalaWeb.TerminalChannel.__intercepts__()
+
+    session = create_session!()
+    assert {:ok, _reply, socket} = join!(session.id)
+    _ = :sys.get_state(socket.channel_pid)
+    topic = "terminal:#{session.id}"
+
+    :ok =
+      DalaWeb.Endpoint.broadcast(topic, "output", %{
+        data: Base.encode64("before-capability"),
+        seq: 1
+      })
+
+    :ok =
+      DalaWeb.Endpoint.broadcast(topic, "terminal_capabilities", %{
+        holder_query_owner: false,
+        holder_query_owner_supported: true
+      })
+
+    first = receive_protocol_push()
+    second = receive_protocol_push()
+    assert %Phoenix.Socket.Message{event: "output"} = first
+    assert %Phoenix.Socket.Message{event: "terminal_capabilities"} = second
+  end
+
+  test "a legacy browser takes query ownership from a detached protocol-7 holder" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+
+    assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: true}, _legacy} =
+             join!(session.id)
+
+    refute Server.capabilities(session.id).holder_query_owner
+  end
+
+  test "a missing query-owner ACK replaces the control connection without losing the shell" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {fake_socket, peer} = tcp_pair()
+    :ok = :inet.setopts(original_socket, active: false)
+
+    :sys.replace_state(server, fn state -> %{state | socket: fake_socket} end)
+
+    try do
+      assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: true}, _socket} =
+               join!(session.id)
+
+      assert {:ok, <<0x17, 0>>} = :gen_tcp.recv(peer, 0, 1_000)
+
+      eventually(fn ->
+        state = :sys.get_state(server)
+
+        state.socket != fake_socket and state.query_owner_phase == :disabled and
+          state.query_owner_command == nil and not state.recovering_holder?
+      end)
+
+      # Close/data notifications from the abandoned generation may already
+      # be queued. They cannot stop or mutate the recovered server.
+      send(server, {:tcp_closed, fake_socket})
+      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 1>>})
+      _ = Server.size_info(session.id)
+      assert Process.alive?(server)
+      refute Server.capabilities(session.id).holder_query_owner
+    after
+      if Process.alive?(server) do
+        current = :sys.get_state(server)
+
+        if current.socket == fake_socket do
+          :sys.replace_state(server, fn state ->
+            %{
+              state
+              | socket: original_socket,
+                query_clients: %{},
+                query_register_waiters: [],
+                query_owner_phase: :enabled,
+                query_owner_enabled?: true
+            }
+          end)
+
+          :ok = :inet.setopts(original_socket, active: true)
+        end
+      end
+
+      :gen_tcp.close(fake_socket)
+      :gen_tcp.close(peer)
+    end
+  end
+
+  test "a failed query-owner write reconnects instead of assuming browser ownership" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+    server = Server.whereis(session.id)
+    original_socket = :sys.get_state(server).socket
+    {failed_socket, peer} = tcp_pair()
+    :ok = :inet.setopts(original_socket, active: false)
+    :ok = :gen_tcp.close(failed_socket)
+
+    :sys.replace_state(server, fn state -> %{state | socket: failed_socket} end)
+
+    try do
+      assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: true}, _socket} =
+               join!(session.id)
+
+      eventually(fn ->
+        state = :sys.get_state(server)
+
+        state.socket != failed_socket and state.query_owner_phase == :disabled and
+          state.query_owner_command == nil and not state.recovering_holder?
+      end)
+
+      assert Process.alive?(server)
+      refute Server.capabilities(session.id).holder_query_owner
+    after
+      if Process.alive?(server) do
+        current = :sys.get_state(server)
+
+        if current.socket == failed_socket do
+          :sys.replace_state(server, fn state ->
+            %{
+              state
+              | socket: original_socket,
+                query_clients: %{},
+                query_register_waiters: [],
+                query_owner_phase: :enabled,
+                query_owner_enabled?: true
+            }
+          end)
+
+          :ok = :inet.setopts(original_socket, active: true)
+        end
+      end
+
+      :gen_tcp.close(peer)
+    end
+  end
+
+  test "a legacy browser disables query ownership until it disconnects" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner_supported end)
+
+    assert {:ok, _reply, modern} =
+             join!(session.id, %{"terminal_query_owner" => true})
+
+    push(modern, "query_owner_ready", %{})
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+
+    assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: true}, legacy} =
+             join!(session.id)
+
+    refute Server.capabilities(session.id).holder_query_owner
+
+    Process.unlink(legacy.channel_pid)
+    _ = leave(legacy)
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+  end
+
+  test "a modern browser keeps xterm ownership with a protocol-5 holder" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner_supported end)
+
+    :sys.replace_state(Server.whereis(session.id), fn state ->
+      %{state | holder_proto: 5, query_owner_phase: :disabled, query_owner_enabled?: false}
+    end)
+
+    assert {:ok, %{holder_query_owner: false, holder_query_owner_supported: false}, socket} =
+             join!(session.id, %{"terminal_query_owner" => true})
+
+    push(socket, "query_owner_ready", %{})
+    refute Server.capabilities(session.id).holder_query_owner
+  end
+
+  test "a reattached protocol-7 holder starts with query ownership disabled" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner_supported end)
+
+    assert {:ok, _reply, socket} =
+             join!(session.id, %{"terminal_query_owner" => true})
+
+    push(socket, "query_owner_ready", %{})
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+
+    old_server = Server.whereis(session.id)
+    monitor = Process.monitor(old_server)
+    Process.exit(old_server, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^old_server, _reason}, 2_000
+
+    {:ok, new_server} = Server.ensure_started(Dala.Terminal.get_session!(session.id))
+    refute new_server == old_server
+
+    eventually(fn -> :sys.get_state(new_server).holder_proto == 7 end)
+    refute Server.capabilities(session.id).holder_query_owner_supported
+    refute Server.capabilities(session.id).holder_query_owner
+    assert :sys.get_state(new_server).query_clients == %{}
+  end
+
+  test "full boot authorization restores detached holder query ownership" do
+    session = create_session!()
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
+
+    old_server = Server.whereis(session.id)
+    monitor = Process.monitor(old_server)
+    Process.exit(old_server, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^old_server, _reason}, 2_000
+
+    {:ok, new_server} = Server.ensure_started(Dala.Terminal.get_session!(session.id))
+    eventually(fn -> :sys.get_state(new_server).holder_proto == 7 end)
+    refute Server.capabilities(session.id).holder_query_owner_supported
+
+    Server.allow_query_owner(session.id)
+    eventually(fn -> Server.capabilities(session.id).holder_query_owner end)
   end
 
   test "the initial timeout requests the current screen instead of revealing an empty stream" do

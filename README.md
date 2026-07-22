@@ -50,7 +50,8 @@ irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
 
 The native server runs as a current-user Scheduled Task at
 `http://localhost:4400`. Versions and data live under `%LOCALAPPDATA%\Dala`;
-configuration lives in `%APPDATA%\Dala\dala.env`. New sessions prefer
+configuration lives in `%APPDATA%\Dala\config.jsonc`, while generated secrets
+stay in `%LOCALAPPDATA%\Dala\data\secrets.json`. New sessions prefer
 PowerShell 7, then Windows PowerShell, then CMD. Existing shells survive Dala
 restarts and upgrades, but not a Windows sign-out or reboot. The standard
 Windows Management Instrumentation service must be available so terminal
@@ -177,11 +178,11 @@ plugin once and you get the integration:
 **Codex** needs no plugin (native notifications). **Gemini CLI**: install
 `warpdotdev/gemini-cli-warp` (see its README).
 
-All four are Tier 1 on native Windows. Dala recognizes their `.exe` and npm
-`.cmd` launchers and agent process trees; it never edits their configuration.
-Pinned versions are executed inside Dala's ConPTY holder on every change;
-current latest versions are probed nightly, with authenticated release checks
-covering full-screen interaction and notifications.
+Dala recognizes all four on native Windows, including `.exe` and npm `.cmd`
+launchers and their process trees; it never edits agent configuration.
+Automated CI covers the ConPTY holder, process detection, release upgrades and
+shell reattachment. Authenticated full-screen interaction and notifications
+remain a manual pre-release checklist in `docs/windows-agent-certification.md`.
 Claude Code, OpenCode and Gemini still require the Warp OSC 777 integrations
 above. Codex uses its native OSC 9 notification path (set
 `notification_method = "osc9"` if your Codex configuration overrides the
@@ -442,7 +443,9 @@ in `config.jsonc`.
 
 Releases are built by GitHub Actions on every `v*` tag
 (`.github/workflows/release.yml`): production assets, Rust NIFs and the PTY
-holder are packaged for Linux x86_64 and macOS arm64. Every Mach-O artifact in
+holder are packaged for Linux x86_64, macOS arm64 and Windows x86_64. The
+Windows ZIP passes the installer/update/rollback/uninstall smoke test before
+that same archive is uploaded. Every Mach-O artifact in
 the macOS release is signed with the Developer ID certificate and the complete
 release is submitted to Apple notarization before publication.
 

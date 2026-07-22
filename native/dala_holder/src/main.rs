@@ -12,11 +12,13 @@
 //!                      0x05 CWD     <utf8 path (from OSC 7)>
 //!                      0x06 AGENT   <title 0x1f body>
 //!                      0x07 TEXT_SNAPSHOT <json text + TUI style snapshot>
+//!                      0x17 QUERY_OWNER_ACK <u8 enabled>
 //!   client -> holder:  0x11 INPUT   <raw bytes>
 //!                      0x12 RESIZE  <u16 be rows> <u16 be cols>
 //!                      0x13 KILL
 //!                      0x14 REPAINT_REQ
 //!                      0x15 TEXT_SNAPSHOT_REQ <u32 lines> <u32 max bytes>
+//!                      0x17 QUERY_OWNER <u8 enabled>
 //!
 //! The holder embeds a headless terminal emulator (alacritty_terminal): all
 //! PTY output feeds a server-side grid + scrollback. REPAINT_REQ answers
@@ -91,6 +93,12 @@ const T_CWD: u8 = 0x05;
 const T_AGENT: u8 = 0x06;
 const T_TEXT_SNAPSHOT: u8 = 0x07;
 const T_PROCESSES: u8 = 0x08;
+// Bidirectional control frame. The server asks the holder to start/stop
+// answering terminal capability queries; the holder echoes the resulting
+// state so the browser can switch xterm's overlapping handlers in a safe
+// order. This was added in protocol 7. Older holders ignore the unknown tag.
+const T_QUERY_OWNER: u8 = 0x17;
+#[cfg(windows)]
 const T_AUTH: u8 = 0x10;
 const T_INPUT: u8 = 0x11;
 const T_RESIZE: u8 = 0x12;
@@ -120,6 +128,11 @@ const MAX_PENDING_REPAINTS: usize = 64;
 // wrong BEAM caller. The control connection is detached on the first request
 // beyond this bound, clearing all pending requests together.
 const MAX_PENDING_TEXT_SNAPSHOTS: usize = 64;
+// PROCESS reports are correlated by request id, but each tree walk and queued
+// JSON response still consumes real work and memory. Refuse before enumerating
+// at the bound; that request times out independently without disconnecting the
+// live holder session.
+const MAX_PENDING_PROCESS_REPORTS: usize = 64;
 // Agent notifications are best-effort UI events. Keep the newest bounded tail
 // when a process emits them faster than the client can consume them.
 const MAX_AGENT_REPORTS: usize = 256;
@@ -400,6 +413,29 @@ impl PendingRepaint {
     }
 }
 
+struct PendingQueryOwnerAck {
+    enabled: bool,
+    barrier: u64,
+}
+
+fn query_owner_ack_ready(transit: &TransitQueue, pending: &VecDeque<PendingQueryOwnerAck>) -> bool {
+    pending
+        .front()
+        .is_some_and(|ack| transit.reached(ack.barrier))
+}
+
+fn next_output_barrier(
+    repaints: &VecDeque<PendingRepaint>,
+    acks: &VecDeque<PendingQueryOwnerAck>,
+) -> Option<u64> {
+    match (repaints.front(), acks.front()) {
+        (Some(repaint), Some(ack)) => Some(repaint.barrier.min(ack.barrier)),
+        (Some(repaint), None) => Some(repaint.barrier),
+        (None, Some(ack)) => Some(ack.barrier),
+        (None, None) => None,
+    }
+}
+
 fn enqueue_repaint_bounded(
     pending: &mut VecDeque<PendingRepaint>,
     repaint: PendingRepaint,
@@ -457,6 +493,15 @@ fn write_input_if_current<W: Write + ?Sized>(
     Ok(true)
 }
 
+fn take_owned_pty_writes(shared: &mut Shared) -> Vec<Vec<u8>> {
+    let replies = shared.screen.take_pty_writes();
+    if shared.query_owner_enabled {
+        replies
+    } else {
+        Vec::new()
+    }
+}
+
 struct Shared {
     transit: TransitQueue,
     client: Option<LocalStream>,
@@ -467,6 +512,16 @@ struct Shared {
     pty_done: bool,
     /// Server-side emulator: grid + scrollback + modes.
     screen: Screen,
+    /// The browser normally answers DA/DSR/DECRQM/window queries through
+    /// xterm. Protocol 7 lets the server hand that role to the authoritative
+    /// holder emulator, but only after every attached browser has confirmed
+    /// that its overlapping xterm handlers are suppressed.
+    query_owner_enabled: bool,
+    /// Query-owner acknowledgements are held behind their exact output
+    /// position and written by the sole socket writer. Writing from the
+    /// control-reader thread could interleave two framed messages on cloned
+    /// stream handles.
+    query_owner_acks: VecDeque<PendingQueryOwnerAck>,
     /// Repaint requests, each held behind the exact output position that was
     /// current when it arrived. Payloads are synthesized only when dequeued.
     repaint_pending: VecDeque<PendingRepaint>,
@@ -490,6 +545,31 @@ struct Shared {
     osc_tail: Vec<u8>,
 }
 
+impl Shared {
+    fn new_detached(screen: Screen) -> Self {
+        Self {
+            transit: TransitQueue::default(),
+            client: None,
+            client_gen: 0,
+            exit_status: None,
+            pty_done: false,
+            screen,
+            // Before the first BEAM/browser connection there is no other
+            // terminal-query responder. Match post-detach behavior so startup
+            // DA/DSR requests cannot disappear in this window.
+            query_owner_enabled: true,
+            query_owner_acks: VecDeque::new(),
+            repaint_pending: VecDeque::new(),
+            repaint_frozen: false,
+            text_snapshot_pending: VecDeque::new(),
+            cwd_report: None,
+            agent_reports: VecDeque::new(),
+            process_reports: VecDeque::new(),
+            osc_tail: Vec::new(),
+        }
+    }
+}
+
 struct State {
     /// Serializes connection handoff against a frame already read by the old
     /// control thread. It is deliberately separate from `shared`: a large PTY
@@ -504,6 +584,27 @@ enum TextSnapshotRequestResult {
     Queued,
     Stale,
     Overloaded,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProcessReportRequestResult {
+    Queued,
+    Stale,
+    Overloaded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessReportRequest {
+    Legacy,
+    Correlated([u8; 8]),
+}
+
+fn parse_process_report_request(data: &[u8]) -> Option<ProcessReportRequest> {
+    match data {
+        [] => Some(ProcessReportRequest::Legacy),
+        bytes if bytes.len() == 8 => Some(ProcessReportRequest::Correlated(bytes.try_into().ok()?)),
+        _ => None,
+    }
 }
 
 fn queue_text_snapshot_request(
@@ -528,6 +629,37 @@ fn queue_text_snapshot_request(
     }
 
     result
+}
+
+fn queue_process_report<F>(
+    state: &State,
+    expected_gen: u64,
+    build_payload: F,
+) -> ProcessReportRequestResult
+where
+    F: FnOnce() -> Vec<u8>,
+{
+    {
+        let shared = state.shared.lock().unwrap();
+        if shared.client_gen != expected_gen {
+            return ProcessReportRequestResult::Stale;
+        }
+        if shared.process_reports.len() >= MAX_PENDING_PROCESS_REPORTS {
+            return ProcessReportRequestResult::Overloaded;
+        }
+    }
+
+    let payload = build_payload();
+    let mut shared = state.shared.lock().unwrap();
+    if shared.client_gen != expected_gen {
+        ProcessReportRequestResult::Stale
+    } else if shared.process_reports.len() < MAX_PENDING_PROCESS_REPORTS {
+        shared.process_reports.push_back(payload);
+        state.cond.notify_all();
+        ProcessReportRequestResult::Queued
+    } else {
+        ProcessReportRequestResult::Overloaded
+    }
 }
 
 fn main() {
@@ -636,21 +768,11 @@ fn run_holder(arg: &str) {
 
     let state = Arc::new(State {
         input_generation: Mutex::new(0),
-        shared: Mutex::new(Shared {
-            transit: TransitQueue::default(),
-            client: None,
-            client_gen: 0,
-            exit_status: None,
-            pty_done: false,
-            screen: Screen::new(config.rows, config.cols, config.history_lines),
-            repaint_pending: VecDeque::new(),
-            repaint_frozen: false,
-            text_snapshot_pending: VecDeque::new(),
-            cwd_report: None,
-            agent_reports: VecDeque::new(),
-            process_reports: VecDeque::new(),
-            osc_tail: Vec::new(),
-        }),
+        shared: Mutex::new(Shared::new_detached(Screen::new(
+            config.rows,
+            config.cols,
+            config.history_lines,
+        ))),
         cond: Condvar::new(),
     });
 
@@ -697,7 +819,10 @@ fn run_holder(arg: &str) {
                         }
 
                         shared.screen.advance(&complete);
-                        let pty_replies = shared.screen.take_pty_writes();
+                        // Always drain emulator events. Replies produced while
+                        // browser ownership is active must never be replayed
+                        // later after query ownership is enabled.
+                        let pty_replies = take_owned_pty_writes(&mut shared);
                         {
                             let mut out = OscOut::default();
                             let mut tail = std::mem::take(&mut shared.osc_tail);
@@ -745,6 +870,7 @@ fn run_holder(arg: &str) {
         let socket_path = socket_path.clone();
         thread::spawn(move || {
             enum Job {
+                QueryOwnerAck(bool),
                 Output(Vec<u8>),
                 Repaint(Vec<u8>),
                 TextSnapshot(Vec<u8>),
@@ -759,12 +885,15 @@ fn run_holder(arg: &str) {
                     let mut shared = state.shared.lock().unwrap();
                     loop {
                         let attached = shared.client.is_some();
-                        let barrier = shared
-                            .repaint_pending
-                            .front()
-                            .map(|pending| pending.barrier);
+                        let query_owner_ack = attached
+                            && query_owner_ack_ready(&shared.transit, &shared.query_owner_acks);
+                        let barrier =
+                            next_output_barrier(&shared.repaint_pending, &shared.query_owner_acks);
                         let repaint = attached
-                            && barrier.is_some_and(|position| shared.transit.reached(position));
+                            && shared
+                                .repaint_pending
+                                .front()
+                                .is_some_and(|pending| shared.transit.reached(pending.barrier));
                         let drainable = attached
                             && !shared.transit.is_empty()
                             && barrier.is_none_or(|position| !shared.transit.reached(position));
@@ -777,7 +906,8 @@ fn run_holder(arg: &str) {
                         let done = shared.exit_status.is_some()
                             && shared.pty_done
                             && shared.transit.is_empty();
-                        if drainable
+                        if query_owner_ack
+                            || drainable
                             || repaint
                             || text_snapshot
                             || cwd
@@ -793,12 +923,29 @@ fn run_holder(arg: &str) {
                     let stream = shared.client.as_ref().and_then(|s| s.try_clone().ok());
                     let gen = shared.client_gen;
 
-                    let barrier = shared
-                        .repaint_pending
-                        .front()
-                        .map(|pending| pending.barrier);
+                    let barrier =
+                        next_output_barrier(&shared.repaint_pending, &shared.query_owner_acks);
+                    let repaint_is_earlier = match (
+                        shared.repaint_pending.front(),
+                        shared.query_owner_acks.front(),
+                    ) {
+                        (Some(repaint), Some(ack)) => repaint.barrier < ack.barrier,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
 
                     if shared.client.is_some()
+                        && query_owner_ack_ready(&shared.transit, &shared.query_owner_acks)
+                        && !repaint_is_earlier
+                    {
+                        (
+                            Job::QueryOwnerAck(
+                                shared.query_owner_acks.pop_front().unwrap().enabled,
+                            ),
+                            stream,
+                            gen,
+                        )
+                    } else if shared.client.is_some()
                         && !shared.transit.is_empty()
                         && barrier.is_none_or(|position| !shared.transit.reached(position))
                     {
@@ -808,7 +955,10 @@ fn run_holder(arg: &str) {
                             gen,
                         )
                     } else if shared.client.is_some()
-                        && barrier.is_some_and(|position| shared.transit.reached(position))
+                        && shared
+                            .repaint_pending
+                            .front()
+                            .is_some_and(|pending| shared.transit.reached(pending.barrier))
                     {
                         let pending = shared.repaint_pending.pop_front().unwrap();
                         let soft = pending.cols as usize == shared.screen.columns();
@@ -850,6 +1000,9 @@ fn run_holder(arg: &str) {
                 };
 
                 match job {
+                    Job::QueryOwnerAck(enabled) => {
+                        send_or_drop(&state, stream, gen, T_QUERY_OWNER, &[u8::from(enabled)])
+                    }
                     // Undeliverable frames are simply dropped: the emulator
                     // has the bytes, and any future client starts from a
                     // repaint that covers them.
@@ -895,30 +1048,20 @@ fn run_holder(arg: &str) {
         }
 
         let hello = format!(
-            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":5}}",
+            "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":7}}",
             shell_pid, config.rows, config.cols
         );
-        if write_frame(&mut stream, T_HELLO, hello.as_bytes()).is_err() {
+        // A writer handle is required for this generation. Installing
+        // `None` would kick a healthy previous client while leaving the new
+        // control reader unable to receive HELLO/output/ACK frames.
+        let Ok(pending_client) = stream.try_clone() else {
             continue;
-        }
-
-        let my_gen = {
-            let mut active_input_gen = state.input_generation.lock().unwrap();
-            let mut shared = state.shared.lock().unwrap();
-            if let Some(old) = shared.client.take() {
-                let _ = old.shutdown(std::net::Shutdown::Both);
-            }
-            // Bytes for the previous client are already folded into the
-            // emulator; the new client starts from a repaint it requests.
-            shared.transit.clear();
-            shared.repaint_pending.clear();
-            shared.repaint_frozen = false;
-            shared.text_snapshot_pending.clear();
-            shared.client = stream.try_clone().ok();
-            shared.client_gen += 1;
-            *active_input_gen = shared.client_gen;
-            state.cond.notify_all();
-            shared.client_gen
+        };
+        let my_gen = match write_hello_then_install(&mut stream, hello.as_bytes(), || {
+            install_client(&state, Some(pending_client))
+        }) {
+            Ok(generation) => generation,
+            Err(_) => continue,
         };
 
         // Client -> holder control frames, one thread per connection.
@@ -994,13 +1137,31 @@ fn run_holder(arg: &str) {
                             | TextSnapshotRequestResult::Overloaded => break,
                         }
                     }
-                    Ok((T_PROCESSES_REQ, _)) => {
-                        let payload = serde_json::to_vec(&process_tree(shell_pid))
-                            .unwrap_or_else(|_| b"[]".to_vec());
+                    Ok((T_PROCESSES_REQ, data)) => {
+                        let Some(request) = parse_process_report_request(&data) else {
+                            break;
+                        };
+                        let correlated = matches!(request, ProcessReportRequest::Correlated(_));
+                        match queue_process_report(&state, my_gen, || {
+                            encode_process_report(request, &process_tree(shell_pid))
+                        }) {
+                            ProcessReportRequestResult::Queued => {}
+                            ProcessReportRequestResult::Overloaded if correlated => {}
+                            ProcessReportRequestResult::Stale
+                            | ProcessReportRequestResult::Overloaded => break,
+                        }
+                    }
+                    Ok((T_QUERY_OWNER, data)) if matches!(data.as_slice(), [0] | [1]) => {
+                        let enabled = data[0] == 1;
                         let mut shared = state.shared.lock().unwrap();
-                        shared.process_reports.push_back(payload);
+                        if shared.client_gen != my_gen {
+                            break;
+                        }
+
+                        transition_query_owner(&mut shared, enabled);
                         state.cond.notify_all();
                     }
+                    Ok((T_QUERY_OWNER, _)) => break,
                     Ok((T_KILL, _)) => {
                         let shared = state.shared.lock().unwrap();
                         if shared.client_gen != my_gen {
@@ -1254,6 +1415,19 @@ fn process_tree(_root_pid: u32) -> Vec<ProcessInfo> {
     Vec::new()
 }
 
+fn encode_process_report(request: ProcessReportRequest, processes: &[ProcessInfo]) -> Vec<u8> {
+    let json = serde_json::to_vec(processes).unwrap_or_else(|_| b"[]".to_vec());
+    match request {
+        ProcessReportRequest::Legacy => json,
+        ProcessReportRequest::Correlated(request_id) => {
+            let mut payload = Vec::with_capacity(request_id.len() + json.len());
+            payload.extend_from_slice(&request_id);
+            payload.extend_from_slice(&json);
+            payload
+        }
+    }
+}
+
 fn run_exec_proxy(raw: &str) -> ! {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -1298,7 +1472,7 @@ fn run_exec_proxy(raw: &str) -> ! {
         });
 
     #[cfg(windows)]
-    let _job = WindowsJob::assign(&child).ok();
+    let job = WindowsJob::assign(&child).ok();
 
     let mut child_stdin = child.stdin.take().unwrap();
     let mut child_stdout = child.stdout.take().unwrap();
@@ -1338,6 +1512,8 @@ fn run_exec_proxy(raw: &str) -> ! {
             }
         }
     };
+    #[cfg(windows)]
+    drop(job);
     let _ = output.join();
     exit(status.code().unwrap_or(1));
 }
@@ -1475,6 +1651,7 @@ fn acquire_session_lock(path: &std::path::Path) -> std::io::Result<Option<std::f
     lock_path.push(".lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(PathBuf::from(lock_path))?;
@@ -1670,6 +1847,17 @@ fn finish_repaint(state: &State, gen: u64) {
     }
 }
 
+fn transition_query_owner(shared: &mut Shared, enabled: bool) {
+    shared.query_owner_enabled = enabled;
+    // Events raised before this control frame belong to the previous owner.
+    // Never leak them across the ownership boundary.
+    let _ = shared.screen.take_pty_writes();
+    let barrier = shared.transit.end_position();
+    shared
+        .query_owner_acks
+        .push_back(PendingQueryOwnerAck { enabled, barrier });
+}
+
 fn clear_client(shared: &mut Shared) {
     if let Some(client) = shared.client.take() {
         // UnixStream clones share one socket. Shutdown wakes the control
@@ -1680,6 +1868,24 @@ fn clear_client(shared: &mut Shared) {
     shared.repaint_pending.clear();
     shared.repaint_frozen = false;
     shared.text_snapshot_pending.clear();
+    shared.process_reports.clear();
+    shared.query_owner_acks.clear();
+    let _ = shared.screen.take_pty_writes();
+}
+
+fn install_client(state: &State, client: Option<LocalStream>) -> u64 {
+    let mut active_input_gen = state.input_generation.lock().unwrap();
+    let mut shared = state.shared.lock().unwrap();
+    // The old owner remains valid until this locked replacement. Bytes for
+    // that client are already folded into the emulator; the newcomer starts
+    // from a repaint and negotiates query ownership from disabled state.
+    clear_client(&mut shared);
+    shared.query_owner_enabled = false;
+    shared.client = client;
+    shared.client_gen += 1;
+    *active_input_gen = shared.client_gen;
+    state.cond.notify_all();
+    shared.client_gen
 }
 
 /// Detaches only the expected connection generation. The input gate is
@@ -1695,10 +1901,27 @@ fn detach_client_if_current(state: &State, expected_gen: u64) -> bool {
     }
 
     clear_client(&mut shared);
+    // With no BEAM/browser path attached, only the holder can answer shell
+    // terminal queries. The next accepted control connection disables this
+    // again when it is installed and renegotiates from a known-safe state.
+    shared.query_owner_enabled = true;
     shared.client_gen += 1;
     *active_input_gen = shared.client_gen;
     state.cond.notify_all();
     true
+}
+
+fn write_hello_then_install<W, F, T>(
+    stream: &mut W,
+    payload: &[u8],
+    install: F,
+) -> std::io::Result<T>
+where
+    W: Write,
+    F: FnOnce() -> T,
+{
+    write_frame(stream, T_HELLO, payload)?;
+    Ok(install())
 }
 
 fn write_frame(stream: &mut impl Write, frame_type: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -1790,12 +2013,15 @@ mod frame_tests {
             T_REPAINT,
             T_CWD,
             T_AGENT,
+            T_PROCESSES,
             T_INPUT,
             T_RESIZE,
             T_KILL,
             T_TEXT_SNAPSHOT,
             T_REPAINT_REQ,
             T_TEXT_SNAPSHOT_REQ,
+            T_PROCESSES_REQ,
+            T_QUERY_OWNER,
         ];
         for &ty in &types {
             // Payload exercises all byte values including 0x00 and 0xff.
@@ -1876,6 +2102,7 @@ mod frame_tests {
 #[cfg(test)]
 mod client_generation_tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1883,6 +2110,21 @@ mod client_generation_tests {
         entered: mpsc::Sender<()>,
         release: Arc<(Mutex<bool>, Condvar)>,
         bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _data: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     impl Write for BlockingWriter {
@@ -1915,6 +2157,11 @@ mod client_generation_tests {
                 exit_status: None,
                 pty_done: false,
                 screen: Screen::new(24, 80, 100),
+                query_owner_enabled: true,
+                query_owner_acks: VecDeque::from([PendingQueryOwnerAck {
+                    enabled: true,
+                    barrier: 0,
+                }]),
                 repaint_pending: VecDeque::from([PendingRepaint {
                     barrier: 0,
                     cols: 80,
@@ -1934,6 +2181,12 @@ mod client_generation_tests {
     #[test]
     fn active_detach_invalidates_control_threads_and_unfreezes_ingestion() {
         let state = frozen_state(7);
+        state
+            .shared
+            .lock()
+            .unwrap()
+            .process_reports
+            .push_back(b"old process report".to_vec());
 
         assert!(detach_client_if_current(&state, 7));
 
@@ -1945,6 +2198,125 @@ mod client_generation_tests {
         assert!(shared.repaint_pending.is_empty());
         assert!(!shared.repaint_frozen);
         assert!(shared.text_snapshot_pending.is_empty());
+        assert!(shared.process_reports.is_empty());
+        assert!(shared.query_owner_enabled);
+        assert!(shared.query_owner_acks.is_empty());
+    }
+
+    #[test]
+    fn fresh_detached_holder_answers_queries_before_the_first_client_connects() {
+        let mut shared = Shared::new_detached(Screen::new(24, 80, 100));
+
+        assert!(shared.client.is_none());
+        shared.screen.advance(b"\x1b[c");
+        assert_eq!(take_owned_pty_writes(&mut shared), [b"\x1b[?6c".to_vec()]);
+    }
+
+    #[test]
+    fn terminal_query_replies_require_negotiated_holder_ownership() {
+        let state = frozen_state(7);
+        let mut shared = state.shared.lock().unwrap();
+
+        shared.query_owner_enabled = false;
+        shared.screen.advance(b"\x1b[c");
+        assert!(take_owned_pty_writes(&mut shared).is_empty());
+
+        shared.query_owner_enabled = true;
+        shared.screen.advance(b"\x1b[c");
+        assert_eq!(take_owned_pty_writes(&mut shared), [b"\x1b[?6c".to_vec()]);
+    }
+
+    #[test]
+    fn client_cleanup_preserves_disabled_query_ownership() {
+        let state = frozen_state(7);
+        let mut shared = state.shared.lock().unwrap();
+
+        shared.query_owner_enabled = false;
+        clear_client(&mut shared);
+
+        assert!(!shared.query_owner_enabled);
+    }
+
+    #[test]
+    fn hello_write_keeps_the_old_modern_owner_until_installing_the_new_client() {
+        let state = Arc::new(frozen_state(7));
+        let (old_client, _old_peer) = local_stream_pair().unwrap();
+        let (new_client, _new_peer) = local_stream_pair().unwrap();
+        state.shared.lock().unwrap().client = Some(old_client);
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = BlockingWriter {
+            entered: entered_tx,
+            release: Arc::clone(&release),
+            bytes,
+        };
+        let installing_state = Arc::clone(&state);
+
+        let handshake = thread::spawn(move || {
+            write_hello_then_install(&mut writer, b"{}", || {
+                install_client(&installing_state, Some(new_client))
+            })
+            .unwrap()
+        });
+
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        {
+            let mut shared = state.shared.lock().unwrap();
+            assert!(shared.query_owner_enabled);
+            assert!(shared.client.is_some());
+            assert_eq!(shared.client_gen, 7);
+            shared.screen.advance(b"\x1b[c");
+            assert_eq!(take_owned_pty_writes(&mut shared), [b"\x1b[?6c".to_vec()]);
+        }
+
+        let (released, cond) = &*release;
+        *released.lock().unwrap() = true;
+        cond.notify_all();
+
+        assert_eq!(handshake.join().unwrap(), 8);
+        let shared = state.shared.lock().unwrap();
+        assert!(!shared.query_owner_enabled);
+        assert!(shared.client.is_some());
+        assert_eq!(shared.client_gen, 8);
+    }
+
+    #[test]
+    fn failed_hello_does_not_replace_or_disable_the_old_modern_client() {
+        let state = frozen_state(7);
+        let (old_client, _old_peer) = local_stream_pair().unwrap();
+        let (new_client, _new_peer) = local_stream_pair().unwrap();
+        state.shared.lock().unwrap().client = Some(old_client);
+        let mut writer = FailingWriter;
+
+        let result = write_hello_then_install(&mut writer, b"{}", || {
+            install_client(&state, Some(new_client))
+        });
+
+        assert!(result.is_err());
+        let shared = state.shared.lock().unwrap();
+        assert!(shared.query_owner_enabled);
+        assert!(shared.client.is_some());
+        assert_eq!(shared.client_gen, 7);
+    }
+
+    #[test]
+    fn installed_legacy_client_stays_browser_owned_until_modern_negotiation() {
+        let state = frozen_state(7);
+        let (new_client, _new_peer) = local_stream_pair().unwrap();
+
+        assert_eq!(install_client(&state, Some(new_client)), 8);
+        {
+            let shared = state.shared.lock().unwrap();
+            assert!(!shared.query_owner_enabled);
+            assert!(shared.query_owner_acks.is_empty());
+        }
+
+        let mut shared = state.shared.lock().unwrap();
+        transition_query_owner(&mut shared, true);
+        assert!(shared.query_owner_enabled);
+        assert!(shared.query_owner_acks.front().unwrap().enabled);
     }
 
     #[test]
@@ -1999,6 +2371,177 @@ mod client_generation_tests {
         assert_eq!(shared.client_gen, 8);
         assert!(shared.text_snapshot_pending.is_empty());
         assert!(!shared.repaint_frozen);
+    }
+
+    #[test]
+    fn stale_process_report_generation_never_queues_a_response() {
+        let state = frozen_state(11);
+        let enumerated = AtomicBool::new(false);
+
+        assert_eq!(
+            queue_process_report(&state, 10, || {
+                enumerated.store(true, Ordering::Relaxed);
+                b"stale".to_vec()
+            }),
+            ProcessReportRequestResult::Stale
+        );
+
+        assert!(!enumerated.load(Ordering::Relaxed));
+        assert!(state.shared.lock().unwrap().process_reports.is_empty());
+    }
+
+    #[test]
+    fn process_report_overload_skips_enumeration_without_disconnecting() {
+        let state = frozen_state(7);
+        let (client, _peer) = local_stream_pair().unwrap();
+        {
+            let mut shared = state.shared.lock().unwrap();
+            shared.client = Some(client);
+            shared.process_reports = (0usize..MAX_PENDING_PROCESS_REPORTS)
+                .map(|sequence| sequence.to_be_bytes().to_vec())
+                .collect();
+        }
+        let enumerated = AtomicBool::new(false);
+
+        assert_eq!(
+            queue_process_report(&state, 7, || {
+                enumerated.store(true, Ordering::Relaxed);
+                b"overflow".to_vec()
+            }),
+            ProcessReportRequestResult::Overloaded
+        );
+
+        let active_input_gen = state.input_generation.lock().unwrap();
+        let shared = state.shared.lock().unwrap();
+        assert!(!enumerated.load(Ordering::Relaxed));
+        assert_eq!(*active_input_gen, 7);
+        assert_eq!(shared.client_gen, 7);
+        assert!(shared.client.is_some());
+        assert_eq!(shared.process_reports.len(), MAX_PENDING_PROCESS_REPORTS);
+        assert!(shared.repaint_frozen);
+    }
+
+    #[test]
+    fn current_process_report_is_enumerated_and_queued() {
+        let state = frozen_state(7);
+        let enumerated = AtomicBool::new(false);
+
+        assert_eq!(
+            queue_process_report(&state, 7, || {
+                enumerated.store(true, Ordering::Relaxed);
+                b"current".to_vec()
+            }),
+            ProcessReportRequestResult::Queued
+        );
+
+        assert!(enumerated.load(Ordering::Relaxed));
+        assert_eq!(
+            state
+                .shared
+                .lock()
+                .unwrap()
+                .process_reports
+                .front()
+                .map(Vec::as_slice),
+            Some(b"current".as_slice())
+        );
+    }
+
+    #[test]
+    fn generation_change_during_process_enumeration_drops_the_response() {
+        let state = frozen_state(7);
+
+        assert_eq!(
+            queue_process_report(&state, 7, || {
+                state.shared.lock().unwrap().client_gen = 8;
+                b"now stale".to_vec()
+            }),
+            ProcessReportRequestResult::Stale
+        );
+
+        assert!(state.shared.lock().unwrap().process_reports.is_empty());
+    }
+
+    #[test]
+    fn reconnect_cleanup_discards_process_reports_from_the_old_client() {
+        let state = frozen_state(7);
+        let (old_client, _old_peer) = local_stream_pair().unwrap();
+        let (new_client, _new_peer) = local_stream_pair().unwrap();
+        let mut shared = state.shared.lock().unwrap();
+        shared.client = Some(old_client);
+        shared.process_reports.push_back(b"old".to_vec());
+
+        clear_client(&mut shared);
+        shared.client = Some(new_client);
+
+        assert!(shared.process_reports.is_empty());
+    }
+
+    #[test]
+    fn process_report_echoes_the_big_endian_request_id_before_json() {
+        let request_id = 0x0102_0304_0506_0708_u64.to_be_bytes();
+
+        let payload = encode_process_report(ProcessReportRequest::Correlated(request_id), &[]);
+
+        assert_eq!(&payload[..8], &request_id);
+        assert_eq!(&payload[8..], b"[]");
+    }
+
+    #[test]
+    fn legacy_process_request_keeps_the_plain_json_response_shape() {
+        let request = parse_process_report_request(&[]).unwrap();
+
+        assert_eq!(request, ProcessReportRequest::Legacy);
+        assert_eq!(encode_process_report(request, &[]), b"[]");
+    }
+
+    #[test]
+    fn correlated_process_request_round_trips_its_request_id() {
+        let request_id = 0x0102_0304_0506_0708_u64.to_be_bytes();
+        let request = parse_process_report_request(&request_id).unwrap();
+
+        assert_eq!(request, ProcessReportRequest::Correlated(request_id));
+        assert_eq!(
+            encode_process_report(request, &[]),
+            [request_id.as_slice(), b"[]"].concat()
+        );
+        assert!(parse_process_report_request(&[0; 7]).is_none());
+        assert!(parse_process_report_request(&[0; 9]).is_none());
+    }
+
+    #[test]
+    fn query_owner_ack_waits_for_output_before_its_transition_barrier() {
+        let mut transit = TransitQueue::default();
+        transit.push_bounded(b"old-owner-query", RING_MAX);
+        let mut acks = VecDeque::from([PendingQueryOwnerAck {
+            enabled: false,
+            barrier: transit.end_position(),
+        }]);
+        transit.push_bounded(b"new-owner-query", RING_MAX);
+
+        assert!(!query_owner_ack_ready(&transit, &acks));
+        let barrier = next_output_barrier(&VecDeque::new(), &acks);
+        assert_eq!(transit.drain_before(barrier, CHUNK), b"old-owner-query");
+        assert!(query_owner_ack_ready(&transit, &acks));
+        assert!(!acks.pop_front().unwrap().enabled);
+        assert_eq!(transit.drain_before(None, CHUNK), b"new-owner-query");
+    }
+
+    #[test]
+    fn output_stops_at_the_earliest_repaint_or_query_owner_barrier() {
+        let repaints = VecDeque::from([PendingRepaint {
+            barrier: 5,
+            cols: 80,
+            history_budget: 0,
+        }]);
+        let acks = VecDeque::from([PendingQueryOwnerAck {
+            enabled: true,
+            barrier: 10,
+        }]);
+
+        assert_eq!(next_output_barrier(&repaints, &acks), Some(5));
+        assert_eq!(next_output_barrier(&VecDeque::new(), &acks), Some(10));
+        assert_eq!(next_output_barrier(&repaints, &VecDeque::new()), Some(5));
     }
 
     #[test]
