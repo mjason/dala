@@ -7,6 +7,11 @@ defmodule Dala.Release do
   """
   require Logger
 
+  defmodule MetadataReplacementError do
+    @moduledoc false
+    defexception [:message, recovery: :unknown]
+  end
+
   @app :dala
 
   def migrate do
@@ -24,7 +29,13 @@ defmodule Dala.Release do
   end
 
   @doc false
-  def sync_install_metadata(root_metadata_path, discovery_path, runtime) do
+  def sync_install_metadata(root_metadata_path, discovery_path, runtime, opts \\ []) do
+    with_metadata_pair_lock([root_metadata_path, discovery_path], fn ->
+      sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts)
+    end)
+  end
+
+  defp sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts) do
     metadata =
       root_metadata_path
       |> File.read!()
@@ -55,8 +66,44 @@ defmodule Dala.Release do
       })
 
     body = Jason.encode!(updated, pretty: true) <> "\n"
-    write_json_pair_atomic!([{root_metadata_path, body}, {discovery_path, body}])
+    write_json_pair_atomic!([{root_metadata_path, body}, {discovery_path, body}], opts)
     :ok
+  end
+
+  defp with_metadata_pair_lock(paths, fun) do
+    # Windows paths are case-insensitive. Lock each path in a stable order so
+    # transactions that share only one metadata file still serialize, while
+    # avoiding the lock-order deadlock that nested global locks can otherwise
+    # introduce.
+    paths =
+      paths
+      |> Enum.map(&metadata_path_key/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    with_metadata_path_locks(paths, fun)
+  end
+
+  defp with_metadata_path_locks([], fun), do: fun.()
+
+  defp with_metadata_path_locks([path | rest], fun) do
+    resource = {__MODULE__, :install_metadata_path, path}
+
+    case :global.trans(
+           {resource, self()},
+           fn -> with_metadata_path_locks(rest, fun) end,
+           [node()],
+           :infinity
+         ) do
+      :aborted ->
+        raise "Dala install metadata lock aborted for #{path}"
+
+      {:aborted, reason} ->
+        raise "Dala install metadata lock aborted for #{path}: #{inspect(reason)}"
+
+      result ->
+        result
+    end
   end
 
   defp repos do
@@ -109,25 +156,38 @@ defmodule Dala.Release do
   end
 
   defp same_path?(left, right) when is_binary(left) and is_binary(right) do
-    left |> Path.expand() |> String.downcase() == right |> Path.expand() |> String.downcase()
+    metadata_path_key(left) == metadata_path_key(right)
   end
 
   defp same_path?(_, _), do: false
+
+  defp metadata_path_key(path) do
+    expanded = Path.expand(path)
+
+    if match?({:win32, _}, :os.type()) do
+      String.downcase(expanded)
+    else
+      expanded
+    end
+  end
 
   # There is no filesystem primitive that atomically replaces two independent
   # files. Stage both payloads first, then replace them while retaining the
   # original bytes. If the second replacement fails, restore every destination
   # that was already changed so a handled failure cannot leave the copies split.
-  defp write_json_pair_atomic!(writes) do
+  defp write_json_pair_atomic!(writes, opts) do
     staged = stage_metadata_entries!(writes)
+    replace_fun = Keyword.get(opts, :replace_fun, &replace_file!/3)
+    cleanup_fun = Keyword.get(opts, :cleanup_fun, &cleanup_windows_backup/1)
 
-    case replace_metadata_entries(staged) do
-      {:ok, _replaced} ->
+    case replace_metadata_entries(staged, replace_fun) do
+      {:ok, replaced} ->
+        cleanup_metadata_recoveries(replaced, cleanup_fun)
         cleanup_staged_entries(staged)
         :ok
 
       {:error, error, stacktrace, replaced} ->
-        case rollback_metadata_entries(replaced) do
+        case rollback_metadata_entries(replaced, replace_fun, cleanup_fun) do
           :ok ->
             cleanup_staged_entries(staged)
             :erlang.raise(:error, error, stacktrace)
@@ -147,16 +207,29 @@ defmodule Dala.Release do
                 paths -> Enum.join(paths, ", ")
               end
 
+            backup_text =
+              replaced
+              |> Enum.flat_map(fn
+                %{recovery: {:windows_backup, backup}} -> [backup]
+                %{recovery: {:ambiguous_windows_backup, backup}} -> [backup]
+                _ -> []
+              end)
+              |> case do
+                [] -> "<none>"
+                paths -> Enum.join(paths, ", ")
+              end
+
             raise "Dala install metadata update failed and rollback failed: " <>
                     Exception.message(error) <>
                     " (rollback: #{inspect(rollback_reason)}); " <>
-                    "staged metadata retained for recovery: #{retained_text}"
+                    "staged metadata retained for recovery: #{retained_text}; " <>
+                    "known recovery backups: #{backup_text}"
         end
     end
   end
 
   defp stage_metadata_entries!(writes) do
-    writes = Enum.uniq_by(writes, fn {path, _body} -> Path.expand(path) end)
+    writes = Enum.uniq_by(writes, fn {path, _body} -> metadata_path_key(path) end)
 
     result =
       Enum.reduce_while(writes, [], fn {path, body}, staged ->
@@ -185,18 +258,19 @@ defmodule Dala.Release do
     end
   end
 
-  defp replace_metadata_entries(staged) do
+  defp replace_metadata_entries(staged, replace_fun) do
     result =
       Enum.reduce_while(staged, [], fn entry, replaced ->
         try do
-          replace_file!(entry.fresh, entry.path)
-          {:cont, [entry | replaced]}
+          recovery = replace_fun.(entry.fresh, entry.path, :commit) |> normalize_recovery!()
+          {:cont, [Map.put(entry, :recovery, recovery) | replaced]}
         rescue
           error ->
             # Include the entry whose replacement raised. A platform rename
             # can fail after it has already moved the destination, so omitting
             # it from rollback can leave one metadata copy missing or stale.
-            {:halt, {:error, error, __STACKTRACE__, [entry | replaced]}}
+            failed = Map.put(entry, :recovery, replacement_error_recovery(error))
+            {:halt, {:error, error, __STACKTRACE__, [failed | replaced]}}
         end
       end)
 
@@ -206,10 +280,10 @@ defmodule Dala.Release do
     end
   end
 
-  defp rollback_metadata_entries(entries) do
+  defp rollback_metadata_entries(entries, replace_fun, cleanup_fun) do
     errors =
       Enum.reduce(entries, [], fn entry, errors ->
-        case restore_metadata_target(entry) do
+        case restore_metadata_target(entry, replace_fun, cleanup_fun) do
           :ok -> errors
           {:error, reason} -> [reason | errors]
         end
@@ -221,38 +295,89 @@ defmodule Dala.Release do
     end
   end
 
-  defp restore_metadata_target(%{path: path, original: :absent}) do
+  defp restore_metadata_target(%{path: path, original: :absent} = entry, _replace, cleanup) do
     case File.rm(path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
+      :ok -> cleanup_metadata_recovery(entry.recovery, cleanup)
+      {:error, :enoent} -> cleanup_metadata_recovery(entry.recovery, cleanup)
       {:error, reason} -> {:error, {path, reason}}
     end
   end
 
-  defp restore_metadata_target(%{path: path, original: {:regular, body}}) do
+  defp restore_metadata_target(
+         %{path: path, original: {:regular, _body}, recovery: {:windows_backup, backup}},
+         replace_fun,
+         cleanup_fun
+       ) do
+    fresh = metadata_temp_path(path, "rollback")
+
+    try do
+      # Never make the only durable old-byte backup the source of a replace:
+      # File.Replace can consume its source before reporting failure.
+      File.cp!(backup, fresh)
+      recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
+      cleanup_metadata_recovery(recovery, cleanup_fun)
+      cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun)
+      File.rm(fresh)
+      :ok
+    rescue
+      error ->
+        retained = if File.exists?(fresh), do: fresh, else: nil
+        {:error, {path, {:known_backup_restore, backup, retained, error}}}
+    end
+  end
+
+  defp restore_metadata_target(
+         %{path: path, original: {:regular, body}} = entry,
+         replace_fun,
+         cleanup_fun
+       ) do
     fresh = metadata_temp_path(path, "rollback")
 
     try do
       File.write!(fresh, body)
-      replace_file!(fresh, path)
+      recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
+      cleanup_metadata_recovery(recovery, cleanup_fun)
+      cleanup_metadata_recovery(entry.recovery, cleanup_fun)
+      File.rm(fresh)
       :ok
     rescue
-      error -> {:error, {path, error}}
-    after
-      File.rm(fresh)
+      error ->
+        retained = retain_snapshot_recovery(path, body, fresh)
+        {:error, {path, {:snapshot_restore, retained, error}}}
     end
   end
 
-  defp restore_metadata_target(%{path: path, original: {:other, type}}) do
+  defp restore_metadata_target(
+         %{path: path, original: {:other, type}} = entry,
+         _replace_fun,
+         cleanup_fun
+       ) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: ^type}} ->
-        :ok
+        cleanup_metadata_recovery(entry.recovery, cleanup_fun)
 
       {:ok, %File.Stat{type: actual}} ->
         {:error, {path, {:cannot_restore_metadata_entry, type, actual}}}
 
       {:error, reason} ->
         {:error, {path, {:cannot_restore_metadata_entry, type, reason}}}
+    end
+  end
+
+  defp retain_snapshot_recovery(path, body, fresh) do
+    # A surviving source is useful only when it still contains the complete
+    # snapshot; a partial post-commit write must get a fresh recovery copy.
+    case File.read(fresh) do
+      {:ok, ^body} ->
+        fresh
+
+      _ ->
+        retained = metadata_temp_path(path, "rollback-recovery")
+
+        case File.write(retained, body) do
+          :ok -> retained
+          {:error, _reason} -> nil
+        end
     end
   end
 
@@ -284,53 +409,129 @@ defmodule Dala.Release do
     Enum.each(entries, fn entry -> File.rm(entry.fresh) end)
   end
 
-  defp replace_file!(fresh, path) do
-    if match?({:win32, _}, :os.type()) do
+  defp cleanup_metadata_recoveries(entries, cleanup_fun) do
+    Enum.each(entries, &cleanup_metadata_recovery(&1.recovery, cleanup_fun))
+  end
+
+  defp cleanup_metadata_recovery(:none, _cleanup_fun), do: :ok
+  defp cleanup_metadata_recovery(:unknown, _cleanup_fun), do: :ok
+
+  defp cleanup_metadata_recovery({:ambiguous_windows_backup, backup}, cleanup_fun),
+    do: cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun)
+
+  defp cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun) do
+    case cleanup_fun.(backup) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "could not remove temporary Dala metadata backup #{backup}: #{inspect(reason)}; " <>
+            "leaving it for recovery"
+        )
+
+        :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "could not remove temporary Dala metadata backup #{backup}: " <>
+          "#{Exception.message(error)}; leaving it for recovery"
+      )
+
+      :ok
+  end
+
+  defp normalize_recovery!(:none), do: :none
+
+  defp normalize_recovery!({:windows_backup, backup})
+       when is_binary(backup) and backup != "",
+       do: {:windows_backup, backup}
+
+  defp normalize_recovery!(other),
+    do: raise(ArgumentError, "invalid metadata replacement recovery: #{inspect(other)}")
+
+  defp replacement_error_recovery(%MetadataReplacementError{recovery: :none}), do: :none
+
+  defp replacement_error_recovery(%MetadataReplacementError{
+         recovery: {:windows_backup, backup}
+       })
+       when is_binary(backup) and backup != "",
+       do: {:windows_backup, backup}
+
+  defp replacement_error_recovery(%MetadataReplacementError{
+         recovery: {:ambiguous_windows_backup, backup}
+       })
+       when is_binary(backup) and backup != "",
+       do: {:ambiguous_windows_backup, backup}
+
+  defp replacement_error_recovery(_error), do: :unknown
+
+  defp replace_file!(fresh, path, phase) when phase in [:commit, :rollback] do
+    windows? = match?({:win32, _}, :os.type())
+
+    if windows? and phase == :commit do
       ensure_no_windows_backups!(path)
     end
 
-    if match?({:win32, _}, :os.type()) and File.exists?(path) do
-      backup = metadata_temp_path(path, "backup")
+    if windows? and File.exists?(path) do
+      backup = if phase == :commit, do: metadata_temp_path(path, "backup")
 
       command =
-        "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
+        if backup do
+          "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
+        else
+          "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $null)"
+        end
+
+      env =
+        [
+          {"DALA_METADATA_SOURCE", fresh},
+          {"DALA_METADATA_DESTINATION", path}
+        ] ++ if(backup, do: [{"DALA_METADATA_BACKUP", backup}], else: [])
 
       case System.cmd(
              "powershell.exe",
              ["-NoProfile", "-NonInteractive", "-Command", command],
-             env: [
-               {"DALA_METADATA_SOURCE", fresh},
-               {"DALA_METADATA_DESTINATION", path},
-               {"DALA_METADATA_BACKUP", backup}
-             ],
+             env: env,
              stderr_to_stdout: true
            ) do
+        {_output, 0} when is_binary(backup) ->
+          {:windows_backup, backup}
+
         {_output, 0} ->
-          case cleanup_windows_backup(backup) do
+          :none
+
+        {output, status} when is_binary(backup) ->
+          case restore_windows_backup(backup, path) do
             :ok ->
-              :ok
+              raise MetadataReplacementError,
+                message:
+                  "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}",
+                # Keep the backup durable while the outer pair rollback runs.
+                # A failed rollback must still have the original bytes even if
+                # this best-effort recovery copy is later consumed.
+                recovery: {:windows_backup, backup}
 
             {:error, reason} ->
-              raise "metadata replacement succeeded but recovery backup remains at #{backup}: " <>
-                      inspect(reason)
+              raise MetadataReplacementError,
+                message:
+                  "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}; " <>
+                    "backup recovery failed at #{backup}: #{inspect(reason)}",
+                recovery: windows_backup_recovery(backup)
           end
 
         {output, status} ->
-          case restore_windows_backup(backup, path) do
-            :ok ->
-              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}"
-
-            {:error, reason} ->
-              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}; " <>
-                      "backup recovery failed at #{backup}: #{inspect(reason)}"
-          end
+          raise "could not roll back Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}"
       end
     else
       File.rename!(fresh, path)
+      :none
     end
   end
 
-  defp cleanup_windows_backup(backup) do
+  @doc false
+  def cleanup_windows_backup(backup) do
     case File.rm(backup) do
       :ok ->
         :ok
@@ -344,7 +545,7 @@ defmodule Dala.Release do
             "leaving it for recovery"
         )
 
-        {:error, reason}
+        :ok
     end
   end
 
@@ -388,9 +589,12 @@ defmodule Dala.Release do
       {:ok, %File.Stat{type: :regular}} ->
         case File.lstat(path) do
           {:error, :enoent} ->
-            case File.rename(backup, path) do
+            # Copy instead of rename: the outer rollback may consume its
+            # source or fail after consuming it, so the generated backup must
+            # remain available as the durable recovery copy.
+            case File.cp(backup, path) do
               :ok -> :ok
-              {:error, reason} -> {:error, {:restore_rename, reason}}
+              {:error, reason} -> {:error, {:restore_copy, reason}}
             end
 
           {:ok, _destination_stat} ->
@@ -405,6 +609,13 @@ defmodule Dala.Release do
 
       {:error, reason} ->
         {:error, {:backup_stat, reason}}
+    end
+  end
+
+  defp windows_backup_recovery(backup) do
+    case File.lstat(backup) do
+      {:ok, %File.Stat{type: :regular}} -> {:windows_backup, backup}
+      _ -> {:ambiguous_windows_backup, backup}
     end
   end
 

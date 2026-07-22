@@ -189,6 +189,9 @@ function Invoke-RecoverableFileReplace(
     }
   }
 
+  $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Source -ErrorAction Stop).Hash
+  $reportedErrorAfterCommit = $false
+  $postCommitError = $null
   try {
     & $ReplaceOperation $Source $Destination $backup
   } catch {
@@ -198,8 +201,14 @@ function Invoke-RecoverableFileReplace(
     try {
       $destinationExists = Test-Path -LiteralPath $Destination -ErrorAction Stop
       $backupExists = Test-Path -LiteralPath $backup -ErrorAction Stop
+      if ($destinationExists) {
+        $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination -ErrorAction Stop).Hash
+        $reportedErrorAfterCommit = $destinationHash -ceq $sourceHash
+      }
 
-      if (-not $destinationExists -and $backupExists) {
+      if ($reportedErrorAfterCommit) {
+        $postCommitError = $replaceError.Exception.Message
+      } elseif (-not $destinationExists -and $backupExists) {
         $backupAttributes = [IO.File]::GetAttributes($backup)
         if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
             ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -228,24 +237,40 @@ function Invoke-RecoverableFileReplace(
       throw "$($replaceError.Exception.Message); $recoveryFailure"
     }
 
-    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
-    throw $replaceError
+    if (-not $reportedErrorAfterCommit) {
+      Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+      throw $replaceError
+    }
   }
 
-  if (Test-Path -LiteralPath $backup) {
+  if ($reportedErrorAfterCommit) {
+    Write-Warning "Replacement reported an error after the destination was verified as committed: $postCommitError" `
+      -WarningAction Continue
     try {
+      if (Test-Path -LiteralPath $Source -ErrorAction Stop) {
+        Remove-Item -LiteralPath $Source -Force -ErrorAction Stop
+      }
+    } catch {
+      Write-Warning "Could not clean committed replacement source at $Source`: $($_.Exception.Message)" `
+        -WarningAction Continue
+    }
+  }
+
+  try {
+    if (Test-Path -LiteralPath $backup -ErrorAction Stop) {
       $backupAttributes = [IO.File]::GetAttributes($backup)
       if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
           ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "recovery backup is not a regular file"
       }
       Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
-    } catch {
-      # The destination replacement has already committed. Do not report a
-      # successful metadata/pointer write as a failed install just because its
-      # old-byte recovery backup needs operator cleanup.
-      Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
     }
+  } catch {
+    # The destination replacement has already committed. Do not report a
+    # successful metadata/pointer write as a failed install just because its
+    # old-byte recovery backup needs operator cleanup.
+    Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)" `
+      -WarningAction Continue
   }
 }
 
@@ -273,6 +298,39 @@ function Write-TextAtomic([string]$Path, [string]$Body) {
   }
 }
 
+function Write-BytesAtomic([string]$Path, [byte[]]$Body) {
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to write through a reparse point: $Path"
+  }
+  $parent = Split-Path -Parent $Path
+  if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  $fresh = "$Path.new-$([guid]::NewGuid().ToString('N'))"
+  [IO.File]::WriteAllBytes($fresh, $Body)
+
+  $helperOwnsFresh = $false
+  try {
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $Path
+    } else {
+      [IO.File]::Move($fresh, $Path)
+    }
+  } finally {
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Get-BytesSha256([byte[]]$Body) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    ([BitConverter]::ToString($sha.ComputeHash($Body))).Replace("-", "")
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 function Write-JsonAtomic([string]$Path, $Value) {
   Write-TextAtomic $Path (($Value | ConvertTo-Json -Depth 8) + "`n")
 }
@@ -283,9 +341,22 @@ function Test-SamePath([string]$Left, [string]$Right) {
   $leftFull.Equals($rightFull, [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Write-InstallMetadataPair([string]$RootPath, [string]$DiscoveryPath, $Value) {
+function Write-InstallMetadataPair(
+  [string]$RootPath,
+  [string]$DiscoveryPath,
+  $Value,
+  [ref]$RollbackIncomplete
+) {
+  $RollbackIncomplete.Value = $false
   if (Test-SamePath $RootPath $DiscoveryPath) {
-    Write-JsonAtomic $RootPath $Value
+    try {
+      Write-JsonAtomic $RootPath $Value
+    } catch {
+      # A single-file replacement can fail after moving bytes. The caller owns
+      # the original snapshot and must make one more recovery attempt.
+      $RollbackIncomplete.Value = $true
+      throw
+    }
     return
   }
 
@@ -327,6 +398,7 @@ function Write-InstallMetadataPair([string]$RootPath, [string]$DiscoveryPath, $V
       }
     }
     if ($rollbackErrors.Count -gt 0) {
+      $RollbackIncomplete.Value = $true
       throw "$writeError; install metadata rollback failed: $($rollbackErrors -join '; ')"
     }
     throw $writeError
@@ -566,6 +638,81 @@ function Remove-SafeInstallTree([string]$Path) {
   }
 }
 
+function Remove-CreatedInstallArtifact([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "refusing to remove through a reparse point: $Path"
+  }
+  $attributes = [IO.File]::GetAttributes($Path)
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "created install artifact is not a regular file: $Path"
+  }
+  [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+  [IO.File]::Delete($Path)
+  if (Test-Path -LiteralPath $Path) {
+    throw "created install artifact remains after rollback: $Path"
+  }
+}
+
+function Restore-InstallArtifacts(
+  [string]$RootMetadataPath,
+  [bool]$RootMetadataExisted,
+  [string]$RootMetadataBody,
+  [string]$DiscoveryMetadataPath,
+  [bool]$DiscoveryMetadataExisted,
+  [string]$DiscoveryMetadataBody,
+  [bool]$RestoreMetadata,
+  [string]$ConfigPath,
+  [bool]$CreatedConfig,
+  [string]$ConfigMarkerPath,
+  [bool]$CreatedConfigMarker
+) {
+  $metadataArtifacts = @()
+  if ($RestoreMetadata) {
+    # Restore in reverse write order so a partial failure leaves the root copy,
+    # which is colocated with the release tree, as the last attempted source of
+    # truth.
+    $metadataArtifacts += [pscustomobject]@{
+      path = $DiscoveryMetadataPath
+      existed = $DiscoveryMetadataExisted
+      body = $DiscoveryMetadataBody
+    }
+    $metadataArtifacts += [pscustomobject]@{
+      path = $RootMetadataPath
+      existed = $RootMetadataExisted
+      body = $RootMetadataBody
+    }
+  }
+  $rollbackErrors = @()
+
+  foreach ($artifact in $metadataArtifacts) {
+    try {
+      if ($artifact.existed) {
+        Write-TextAtomic ([string]$artifact.path) ([string]$artifact.body)
+      } else {
+        Remove-CreatedInstallArtifact ([string]$artifact.path)
+      }
+    } catch {
+      $rollbackErrors += $_.Exception.Message
+    }
+  }
+
+  if ($rollbackErrors.Count -gt 0) {
+    throw ($rollbackErrors -join '; ')
+  }
+
+  # Config is referenced by metadata and the marker claims ownership of its
+  # directory. Preserve each dependency until the artifact above it is known
+  # to be restored or removed.
+  if ($CreatedConfig) {
+    Remove-CreatedInstallArtifact $ConfigPath
+  }
+  if ($CreatedConfigMarker) {
+    Remove-CreatedInstallArtifact $ConfigMarkerPath
+  }
+}
+
 function Test-NoReparsePoints([string]$Path, [bool]$CheckAncestors = $true) {
   try {
     if ($CheckAncestors -and -not (Test-NoReparseAncestors $Path)) { return $false }
@@ -730,12 +877,18 @@ function New-DalaTask([string]$Name, [string]$Launcher, [string]$Runner, [string
     -Principal $principal -Description "Dala terminal server" | Out-Null
 }
 
-function Assert-DalaTaskOwnership([string]$Name, [string]$ReleaseDir, [string]$ExpectedRunner, [string]$ExpectedLog) {
-  $tasks = @(Get-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction SilentlyContinue)
+function Get-DalaTaskExact([string]$Name) {
+  $tasks = @(
+    Get-ScheduledTask -TaskPath "\" -ErrorAction Stop |
+      Where-Object { [string]$_.TaskName -ceq $Name }
+  )
   if ($tasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$Name'" }
-  $task = if ($tasks.Count -eq 1) { $tasks[0] } else { $null }
-  if (-not $task) { return $false }
+  if ($tasks.Count -eq 1) { return $tasks[0] }
+  $null
+}
 
+function Assert-DalaTaskObjectOwnership($Task, [string]$Name, [string]$ReleaseDir, [string]$ExpectedRunner, [string]$ExpectedLog) {
+  if (-not $Task) { throw "Scheduled task '$Name' does not exist" }
   Assert-DalaTaskPrincipal $task
 
   $releaseTag = Split-Path -Leaf ([IO.Path]::GetFullPath($ReleaseDir).TrimEnd([char[]]"\/"))
@@ -752,6 +905,185 @@ function Assert-DalaTaskOwnership([string]$Name, [string]$ReleaseDir, [string]$E
   $true
 }
 
+function Assert-DalaTaskOwnership([string]$Name, [string]$ReleaseDir, [string]$ExpectedRunner, [string]$ExpectedLog) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return $false }
+  Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $ExpectedRunner $ExpectedLog
+}
+
+function Register-DalaTaskVerified(
+  [string]$Name,
+  [string]$Launcher,
+  [string]$Runner,
+  [string]$LogFile,
+  [string]$ReleaseDir,
+  [ref]$Ambiguous
+) {
+  $Ambiguous.Value = $false
+  $registrationError = $null
+  try {
+    New-DalaTask $Name $Launcher $Runner $LogFile
+  } catch {
+    $registrationError = $_.Exception.Message
+  }
+
+  try {
+    $task = Get-DalaTaskExact $Name
+  } catch {
+    $Ambiguous.Value = $true
+    if ($registrationError) {
+      throw "$registrationError; could not query Scheduled Task '$Name': $($_.Exception.Message)"
+    }
+    throw
+  }
+  if (-not $task) {
+    if ($registrationError) { throw $registrationError }
+    throw "Scheduled task registration returned without creating '$Name'"
+  }
+  try {
+    $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+  } catch {
+    $Ambiguous.Value = $true
+    if ($registrationError) {
+      throw "$registrationError; could not verify Scheduled Task '$Name': $($_.Exception.Message)"
+    }
+    throw
+  }
+
+  if ($registrationError) {
+    Write-Warning "Scheduled Task registration reported an error after '$Name' was committed: $registrationError" `
+      -WarningAction Continue
+  }
+}
+
+function Remove-DalaTaskVerified(
+  [string]$Name,
+  [string]$ReleaseDir,
+  [string]$Runner,
+  [string]$LogFile
+) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+
+  Stop-DalaTaskVerified $Name $ReleaseDir $Runner $LogFile
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+
+  $removalError = $null
+  try {
+    Unregister-ScheduledTask -TaskName $Name -TaskPath "\" -Confirm:$false -ErrorAction Stop
+  } catch {
+    $removalError = $_.Exception.Message
+  }
+
+  try {
+    $remaining = Get-DalaTaskExact $Name
+  } catch {
+    if ($removalError) {
+      throw "$removalError; could not verify removal of Scheduled Task '$Name': $($_.Exception.Message)"
+    }
+    throw
+  }
+
+  if (-not $remaining) {
+    if ($removalError) {
+      Write-Warning "Scheduled Task removal reported an error after '$Name' was removed: $removalError" `
+        -WarningAction Continue
+    }
+    return
+  }
+
+  try {
+    $null = Assert-DalaTaskObjectOwnership $remaining $Name $ReleaseDir $Runner $LogFile
+  } catch {
+    if ($removalError) {
+      throw "$removalError; Scheduled Task '$Name' remains with uncertain ownership: $($_.Exception.Message)"
+    }
+    throw
+  }
+  if ($removalError) { throw "$removalError; Scheduled Task '$Name' still exists" }
+  throw "Scheduled Task '$Name' still exists after removal returned"
+}
+
+function Stop-DalaTaskVerified(
+  [string]$Name,
+  [string]$ReleaseDir,
+  [string]$Runner,
+  [string]$LogFile
+) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+  if ([string]$task.State -notin @("Running", "Queued")) { return }
+
+  $stopError = $null
+  try {
+    Stop-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $stopError = $_.Exception.Message
+  }
+
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    $task = Get-DalaTaskExact $Name
+    if (-not $task -or [string]$task.State -notin @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  if ($task) {
+    $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+  }
+  if ($task -and [string]$task.State -in @("Running", "Queued")) {
+    $message = "Scheduled Task '$Name' remained active after stop"
+    if ($stopError) { $message = "$stopError; $message" }
+    throw $message
+  }
+  if ($stopError) {
+    Write-Warning "Scheduled Task stop reported an error after '$Name' stopped: $stopError" `
+      -WarningAction Continue
+  }
+}
+
+function Start-DalaTaskVerified(
+  [string]$Name,
+  [string]$ReleaseDir,
+  [string]$Runner,
+  [string]$LogFile
+) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { throw "Scheduled Task '$Name' is missing before start" }
+  $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+
+  $startError = $null
+  try {
+    Start-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $startError = $_.Exception.Message
+  }
+
+  $task = $null
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $task = Get-DalaTaskExact $Name
+    if ($task -and [string]$task.State -in @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not $task) {
+    $message = "Scheduled Task '$Name' is missing after start"
+    if ($startError) { $message = "$startError; $message" }
+    throw $message
+  }
+  $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+  if ([string]$task.State -notin @("Running", "Queued")) {
+    $message = "Scheduled Task '$Name' did not enter a running state"
+    if ($startError) { $message = "$startError; $message" }
+    throw $message
+  }
+  if ($startError) {
+    Write-Warning "Scheduled Task start reported an error after '$Name' started: $startError" `
+      -WarningAction Continue
+  }
+}
+
 function Find-DalaTaskRegistration([string]$ReleaseDir, [string]$ExpectedRunner, [string]$ExpectedLog) {
   $releaseTag = Split-Path -Leaf ([IO.Path]::GetFullPath($ReleaseDir).TrimEnd([char[]]"\/"))
   $launcher = Get-TaskLauncher $ReleaseDir (Get-ReleaseVersion $releaseTag)
@@ -759,7 +1091,7 @@ function Find-DalaTaskRegistration([string]$ReleaseDir, [string]$ExpectedRunner,
   $expectedArguments = "`"$ExpectedRunner`" `"$ExpectedLog`""
 
   $matches = @(
-    Get-ScheduledTask -TaskPath "\" -ErrorAction SilentlyContinue |
+    Get-ScheduledTask -TaskPath "\" -ErrorAction Stop |
       Where-Object {
         $actions = @($_.Actions)
         $actions.Count -eq 1 -and
@@ -779,44 +1111,64 @@ function Find-DalaTaskRegistration([string]$ReleaseDir, [string]$ExpectedRunner,
   $null
 }
 
-function Get-ReleaseBeamProcesses([string]$ReleaseDir) {
-  try {
-    $releaseRoot = [IO.Path]::GetFullPath($ReleaseDir).TrimEnd([char[]]"\/")
-    $tag = Split-Path -Leaf $releaseRoot
-    if ($tag -cnotmatch $TagPattern) { return @() }
-    $version = $tag.Substring(1)
-    $tokens = @((Get-Content -LiteralPath (Join-Path $releaseRoot "releases\start_erl.data") -Raw).Trim() -split '\s+')
-    if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) { return @() }
-    $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $releaseRoot "erts-$($tokens[0])\bin\erl.exe"))
-    $boot = [IO.Path]::GetFullPath((Join-Path $releaseRoot "releases\$version\start"))
-    $bootFile = [IO.Path]::GetFullPath((Join-Path $releaseRoot "releases\$version\start.boot"))
-  } catch {
-    return @()
+function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates) {
+  $command = $CommandLine.Replace('/', '\')
+  foreach ($boot in $BootCandidates) {
+    $normalizedBoot = ([string]$boot).Replace('/', '\')
+    $escapedBoot = [regex]::Escape($normalizedBoot)
+    $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
+    if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+      return $true
+    }
   }
-  @(
-    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
-      Where-Object {
-        $processExecutable = [string]$_.ExecutablePath
-        if ([string]::IsNullOrWhiteSpace($processExecutable) -or
-            -not (Test-SamePath $processExecutable $expectedExecutable)) { return $false }
-        $command = ([string]$_.CommandLine).Replace('/', '\').Replace('"', '')
-        foreach ($candidateBoot in @($boot, $bootFile)) {
-          $index = $command.IndexOf($candidateBoot, [StringComparison]::OrdinalIgnoreCase)
-          if ($index -ge 0) {
-            $prefix = $command.Substring(0, $index).TrimEnd()
-            if ($prefix.EndsWith("-boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("-boot=", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot=", [StringComparison]::OrdinalIgnoreCase)) { return $true }
-          }
-        }
-        $false
-      }
-  )
+  $false
+}
+
+function Get-ReleaseBeamProcesses([string]$ReleaseDir) {
+  $releaseRoot = [IO.Path]::GetFullPath($ReleaseDir).TrimEnd([char[]]"\/")
+  $tag = Split-Path -Leaf $releaseRoot
+  if ($tag -cnotmatch $TagPattern) {
+    throw "Cannot inspect Dala release with an invalid version directory: $releaseRoot"
+  }
+  $version = $tag.Substring(1)
+  $tokens = @((Get-Content -LiteralPath (Join-Path $releaseRoot "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) {
+    throw "Cannot inspect Dala release with malformed start_erl.data: $releaseRoot"
+  }
+  $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $releaseRoot "erts-$($tokens[0])\bin\erl.exe"))
+  $boot = [IO.Path]::GetFullPath((Join-Path $releaseRoot "releases\$version\start"))
+  $bootFile = [IO.Path]::GetFullPath((Join-Path $releaseRoot "releases\$version\start.boot"))
+  $releaseProcesses = @()
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+
+    $processExecutable = [string]$process.ExecutablePath
+    $processCommandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($processExecutable) -or
+        [string]::IsNullOrWhiteSpace($processCommandLine)) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+    if (-not (Test-SamePath $processExecutable $expectedExecutable)) { continue }
+
+    if (-not (Test-ReleaseBootCommand $processCommandLine @($boot, $bootFile))) {
+      throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
+    }
+    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "Cannot determine the process id of an erl.exe process; refusing to continue"
+    }
+    $releaseProcesses += $process
+  }
+  $releaseProcesses
 }
 
 function Test-ReleaseTaskRunning([string]$Name, [string]$ReleaseDir) {
-  $task = Get-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction SilentlyContinue
+  $task = Get-DalaTaskExact $Name
+  if ($task) {
+    $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
+  }
   $task -and [string]$task.State -ceq "Running" -and (Get-ReleaseBeamProcesses $ReleaseDir).Count -gt 0
 }
 
@@ -827,15 +1179,11 @@ function Test-ReleaseOwnsPort([int]$PortNumber, [string]$ReleaseDir) {
   )
   if ($releaseProcessIds.Count -eq 0) { return $false }
 
-  try {
-    $listenerProcessIds = @(
-      Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction Stop |
-        Where-Object { $_.LocalAddress -ceq "127.0.0.1" -or $_.LocalAddress -ceq "0.0.0.0" } |
-        ForEach-Object { [uint32]$_.OwningProcess }
-    )
-  } catch {
-    return $false
-  }
+  $listenerProcessIds = @(
+    Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction Stop |
+      Where-Object { $_.LocalAddress -ceq "127.0.0.1" -or $_.LocalAddress -ceq "0.0.0.0" } |
+      ForEach-Object { [uint32]$_.OwningProcess }
+  )
 
   foreach ($processId in $releaseProcessIds) {
     if ($listenerProcessIds -contains $processId) { return $true }
@@ -846,6 +1194,7 @@ function Test-ReleaseOwnsPort([int]$PortNumber, [string]$ReleaseDir) {
 function Wait-DalaVersion([int]$PortNumber, [string]$Expected, [string]$ReleaseDir, [string]$Name) {
   $deadline = [DateTime]::UtcNow.AddSeconds($HealthTimeoutSeconds)
   $uri = "http://127.0.0.1:$PortNumber/version"
+  $lastHealthError = $null
 
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
@@ -864,11 +1213,14 @@ function Wait-DalaVersion([int]$PortNumber, [string]$Expected, [string]$ReleaseD
       }
     } catch {
       if ($_.Exception.Message -like "Dala returned version*") { throw }
+      $lastHealthError = $_.Exception.Message
     }
     Start-Sleep -Milliseconds 500
   }
 
-  throw "Dala $Expected did not become healthy at $uri"
+  $message = "Dala $Expected did not become healthy at $uri"
+  if ($lastHealthError) { $message += "; last health probe error: $lastHealthError" }
+  throw $message
 }
 
 if ($AttemptId) { Assert-AttemptId $AttemptId }
@@ -997,20 +1349,16 @@ $ConfigDirClaimable = (Test-SamePath $ConfigDir $DefaultConfigDir) -or -not $Con
 if ($ConfigDirExists -and -not $ConfigDirClaimable) {
   $ConfigDirClaimable = -not (Get-ChildItem -LiteralPath $ConfigDir -Force | Select-Object -First 1)
 }
-$CreatedConfigMarker = $ConfigDirClaimable -and -not $ConfigMarkerExists
-$CreatedMetadata = -not (Test-Path -LiteralPath $DiscoveryFile -PathType Leaf)
+$ShouldCreateConfigMarker = $ConfigDirClaimable -and -not $ConfigMarkerExists
+$CreatedConfigMarker = $false
+$RootMetadataExisted = Test-Path -LiteralPath $RootMetadataFile -PathType Leaf
+$DiscoveryMetadataExisted = Test-Path -LiteralPath $DiscoveryFile -PathType Leaf
+$RootMetadataBody = if ($RootMetadataExisted) { Get-Content -LiteralPath $RootMetadataFile -Raw } else { $null }
+$DiscoveryMetadataBody = if ($DiscoveryMetadataExisted) { Get-Content -LiteralPath $DiscoveryFile -Raw } else { $null }
+$MetadataWritten = $false
+$MetadataRollbackIncomplete = $false
+$CanRollbackCreatedArtifacts = $true
 $PreviousTag = $null
-
-$destinationParent = Split-Path -Parent $Dest
-$destinationLeaf = Split-Path -Leaf $Dest
-$repairPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.repair-.+$'
-$orphanRepairs = @(
-  Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match $repairPattern }
-)
-if ($orphanRepairs.Count -gt 0) {
-  throw "Previous damaged release backup requires manual recovery: $($orphanRepairs[0].FullName)"
-}
 
 Assert-ClaimableDirectory $Root $DefaultRoot ".dala-install" "DALA_HOME"
 Assert-ClaimableDirectory $DataDir $DefaultDataDir ".dala-data" "DALA_DATA_DIR"
@@ -1023,13 +1371,33 @@ if (-not (Test-NoReparseAncestors $DataDir)) {
 if (-not (Test-NoReparseAncestors $ConfigDir)) {
   throw "Refusing to use Dala config directory through a reparse point: $ConfigDir"
 }
+
+$destinationParent = Split-Path -Parent $Dest
+$destinationLeaf = Split-Path -Leaf $Dest
+$repairPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.repair-.+$'
+$orphanRepairs = if (Test-Path -LiteralPath $destinationParent -PathType Container -ErrorAction Stop) {
+  @(
+    Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
+      Where-Object { $_.Name -match $repairPattern }
+  )
+} else {
+  @()
+}
+if ($orphanRepairs.Count -gt 0) {
+  throw "Previous damaged release backup requires manual recovery: $($orphanRepairs[0].FullName)"
+}
+
+try {
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
-[IO.File]::WriteAllText((Join-Path $Root ".dala-install"), "Dala installation root`n", [Text.UTF8Encoding]::new($false))
+# Dedicated root/data markers retain ownership of partial trees for a safe
+# retry. The config marker is transactional because its directory may be shared.
+Write-TextAtomic (Join-Path $Root ".dala-install") "Dala installation root`n"
 $PreviousTag = Get-CurrentTag $Root
 New-Item -ItemType Directory -Force -Path $DataDir, $ConfigDir, (Join-Path $Root "versions"), (Join-Path $Root "logs") | Out-Null
-[IO.File]::WriteAllText((Join-Path $DataDir ".dala-data"), "Dala data directory`n", [Text.UTF8Encoding]::new($false))
+Write-TextAtomic (Join-Path $DataDir ".dala-data") "Dala data directory`n"
 if ($ConfigDirClaimable) {
-  [IO.File]::WriteAllText($ConfigMarker, "Dala configuration directory`n", [Text.UTF8Encoding]::new($false))
+  Write-TextAtomic $ConfigMarker "Dala configuration directory`n"
+  if ($ShouldCreateConfigMarker) { $CreatedConfigMarker = $true }
 }
 
 if (-not (Test-CompleteDalaRelease $Dest $ReleaseVersion)) {
@@ -1119,7 +1487,8 @@ if (-not (Test-CompleteDalaRelease $Dest $ReleaseVersion)) {
       try {
         Remove-SafeInstallTree $cleanupPath
       } catch {
-        Write-Warning "Could not safely remove installer staging at $cleanupPath`: $($_.Exception.Message)"
+        Write-Warning "Could not safely remove installer staging at $cleanupPath`: $($_.Exception.Message)" `
+          -WarningAction Continue
       }
     }
   }
@@ -1179,10 +1548,9 @@ if ($PreviousTag) {
 
   if ($MetadataTaskName) {
     Assert-TaskName $MetadataTaskName
-    $metadataTasks = @(Get-ScheduledTask -TaskName $MetadataTaskName -TaskPath "\" -ErrorAction SilentlyContinue)
-    if ($metadataTasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$MetadataTaskName'" }
-    if ($metadataTasks.Count -eq 1) {
-      $null = Assert-DalaTaskOwnership $MetadataTaskName $previousDir $Runner $LogFile
+    $metadataTask = Get-DalaTaskExact $MetadataTaskName
+    if ($metadataTask) {
+      $null = Assert-DalaTaskObjectOwnership $metadataTask $MetadataTaskName $previousDir $Runner $LogFile
     }
   }
 
@@ -1190,59 +1558,83 @@ if ($PreviousTag) {
   $taskNameMigrated = $false
   $previousTaskWasRunning = $false
   if ($registeredTaskName -and [string]$registeredTaskName -cne [string]$TaskName) {
-    $targetTasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue)
-    if ($targetTasks.Count -gt 0) {
+    if (Get-DalaTaskExact $TaskName) {
       throw "Scheduled task $TaskName already exists and cannot receive the Dala configuration migration"
     }
 
-    $registeredTask = Get-ScheduledTask -TaskName $registeredTaskName -TaskPath "\" -ErrorAction Stop
-    $previousTaskWasRunning = [string]$registeredTask.State -ceq "Running"
-    Stop-ScheduledTask -TaskName $registeredTaskName -TaskPath "\" -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $registeredTaskName -TaskPath "\" -Confirm:$false -ErrorAction Stop
+    $registeredTask = Get-DalaTaskExact $registeredTaskName
+    if (-not $registeredTask) { throw "Scheduled Task '$registeredTaskName' disappeared during migration" }
+    $null = Assert-DalaTaskObjectOwnership $registeredTask $registeredTaskName $previousDir $Runner $LogFile
+    $previousTaskWasRunning = [string]$registeredTask.State -in @("Running", "Queued")
+    $CanRollbackCreatedArtifacts = $false
+    Remove-DalaTaskVerified $registeredTaskName $previousDir $Runner $LogFile
+    $targetRegistrationAmbiguous = $false
     try {
-      New-DalaTask $TaskName $previousLauncher $Runner $LogFile
+      Register-DalaTaskVerified $TaskName $previousLauncher $Runner $LogFile $previousDir `
+        ([ref]$targetRegistrationAmbiguous)
       $taskNameMigrated = $true
+      $CanRollbackCreatedArtifacts = $true
     } catch {
       $migrationError = $_.Exception.Message
       try {
-        New-DalaTask $registeredTaskName $previousLauncher $Runner $LogFile
+        Remove-DalaTaskVerified $TaskName $previousDir $Runner $LogFile
+        $restoreRegistrationAmbiguous = $false
+        Register-DalaTaskVerified $registeredTaskName $previousLauncher $Runner $LogFile $previousDir `
+          ([ref]$restoreRegistrationAmbiguous)
         if ($previousTaskWasRunning) {
-          Start-ScheduledTask -TaskName $registeredTaskName -TaskPath "\"
+          Start-DalaTaskVerified $registeredTaskName $previousDir $Runner $LogFile
         }
+        $CanRollbackCreatedArtifacts = $true
       } catch {
         throw "$migrationError; could not restore Scheduled Task '$registeredTaskName': $($_.Exception.Message)"
       }
       throw $migrationError
     }
   } elseif (-not $registeredTaskName) {
-    $targetTasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue)
-    if ($targetTasks.Count -gt 0) {
+    if (Get-DalaTaskExact $TaskName) {
       throw "Scheduled task $TaskName already exists without a valid Dala action"
     }
-    New-DalaTask $TaskName $previousLauncher $Runner $LogFile
+    $taskRegistrationAmbiguous = $false
+    try {
+      Register-DalaTaskVerified $TaskName $previousLauncher $Runner $LogFile $previousDir `
+        ([ref]$taskRegistrationAmbiguous)
+    } catch {
+      if ($taskRegistrationAmbiguous) { $CanRollbackCreatedArtifacts = $false }
+      throw
+    }
     $CreatedTask = $true
   }
 
   try {
-    Write-InstallMetadataPair $RootMetadataFile $DiscoveryFile $metadata
+    Write-InstallMetadataPair $RootMetadataFile $DiscoveryFile $metadata ([ref]$MetadataRollbackIncomplete)
+    $MetadataWritten = $true
+    $CanRollbackCreatedArtifacts = $false
   } catch {
     $metadataError = $_.Exception.Message
     if ($taskNameMigrated) {
+      $CanRollbackCreatedArtifacts = $false
       try {
-        $null = Assert-DalaTaskOwnership $TaskName $previousDir $Runner $LogFile
-        Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $TaskName -TaskPath "\" -Confirm:$false -ErrorAction Stop
-        New-DalaTask $registeredTaskName $previousLauncher $Runner $LogFile
+        Remove-DalaTaskVerified $TaskName $previousDir $Runner $LogFile
+        $restoreRegistrationAmbiguous = $false
+        Register-DalaTaskVerified $registeredTaskName $previousLauncher $Runner $LogFile $previousDir `
+          ([ref]$restoreRegistrationAmbiguous)
         if ($previousTaskWasRunning) {
-          Start-ScheduledTask -TaskName $registeredTaskName -TaskPath "\"
+          Start-DalaTaskVerified $registeredTaskName $previousDir $Runner $LogFile
         }
+        $taskNameMigrated = $false
+        $CanRollbackCreatedArtifacts = $true
       } catch {
         throw "$metadataError; could not restore Scheduled Task '$registeredTaskName': $($_.Exception.Message)"
       }
     } elseif ($CreatedTask) {
-      Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
-      Unregister-ScheduledTask -TaskName $TaskName -TaskPath "\" -Confirm:$false -ErrorAction SilentlyContinue
-      $CreatedTask = $false
+      $CanRollbackCreatedArtifacts = $false
+      try {
+        Remove-DalaTaskVerified $TaskName $previousDir $Runner $LogFile
+        $CreatedTask = $false
+        $CanRollbackCreatedArtifacts = $true
+      } catch {
+        throw "$metadataError; could not remove newly created Scheduled Task '$TaskName': $($_.Exception.Message)"
+      }
     }
     throw $metadataError
   }
@@ -1256,56 +1648,49 @@ if ($PreviousTag) {
   $resultFile = Join-Path $Root "logs\update-results\$updateAttemptId.json"
   Exit-DalaLifecycleMutex $LifecycleMutex
   $LifecycleMutex = $null
-  try {
-    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdateHelper `
-      -InstallRoot $Root -TaskName $TaskName -TargetTag $Version -PreviousTag $PreviousTag `
-      -ExpectedVersion $ExpectedVersion -PreviousVersion $previousVersion `
-      -AttemptId $updateAttemptId -ResultFile $resultFile -HealthTimeoutSeconds $HealthTimeoutSeconds
-    if ($LASTEXITCODE -ne 0) { throw "Dala update failed; see $resultFile for the correlated recovery result" }
-  } catch {
-    if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
-      try {
-        Remove-SafeInstallTree $ReplacedDestinationBackup
-        $ReplacedDestinationBackup = $null
-      } catch {
-        Write-Warning "Could not safely remove repaired release backup at $ReplacedDestinationBackup`: $($_.Exception.Message)"
-      }
-    }
-    throw
-  }
+  # Keep a repaired release backup until the helper has returned success. If
+  # rollback is incomplete, that backup may be the only recoverable copy.
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdateHelper `
+    -InstallRoot $Root -TaskName $TaskName -TargetTag $Version -PreviousTag $PreviousTag `
+    -ExpectedVersion $ExpectedVersion -PreviousVersion $previousVersion `
+    -AttemptId $updateAttemptId -ResultFile $resultFile -HealthTimeoutSeconds $HealthTimeoutSeconds
+  if ($LASTEXITCODE -ne 0) { throw "Dala update failed; see $resultFile for the correlated recovery result" }
 } else {
+  $RunnerExistedBeforeFreshInstall = Test-Path -LiteralPath $Runner -PathType Leaf
+  $RunnerBodyBeforeFreshInstall = if ($RunnerExistedBeforeFreshInstall) {
+    [IO.File]::ReadAllBytes($Runner)
+  } else {
+    $null
+  }
+  $RunnerHashBeforeFreshInstall = if ($RunnerExistedBeforeFreshInstall) {
+    Get-BytesSha256 $RunnerBodyBeforeFreshInstall
+  } else {
+    $null
+  }
+  $ReleaseRunnerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseRunner).Hash
+  $FreshTaskRegistrationAmbiguous = $false
+  $CanRollbackCreatedArtifacts = $false
   try {
-    if (Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue) {
+    if (Get-DalaTaskExact $TaskName) {
       throw "Scheduled task $TaskName already exists without a valid Dala install pointer"
     }
-    Write-InstallMetadataPair $RootMetadataFile $DiscoveryFile $metadata
+    Write-InstallMetadataPair $RootMetadataFile $DiscoveryFile $metadata ([ref]$MetadataRollbackIncomplete)
+    $MetadataWritten = $true
     Deploy-Runner $ReleaseRunner $Runner
     Set-Current $Root $Version
-    New-DalaTask $TaskName $TaskLauncher $Runner $LogFile
+    Register-DalaTaskVerified $TaskName $TaskLauncher $Runner $LogFile $Dest `
+      ([ref]$FreshTaskRegistrationAmbiguous)
     $CreatedTask = $true
-    Start-ScheduledTask -TaskName $TaskName -TaskPath "\"
+    Start-DalaTaskVerified $TaskName $Dest $Runner $LogFile
     Wait-DalaVersion $Port $ExpectedVersion $Dest $TaskName
   } catch {
     $installError = $_.Exception.Message
-    $rollbackTask = $null
+    if ($FreshTaskRegistrationAmbiguous) {
+      throw "$installError; Scheduled Task state is ambiguous; preserving install artifacts for recovery"
+    }
     if ($CreatedTask) {
       try {
-        $rollbackTask = Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
-        if ($rollbackTask) {
-          $null = Assert-DalaTaskOwnership $TaskName $Dest $Runner $LogFile
-          if ([string]$rollbackTask.State -in @("Running", "Queued")) {
-            Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction Stop
-          }
-
-          for ($attempt = 0; $attempt -lt 50; $attempt++) {
-            $currentTask = Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
-            if (-not $currentTask -or [string]$currentTask.State -notin @("Running", "Queued")) { break }
-            Start-Sleep -Milliseconds 100
-          }
-          if ($currentTask -and [string]$currentTask.State -in @("Running", "Queued")) {
-            throw "Scheduled Task remained active during rollback: $TaskName"
-          }
-        }
+        Stop-DalaTaskVerified $TaskName $Dest $Runner $LogFile
       } catch {
         throw "$installError; task stop rollback failed: $($_.Exception.Message)"
       }
@@ -1328,20 +1713,66 @@ if ($PreviousTag) {
 
     if ($CreatedTask) {
       try {
-        $rollbackTask = Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
-        if ($rollbackTask) {
-          $null = Assert-DalaTaskOwnership $TaskName $Dest $Runner $LogFile
-          Unregister-ScheduledTask -TaskName $TaskName -TaskPath "\" -Confirm:$false -ErrorAction Stop
-          if (Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue) {
-            throw "Scheduled Task still exists after rollback: $TaskName"
-          }
-        }
+        Remove-DalaTaskVerified $TaskName $Dest $Runner $LogFile
+        $CreatedTask = $false
       } catch {
         throw "$installError; task unregister rollback failed: $($_.Exception.Message)"
       }
     }
 
-    Remove-Item -LiteralPath (Join-Path $Root "current.txt"), $Runner -Force -ErrorAction SilentlyContinue
+    try {
+      # Validate the pointer before touching the runner, then validate it
+      # again immediately before removal. This preserves the release as a
+      # recovery dependency without overwriting a concurrent install switch.
+      $currentFile = Join-Path $Root "current.txt"
+      if (Test-Path -LiteralPath $currentFile) {
+        if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) {
+          throw "current release pointer is not a regular file during install rollback: $currentFile"
+        }
+        $rollbackCurrentTag = (Get-Content -LiteralPath $currentFile -Raw).Trim()
+        if ($rollbackCurrentTag -cne $Version) {
+          throw "current release changed from $Version to $rollbackCurrentTag during install rollback"
+        }
+      }
+
+      if (Test-Path -LiteralPath $Runner -PathType Leaf) {
+        $rollbackRunnerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runner).Hash
+        $runnerIsOriginal = $RunnerExistedBeforeFreshInstall -and
+          $rollbackRunnerHash -ceq $RunnerHashBeforeFreshInstall
+        $runnerIsDeployed = $rollbackRunnerHash -ceq $ReleaseRunnerHash
+        if (-not $runnerIsOriginal -and -not $runnerIsDeployed) {
+          throw "root runner changed during install rollback: $Runner"
+        }
+      } elseif (Test-Path -LiteralPath $Runner) {
+        throw "root runner is not a regular file during install rollback: $Runner"
+      }
+
+      if ($RunnerExistedBeforeFreshInstall) {
+        if (-not (Test-Path -LiteralPath $Runner -PathType Leaf) -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $Runner).Hash -cne $RunnerHashBeforeFreshInstall) {
+          Write-BytesAtomic $Runner $RunnerBodyBeforeFreshInstall
+        }
+      } else {
+        Remove-CreatedInstallArtifact $Runner
+      }
+
+      # Keep current.txt usable until the runner is safely restored or
+      # removed. If runner rollback fails, the retained release remains
+      # launchable for manual recovery.
+      if (Test-Path -LiteralPath $currentFile) {
+        if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) {
+          throw "current release pointer is not a regular file during install rollback: $currentFile"
+        }
+        $rollbackCurrentTag = (Get-Content -LiteralPath $currentFile -Raw).Trim()
+        if ($rollbackCurrentTag -cne $Version) {
+          throw "current release changed from $Version to $rollbackCurrentTag during install rollback"
+        }
+      }
+      Remove-CreatedInstallArtifact $currentFile
+    } catch {
+      throw "$installError; pointer or runner rollback failed: $($_.Exception.Message); preserving $Dest"
+    }
+
     if ($InstalledNow) {
       try {
         Remove-SafeInstallTree $Dest
@@ -1353,21 +1784,46 @@ if ($PreviousTag) {
         throw "$installError; release tree rollback failed: $($_.Exception.Message)"
       }
     }
-    if ($CreatedMetadata) {
-      Remove-Item -LiteralPath $RootMetadataFile, $DiscoveryFile -Force -ErrorAction SilentlyContinue
-    }
-    if ($CreatedConfig) { Remove-Item -LiteralPath $ConfigFile -Force -ErrorAction SilentlyContinue }
-    if ($CreatedConfigMarker) { Remove-Item -LiteralPath $ConfigMarker -Force -ErrorAction SilentlyContinue }
+    $CanRollbackCreatedArtifacts = $true
     throw $installError
   }
 }
 
-if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
-  Remove-SafeInstallTree $ReplacedDestinationBackup
-  $ReplacedDestinationBackup = $null
+if ($ReplacedDestinationBackup) {
+  try {
+    if (Test-Path -LiteralPath $ReplacedDestinationBackup -ErrorAction Stop) {
+      Remove-SafeInstallTree $ReplacedDestinationBackup
+    }
+    $ReplacedDestinationBackup = $null
+  } catch {
+    Write-Warning ("Dala is running, but the repaired release backup requires manual cleanup at " +
+      "$ReplacedDestinationBackup`: $($_.Exception.Message)") -WarningAction Continue
+  }
 }
 
 Write-Step "Dala $ExpectedVersion is running at http://localhost:$Port"
+} catch {
+  $installError = $_.Exception.Message
+  if ($CanRollbackCreatedArtifacts) {
+    try {
+      Restore-InstallArtifacts `
+        -RootMetadataPath $RootMetadataFile `
+        -RootMetadataExisted $RootMetadataExisted `
+        -RootMetadataBody $RootMetadataBody `
+        -DiscoveryMetadataPath $DiscoveryFile `
+        -DiscoveryMetadataExisted $DiscoveryMetadataExisted `
+        -DiscoveryMetadataBody $DiscoveryMetadataBody `
+        -RestoreMetadata ($MetadataWritten -or $MetadataRollbackIncomplete) `
+        -ConfigPath $ConfigFile `
+        -CreatedConfig $CreatedConfig `
+        -ConfigMarkerPath $ConfigMarker `
+        -CreatedConfigMarker $CreatedConfigMarker
+    } catch {
+      throw "$installError; install artifact rollback failed: $($_.Exception.Message)"
+    }
+  }
+  throw $installError
+}
 } finally {
   if ($LifecycleMutex) {
     Exit-DalaLifecycleMutex $LifecycleMutex

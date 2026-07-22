@@ -187,11 +187,21 @@ defmodule Dala.Updater do
   end
 
   defp with_release_lock(root, fun) do
-    resource = {__MODULE__, :apply_release, Path.expand(root)}
+    resource = {__MODULE__, :apply_release, release_lock_path(root)}
 
     case :global.trans({resource, self()}, fun, [node()], 0) do
       :aborted -> {:error, "another update is already in progress"}
       result -> result
+    end
+  end
+
+  defp release_lock_path(root) do
+    expanded = Path.expand(root)
+
+    if platform() == "windows-x86_64" or match?({:win32, _}, :os.type()) do
+      String.downcase(expanded)
+    else
+      expanded
     end
   end
 
@@ -725,11 +735,6 @@ defmodule Dala.Updater do
         :ok
 
       {:error, reason} ->
-        Logger.warning(
-          "updater: could not remove temporary current-pointer backup #{backup}: " <>
-            "#{inspect(reason)}; leaving it for recovery"
-        )
-
         {:error, reason}
     end
   end

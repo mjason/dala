@@ -165,7 +165,7 @@ function Test-RemovableDalaConfigDir([string]$Path, [string]$OwnedConfigFile, [s
     $full = [IO.Path]::GetFullPath($ownedPath).TrimEnd([char[]]"\/")
     $allowed[$full.ToLowerInvariant()] = $true
   }
-  foreach ($entry in Get-ChildItem -LiteralPath $Path -Force) {
+  foreach ($entry in Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) {
     $full = [IO.Path]::GetFullPath($entry.FullName).TrimEnd([char[]]"\/")
     if (-not $allowed.ContainsKey($full.ToLowerInvariant())) { return $false }
   }
@@ -245,28 +245,45 @@ function Get-CurrentExecutable([string]$InstallRoot) {
 
 function Get-ReleaseIdentity([string]$DalaExecutable) {
   if ([string]::IsNullOrWhiteSpace($DalaExecutable)) { return $null }
-  try {
-    $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
-    $tag = Split-Path -Leaf $releaseDir
-    if ($tag -cnotmatch $TagPattern) { return $null }
-    $version = $tag.Substring(1)
-    $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
-    if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) { return $null }
-    $tokens = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
-    if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) { return $null }
-    $erts = [string]$tokens[0]
-    if ($erts -notmatch '^[0-9A-Za-z._-]+$') { return $null }
-    $expected = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
-    [pscustomobject]@{
-      ReleaseDir = $releaseDir
-      Version = $version
-      Executable = [IO.Path]::GetFullPath($expected)
-      Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
-      BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
-    }
-  } catch {
-    $null
+  $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
+  $tag = Split-Path -Leaf $releaseDir
+  if ($tag -cnotmatch $TagPattern) {
+    throw "Cannot inspect Dala release with an invalid version directory: $releaseDir"
   }
+  $version = $tag.Substring(1)
+  $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
+  if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) {
+    throw "Dala executable is outside its release layout: $DalaExecutable"
+  }
+  $tokens = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) {
+    throw "Cannot inspect Dala release with malformed start_erl.data: $releaseDir"
+  }
+  $erts = [string]$tokens[0]
+  if ($erts -notmatch '^[0-9A-Za-z._-]+$') {
+    throw "Cannot inspect Dala release with invalid ERTS version: $releaseDir"
+  }
+  $expected = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
+  [pscustomobject]@{
+    ReleaseDir = $releaseDir
+    Version = $version
+    Executable = [IO.Path]::GetFullPath($expected)
+    Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
+    BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
+  }
+}
+
+function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates) {
+  $command = $CommandLine.Replace('/', '\')
+  foreach ($boot in $BootCandidates) {
+    $normalizedBoot = ([string]$boot).Replace('/', '\')
+    $escapedBoot = [regex]::Escape($normalizedBoot)
+    $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
+    if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+      return $true
+    }
+  }
+  $false
 }
 
 function Assert-DalaTaskOwnership($Task, [string]$InstallRoot) {
@@ -299,46 +316,134 @@ function Assert-DalaTaskOwnership($Task, [string]$InstallRoot) {
   }
 }
 
+function Get-DalaTaskExact([string]$Name) {
+  $tasks = @(
+    Get-ScheduledTask -TaskPath "\" -ErrorAction Stop |
+      Where-Object { [string]$_.TaskName -ceq $Name }
+  )
+  if ($tasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$Name'" }
+  if ($tasks.Count -eq 1) { return $tasks[0] }
+  $null
+}
+
+function Stop-DalaTaskVerified([string]$Name, [string]$InstallRoot) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  Assert-DalaTaskOwnership $task $InstallRoot
+  if ([string]$task.State -notin @("Running", "Queued")) { return }
+
+  $stopError = $null
+  try {
+    Stop-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $stopError = $_.Exception.Message
+  }
+
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    $task = Get-DalaTaskExact $Name
+    if (-not $task -or [string]$task.State -notin @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  if ($task) { Assert-DalaTaskOwnership $task $InstallRoot }
+  if ($task -and [string]$task.State -in @("Running", "Queued")) {
+    $message = "Scheduled task remained active during uninstall: $Name"
+    if ($stopError) { $message = "$stopError; $message" }
+    throw $message
+  }
+  if ($stopError) {
+    Write-Warning "Scheduled Task stop reported an error after '$Name' stopped: $stopError" `
+      -WarningAction Continue
+  }
+}
+
+function Remove-DalaTaskVerified([string]$Name, [string]$InstallRoot) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  Assert-DalaTaskOwnership $task $InstallRoot
+  Stop-DalaTaskVerified $Name $InstallRoot
+
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { return }
+  Assert-DalaTaskOwnership $task $InstallRoot
+
+  $removalError = $null
+  try {
+    Unregister-ScheduledTask -TaskName $Name -TaskPath "\" -Confirm:$false -ErrorAction Stop
+  } catch {
+    $removalError = $_.Exception.Message
+  }
+
+  try {
+    $remaining = Get-DalaTaskExact $Name
+  } catch {
+    if ($removalError) {
+      throw "$removalError; could not verify removal of Scheduled Task '$Name': $($_.Exception.Message)"
+    }
+    throw
+  }
+  if (-not $remaining) {
+    if ($removalError) {
+      Write-Warning "Scheduled Task removal reported an error after '$Name' was removed: $removalError" `
+        -WarningAction Continue
+    }
+    return
+  }
+
+  Assert-DalaTaskOwnership $remaining $InstallRoot
+  if ($removalError) { throw "$removalError; Scheduled Task '$Name' still exists" }
+  throw "Scheduled Task '$Name' still exists after removal returned"
+}
+
 function Get-ReleaseBeamProcesses([string]$InstallRoot) {
   $identities = @()
   $versionsRoot = Join-Path $InstallRoot "versions"
   if (Test-Path -LiteralPath $versionsRoot -PathType Container) {
-    foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+    foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction Stop)) {
       if ($directory.Name -cmatch $TagPattern) {
         $candidate = Join-Path $directory.FullName "bin\dala.bat"
-        $identity = Get-ReleaseIdentity $candidate
-        if ($identity) { $identities += $identity }
+        # Incomplete staging directories without a launcher cannot own a
+        # running release; a launcher that exists but cannot be inspected is
+        # an unsafe/ambiguous state and must fail closed.
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+          $identity = Get-ReleaseIdentity $candidate
+          if ($identity) { $identities += $identity }
+        }
       }
     }
   }
   if ($identities.Count -eq 0) { return @() }
-  @(
-    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
-      Where-Object {
-        $processExecutable = [string]$_.ExecutablePath
-        if ([string]::IsNullOrWhiteSpace($processExecutable)) { return $false }
-        $identity = $null
-        foreach ($candidateIdentity in $identities) {
-          if (Test-SamePath $processExecutable $candidateIdentity.Executable) {
-            $identity = $candidateIdentity
-            break
-          }
-        }
-        if (-not $identity) { return $false }
-        $command = ([string]$_.CommandLine).Replace('/', '\').Replace('"', '')
-        foreach ($boot in @($identity.Boot, $identity.BootFile)) {
-          $index = $command.IndexOf($boot, [StringComparison]::OrdinalIgnoreCase)
-          if ($index -ge 0) {
-            $prefix = $command.Substring(0, $index).TrimEnd()
-            if ($prefix.EndsWith("-boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("-boot=", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot=", [StringComparison]::OrdinalIgnoreCase)) { return $true }
-          }
-        }
-        $false
+  $releaseProcesses = @()
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+
+    $processExecutable = [string]$process.ExecutablePath
+    $processCommandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($processExecutable) -or
+        [string]::IsNullOrWhiteSpace($processCommandLine)) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+
+    $identity = $null
+    foreach ($candidateIdentity in $identities) {
+      if (Test-SamePath $processExecutable $candidateIdentity.Executable) {
+        $identity = $candidateIdentity
+        break
       }
-  )
+    }
+    if (-not $identity) { continue }
+
+    if (-not (Test-ReleaseBootCommand $processCommandLine @($identity.Boot, $identity.BootFile))) {
+      throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
+    }
+    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "Cannot determine the process id of an erl.exe process; refusing to continue"
+    }
+    $releaseProcesses += $process
+  }
+  $releaseProcesses
 }
 
 function Stop-DalaRelease([string]$InstallRoot, [string]$Executable) {
@@ -365,7 +470,7 @@ function Get-ScopedHolders([string]$InstallRoot) {
   $holderPaths = @()
   $versionsRoot = Join-Path $InstallRoot "versions"
   if (Test-Path -LiteralPath $versionsRoot -PathType Container) {
-    foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+    foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction Stop)) {
       if ($directory.Name -cnotmatch $TagPattern) { continue }
       $version = $directory.Name.Substring(1)
       foreach ($name in @("dala_holder.exe")) {
@@ -379,7 +484,7 @@ function Get-ScopedHolders([string]$InstallRoot) {
   if ($holderPaths.Count -eq 0) { return @() }
 
   @(
-    Get-CimInstance Win32_Process -Filter "Name='dala_holder.exe'" -ErrorAction SilentlyContinue |
+    Get-CimInstance Win32_Process -Filter "Name='dala_holder.exe'" -ErrorAction Stop |
       Where-Object {
         $path = [string]$_.ExecutablePath
         if ([string]::IsNullOrWhiteSpace($path)) { return $false }
@@ -410,11 +515,23 @@ function Get-ProcessTreeIds($Processes, [uint32[]]$RootIds) {
   @($ids.Keys | ForEach-Object { [uint32]$_ })
 }
 
+function Get-LiveProcessIds([uint32[]]$ProcessIds) {
+  if (-not $ProcessIds -or $ProcessIds.Count -eq 0) { return @() }
+
+  $wanted = @{}
+  foreach ($processId in $ProcessIds) { $wanted[[string]$processId] = $true }
+  @(
+    Get-CimInstance Win32_Process -ErrorAction Stop |
+      Where-Object { $wanted.ContainsKey([string][uint32]$_.ProcessId) } |
+      ForEach-Object { [uint32]$_.ProcessId }
+  )
+}
+
 function Stop-ScopedHolders([string]$InstallRoot) {
   $holders = @(Get-ScopedHolders $InstallRoot)
   if ($holders.Count -eq 0) { return @() }
 
-  $snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $snapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $holderIds = @($holders | ForEach-Object { [uint32]$_.ProcessId })
   $treeIds = @(Get-ProcessTreeIds $snapshot $holderIds)
 
@@ -423,14 +540,14 @@ function Stop-ScopedHolders([string]$InstallRoot) {
   }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    $remaining = @($treeIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    $remaining = @(Get-LiveProcessIds $treeIds)
     if ($remaining.Count -eq 0 -and (Get-ScopedHolders $InstallRoot).Count -eq 0) {
       return $treeIds
     }
     Start-Sleep -Milliseconds 100
   }
 
-  $remaining = @($treeIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+  $remaining = @(Get-LiveProcessIds $treeIds)
   throw "Installation-scoped terminal processes did not stop: $($remaining -join ', ')"
 }
 
@@ -616,21 +733,13 @@ if (Test-Path -LiteralPath $versionsRoot) {
 }
 
 $currentExecutable = Get-CurrentExecutable $Root
-$tasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue)
-if ($tasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$TaskName'" }
-$task = if ($tasks.Count -eq 1) { $tasks[0] } else { $null }
+$task = Get-DalaTaskExact $TaskName
 if ($task) {
   Assert-DalaTaskOwnership $task $Root
-  Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
+  Stop-DalaTaskVerified $TaskName $Root
 }
 Stop-DalaRelease $Root $currentExecutable
-
-if ($task) {
-  Unregister-ScheduledTask -TaskName $TaskName -TaskPath "\" -Confirm:$false -ErrorAction Stop
-  if (Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue) {
-    throw "Scheduled task still exists after uninstall: $TaskName"
-  }
-}
+Remove-DalaTaskVerified $TaskName $Root
 
 $stoppedTerminalPids = @(Stop-ScopedHolders $Root)
 if ((Get-ScopedHolders $Root).Count -ne 0) {
@@ -678,10 +787,10 @@ if ($PurgeData) {
   )) {
     Remove-RequiredPath $target
   }
-  foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Filter ".current-*.new" -Force -ErrorAction SilentlyContinue)) {
+  foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Filter ".current-*.new" -Force -ErrorAction Stop)) {
     Remove-RequiredPath $entry.FullName
   }
-  foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Filter ".run-dala-*" -Force -ErrorAction SilentlyContinue)) {
+  foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Filter ".run-dala-*" -Force -ErrorAction Stop)) {
     Remove-RequiredPath $entry.FullName
   }
 

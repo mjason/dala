@@ -174,6 +174,1433 @@ function Assert-InstallerJsoncSemantics([string]$ScriptPath) {
   }
 }
 
+function Assert-InstallerArtifactRollbackSemantics([string]$ScriptPath, [string]$WorkDir) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  # A repaired release is the only durable copy of the pre-install tree until
+  # the update helper has committed successfully. Failure paths must leave it
+  # available for manual recovery rather than deleting it unconditionally.
+  $installerBody = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ScriptPath).Path)
+  $repairBackupRemovals = [regex]::Matches(
+    $installerBody,
+    'Remove-SafeInstallTree\s+\$ReplacedDestinationBackup',
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+  )
+  Assert-True ($repairBackupRemovals.Count -eq 1) `
+    "$ScriptPath must only remove the repaired release backup on the success path"
+
+  $requiredFunctions = @(
+    "Invoke-RecoverableFileReplace",
+    "Write-TextAtomic",
+    "Write-JsonAtomic",
+    "Test-SamePath",
+    "Write-InstallMetadataPair",
+    "Test-NoReparseAncestors",
+    "Remove-CreatedInstallArtifact",
+    "Restore-InstallArtifacts"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  foreach ($pattern in @(
+    'Write-TextAtomic\s+\(Join-Path\s+\$Root\s+"\.dala-install"\)',
+    'Write-TextAtomic\s+\(Join-Path\s+\$DataDir\s+"\.dala-data"\)',
+    'Write-TextAtomic\s+\$ConfigMarker\s+"Dala configuration directory'
+  )) {
+    Assert-True ([regex]::IsMatch($scriptText, $pattern)) `
+      "$ScriptPath does not route every ownership marker through Write-TextAtomic"
+  }
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      'Write-InstallMetadataPair\s+\$RootMetadataFile\s+\$DiscoveryFile\s+\$metadata\s+' +
+        '\(\[ref\]\$MetadataRollbackIncomplete\)\s+' +
+        '\$MetadataWritten\s*=\s*\$true\s+\$CanRollbackCreatedArtifacts\s*=\s*\$false'
+    )) "Existing install does not commit created artifacts with its metadata pair"
+  $metadataWrites = [regex]::Matches(
+    $scriptText,
+    'Write-InstallMetadataPair\s+\$RootMetadataFile\s+\$DiscoveryFile\s+\$metadata\s+' +
+      '\(\[ref\]\$MetadataRollbackIncomplete\)',
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+  )
+  Assert-True ($metadataWrites.Count -eq 2) `
+    "Installer does not track incomplete rollback for both metadata-pair writes"
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      '-RestoreMetadata\s+\(\$MetadataWritten\s+-or\s+\$MetadataRollbackIncomplete\)'
+    )) "Installer does not retry metadata restoration after an incomplete pair rollback"
+
+  $orphanRepairGuard = $scriptText.IndexOf(
+    'if ($orphanRepairs.Count -gt 0)',
+    [StringComparison]::Ordinal
+  )
+  $repairCommit = $scriptText.IndexOf(
+    'Move-Item -LiteralPath $Dest -Destination $backup -ErrorAction Stop',
+    [StringComparison]::Ordinal
+  )
+  Assert-True ($orphanRepairGuard -ge 0 -and $repairCommit -gt $orphanRepairGuard) `
+    "Installer does not reject orphan repair backups before moving a damaged release"
+  Assert-True ($scriptText.IndexOf(
+      'Move-Item -LiteralPath $backup -Destination $Dest -ErrorAction Stop',
+      [StringComparison]::Ordinal
+    ) -gt $repairCommit) "Installer does not make damaged-release restoration errors terminating"
+  Assert-True ($scriptText -match 'could not restore original release from') `
+    "Installer does not surface damaged-release restoration failures"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  $caseRoot = Join-Path $WorkDir "installer artifact rollback"
+  New-Item -ItemType Directory -Force -Path $caseRoot | Out-Null
+
+  try {
+    $preservedRoot = Join-Path $caseRoot "root-preserved.json"
+    $createdDiscovery = Join-Path $caseRoot "discovery-created.json"
+    $createdConfig = Join-Path $caseRoot "config-created.jsonc"
+    $createdMarker = Join-Path $caseRoot ".dala-config-created"
+    [IO.File]::WriteAllText($preservedRoot, "original root metadata")
+    [IO.File]::WriteAllText($createdDiscovery, "new discovery metadata")
+    [IO.File]::WriteAllText($createdConfig, "new config")
+    [IO.File]::WriteAllText($createdMarker, "new marker")
+    [IO.File]::WriteAllText($preservedRoot, "replacement root metadata")
+
+    & $module {
+      param($Root, $Discovery, $Config, $Marker)
+      Restore-InstallArtifacts `
+        -RootMetadataPath $Root -RootMetadataExisted $true -RootMetadataBody "original root metadata" `
+        -DiscoveryMetadataPath $Discovery -DiscoveryMetadataExisted $false -DiscoveryMetadataBody $null `
+        -RestoreMetadata $true `
+        -ConfigPath $Config -CreatedConfig $true `
+        -ConfigMarkerPath $Marker -CreatedConfigMarker $true
+    } $preservedRoot $createdDiscovery $createdConfig $createdMarker
+
+    Assert-True ((Get-Content -LiteralPath $preservedRoot -Raw) -ceq "original root metadata") `
+      "Artifact rollback removed original root metadata"
+    foreach ($path in @($createdDiscovery, $createdConfig, $createdMarker)) {
+      Assert-True (-not (Test-Path -LiteralPath $path)) "Artifact rollback left a created file at $path"
+    }
+
+    $createdRoot = Join-Path $caseRoot "root-created.json"
+    $preservedDiscovery = Join-Path $caseRoot "discovery-preserved.json"
+    [IO.File]::WriteAllText($createdRoot, "new root metadata")
+    [IO.File]::WriteAllText($preservedDiscovery, "original discovery metadata")
+    [IO.File]::WriteAllText($preservedDiscovery, "replacement discovery metadata")
+    & $module {
+      param($Root, $Discovery, $Config, $Marker)
+      Restore-InstallArtifacts `
+        -RootMetadataPath $Root -RootMetadataExisted $false -RootMetadataBody $null `
+        -DiscoveryMetadataPath $Discovery -DiscoveryMetadataExisted $true `
+        -DiscoveryMetadataBody "original discovery metadata" -RestoreMetadata $true `
+        -ConfigPath $Config -CreatedConfig $false `
+        -ConfigMarkerPath $Marker -CreatedConfigMarker $false
+    } $createdRoot $preservedDiscovery $createdConfig $createdMarker
+
+    Assert-True (-not (Test-Path -LiteralPath $createdRoot)) `
+      "Artifact rollback left root metadata created beside an original discovery file"
+    Assert-True ((Get-Content -LiteralPath $preservedDiscovery -Raw) -ceq "original discovery metadata") `
+      "Artifact rollback removed original discovery metadata"
+
+    $blockedMetadata = Join-Path $caseRoot "metadata-restore-blocked"
+    $configKeptForMetadata = Join-Path $caseRoot "config-kept-for-metadata.jsonc"
+    $markerKeptForMetadata = Join-Path $caseRoot ".marker-kept-for-metadata"
+    New-Item -ItemType Directory -Path $blockedMetadata | Out-Null
+    [IO.File]::WriteAllText($configKeptForMetadata, "keep config")
+    [IO.File]::WriteAllText($markerKeptForMetadata, "keep marker")
+    $metadataRestoreFailed = $false
+    try {
+      & $module {
+        param($Root, $Discovery, $Config, $Marker)
+        Restore-InstallArtifacts `
+          -RootMetadataPath $Root -RootMetadataExisted $true -RootMetadataBody "original metadata" `
+          -DiscoveryMetadataPath $Discovery -DiscoveryMetadataExisted $false -DiscoveryMetadataBody $null `
+          -RestoreMetadata $true `
+          -ConfigPath $Config -CreatedConfig $true `
+          -ConfigMarkerPath $Marker -CreatedConfigMarker $true
+      } $blockedMetadata (Join-Path $caseRoot "metadata-restore-missing.json") `
+        $configKeptForMetadata $markerKeptForMetadata
+    } catch {
+      $metadataRestoreFailed = $true
+    }
+    Assert-True $metadataRestoreFailed "Artifact rollback ignored a metadata restore failure"
+    Assert-True (Test-Path -LiteralPath $configKeptForMetadata -PathType Leaf) `
+      "Metadata restore failure removed the config needed by uncertain metadata"
+    Assert-True (Test-Path -LiteralPath $markerKeptForMetadata -PathType Leaf) `
+      "Metadata restore failure removed the config ownership marker"
+
+    $blockedConfig = Join-Path $caseRoot "config-cleanup-blocked"
+    $markerKeptForConfig = Join-Path $caseRoot ".marker-kept-for-config"
+    New-Item -ItemType Directory -Path $blockedConfig | Out-Null
+    [IO.File]::WriteAllText($markerKeptForConfig, "keep marker")
+    $configCleanupFailed = $false
+    try {
+      & $module {
+        param($Config, $Marker)
+        Restore-InstallArtifacts `
+          -RootMetadataPath "" -RootMetadataExisted $false -RootMetadataBody $null `
+          -DiscoveryMetadataPath "" -DiscoveryMetadataExisted $false -DiscoveryMetadataBody $null `
+          -RestoreMetadata $false `
+          -ConfigPath $Config -CreatedConfig $true `
+          -ConfigMarkerPath $Marker -CreatedConfigMarker $true
+      } $blockedConfig $markerKeptForConfig
+    } catch {
+      $configCleanupFailed = $true
+    }
+    Assert-True $configCleanupFailed "Artifact rollback ignored a config cleanup failure"
+    Assert-True (Test-Path -LiteralPath $markerKeptForConfig -PathType Leaf) `
+      "Config cleanup failure removed the ownership marker needed for a safe retry"
+
+    $outsideMarkerTarget = Join-Path $caseRoot "outside-marker-target.txt"
+    $markerLink = Join-Path $caseRoot ".dala-config-link"
+    [IO.File]::WriteAllText($outsideMarkerTarget, "must remain unchanged")
+    New-Item -ItemType SymbolicLink -Path $markerLink -Target $outsideMarkerTarget | Out-Null
+    try {
+      $markerRejected = $false
+      try {
+        & $module { param($Path) Write-TextAtomic $Path "Dala configuration directory`n" } $markerLink
+      } catch {
+        if ($_.Exception.Message -notmatch "reparse") { throw }
+        $markerRejected = $true
+      }
+      Assert-True $markerRejected "Installer marker write followed a file reparse point"
+      Assert-True ((Get-Content -LiteralPath $outsideMarkerTarget -Raw) -ceq "must remain unchanged") `
+        "Installer marker write changed the reparse target"
+    } finally {
+      if (Test-Path -LiteralPath $markerLink) { [IO.File]::Delete($markerLink) }
+    }
+
+    $createdPairRoot = Join-Path $caseRoot "pair-created-root.json"
+    $createdPairDiscovery = Join-Path $caseRoot "pair-created-discovery.json"
+    $createdPairResult = & $module {
+      param($Root, $Discovery)
+      $script:injectedCreatedPairWriteCount = 0
+      Set-Item -Path Function:Write-JsonAtomic -Value {
+        param([string]$Path, $Value)
+        $script:injectedCreatedPairWriteCount++
+        if ($script:injectedCreatedPairWriteCount -eq 1) {
+          [IO.Directory]::CreateDirectory($Path) | Out-Null
+          [IO.File]::WriteAllText((Join-Path $Path "rollback-blocker.txt"), "keep")
+          return
+        }
+        throw "injected second metadata write failure"
+      }
+
+      $rollbackIncomplete = $false
+      $errorMessage = $null
+      try {
+        Write-InstallMetadataPair $Root $Discovery ([ordered]@{ schemaVersion = 1 }) `
+          ([ref]$rollbackIncomplete)
+      } catch {
+        $errorMessage = $_.Exception.Message
+      }
+      [pscustomobject]@{
+        rollback_incomplete = $rollbackIncomplete
+        error = $errorMessage
+      }
+    } $createdPairRoot $createdPairDiscovery
+
+    Assert-True ([bool]$createdPairResult.rollback_incomplete) `
+      "Metadata pair ignored a failure deleting metadata created by this attempt"
+    Assert-True ([string]$createdPairResult.error -match "install metadata rollback failed") `
+      "Metadata pair did not surface its created-file deletion failure"
+    Assert-True (Test-Path -LiteralPath (Join-Path $createdPairRoot "rollback-blocker.txt") -PathType Leaf) `
+      "Metadata pair discarded the artifact whose rollback state is uncertain"
+
+    $pairRoot = Join-Path $caseRoot "pair-root.json"
+    $pairDiscovery = Join-Path $caseRoot "pair-discovery.json"
+    $pairBackup = "$pairRoot.backup-stuck"
+    [IO.File]::WriteAllText($pairRoot, "old root")
+    [IO.File]::WriteAllText($pairDiscovery, "old discovery")
+    New-Item -ItemType Directory -Path $pairBackup | Out-Null
+    $pairResult = & $module {
+      param($Root, $Discovery)
+      $script:injectedPairWriteCount = 0
+      Set-Item -Path Function:Write-JsonAtomic -Value {
+        param([string]$Path, $Value)
+        $script:injectedPairWriteCount++
+        if ($script:injectedPairWriteCount -eq 1) {
+          [IO.File]::WriteAllText($Path, "new root")
+          return
+        }
+        throw "injected second metadata write failure"
+      }
+
+      $rollbackIncomplete = $false
+      $errorMessage = $null
+      try {
+        Write-InstallMetadataPair $Root $Discovery ([ordered]@{ schemaVersion = 1 }) `
+          ([ref]$rollbackIncomplete)
+      } catch {
+        $errorMessage = $_.Exception.Message
+      }
+      [pscustomobject]@{
+        rollback_incomplete = $rollbackIncomplete
+        error = $errorMessage
+      }
+    } $pairRoot $pairDiscovery
+
+    Assert-True ([bool]$pairResult.rollback_incomplete) `
+      "Metadata pair did not report its injected rollback failure"
+    Assert-True ([string]$pairResult.error -match "install metadata rollback failed") `
+      "Metadata pair did not surface its injected rollback failure"
+    Assert-True ((Get-Content -LiteralPath $pairRoot -Raw) -ceq "new root") `
+      "Metadata pair hid the uncertain committed root bytes"
+    Assert-True ((Get-Content -LiteralPath $pairDiscovery -Raw) -ceq "old discovery") `
+      "Metadata pair changed discovery while reporting rollback failure"
+    Assert-True (Test-Path -LiteralPath $pairBackup -PathType Container) `
+      "Metadata pair discarded the recovery backup from its rollback failure"
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Register-DalaTaskVerified",
+    "Remove-DalaTaskVerified",
+    "Stop-DalaTaskVerified",
+    "Start-DalaTaskVerified"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  $directRegistrations = [regex]::Matches(
+    $scriptText,
+    '(?m)^\s+New-DalaTask\s+',
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+  )
+  Assert-True ($directRegistrations.Count -eq 1) `
+    "Installer bypasses verified Scheduled Task registration"
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      'Get-ScheduledTask\s+-TaskPath\s+"\\"\s+-ErrorAction\s+Stop\s*\|\s*' +
+        'Where-Object\s+\{\s*\[string\]\$_\.TaskName\s+-ceq\s+\$Name',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "Installer exact task probe can mistake a query failure for absence"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:fakeTask = $null
+      $script:registrationMode = "postcommit"
+
+      Set-Item -Path Function:Get-DalaTaskExact -Value {
+        param([string]$Name)
+        if ($script:fakeTask -and [string]$script:fakeTask.TaskName -ceq $Name) {
+          return $script:fakeTask
+        }
+        $null
+      }
+      Set-Item -Path Function:Assert-DalaTaskObjectOwnership -Value {
+        param($Task, [string]$Name, [string]$ReleaseDir, [string]$Runner, [string]$LogFile)
+        if (-not $Task.owned) { throw "foreign task" }
+        $true
+      }
+      Set-Item -Path Function:New-DalaTask -Value {
+        param([string]$Name, [string]$Launcher, [string]$Runner, [string]$LogFile)
+        if ($script:registrationMode -eq "absent") { throw "register failed before commit" }
+        $owned = $script:registrationMode -ne "foreign"
+        $script:fakeTask = [pscustomobject]@{ TaskName = $Name; State = "Ready"; owned = $owned }
+        throw "register reported failure after commit"
+      }
+      Set-Item -Path Function:Stop-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, $ErrorAction)
+        $script:fakeTask.State = "Ready"
+        throw "stop reported failure after commit"
+      }
+      Set-Item -Path Function:Unregister-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, [switch]$Confirm, $ErrorAction)
+        $script:fakeTask = $null
+        throw "unregister reported failure after commit"
+      }
+      Set-Item -Path Function:Start-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, $ErrorAction)
+        $script:fakeTask.State = "Running"
+        throw "start reported failure after commit"
+      }
+
+      $WarningPreference = "Stop"
+      $ambiguous = $false
+      Register-DalaTaskVerified "Dala" "launcher" "runner" "log" "release" ([ref]$ambiguous)
+      $registeredAfterThrow = $script:fakeTask -and -not $ambiguous
+
+      $script:fakeTask = $null
+      $script:registrationMode = "absent"
+      $ambiguous = $false
+      $absentRejected = $false
+      try {
+        Register-DalaTaskVerified "Dala" "launcher" "runner" "log" "release" ([ref]$ambiguous)
+      } catch {
+        $absentRejected = -not $ambiguous -and -not $script:fakeTask
+      }
+
+      $script:registrationMode = "foreign"
+      $ambiguous = $false
+      $foreignRejected = $false
+      try {
+        Register-DalaTaskVerified "Dala" "launcher" "runner" "log" "release" ([ref]$ambiguous)
+      } catch {
+        $foreignRejected = $ambiguous -and [bool]$script:fakeTask
+      }
+
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Running"; owned = $true }
+      Stop-DalaTaskVerified "Dala" "release" "runner" "log"
+      $stoppedAfterThrow = [string]$script:fakeTask.State -ceq "Ready"
+
+      Start-DalaTaskVerified "Dala" "release" "runner" "log"
+      $startedAfterThrow = [string]$script:fakeTask.State -ceq "Running"
+
+      $script:fakeTask.State = "Ready"
+      Remove-DalaTaskVerified "Dala" "release" "runner" "log"
+      $removedAfterThrow = $null -eq $script:fakeTask
+
+      [pscustomobject]@{
+        registered_after_throw = $registeredAfterThrow
+        absent_unambiguous = $absentRejected
+        foreign_ambiguous = $foreignRejected
+        stopped_after_throw = $stoppedAfterThrow
+        started_after_throw = $startedAfterThrow
+        removed_after_throw = $removedAfterThrow
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Verified task command smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Get-DalaTaskExact",
+    "Assert-DalaTaskObjectOwnership",
+    "Stop-DalaTaskVerified",
+    "Start-DalaTaskVerified",
+    "Set-TaskAction"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  foreach ($command in @("Get-ScheduledTask", "Set-ScheduledTask", "Stop-ScheduledTask", "Start-ScheduledTask")) {
+    $calls = [regex]::Matches(
+      $scriptText,
+      "(?m)^\s+$command\s+",
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    Assert-True ($calls.Count -eq 1) `
+      "$ScriptPath bypasses verified Scheduled Task handling for $command"
+  }
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      'Get-ScheduledTask\s+-TaskPath\s+"\\"\s+-ErrorAction\s+Stop\s*\|\s*' +
+        'Where-Object\s+\{\s*\[string\]\$_\.TaskName\s+-ceq\s+\$Name',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath exact task probe can mistake a query failure for absence"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:TaskName = "Dala"
+      $script:Root = "C:\dala"
+      $script:Runner = "C:\dala\run-dala.ps1"
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Ready"; committed = $false }
+      $script:queryFails = $false
+      $script:commandMode = "postcommit"
+
+      Set-Item -Path Function:Assert-DalaTaskObjectOwnership -Value {
+        param($Task, [string]$ReleaseDir)
+        if (-not $Task) { throw "missing fake task" }
+        if (-not $Task.committed) { throw "task action was not committed" }
+      }
+      Set-Item -Path Function:Assert-SafeWritePath -Value {}
+      Set-Item -Path Function:Get-ReleaseDirVersion -Value { "1.2.3" }
+      Set-Item -Path Function:Get-TaskLauncher -Value { "C:\dala\launcher.exe" }
+      Set-Item -Path Function:New-ScheduledTaskAction -Value {
+        param([string]$Execute, [string]$Argument)
+        [pscustomobject]@{ Execute = $Execute; Arguments = $Argument }
+      }
+      Set-Item -Path Function:Get-ScheduledTask -Value {
+        param([string]$TaskPath)
+        if ($script:queryFails) { throw "injected task query failure" }
+        @($script:fakeTask)
+      }
+      Set-Item -Path Function:Set-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, $Action)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.committed = $true }
+        throw "injected Set-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Stop-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.State = "Ready" }
+        throw "injected Stop-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Start-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.State = "Running" }
+        throw "injected Start-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Start-Sleep -Value {}
+
+      $WarningPreference = "Stop"
+      $script:queryFails = $true
+      $queryFailureSurfaced = $false
+      try { $null = Get-DalaTaskExact "Dala" } catch {
+        $queryFailureSurfaced = $_.Exception.Message -match "task query failure"
+      }
+      $script:queryFails = $false
+
+      Set-TaskAction "target"
+      $setPostCommitAccepted = [bool]$script:fakeTask.committed
+
+      $script:commandMode = "precommit"
+      $script:fakeTask.committed = $false
+      $setPreCommitRejected = $false
+      try { Set-TaskAction "target" } catch {
+        $setPreCommitRejected = -not [bool]$script:fakeTask.committed
+      }
+
+      $script:commandMode = "postcommit"
+      $script:fakeTask.committed = $true
+      $script:fakeTask.State = "Running"
+      Stop-DalaTaskVerified "previous"
+      $stopPostCommitAccepted = [string]$script:fakeTask.State -ceq "Ready"
+      Start-DalaTaskVerified "target"
+      $startPostCommitAccepted = [string]$script:fakeTask.State -ceq "Running"
+
+      $script:commandMode = "precommit"
+      $script:fakeTask.State = "Running"
+      $stopPreCommitRejected = $false
+      try { Stop-DalaTaskVerified "previous" } catch {
+        $stopPreCommitRejected = [string]$script:fakeTask.State -ceq "Running"
+      }
+      $script:fakeTask.State = "Ready"
+      $startPreCommitRejected = $false
+      try { Start-DalaTaskVerified "target" } catch {
+        $startPreCommitRejected = [string]$script:fakeTask.State -ceq "Ready"
+      }
+
+      [pscustomobject]@{
+        query_failure_surfaced = $queryFailureSurfaced
+        set_postcommit_accepted = $setPostCommitAccepted
+        set_precommit_rejected = $setPreCommitRejected
+        stop_postcommit_accepted = $stopPostCommitAccepted
+        start_postcommit_accepted = $startPostCommitAccepted
+        stop_precommit_rejected = $stopPreCommitRejected
+        start_precommit_rejected = $startPreCommitRejected
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Verified updater task command smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-InstallerReleaseProcessSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @("Test-ReleaseBootCommand", "Get-ReleaseBeamProcesses")
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $processBody = @($definitions | Where-Object { $_.Name -ceq "Get-ReleaseBeamProcesses" })[0].Extent.Text
+  Assert-True ([regex]::IsMatch(
+      $processBody,
+      'Get-CimInstance\s+Win32_Process[^\r\n]*-ErrorAction\s+Stop',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath process identity query is not fail-closed"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:TagPattern = '^v[0-9]+\.[0-9]+\.[0-9]+$'
+      $script:releaseDir = [IO.Path]::Combine(
+        [IO.Path]::GetTempPath(),
+        "dala-installer-process",
+        "v1.2.3"
+      )
+      $script:expectedExecutable = [IO.Path]::GetFullPath(
+        (Join-Path $script:releaseDir "erts-14\bin\erl.exe")
+      )
+      $script:expectedBoot = [IO.Path]::GetFullPath(
+        (Join-Path $script:releaseDir "releases\1.2.3\start")
+      )
+      $script:installerCimFails = $false
+      $script:installerCimRows = @()
+
+      Set-Item -Path Function:Get-Content -Value {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Raw)
+        "14 1.2.3"
+      }
+      Set-Item -Path Function:Get-CimInstance -Value {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        if ($script:installerCimFails) { throw "injected installer CIM query failure" }
+        $script:installerCimRows
+      }
+      Set-Item -Path Function:Test-SamePath -Value {
+        param([string]$Left, [string]$Right)
+        $Left -ceq $Right
+      }
+
+      $script:installerCimFails = $true
+      $queryFailureRejected = $false
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $queryFailureRejected = $_.Exception.Message -match "installer CIM query failure"
+      }
+
+      $script:installerCimFails = $false
+      $missingExecutableRejected = $false
+      $script:installerCimRows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = "erl.exe -boot `"$($script:expectedBoot)`""
+        ProcessId = [uint32]61
+      })
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $missingExecutableRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $missingCommandRejected = $false
+      $script:installerCimRows = @([pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = ""
+        ProcessId = [uint32]62
+      })
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $missingCommandRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $prefixedBootRejected = $false
+      $script:installerCimRows = @([pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = "erl.exe -boot `"$($script:expectedBoot)-foreign`""
+        ProcessId = [uint32]63
+      })
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $prefixedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+
+      $missingPidRejected = $false
+      $script:installerCimRows = @([pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = "erl.exe -boot `"$($script:expectedBoot)`""
+      })
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $missingPidRejected = $_.Exception.Message -match "process id.*refusing to continue"
+      }
+
+      $validRow = [pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = "erl.exe --boot=`"$($script:expectedBoot)`""
+        ProcessId = [uint32]64
+      }
+      $script:installerCimRows = @($validRow)
+      $validRowAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 1)
+
+      [pscustomobject]@{
+        query_failure_rejected = $queryFailureRejected
+        missing_executable_rejected = $missingExecutableRejected
+        missing_command_rejected = $missingCommandRejected
+        prefixed_boot_rejected = $prefixedBootRejected
+        missing_pid_rejected = $missingPidRejected
+        valid_row_accepted = $validRowAccepted
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Installer release process smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Test-SamePath",
+    "Test-ReleaseBootCommand",
+    "Get-ReleaseBeamProcesses",
+    "Stop-DalaRelease"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ScriptPath).Path)
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      'Get-CimInstance\s+Win32_Process[^\r\n]*-ErrorAction\s+Stop',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath process identity query is not fail-closed"
+  $stopBody = @($definitions | Where-Object { $_.Name -ceq "Stop-DalaRelease" })[0].Extent.Text
+  Assert-True ([regex]::IsMatch(
+      $stopBody,
+      'IsNullOrWhiteSpace\(\$Executable\)[\s\S]*?throw',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath silently accepts an empty release executable"
+  Assert-True ([regex]::IsMatch(
+      $stopBody,
+      'Test-Path\s+-LiteralPath\s+\$Executable[\s\S]*?throw',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath silently accepts a missing release executable"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:identity = [pscustomobject]@{
+        Executable = "C:\dala\erts-14\bin\erl.exe"
+        Boot = "C:\dala\releases\1.2.3\start"
+        BootFile = "C:\dala\releases\1.2.3\start.boot"
+      }
+      $script:rows = @()
+      $script:pathMode = "missing"
+      $script:cimFails = $false
+
+      Set-Item -Path Function:Get-ReleaseIdentity -Value {
+        param([string]$Executable)
+        $script:identity
+      }
+      Set-Item -Path Function:Test-SamePath -Value {
+        param([string]$Left, [string]$Right)
+        $Left -ceq $Right
+      }
+      Set-Item -Path Function:Get-CimInstance -Value {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        if ($script:cimFails) { throw "injected CIM query failure" }
+        $script:rows
+      }
+      Set-Item -Path Function:Test-Path -Value {
+        [CmdletBinding()]
+        param([string]$LiteralPath, $PathType)
+        if ($script:pathMode -eq "query-failure") { throw "injected executable query failure" }
+        $script:pathMode -eq "present"
+      }
+      Set-Item -Path Function:Start-Sleep -Value {}
+      Set-Item -Path Function:Stop-Process -Value {}
+
+      $unknownFieldsRejected = $false
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = ""
+        ProcessId = [uint32]42
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
+        $unknownFieldsRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $unknownCommandRejected = $false
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = "erl.exe -boot `"$($script:identity.Boot)-foreign`""
+        ProcessId = [uint32]43
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
+        $unknownCommandRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+
+      $missingPidRejected = $false
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = "erl.exe -boot `"$($script:identity.Boot)`""
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
+        $missingPidRejected = $_.Exception.Message -match "process id.*refusing to continue"
+      }
+
+      $validRow = [pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = "erl.exe -boot `"$($script:identity.Boot)`""
+        ProcessId = [uint32]44
+      }
+      $script:rows = @($validRow)
+      $validRowAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
+
+      $emptyExecutableRejected = $false
+      try { Stop-DalaRelease "" } catch {
+        $emptyExecutableRejected = $_.Exception.Message -match "executable path is empty"
+      }
+      $missingExecutableRejected = $false
+      try { Stop-DalaRelease "C:\dala\bin\dala.bat" } catch {
+        $missingExecutableRejected = $_.Exception.Message -match "executable is missing"
+      }
+      $queryFailureRejected = $false
+      $script:pathMode = "query-failure"
+      try { Stop-DalaRelease "C:\dala\bin\dala.bat" } catch {
+        $queryFailureRejected = $_.Exception.Message -match "executable query failure"
+      }
+
+      [pscustomobject]@{
+        unknown_fields_rejected = $unknownFieldsRejected
+        unknown_command_rejected = $unknownCommandRejected
+        missing_pid_rejected = $missingPidRejected
+        valid_row_accepted = $validRowAccepted
+        empty_executable_rejected = $emptyExecutableRejected
+        missing_executable_rejected = $missingExecutableRejected
+        executable_query_failure_rejected = $queryFailureRejected
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Update release process smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-UninstallerVerifiedTaskSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Get-DalaTaskExact",
+    "Stop-DalaTaskVerified",
+    "Remove-DalaTaskVerified"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  foreach ($command in @("Get-ScheduledTask", "Stop-ScheduledTask", "Unregister-ScheduledTask")) {
+    $calls = [regex]::Matches(
+      $scriptText,
+      "(?m)^\s+$command\s+",
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    Assert-True ($calls.Count -eq 1) `
+      "Uninstaller bypasses verified Scheduled Task handling for $command"
+  }
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:fakeTask = $null
+      $script:queryFails = $false
+
+      Set-Item -Path Function:Get-ScheduledTask -Value {
+        param([string]$TaskPath, $ErrorAction)
+        if ($script:queryFails) { throw "scheduler query failed" }
+        if ($script:fakeTask) { return $script:fakeTask }
+        $null
+      }
+      Set-Item -Path Function:Assert-DalaTaskOwnership -Value {
+        param($Task, [string]$InstallRoot)
+        if (-not $Task.owned) { throw "foreign task" }
+      }
+      Set-Item -Path Function:Stop-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, $ErrorAction)
+        $script:fakeTask.State = "Ready"
+        throw "stop reported failure after commit"
+      }
+      Set-Item -Path Function:Unregister-ScheduledTask -Value {
+        param([string]$TaskName, [string]$TaskPath, [switch]$Confirm, $ErrorAction)
+        $script:fakeTask = $null
+        throw "unregister reported failure after commit"
+      }
+
+      $script:queryFails = $true
+      $queryFailureSurfaced = $false
+      try {
+        $null = Get-DalaTaskExact "Dala"
+      } catch {
+        $queryFailureSurfaced = $_.Exception.Message -match "scheduler query failed"
+      }
+
+      $WarningPreference = "Stop"
+      $script:queryFails = $false
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Running"; owned = $true }
+      Stop-DalaTaskVerified "Dala" "root"
+      $stoppedAfterThrow = [string]$script:fakeTask.State -ceq "Ready"
+
+      Remove-DalaTaskVerified "Dala" "root"
+      $removedAfterThrow = $null -eq $script:fakeTask
+
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Ready"; owned = $false }
+      $foreignRejected = $false
+      try {
+        Remove-DalaTaskVerified "Dala" "root"
+      } catch {
+        $foreignRejected = $_.Exception.Message -match "foreign task" -and [bool]$script:fakeTask
+      }
+
+      [pscustomobject]@{
+        query_failure_surfaced = $queryFailureSurfaced
+        stopped_after_throw = $stoppedAfterThrow
+        removed_after_throw = $removedAfterThrow
+        foreign_task_preserved = $foreignRejected
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Uninstaller task command smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Test-ReleaseBootCommand",
+    "Get-ReleaseBeamProcesses",
+    "Get-ScopedHolders",
+    "Get-ProcessTreeIds",
+    "Get-LiveProcessIds",
+    "Stop-ScopedHolders"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  foreach ($commandName in @("Get-ChildItem", "Get-CimInstance")) {
+    $commands = @(
+      $ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and
+          [string]$node.GetCommandName() -ceq $commandName
+      }, $true)
+    )
+    foreach ($command in $commands) {
+      Assert-True ([regex]::IsMatch(
+          $command.Extent.Text,
+          '-ErrorAction\s+Stop',
+          [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )) "$ScriptPath query can mistake a $commandName failure for an empty result: $($command.Extent.Text)"
+    }
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  $releaseStop = $scriptText.LastIndexOf('Stop-DalaRelease $Root $currentExecutable')
+  $holderStop = $scriptText.LastIndexOf('$stoppedTerminalPids = @(Stop-ScopedHolders $Root)')
+  $firstRemoval = $scriptText.IndexOf('Remove-RequiredPath $target', $holderStop)
+  Assert-True ($releaseStop -ge 0 -and $holderStop -gt $releaseStop -and $firstRemoval -gt $holderStop) `
+    "$ScriptPath does not complete fail-closed process queries before removing install paths"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:TagPattern = '^v[0-9]+\.[0-9]+\.[0-9]+$'
+      $script:directoryFails = $false
+      $script:cimFails = $false
+      $script:cimRows = @()
+
+      Set-Item -Path Function:Test-Path -Value {
+        [CmdletBinding()]
+        param([string]$LiteralPath, $PathType)
+        $true
+      }
+      Set-Item -Path Function:Get-ChildItem -Value {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Directory, [switch]$Force, [string]$Filter)
+        if ($script:directoryFails) {
+          Write-Error "injected directory query failure"
+          return
+        }
+        [pscustomobject]@{ Name = "v1.2.3"; FullName = "$LiteralPath\v1.2.3" }
+      }
+      Set-Item -Path Function:Get-ReleaseIdentity -Value {
+        [pscustomobject]@{
+          Executable = "C:\dala\erl.exe"
+          Boot = "C:\dala\start"
+          BootFile = "C:\dala\start.boot"
+        }
+      }
+      Set-Item -Path Function:Get-CimInstance -Value {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        if ($script:cimFails) { Write-Error "injected CIM query failure" }
+        $script:cimRows
+      }
+      Set-Item -Path Function:Test-SamePath -Value {
+        param([string]$Left, [string]$Right)
+        $Left -ceq $Right
+      }
+      Set-Item -Path Function:Stop-Process -Value {}
+      Set-Item -Path Function:Get-Process -Value {
+        [CmdletBinding()]
+        param([uint32]$Id)
+        $null
+      }
+      Set-Item -Path Function:Start-Sleep -Value {}
+
+      $script:directoryFails = $true
+      $releaseDirectoryFailureSurfaced = $false
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $releaseDirectoryFailureSurfaced = $_.Exception.Message -match "directory query failure"
+      }
+      $holderDirectoryFailureSurfaced = $false
+      try { $null = @(Get-ScopedHolders "root") } catch {
+        $holderDirectoryFailureSurfaced = $_.Exception.Message -match "directory query failure"
+      }
+
+      $script:directoryFails = $false
+      $script:cimFails = $true
+      $releaseCimFailureSurfaced = $false
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $releaseCimFailureSurfaced = $_.Exception.Message -match "CIM query failure"
+      }
+      $holderCimFailureSurfaced = $false
+      try { $null = @(Get-ScopedHolders "root") } catch {
+        $holderCimFailureSurfaced = $_.Exception.Message -match "CIM query failure"
+      }
+
+      $script:cimFails = $false
+      $missingExecutableRejected = $false
+      $script:cimRows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = "erl.exe -boot C:\dala\start"
+        ProcessId = [uint32]41
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $missingExecutableRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $missingCommandRejected = $false
+      $script:cimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = ""
+        ProcessId = [uint32]42
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $missingCommandRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $mismatchedBootRejected = $false
+      $script:cimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot `"C:\dala\start-foreign`""
+        ProcessId = [uint32]43
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $mismatchedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+
+      $missingPidRejected = $false
+      $script:cimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot C:\dala\start"
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $missingPidRejected = $_.Exception.Message -match "process id.*refusing to continue"
+      }
+
+      $validRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe --boot=`"C:\dala\start`""
+        ProcessId = [uint32]44
+      }
+      $script:cimRows = @($validRow)
+      $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
+
+      $script:cimFails = $true
+      $script:holderProbeCount = 0
+      Set-Item -Path Function:Get-ScopedHolders -Value {
+        $script:holderProbeCount++
+        if ($script:holderProbeCount -eq 1) {
+          return [pscustomobject]@{ ProcessId = [uint32]123; ParentProcessId = [uint32]1 }
+        }
+        @()
+      }
+      $snapshotFailureSurfaced = $false
+      try { $null = @(Stop-ScopedHolders "root") } catch {
+        $snapshotFailureSurfaced = $_.Exception.Message -match "CIM query failure"
+      }
+
+      [pscustomobject]@{
+        release_directory_failure_surfaced = $releaseDirectoryFailureSurfaced
+        holder_directory_failure_surfaced = $holderDirectoryFailureSurfaced
+        release_cim_failure_surfaced = $releaseCimFailureSurfaced
+        holder_cim_failure_surfaced = $holderCimFailureSurfaced
+        missing_release_executable_rejected = $missingExecutableRejected
+        missing_release_command_rejected = $missingCommandRejected
+        mismatched_release_boot_rejected = $mismatchedBootRejected
+        missing_release_pid_rejected = $missingPidRejected
+        valid_release_row_accepted = $validReleaseRowAccepted
+        process_snapshot_failure_surfaced = $snapshotFailureSurfaced
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Uninstaller fail-closed query smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Test-SamePath",
+    "Test-ReleaseBootCommand",
+    "Get-ReleaseBeamProcesses",
+    "Stop-DalaRelease",
+    "Get-DalaTaskExact",
+    "Assert-DalaTaskPrincipal",
+    "Assert-DalaTaskOwnership",
+    "Test-DalaTaskAction",
+    "Set-DalaTaskActionVerified",
+    "Stop-DalaTaskVerified",
+    "Start-DalaTaskVerified",
+    "Restart-DalaTask"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  Assert-True (-not [regex]::IsMatch(
+      $scriptText,
+      '(?:Get-CimInstance|Get-ScheduledTask)[^\r\n]*-ErrorAction\s+SilentlyContinue',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath can mistake a process or task query failure for absence"
+  Assert-True ([regex]::IsMatch(
+      $scriptText,
+      'Get-ScheduledTask\s+-TaskPath\s+"\\"\s+-ErrorAction\s+Stop\s*\|\s*' +
+        'Where-Object\s+\{\s*\[string\]\$_\.TaskName\s+-ceq\s+\$Name',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath does not query the root task by exact name"
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:fakeTask = $null
+      $script:queryFails = $false
+      $script:commandMode = "postcommit"
+      $script:restartCimFails = $false
+      $script:restartCimRows = @()
+      $script:restartPathMode = "missing"
+
+      Set-Item -Path Function:Assert-DalaTaskOwnership -Value {
+        param($Task, [string]$InstallRoot)
+        if (-not $Task) { throw "missing fake task" }
+      }
+
+      Set-Item -Path Function:Get-ReleaseIdentity -Value {
+        [pscustomobject]@{
+          Executable = "C:\dala\erl.exe"
+          Boot = "C:\dala\start"
+          BootFile = "C:\dala\start.boot"
+        }
+      }
+      Set-Item -Path Function:Get-CimInstance -Value {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        if ($script:restartCimFails) { Write-Error "injected restart CIM query failure" }
+        $script:restartCimRows
+      }
+      Set-Item -Path Function:Test-SamePath -Value {
+        param([string]$Left, [string]$Right)
+        $Left -ceq $Right
+      }
+      Set-Item -Path Function:Test-Path -Value {
+        [CmdletBinding()]
+        param([string]$LiteralPath, $PathType)
+        if ($script:restartPathMode -eq "query-failure") {
+          throw "injected restart executable query failure"
+        }
+        $script:restartPathMode -eq "present"
+      }
+      $script:restartCimFails = $true
+      $releaseQueryFailureSurfaced = $false
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $releaseQueryFailureSurfaced = $_.Exception.Message -match "restart CIM query failure"
+      }
+
+      $script:restartCimFails = $false
+      $missingExecutableRejected = $false
+      $script:restartCimRows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = "erl.exe -boot C:\dala\start"
+        ProcessId = [uint32]51
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $missingExecutableRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $missingCommandRejected = $false
+      $script:restartCimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = ""
+        ProcessId = [uint32]52
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $missingCommandRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+
+      $mismatchedBootRejected = $false
+      $script:restartCimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot `"C:\dala\start-foreign`""
+        ProcessId = [uint32]53
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $mismatchedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+
+      $missingPidRejected = $false
+      $script:restartCimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot C:\dala\start"
+      })
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $missingPidRejected = $_.Exception.Message -match "process id.*refusing to continue"
+      }
+
+      $validRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe --boot=`"C:\dala\start`""
+        ProcessId = [uint32]54
+      }
+      $script:restartCimRows = @($validRow)
+      $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $emptyExecutableRejected = $false
+      try { Stop-DalaRelease "" } catch {
+        $emptyExecutableRejected = $_.Exception.Message -match "executable path is empty"
+      }
+      $missingExecutableFileRejected = $false
+      try { Stop-DalaRelease "C:\dala\bin\dala.bat" } catch {
+        $missingExecutableFileRejected = $_.Exception.Message -match "executable is missing"
+      }
+      $script:restartPathMode = "query-failure"
+      $executableQueryFailureRejected = $false
+      try { Stop-DalaRelease "C:\dala\bin\dala.bat" } catch {
+        $executableQueryFailureRejected = $_.Exception.Message -match "restart executable query failure"
+      }
+
+      Set-Item -Path Function:Get-ScheduledTask -Value {
+        [CmdletBinding()]
+        param([string]$TaskPath)
+        if ($script:queryFails) { Write-Error "injected task query failure"; return }
+        @(
+          [pscustomobject]@{ TaskName = "dala"; State = "Ready"; Actions = @() },
+          $script:fakeTask
+        ) | Where-Object { $null -ne $_ }
+      }
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Ready"; Actions = @() }
+      $exactTaskMatched = (Get-DalaTaskExact "Dala") -eq $script:fakeTask
+      $lowercaseTaskRejected = $null -eq (Get-DalaTaskExact "DALA")
+      $script:queryFails = $true
+      $taskQueryFailureSurfaced = $false
+      try { $null = Get-DalaTaskExact "Dala" } catch {
+        $taskQueryFailureSurfaced = $_.Exception.Message -match "task query failure"
+      }
+
+      $script:queryFails = $false
+      Set-Item -Path Function:Get-DalaTaskExact -Value {
+        if ($script:queryFails) { throw "injected post-command query failure" }
+        $script:fakeTask
+      }
+      Set-Item -Path Function:Set-ScheduledTask -Value {
+        [CmdletBinding()]
+        param([string]$TaskName, [string]$TaskPath, $Action)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.Actions = @($Action) }
+        throw "injected Set-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Stop-ScheduledTask -Value {
+        [CmdletBinding()]
+        param([string]$TaskName, [string]$TaskPath)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.State = "Ready" }
+        throw "injected Stop-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Start-ScheduledTask -Value {
+        [CmdletBinding()]
+        param([string]$TaskName, [string]$TaskPath)
+        if ($script:commandMode -eq "postcommit") { $script:fakeTask.State = "Running" }
+        throw "injected Start-ScheduledTask failure"
+      }
+      Set-Item -Path Function:Start-Sleep -Value {}
+
+      $WarningPreference = "Stop"
+      $expectedAction = [pscustomobject]@{ Execute = "C:\dala\launcher.exe"; Arguments = '"runner" "log"' }
+      $script:fakeTask = [pscustomobject]@{ TaskName = "Dala"; State = "Ready"; Actions = @() }
+      Set-DalaTaskActionVerified "Dala" $expectedAction
+      $setPostCommitAccepted = Test-DalaTaskAction $script:fakeTask $expectedAction
+
+      $script:commandMode = "precommit"
+      $script:fakeTask.Actions = @()
+      $setPreCommitRejected = $false
+      try { Set-DalaTaskActionVerified "Dala" $expectedAction } catch {
+        $setPreCommitRejected = @($script:fakeTask.Actions).Count -eq 0
+      }
+
+      $script:commandMode = "postcommit"
+      $script:fakeTask.State = "Running"
+      Stop-DalaTaskVerified "Dala"
+      $stopPostCommitAccepted = [string]$script:fakeTask.State -ceq "Ready"
+      Start-DalaTaskVerified "Dala"
+      $startPostCommitAccepted = [string]$script:fakeTask.State -ceq "Running"
+
+      $script:commandMode = "precommit"
+      $script:fakeTask.State = "Running"
+      $stopPreCommitRejected = $false
+      try { Stop-DalaTaskVerified "Dala" } catch {
+        $stopPreCommitRejected = [string]$script:fakeTask.State -ceq "Running"
+      }
+      $script:fakeTask.State = "Ready"
+      $startPreCommitRejected = $false
+      try { Start-DalaTaskVerified "Dala" } catch {
+        $startPreCommitRejected = [string]$script:fakeTask.State -ceq "Ready"
+      }
+
+      $script:setWasCalled = $false
+      $script:startWasCalled = $false
+      Set-Item -Path Function:Stop-DalaRelease -Value {}
+      Set-Item -Path Function:Stop-DalaTaskVerified -Value { throw "injected stop verification failure" }
+      Set-Item -Path Function:Set-CurrentTaskAction -Value { $script:setWasCalled = $true }
+      Set-Item -Path Function:Start-DalaTaskVerified -Value { $script:startWasCalled = $true }
+      $failedStopRejected = $false
+      try { Restart-DalaTask "C:\dala\versions\v1.2.3\bin\dala.bat" "Dala" $false } catch {
+        $failedStopRejected = $_.Exception.Message -match "stop verification failure"
+      }
+
+      [pscustomobject]@{
+        release_query_failure_surfaced = $releaseQueryFailureSurfaced
+        missing_release_executable_rejected = $missingExecutableRejected
+        missing_release_command_rejected = $missingCommandRejected
+        mismatched_release_boot_rejected = $mismatchedBootRejected
+        missing_release_pid_rejected = $missingPidRejected
+        valid_release_row_accepted = $validReleaseRowAccepted
+        empty_release_executable_rejected = $emptyExecutableRejected
+        missing_release_executable_file_rejected = $missingExecutableFileRejected
+        release_executable_query_failure_rejected = $executableQueryFailureRejected
+        exact_task_matched = $exactTaskMatched
+        lowercase_task_rejected = $lowercaseTaskRejected
+        task_query_failure_surfaced = $taskQueryFailureSurfaced
+        set_postcommit_accepted = $setPostCommitAccepted
+        set_precommit_rejected = $setPreCommitRejected
+        stop_postcommit_accepted = $stopPostCommitAccepted
+        start_postcommit_accepted = $startPostCommitAccepted
+        stop_precommit_rejected = $stopPreCommitRejected
+        start_precommit_rejected = $startPreCommitRejected
+        failed_stop_aborted_restart = $failedStopRejected -and
+          -not $script:setWasCalled -and -not $script:startWasCalled
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Restart task command smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function ConvertTo-SignedInt32([uint32]$Value) {
   [BitConverter]::ToInt32([BitConverter]::GetBytes($Value), 0)
 }
@@ -1040,6 +2467,14 @@ foreach ($name in $environmentNames) {
 try {
   New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, $expandedIncomplete, `
     $expandedStopFailure, $configDir | Out-Null
+  Assert-InstallerArtifactRollbackSemantics $installer $smokeRoot
+  Assert-VerifiedTaskCommandSemantics $installer
+  Assert-InstallerReleaseProcessSemantics $installer
+  Assert-VerifiedUpdateTaskCommandSemantics $updateHelperSource
+  Assert-UpdateReleaseProcessSemantics $updateHelperSource
+  Assert-UninstallerVerifiedTaskSemantics $uninstall
+  Assert-UninstallerFailClosedQuerySemantics $uninstall
+  Assert-RestartVerifiedTaskSemantics $restartHelperSource
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
   Assert-PublisherSafeRemovalSemantics $publishHelperSource $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
@@ -1268,6 +2703,45 @@ try {
 
   $rootMetadataFile = Join-Path $installRoot "install.json"
   $rootMetadataText = Get-Content -LiteralPath $rootMetadataFile -Raw
+  $discoveryMetadataText = Get-Content -LiteralPath $discoveryFile -Raw
+  $configText = Get-Content -LiteralPath $configFile -Raw
+  $unrelatedConfigBackup = Join-Path $smokeRoot "rollback keep-me.txt"
+  $configMarker = Join-Path $configDir ".dala-config"
+  Move-Item -LiteralPath $unrelatedConfigFile -Destination $unrelatedConfigBackup
+  Remove-Item -LiteralPath $configFile, $discoveryFile -Force
+  New-Item -ItemType Directory -Path $discoveryFile | Out-Null
+  try {
+    $precommitRollbackRejected = $false
+    try {
+      & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
+        -ExpectedVersion $oldVersion -HealthTimeoutSeconds 30
+    } catch {
+      if ($_.Exception.Message -notmatch "metadata target is not a regular file") { throw }
+      $precommitRollbackRejected = $true
+    }
+    Assert-True $precommitRollbackRejected "Existing installer accepted a directory metadata target"
+    Assert-True (-not (Test-Path -LiteralPath $configFile)) `
+      "Existing install failure left the config created by this attempt"
+    Assert-True (-not (Test-Path -LiteralPath $configMarker)) `
+      "Existing install failure left the config ownership marker created by this attempt"
+    Assert-True ((Get-Content -LiteralPath $rootMetadataFile -Raw) -ceq $rootMetadataText) `
+      "Existing install failure changed original root metadata before commit"
+    Assert-True (Test-Path -LiteralPath $discoveryFile -PathType Container) `
+      "Existing install failure removed the original non-file discovery target"
+    Assert-TaskAction $taskName $oldLauncher $runner $logFile
+  } finally {
+    Remove-Item -LiteralPath $configFile, $configMarker -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $discoveryFile) {
+      Remove-Item -LiteralPath $discoveryFile -Recurse -Force
+    }
+    [IO.File]::WriteAllText($rootMetadataFile, $rootMetadataText, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($discoveryFile, $discoveryMetadataText, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($configFile, $configText, [Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $unrelatedConfigBackup -PathType Leaf) {
+      Move-Item -LiteralPath $unrelatedConfigBackup -Destination $unrelatedConfigFile
+    }
+  }
+
   Remove-Item -LiteralPath $discoveryFile -Force
   & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
     -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
@@ -1845,6 +3319,14 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   $stagedLauncher = Get-TaskLauncher $newDir
   Assert-TaskAction $taskName $stagedLauncher $runner $logFile
   Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $runner).Hash -ceq (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $newDir "run-dala.ps1")).Hash) "Rollback CAS overwrote the target runner"
+  $retainedRunnerBackups = @(
+    Get-ChildItem -LiteralPath $installRoot -Filter ".run-dala.rollback-*.ps1" -File -Force
+  )
+  Assert-True ($retainedRunnerBackups.Count -eq 1) `
+    "Incomplete rollback did not retain exactly one previous runner backup"
+  Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $retainedRunnerBackups[0].FullName).Hash -ceq `
+      (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $oldDir "run-dala.ps1")).Hash) `
+    "Incomplete rollback retained the wrong runner bytes"
 
   [IO.File]::WriteAllText((Join-Path $installRoot "current.txt"), "$newTag`n", [Text.UTF8Encoding]::new($false))
   $restoreAttemptId = New-SmokeAttemptId
@@ -1854,6 +3336,9 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Assert-True $restoreResult.success "Could not restore the old release after the rollback CAS test"
   Wait-DalaVersion $port $oldVersion
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
+  Assert-True (Test-Path -LiteralPath $retainedRunnerBackups[0].FullName -PathType Leaf) `
+    "Successful recovery removed the retained runner backup from the incomplete attempt"
+  Remove-Item -LiteralPath $retainedRunnerBackups[0].FullName -Force
 
   $sidebarAttemptId = New-SmokeAttemptId
   Remove-Item -LiteralPath $sidebarResultFile -Force -ErrorAction SilentlyContinue
@@ -2199,6 +3684,7 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
     failed_release_stop_preserved_install = $stopFailureRejected
     update_health_decoy_rolled_back = (-not $healthDecoyResult.success -and $healthDecoyResult.rolled_back)
     rollback_cas_preserved_external_change = $true
+    failed_rollback_runner_backup_retained = $true
     successful_update = $true
     holder_pid_preserved = $true
     shell_pid_preserved = $true
@@ -2207,6 +3693,8 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
     non_purge_preserved_data = $true
     install_metadata_conflict_rejected = $installConflictRejected
     root_discovery_mismatch_rejected = $metadataMismatchRejected
+    install_artifact_rollback = $precommitRollbackRejected
+    installer_marker_reparse_rejected = $true
     config_port_synced_to_metadata = $true
     uninstall_metadata_conflict_rejected = $uninstallConflictRejected
     foreign_task_rejected = $foreignTaskRejected

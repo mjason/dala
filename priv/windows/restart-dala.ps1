@@ -23,56 +23,85 @@ function Test-SamePath([string]$Left, [string]$Right) {
 
 function Get-ReleaseIdentity([string]$DalaExecutable) {
   if ([string]::IsNullOrWhiteSpace($DalaExecutable)) { return $null }
-  try {
-    $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
-    $tag = Split-Path -Leaf $releaseDir
-    if ($tag -cnotmatch $TagPattern) { return $null }
-    $version = $tag.Substring(1)
-    $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
-    if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) { return $null }
-    $tokens = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
-    if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) { return $null }
-    $erts = [string]$tokens[0]
-    if ($erts -notmatch '^[0-9A-Za-z._-]+$') { return $null }
-    $expected = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
-    [pscustomobject]@{
-      Executable = [IO.Path]::GetFullPath($expected)
-      Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
-      BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
-    }
-  } catch {
-    $null
+  $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
+  $tag = Split-Path -Leaf $releaseDir
+  if ($tag -cnotmatch $TagPattern) {
+    throw "Cannot inspect Dala release with an invalid version directory: $releaseDir"
   }
+  $version = $tag.Substring(1)
+  $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
+  if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) {
+    throw "Dala executable is outside its release layout: $DalaExecutable"
+  }
+  $tokens = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  if ($tokens.Count -ne 2 -or [string]$tokens[1] -cne $version) {
+    throw "Cannot inspect Dala release with malformed start_erl.data: $releaseDir"
+  }
+  $erts = [string]$tokens[0]
+  if ($erts -notmatch '^[0-9A-Za-z._-]+$') {
+    throw "Cannot inspect Dala release with invalid ERTS version: $releaseDir"
+  }
+  $expected = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
+  [pscustomobject]@{
+    Executable = [IO.Path]::GetFullPath($expected)
+    Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
+    BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
+  }
+}
+
+function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates) {
+  $command = $CommandLine.Replace('/', '\')
+  foreach ($boot in $BootCandidates) {
+    $normalizedBoot = ([string]$boot).Replace('/', '\')
+    $escapedBoot = [regex]::Escape($normalizedBoot)
+    $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
+    if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+      return $true
+    }
+  }
+  $false
 }
 
 function Get-ReleaseBeamProcesses([string]$Executable) {
   $identity = Get-ReleaseIdentity $Executable
   if (-not $identity) { return @() }
-  @(
-    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
-      Where-Object {
-        $processExecutable = [string]$_.ExecutablePath
-        if ([string]::IsNullOrWhiteSpace($processExecutable) -or
-            -not (Test-SamePath $processExecutable $identity.Executable)) { return $false }
-        $command = ([string]$_.CommandLine).Replace('/', '\').Replace('"', '')
-        foreach ($boot in @($identity.Boot, $identity.BootFile)) {
-          $index = $command.IndexOf($boot, [StringComparison]::OrdinalIgnoreCase)
-          if ($index -ge 0) {
-            $prefix = $command.Substring(0, $index).TrimEnd()
-            if ($prefix.EndsWith("-boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("-boot=", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot=", [StringComparison]::OrdinalIgnoreCase)) { return $true }
-          }
-        }
-        $false
-      }
-  )
+  $releaseProcesses = @()
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+
+    $processExecutable = [string]$process.ExecutablePath
+    $processCommandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($processExecutable) -or
+        [string]::IsNullOrWhiteSpace($processCommandLine)) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+    if (-not (Test-SamePath $processExecutable $identity.Executable)) { continue }
+
+    if (-not (Test-ReleaseBootCommand $processCommandLine @($identity.Boot, $identity.BootFile))) {
+      throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
+    }
+    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "Cannot determine the process id of an erl.exe process; refusing to continue"
+    }
+    $releaseProcesses += $process
+  }
+  $releaseProcesses
 }
 
 function Stop-DalaRelease([string]$Executable) {
-  if ([string]::IsNullOrWhiteSpace($Executable) -or -not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
-    return
+  if ([string]::IsNullOrWhiteSpace($Executable)) {
+    throw "Cannot stop Dala release: executable path is empty"
+  }
+  try {
+    $executableExists = Test-Path -LiteralPath $Executable -PathType Leaf -ErrorAction Stop
+  } catch {
+    throw "Cannot inspect Dala release executable '$Executable': $($_.Exception.Message)"
+  }
+  if (-not $executableExists) {
+    throw "Cannot stop Dala release: executable is missing or not a regular file: $Executable"
   }
 
   & $Executable stop 2>$null | Out-Null
@@ -138,51 +167,194 @@ function Set-CurrentTaskAction([string]$Executable, [string]$Name) {
 
   $logFile = Join-Path $installRoot "logs\server.log"
   $action = New-ScheduledTaskAction -Execute $launcher -Argument "`"$runner`" `"$logFile`""
-  Set-ScheduledTask -TaskName $Name -TaskPath "\" -Action $action | Out-Null
+  Set-DalaTaskActionVerified $Name $action
 }
 
-function Get-DalaTask([string]$Name) {
-  $tasks = @(Get-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction SilentlyContinue)
+function Get-DalaTaskExact([string]$Name) {
+  $tasks = @(
+    Get-ScheduledTask -TaskPath "\" -ErrorAction Stop |
+      Where-Object { [string]$_.TaskName -ceq $Name }
+  )
   if ($tasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$Name'" }
   if ($tasks.Count -eq 0) { return $null }
   $tasks[0]
 }
 
-function End-DalaTask([string]$Name) {
-  $task = Get-DalaTask $Name
+function Assert-DalaTaskPrincipal($Task) {
+  $expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $userId = [string]$Task.Principal.UserId
+  try {
+    $actualSid = if ($userId -match '^S-[0-9-]+$') {
+      [Security.Principal.SecurityIdentifier]::new($userId).Value
+    } else {
+      ([Security.Principal.NTAccount]::new($userId)).Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+  } catch {
+    throw "Scheduled task '$($Task.TaskName)' is not owned by this Dala installation"
+  }
+
+  if ($actualSid -cne $expectedSid -or
+      [string]$Task.Principal.LogonType -cne "Interactive" -or
+      [string]$Task.Principal.RunLevel -cne "Limited") {
+    throw "Scheduled task '$($Task.TaskName)' is not owned by this Dala installation"
+  }
+}
+
+function Assert-DalaTaskOwnership($Task, [string]$InstallRoot) {
+  if (-not $Task) { throw "Dala Scheduled Task is missing: $TaskName" }
+  Assert-DalaTaskPrincipal $Task
+
+  $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd([char[]]"\/")
+  $runner = Join-Path $root "run-dala.ps1"
+  $logFile = Join-Path $root "logs\server.log"
+  $expectedArguments = "`"$runner`" `"$logFile`""
+  $actions = @($Task.Actions)
+  if ($actions.Count -ne 1 -or [string]$actions[0].Arguments -cne $expectedArguments) {
+    throw "Scheduled task '$($Task.TaskName)' is not owned by this Dala installation"
+  }
+
+  $versionsRoot = Join-Path $root "versions"
+  $ownedLaunchers = @()
+  foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction Stop)) {
+    if ($directory.Name -cmatch $TagPattern) {
+      $launcher = Get-TaskLauncher $directory.FullName
+      if ($launcher) { $ownedLaunchers += $launcher }
+    }
+  }
+  if (-not ($ownedLaunchers | Where-Object { Test-SamePath ([string]$actions[0].Execute) $_ })) {
+    throw "Scheduled task '$($Task.TaskName)' is not owned by this Dala installation"
+  }
+}
+
+function Test-DalaTaskAction($Task, $ExpectedAction) {
+  $actions = @($Task.Actions)
+  if ($actions.Count -ne 1) { return $false }
+  try {
+    (Test-SamePath ([string]$actions[0].Execute) ([string]$ExpectedAction.Execute)) -and
+      [string]$actions[0].Arguments -ceq [string]$ExpectedAction.Arguments
+  } catch {
+    $false
+  }
+}
+
+function Set-DalaTaskActionVerified([string]$Name, $Action) {
+  $task = Get-DalaTaskExact $Name
   if (-not $task) { throw "Dala Scheduled Task is missing: $Name" }
 
-  # schtasks /End returns an error for an already-idle task.  Only invoke it
-  # when the scheduler reports Running, then verify that the stop completed
-  # before changing the action underneath the scheduler.
-  if ([string]$task.State -ceq "Running") {
-    & schtasks.exe /End /TN "\$Name" 2>$null | Out-Null
-    $endStatus = $LASTEXITCODE
-    if ($endStatus -ne 0) {
-      throw "Could not stop Scheduled Task '$Name' (schtasks /End exit $endStatus)"
-    }
-
-    for ($attempt = 0; $attempt -lt 50; $attempt++) {
-      $current = Get-DalaTask $Name
-      if (-not $current -or [string]$current.State -cne "Running") { return }
-      Start-Sleep -Milliseconds 100
-    }
-    throw "Scheduled Task '$Name' remained Running after schtasks /End"
+  $setError = $null
+  try {
+    Set-ScheduledTask -TaskName $Name -TaskPath "\" -Action $Action -ErrorAction Stop | Out-Null
+  } catch {
+    $setError = $_.Exception.Message
   }
+
+  try {
+    $task = Get-DalaTaskExact $Name
+  } catch {
+    if ($setError) {
+      throw "$setError; could not verify Scheduled Task action for '$Name': $($_.Exception.Message)"
+    }
+    throw
+  }
+  if (-not $task) {
+    $message = "Dala Scheduled Task disappeared while updating its action: $Name"
+    if ($setError) { $message = "$setError; $message" }
+    throw $message
+  }
+  if (Test-DalaTaskAction $task $Action) {
+    if ($setError) {
+      Write-Warning "Scheduled Task action update reported an error after '$Name' was updated: $setError" `
+        -WarningAction Continue
+    }
+    return
+  }
+  if ($setError) { throw "$setError; Scheduled Task '$Name' still has the previous action" }
+  throw "Scheduled Task '$Name' action did not match after Set-ScheduledTask returned"
+}
+
+function Stop-DalaTaskVerified([string]$Name) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { throw "Dala Scheduled Task is missing: $Name" }
+  if ([string]$task.State -notin @("Running", "Queued")) { return }
+
+  $stopError = $null
+  try {
+    Stop-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $stopError = $_.Exception.Message
+  }
+
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    $task = Get-DalaTaskExact $Name
+    if (-not $task) {
+      $message = "Dala Scheduled Task disappeared while stopping: $Name"
+      if ($stopError) { $message = "$stopError; $message" }
+      throw $message
+    }
+    if ([string]$task.State -notin @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  if ([string]$task.State -in @("Running", "Queued")) {
+    $message = "Scheduled Task '$Name' remained active after stop"
+    if ($stopError) { $message = "$stopError; $message" }
+    throw $message
+  }
+  if ($stopError) {
+    Write-Warning "Scheduled Task stop reported an error after '$Name' stopped: $stopError" `
+      -WarningAction Continue
+  }
+}
+
+function Start-DalaTaskVerified([string]$Name) {
+  $task = Get-DalaTaskExact $Name
+  if (-not $task) { throw "Dala Scheduled Task is missing: $Name" }
+  if ([string]$task.State -in @("Running", "Queued")) { return }
+
+  $startError = $null
+  try {
+    Start-ScheduledTask -TaskName $Name -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $startError = $_.Exception.Message
+  }
+
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    $task = Get-DalaTaskExact $Name
+    if (-not $task) {
+      $message = "Dala Scheduled Task disappeared while starting: $Name"
+      if ($startError) { $message = "$startError; $message" }
+      throw $message
+    }
+    if ([string]$task.State -in @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  if ([string]$task.State -notin @("Running", "Queued")) {
+    $message = "Scheduled Task '$Name' did not become active after start"
+    if ($startError) { $message = "$startError; $message" }
+    throw $message
+  }
+  if ($startError) {
+    Write-Warning "Scheduled Task start reported an error after '$Name' started: $startError" `
+      -WarningAction Continue
+  }
+}
+
+function Restart-DalaTask([string]$Executable, [string]$Name, [bool]$OnlyStop) {
+  if (-not $OnlyStop) {
+    $releaseDir = Split-Path -Parent (Split-Path -Parent $Executable)
+    $installRoot = Split-Path -Parent (Split-Path -Parent $releaseDir)
+    $task = Get-DalaTaskExact $Name
+    Assert-DalaTaskOwnership $task $installRoot
+  }
+  Stop-DalaRelease $Executable
+  if ($OnlyStop) { return }
+
+  Stop-DalaTaskVerified $Name
+  Set-CurrentTaskAction $Executable $Name
+  Start-DalaTaskVerified $Name
 }
 
 # The updater launches this helper from inside the server request. Give that
 # response time to reach the browser before stopping the running release.
 Assert-TaskName $TaskName
 if (-not $StopOnly) { Start-Sleep -Milliseconds 750 }
-Stop-DalaRelease $StopExecutable
-
-if ($StopOnly) { exit 0 }
-
-End-DalaTask $TaskName
-Set-CurrentTaskAction $StopExecutable $TaskName
-& schtasks.exe /Run /TN "\$TaskName" | Out-Null
-$runStatus = $LASTEXITCODE
-if ($runStatus -ne 0) {
-  throw "Could not start Scheduled Task '$TaskName' (schtasks /Run exit $runStatus)"
-}
+Restart-DalaTask $StopExecutable $TaskName ([bool]$StopOnly)

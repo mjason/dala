@@ -59,6 +59,9 @@ function Invoke-RecoverableFileReplace(
     }
   }
 
+  $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Source -ErrorAction Stop).Hash
+  $reportedErrorAfterCommit = $false
+  $postCommitError = $null
   try {
     & $ReplaceOperation $Source $Destination $backup
   } catch {
@@ -68,8 +71,14 @@ function Invoke-RecoverableFileReplace(
     try {
       $destinationExists = Test-Path -LiteralPath $Destination -ErrorAction Stop
       $backupExists = Test-Path -LiteralPath $backup -ErrorAction Stop
+      if ($destinationExists) {
+        $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination -ErrorAction Stop).Hash
+        $reportedErrorAfterCommit = $destinationHash -ceq $sourceHash
+      }
 
-      if (-not $destinationExists -and $backupExists) {
+      if ($reportedErrorAfterCommit) {
+        $postCommitError = $replaceError.Exception.Message
+      } elseif (-not $destinationExists -and $backupExists) {
         $backupAttributes = [IO.File]::GetAttributes($backup)
         if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
             ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -98,24 +107,40 @@ function Invoke-RecoverableFileReplace(
       throw "$($replaceError.Exception.Message); $recoveryFailure"
     }
 
-    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
-    throw $replaceError
+    if (-not $reportedErrorAfterCommit) {
+      Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+      throw $replaceError
+    }
   }
 
-  if (Test-Path -LiteralPath $backup) {
+  if ($reportedErrorAfterCommit) {
+    Write-Warning "Replacement reported an error after the destination was verified as committed: $postCommitError" `
+      -WarningAction Continue
     try {
+      if (Test-Path -LiteralPath $Source -ErrorAction Stop) {
+        Remove-Item -LiteralPath $Source -Force -ErrorAction Stop
+      }
+    } catch {
+      Write-Warning "Could not clean committed replacement source at $Source`: $($_.Exception.Message)" `
+        -WarningAction Continue
+    }
+  }
+
+  try {
+    if (Test-Path -LiteralPath $backup -ErrorAction Stop) {
       $backupAttributes = [IO.File]::GetAttributes($backup)
       if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
           ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "recovery backup is not a regular file"
       }
       Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
-    } catch {
-      # The destination replacement has already committed. A cleanup failure
-      # must not turn a successful pointer/result write into a transaction
-      # failure that rolls the release back; leave the backup for recovery.
-      Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
     }
+  } catch {
+    # The destination replacement has already committed. A cleanup failure
+    # must not turn a successful pointer/result write into a transaction
+    # failure that rolls the release back; leave the backup for recovery.
+    Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)" `
+      -WarningAction Continue
   }
 }
 
@@ -367,41 +392,60 @@ function Test-CompleteDalaRelease([string]$Path, [string]$Version) {
 
 function Get-ReleaseIdentity([string]$DalaExecutable) {
   if ([string]::IsNullOrWhiteSpace($DalaExecutable)) { return $null }
-  try {
-    $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
-    $tag = Split-Path -Leaf $releaseDir
-    $version = Get-ReleaseVersion $tag
-    if (-not $version) { return $null }
-    $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
-    if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) { return $null }
-    $startData = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
-    if ($startData.Count -ne 2 -or [string]$startData[1] -cne $version) { return $null }
-    $erts = [string]$startData[0]
-    if ($erts -notmatch '^[0-9A-Za-z._-]+$') { return $null }
-    $expectedExecutable = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
-    [pscustomobject]@{
-      ReleaseDir = $releaseDir
-      Version = $version
-      Executable = [IO.Path]::GetFullPath($expectedExecutable)
-      Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
-      BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
-    }
-  } catch {
-    $null
+  $releaseDir = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $DalaExecutable))).TrimEnd([char[]]"\/")
+  $tag = Split-Path -Leaf $releaseDir
+  $version = Get-ReleaseVersion $tag
+  if (-not $version) { throw "Cannot inspect Dala release with an invalid version directory: $releaseDir" }
+  $expectedDalaExecutable = Join-Path $releaseDir "bin\dala.bat"
+  if (-not (Test-SamePath $DalaExecutable $expectedDalaExecutable)) {
+    throw "Dala executable is outside its release layout: $DalaExecutable"
+  }
+  $startData = @((Get-Content -LiteralPath (Join-Path $releaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  if ($startData.Count -ne 2 -or [string]$startData[1] -cne $version) {
+    throw "Cannot inspect Dala release with malformed start_erl.data: $releaseDir"
+  }
+  $erts = [string]$startData[0]
+  if ($erts -notmatch '^[0-9A-Za-z._-]+$') { throw "Cannot inspect Dala release with invalid ERTS version: $releaseDir" }
+  $expectedExecutable = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
+  [pscustomobject]@{
+    ReleaseDir = $releaseDir
+    Version = $version
+    Executable = [IO.Path]::GetFullPath($expectedExecutable)
+    Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
+    BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
   }
 }
 
-function Assert-DalaTaskOwnership([string]$ReleaseDir) {
-  $task = @(Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue)
-  if ($task.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$TaskName'" }
-  $task = if ($task.Count -eq 1) { $task[0] } else { $null }
-  if (-not $task) { throw "Dala scheduled task is missing: $TaskName" }
+function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates) {
+  $command = $CommandLine.Replace('/', '\')
+  foreach ($boot in $BootCandidates) {
+    $normalizedBoot = ([string]$boot).Replace('/', '\')
+    $escapedBoot = [regex]::Escape($normalizedBoot)
+    $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
+    if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+      return $true
+    }
+  }
+  $false
+}
 
-  Assert-DalaTaskPrincipal $task
+function Get-DalaTaskExact([string]$Name) {
+  $tasks = @(
+    Get-ScheduledTask -TaskPath "\" -ErrorAction Stop |
+      Where-Object { [string]$_.TaskName -ceq $Name }
+  )
+  if ($tasks.Count -gt 1) { throw "Multiple root Scheduled Tasks match '$Name'" }
+  if ($tasks.Count -eq 1) { return $tasks[0] }
+  $null
+}
+
+function Assert-DalaTaskObjectOwnership($Task, [string]$ReleaseDir) {
+  if (-not $Task) { throw "Dala scheduled task is missing: $TaskName" }
+  Assert-DalaTaskPrincipal $Task
 
   $launcher = Get-TaskLauncher $ReleaseDir (Get-ReleaseDirVersion $ReleaseDir)
   if (-not $launcher) { throw "Release is missing dala_task_launcher.exe: $ReleaseDir" }
-  $actions = @($task.Actions)
+  $actions = @($Task.Actions)
   $logFile = Join-Path $Root "logs\server.log"
   $expectedArguments = "`"$Runner`" `"$logFile`""
   if ($actions.Count -ne 1 -or
@@ -411,35 +455,112 @@ function Assert-DalaTaskOwnership([string]$ReleaseDir) {
   }
 }
 
+function Assert-DalaTaskOwnership([string]$ReleaseDir) {
+  $task = Get-DalaTaskExact $TaskName
+  Assert-DalaTaskObjectOwnership $task $ReleaseDir
+}
+
+function Stop-DalaTaskVerified([string]$ReleaseDir) {
+  $task = Get-DalaTaskExact $TaskName
+  Assert-DalaTaskObjectOwnership $task $ReleaseDir
+  if ([string]$task.State -notin @("Running", "Queued")) { return }
+
+  $stopError = $null
+  try {
+    Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $stopError = $_.Exception.Message
+  }
+
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    $task = Get-DalaTaskExact $TaskName
+    if (-not $task -or [string]$task.State -notin @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-DalaTaskObjectOwnership $task $ReleaseDir
+  if ([string]$task.State -in @("Running", "Queued")) {
+    $message = "Scheduled Task '$TaskName' remained active after stop"
+    if ($stopError) { $message = "$stopError; $message" }
+    throw $message
+  }
+  if ($stopError) {
+    Write-Warning "Scheduled Task stop reported an error after '$TaskName' stopped: $stopError" `
+      -WarningAction Continue
+  }
+}
+
+function Start-DalaTaskVerified([string]$ReleaseDir) {
+  $task = Get-DalaTaskExact $TaskName
+  Assert-DalaTaskObjectOwnership $task $ReleaseDir
+
+  $startError = $null
+  try {
+    Start-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction Stop
+  } catch {
+    $startError = $_.Exception.Message
+  }
+
+  $task = $null
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $task = Get-DalaTaskExact $TaskName
+    if ($task -and [string]$task.State -in @("Running", "Queued")) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-DalaTaskObjectOwnership $task $ReleaseDir
+  if ([string]$task.State -notin @("Running", "Queued")) {
+    $message = "Scheduled Task '$TaskName' did not enter a running state"
+    if ($startError) { $message = "$startError; $message" }
+    throw $message
+  }
+  if ($startError) {
+    Write-Warning "Scheduled Task start reported an error after '$TaskName' started: $startError" `
+      -WarningAction Continue
+  }
+}
+
 function Get-ReleaseBeamProcesses([string]$Executable) {
   $identity = Get-ReleaseIdentity $Executable
   if (-not $identity) { return @() }
-  $bootCandidates = @($identity.Boot, $identity.BootFile)
-  @(
-    Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
-      Where-Object {
-        $processExecutable = [string]$_.ExecutablePath
-        if ([string]::IsNullOrWhiteSpace($processExecutable) -or
-            -not (Test-SamePath $processExecutable $identity.Executable)) { return $false }
-        $command = ([string]$_.CommandLine).Replace('/', '\').Replace('"', '')
-        foreach ($boot in $bootCandidates) {
-          $index = $command.IndexOf($boot, [StringComparison]::OrdinalIgnoreCase)
-          if ($index -ge 0) {
-            $prefix = $command.Substring(0, $index).TrimEnd()
-            if ($prefix.EndsWith("-boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("-boot=", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot", [StringComparison]::OrdinalIgnoreCase) -or
-                $prefix.EndsWith("--boot=", [StringComparison]::OrdinalIgnoreCase)) { return $true }
-          }
-        }
-        $false
-      }
-  )
+  $releaseProcesses = @()
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+
+    # A missing CIM identity field is not evidence that the process is
+    # unrelated. Treat it as an ambiguous live process so a stop/replace
+    # operation cannot proceed while an unknown BEAM may still be running.
+    $processExecutable = [string]$process.ExecutablePath
+    $processCommandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($processExecutable) -or
+        [string]::IsNullOrWhiteSpace($processCommandLine)) {
+      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+    }
+    if (-not (Test-SamePath $processExecutable $identity.Executable)) { continue }
+
+    if (-not (Test-ReleaseBootCommand $processCommandLine @($identity.Boot, $identity.BootFile))) {
+      throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
+    }
+    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "Cannot determine the process id of an erl.exe process; refusing to continue"
+    }
+    $releaseProcesses += $process
+  }
+  $releaseProcesses
 }
 
 function Stop-DalaRelease([string]$Executable) {
-  if ([string]::IsNullOrWhiteSpace($Executable) -or -not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
-    return
+  if ([string]::IsNullOrWhiteSpace($Executable)) {
+    throw "Cannot stop Dala release: executable path is empty"
+  }
+  try {
+    $executableExists = Test-Path -LiteralPath $Executable -PathType Leaf -ErrorAction Stop
+  } catch {
+    throw "Cannot inspect Dala release executable '$Executable': $($_.Exception.Message)"
+  }
+  if (-not $executableExists) {
+    throw "Cannot stop Dala release: executable is missing or not a regular file: $Executable"
   }
 
   & $Executable stop 2>$null | Out-Null
@@ -516,11 +637,29 @@ function Set-TaskAction([string]$ReleaseDir) {
 
   $logFile = Join-Path $Root "logs\server.log"
   $action = New-ScheduledTaskAction -Execute $launcher -Argument "`"$Runner`" `"$logFile`""
-  Set-ScheduledTask -TaskName $TaskName -TaskPath "\" -Action $action | Out-Null
+  $setError = $null
+  try {
+    Set-ScheduledTask -TaskName $TaskName -TaskPath "\" -Action $action -ErrorAction Stop | Out-Null
+  } catch {
+    $setError = $_.Exception.Message
+  }
+
+  try {
+    $task = Get-DalaTaskExact $TaskName
+    Assert-DalaTaskObjectOwnership $task $ReleaseDir
+  } catch {
+    if ($setError) { throw "$setError; could not verify Scheduled Task action: $($_.Exception.Message)" }
+    throw
+  }
+  if ($setError) {
+    Write-Warning "Scheduled Task action update reported an error after '$TaskName' was committed: $setError" `
+      -WarningAction Continue
+  }
 }
 
 function Test-ReleaseTaskRunning([string]$ReleaseDir) {
-  $task = Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
+  $task = Get-DalaTaskExact $TaskName
+  if ($task) { Assert-DalaTaskObjectOwnership $task $ReleaseDir }
   $task -and [string]$task.State -ceq "Running" -and (Get-ReleaseBeamProcesses (Join-Path $ReleaseDir "bin\dala.bat")).Count -gt 0
 }
 
@@ -531,15 +670,11 @@ function Test-ReleaseOwnsPort([string]$ReleaseDir) {
   )
   if ($releaseProcessIds.Count -eq 0) { return $false }
 
-  try {
-    $listenerProcessIds = @(
-      Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop |
-        Where-Object { $_.LocalAddress -ceq "127.0.0.1" -or $_.LocalAddress -ceq "0.0.0.0" } |
-        ForEach-Object { [uint32]$_.OwningProcess }
-    )
-  } catch {
-    return $false
-  }
+  $listenerProcessIds = @(
+    Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop |
+      Where-Object { $_.LocalAddress -ceq "127.0.0.1" -or $_.LocalAddress -ceq "0.0.0.0" } |
+      ForEach-Object { [uint32]$_.OwningProcess }
+  )
 
   foreach ($processId in $releaseProcessIds) {
     if ($listenerProcessIds -contains $processId) { return $true }
@@ -550,6 +685,7 @@ function Test-ReleaseOwnsPort([string]$ReleaseDir) {
 function Wait-DalaVersion([string]$Version, [string]$ReleaseDir) {
   $deadline = [DateTime]::UtcNow.AddSeconds($HealthTimeoutSeconds)
   $uri = "http://127.0.0.1:$Port/version"
+  $lastHealthError = $null
 
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
@@ -568,12 +704,15 @@ function Wait-DalaVersion([string]$Version, [string]$ReleaseDir) {
       }
     } catch {
       if ($_.Exception.Message -like "Dala returned version*") { throw }
+      $lastHealthError = $_.Exception.Message
     }
 
     Start-Sleep -Milliseconds 500
   }
 
-  throw "Dala $Version did not become healthy at $uri"
+  $message = "Dala $Version did not become healthy at $uri"
+  if ($lastHealthError) { $message += "; last health probe error: $lastHealthError" }
+  throw $message
 }
 
 $rolledBack = $false
@@ -633,14 +772,14 @@ try {
     if ($HadRunner) { Copy-Item -LiteralPath $Runner -Destination $RunnerBackup -Force }
 
     $switchAttempted = $true
-    Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
+    Stop-DalaTaskVerified $PreviousDir
     Stop-DalaRelease $PreviousExecutable
     Deploy-Runner $TargetRunner
     Set-Current $TargetTag
     $pointerSwitched = $true
     Set-TaskAction $TargetDir
     $taskActionSwitched = $true
-    Start-ScheduledTask -TaskName $TaskName -TaskPath "\"
+    Start-DalaTaskVerified $TargetDir
     Wait-DalaVersion $ExpectedVersion $TargetDir
 
     Write-UpdateResult $true $false "updated to $TargetTag"
@@ -667,10 +806,13 @@ try {
         } else {
           Join-Path $Root "versions\$PreviousTag"
         }
-        Assert-DalaTaskOwnership $expectedTaskDir
-
-        Stop-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction SilentlyContinue
+        Stop-DalaTaskVerified $expectedTaskDir
+        # A failure can occur before the pointer/action switch (for example
+        # while stopping the previous release). Probe both identities before
+        # restoring the previous task, so rollback cannot leave an old BEAM
+        # process running beside the restarted one.
         Stop-DalaRelease $TargetExecutable
+        Stop-DalaRelease $PreviousExecutable
 
         if ($PreviousTag) {
           Set-Current $PreviousTag
@@ -681,7 +823,7 @@ try {
           }
 
           Set-TaskAction $PreviousDir
-          Start-ScheduledTask -TaskName $TaskName -TaskPath "\"
+          Start-DalaTaskVerified $PreviousDir
           if ($PreviousVersion) { Wait-DalaVersion $PreviousVersion $PreviousDir }
           $rolledBack = $true
         } else {
@@ -693,28 +835,45 @@ try {
       }
     }
 
-    Write-UpdateResult $false $rolledBack $failureMessage
+    try {
+      Write-UpdateResult $false $rolledBack $failureMessage
+    } catch {
+      $failureMessage += "; could not persist failure result: $($_.Exception.Message)"
+    }
   }
 } catch {
-  $failureMessage = $_.Exception.Message
-  Write-UpdateResult $false $false $failureMessage
+  $resultWriteError = $_.Exception.Message
+  $failureMessage = if ($failureMessage) {
+    "$failureMessage; could not write update result: $resultWriteError"
+  } else {
+    $resultWriteError
+  }
+  try {
+    Write-UpdateResult $false $rolledBack $failureMessage
+  } catch {
+    $failureMessage += "; could not persist failure result: $($_.Exception.Message)"
+  }
 } finally {
-  if (Test-Path -LiteralPath $RunnerBackup) {
-    try {
-      if ((Test-NoReparseAncestors $RunnerBackup) -and
-          (([IO.File]::GetAttributes($RunnerBackup) -band [IO.FileAttributes]::ReparsePoint) -eq 0)) {
-        # On an incomplete rollback this may be the only copy of the
-        # previously running root runner. Keep it for manual recovery.
-        $keepRunnerBackup = [bool]$failureMessage -and -not [bool]$rolledBack
-        if ($keepRunnerBackup) {
-          Write-Warning "Retaining previous Dala runner backup for recovery: $RunnerBackup"
-        } else {
-          Remove-Item -LiteralPath $RunnerBackup -Force -ErrorAction Stop
-        }
+  try {
+    if (Test-Path -LiteralPath $RunnerBackup -ErrorAction Stop) {
+      if (-not (Test-NoReparseAncestors $RunnerBackup) -or
+          (([IO.File]::GetAttributes($RunnerBackup) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "runner backup path contains a reparse point"
       }
-    } catch {
-      Write-Warning "Could not clean previous Dala runner backup at $RunnerBackup`: $($_.Exception.Message)"
+
+      # On an incomplete rollback this may be the only copy of the
+      # previously running root runner. Keep it for manual recovery.
+      $keepRunnerBackup = [bool]$failureMessage -and -not [bool]$rolledBack
+      if ($keepRunnerBackup) {
+        Write-Warning "Retaining previous Dala runner backup for recovery: $RunnerBackup" `
+          -WarningAction Continue
+      } else {
+        Remove-Item -LiteralPath $RunnerBackup -Force -ErrorAction Stop
+      }
     }
+  } catch {
+    Write-Warning "Could not clean previous Dala runner backup at $RunnerBackup`: $($_.Exception.Message)" `
+      -WarningAction Continue
   }
   if ($UpdateLock) {
     $UpdateLock.ReleaseMutex()
