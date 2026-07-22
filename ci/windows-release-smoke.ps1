@@ -1017,6 +1017,7 @@ function Assert-InstallerArtifactRollbackSemantics([string]$ScriptPath, [string]
     "Write-JsonAtomic",
     "Test-SamePath",
     "Write-InstallMetadataPair",
+    "Assert-SafeMetadataTarget",
     "Test-NoReparseAncestors",
     "Remove-CreatedInstallArtifact",
     "Restore-InstallArtifacts"
