@@ -112,6 +112,7 @@ function Test-CompleteDalaRelease([string]$Path, [string]$Version) {
       "releases\$Version\start.boot",
       "releases\$Version\dala.rel",
       "erts-$ertsVersion\bin\erl.exe",
+      "erts-$ertsVersion\bin\epmd.exe",
       "lib\dala-$Version\ebin\Elixir.Dala.beam"
     )) {
       if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }

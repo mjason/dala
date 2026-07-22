@@ -264,10 +264,12 @@ function Get-ReleaseIdentity([string]$DalaExecutable) {
     throw "Cannot inspect Dala release with invalid ERTS version: $releaseDir"
   }
   $expected = Join-Path $releaseDir "erts-$erts\bin\erl.exe"
+  $expectedEpmd = Join-Path $releaseDir "erts-$erts\bin\epmd.exe"
   [pscustomobject]@{
     ReleaseDir = $releaseDir
     Version = $version
     Executable = [IO.Path]::GetFullPath($expected)
+    Epmd = [IO.Path]::GetFullPath($expectedEpmd)
     Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
     BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
   }
@@ -284,6 +286,26 @@ function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates
     }
   }
   $false
+}
+
+function Invoke-ReleaseWithDefaultEpmdPort([scriptblock]$Action) {
+  # run-dala strips EPMD overrides, so lifecycle commands must address the
+  # same default, non-relaxed daemon even when the caller has ambient state.
+  $names = @("ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK")
+  $previous = @{}
+  try {
+    foreach ($name in $names) {
+      $previous[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+      [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    & $Action
+  } finally {
+    foreach ($name in $names) {
+      if ($previous.ContainsKey($name)) {
+        [Environment]::SetEnvironmentVariable($name, $previous[$name], "Process")
+      }
+    }
+  }
 }
 
 function Assert-DalaTaskOwnership($Task, [string]$InstallRoot) {
@@ -394,23 +416,40 @@ function Remove-DalaTaskVerified([string]$Name, [string]$InstallRoot) {
   throw "Scheduled Task '$Name' still exists after removal returned"
 }
 
-function Get-ReleaseBeamProcesses([string]$InstallRoot) {
+function Get-ReleaseIdentities([string]$InstallRoot) {
   $identities = @()
   $versionsRoot = Join-Path $InstallRoot "versions"
   if (Test-Path -LiteralPath $versionsRoot -PathType Container) {
     foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force -ErrorAction Stop)) {
       if ($directory.Name -cmatch $TagPattern) {
         $candidate = Join-Path $directory.FullName "bin\dala.bat"
-        # Incomplete staging directories without a launcher cannot own a
-        # running release; a launcher that exists but cannot be inspected is
-        # an unsafe/ambiguous state and must fail closed.
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        $startData = Join-Path $directory.FullName "releases\start_erl.data"
+        $hasRuntimeBinary = @(
+          Get-ChildItem -LiteralPath $directory.FullName -Directory -Force -ErrorAction Stop |
+            Where-Object {
+              $_.Name -cmatch '^erts-[0-9A-Za-z._-]+$' -and
+                ((Test-Path -LiteralPath (Join-Path $_.FullName "bin\erl.exe") -PathType Leaf) -or
+                 (Test-Path -LiteralPath (Join-Path $_.FullName "bin\epmd.exe") -PathType Leaf))
+            }
+        ).Count -gt 0
+
+        # A damaged release can still own live runtime processes after its
+        # launcher or metadata was removed. Any release marker requires a
+        # complete, verifiable identity; otherwise uninstall fails closed.
+        if ((Test-Path -LiteralPath $candidate -PathType Leaf) -or
+            (Test-Path -LiteralPath $startData -PathType Leaf) -or
+            $hasRuntimeBinary) {
           $identity = Get-ReleaseIdentity $candidate
           if ($identity) { $identities += $identity }
         }
       }
     }
   }
+  $identities
+}
+
+function Get-ReleaseBeamProcesses([string]$InstallRoot) {
+  $identities = @(Get-ReleaseIdentities $InstallRoot)
   if ($identities.Count -eq 0) { return @() }
   $releaseProcesses = @()
   foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
@@ -446,10 +485,320 @@ function Get-ReleaseBeamProcesses([string]$InstallRoot) {
   $releaseProcesses
 }
 
-function Stop-DalaRelease([string]$InstallRoot, [string]$Executable) {
+function Get-ReleaseEpmdProcesses([string]$InstallRoot) {
+  $identities = @(Get-ReleaseIdentities $InstallRoot)
+  $epmdPaths = @(
+    $identities |
+      ForEach-Object { [string]$_.Epmd } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Select-Object -Unique
+  )
+  if ($epmdPaths.Count -eq 0) { return @() }
+
+  $releaseProcesses = @()
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='epmd.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process) {
+      throw "Cannot determine the identity of an epmd.exe process; refusing to continue"
+    }
+
+    $processExecutable = [string]$process.ExecutablePath
+    if ([string]::IsNullOrWhiteSpace($processExecutable)) {
+      throw "Cannot determine the identity of an epmd.exe process; refusing to continue"
+    }
+
+    $isReleaseEpmd = $false
+    foreach ($epmdPath in $epmdPaths) {
+      if (Test-SamePath $processExecutable $epmdPath) {
+        $isReleaseEpmd = $true
+        break
+      }
+    }
+    if (-not $isReleaseEpmd) { continue }
+    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "Cannot determine the process id of an epmd.exe process; refusing to continue"
+    }
+    if ($null -eq $process.PSObject.Properties["CommandLine"] -or
+        [string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
+      throw "Cannot determine the command line of an epmd.exe process; refusing to continue"
+    }
+    $releaseProcesses += $process
+  }
+  $releaseProcesses
+}
+
+function Test-ReleaseEpmdSafeToKill($Process) {
+  $commandLine = [string]$Process.CommandLine
+  if ([string]::IsNullOrWhiteSpace($commandLine)) {
+    throw "Cannot determine the command line of an epmd.exe process; refusing to continue"
+  }
+  if ([regex]::IsMatch(
+      $commandLine,
+      '(?i)(?:^|\s)-{1,2}relaxed_command_check(?:=\S+)?(?=\s|$)')) {
+    return $false
+  }
+  if ([regex]::IsMatch(
+      $commandLine,
+      '(?i)(?:^|\s)-{1,2}address(?:=|\s|$)')) {
+    return $false
+  }
+  $hasPortToken = [regex]::IsMatch($commandLine, '(?i)(?:^|\s)-{1,2}port(?:=|\s|$)')
+  if ($hasPortToken) {
+    $portMatch = [regex]::Match(
+      $commandLine,
+      '(?i)(?:^|\s)-{1,2}port(?:=|\s+)(?:"([^"]+)"|([^\s]+))(?=\s|$)'
+    )
+    if (-not $portMatch.Success) { return $false }
+    $portText = if ($portMatch.Groups[1].Success) {
+      [string]$portMatch.Groups[1].Value
+    } else {
+      [string]$portMatch.Groups[2].Value
+    }
+    if ($portText -notmatch '^\d+$' -or [int]$portText -ne 4369) { return $false }
+  }
+  $processId = [uint32]$Process.ProcessId
+  $listenerIds = @(
+    Get-NetTCPConnection -State Listen -LocalPort 4369 -ErrorAction Stop |
+      ForEach-Object {
+        if ($null -eq $_.PSObject.Properties["OwningProcess"] -or
+            [string]::IsNullOrWhiteSpace([string]$_.OwningProcess)) {
+          throw "Cannot determine the owner of the epmd default-port listener; refusing to continue"
+        }
+        if ($null -eq $_.PSObject.Properties["LocalAddress"] -or
+            [string]::IsNullOrWhiteSpace([string]$_.LocalAddress)) {
+          throw "Cannot determine the address of the epmd default-port listener; refusing to continue"
+        }
+        if ([string]$_.LocalAddress -notin @("0.0.0.0", "127.0.0.1", "::", "::1", "::ffff:127.0.0.1")) {
+          throw "epmd default-port listener is bound to a non-local address; refusing to continue"
+        }
+        [uint32]$_.OwningProcess
+      } |
+      Sort-Object -Unique
+  )
+  if ($listenerIds.Count -ne 1 -or $listenerIds[0] -ne $processId) {
+    return $false
+  }
+  $true
+}
+
+function Get-ReleaseEpmdNames([string]$EpmdPath) {
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $EpmdPath
+  $startInfo.Arguments = "-names"
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (-not $process.Start()) { throw "Could not start epmd names probe: $EpmdPath" }
+    if (-not $process.WaitForExit(2000)) {
+      try { $process.Kill() } catch { }
+      throw "epmd names probe timed out: $EpmdPath"
+    }
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    if ($process.ExitCode -ne 0) {
+      throw "epmd names probe failed: $EpmdPath ($stderr)"
+    }
+    "$stdout`n$stderr"
+  } finally {
+    $process.Dispose()
+  }
+}
+
+function Invoke-ReleaseEpmdKill([string]$EpmdPath, [uint32]$ExpectedProcessId = 0) {
+  if ($ExpectedProcessId -gt 0) {
+    $identityRows = @(
+      Get-CimInstance Win32_Process -Filter "Name='epmd.exe'" -ErrorAction Stop |
+        Where-Object {
+          [string]$_.ProcessId -eq [string]$ExpectedProcessId
+        }
+    )
+    if ($identityRows.Count -ne 1 -or
+        -not (Test-SamePath ([string]$identityRows[0].ExecutablePath) $EpmdPath) -or
+        [string]::IsNullOrWhiteSpace([string]$identityRows[0].CommandLine)) {
+      throw "epmd process identity changed; refusing to continue"
+    }
+    if (-not (Test-ReleaseEpmdSafeToKill $identityRows[0])) {
+      throw "epmd process safety changed; refusing to continue"
+    }
+    $listenerIds = @(
+      Get-NetTCPConnection -State Listen -LocalPort 4369 -ErrorAction Stop |
+        ForEach-Object {
+          if ($null -eq $_.PSObject.Properties["OwningProcess"] -or
+              [string]::IsNullOrWhiteSpace([string]$_.OwningProcess)) {
+            throw "Cannot determine the owner of the epmd default-port listener; refusing to continue"
+          }
+          if ($null -eq $_.PSObject.Properties["LocalAddress"] -or
+              [string]::IsNullOrWhiteSpace([string]$_.LocalAddress)) {
+            throw "Cannot determine the address of the epmd default-port listener; refusing to continue"
+          }
+          if ([string]$_.LocalAddress -notin @("0.0.0.0", "127.0.0.1", "::", "::1", "::ffff:127.0.0.1")) {
+            throw "epmd default-port listener is bound to a non-local address; refusing to continue"
+          }
+          [uint32]$_.OwningProcess
+        } |
+        Sort-Object -Unique
+    )
+    if ($listenerIds.Count -ne 1 -or $listenerIds[0] -ne $ExpectedProcessId) {
+      throw "epmd default-port listener ownership changed; refusing to continue"
+    }
+  }
+  Invoke-ReleaseWithDefaultEpmdPort {
+    try {
+      & $EpmdPath -kill 2>$null | Out-Null
+    } catch {
+      # A daemon with registered nodes refuses -kill. Verification by CIM below
+      # remains authoritative.
+    }
+  }
+}
+
+function Stop-ReleaseEpmd([string]$InstallRoot, [bool]$RequireStop = $false) {
+  try {
+    $epmdProcesses = @(Get-ReleaseEpmdProcesses $InstallRoot)
+  } catch {
+    $message = "Could not inspect Dala release epmd before stopping it: $($_.Exception.Message)"
+    if ($RequireStop) { throw $message }
+    Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+    return
+  }
+  $unsafeProcesses = @()
+  try {
+    $unsafeProcesses = @(
+      $epmdProcesses | Where-Object { -not (Test-ReleaseEpmdSafeToKill $_) }
+    )
+  } catch {
+    $message = "Could not verify Dala release epmd safety: $($_.Exception.Message)"
+    if ($RequireStop) { throw $message }
+    Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+    return
+  }
+  if ($unsafeProcesses.Count -gt 0) {
+    $message = "Dala release epmd is not a default, non-relaxed daemon; retaining it under $InstallRoot"
+    if ($RequireStop) { throw $message }
+    Write-Warning $message -WarningAction Continue
+    return
+  }
+
+  $epmdTargets = @(
+    $epmdProcesses |
+      Group-Object { [string]$_.ExecutablePath } |
+      ForEach-Object { $_.Group[0] }
+  )
+  foreach ($epmdTarget in $epmdTargets) {
+    $epmdPath = [string]$epmdTarget.ExecutablePath
+    try {
+      $names = [string](Invoke-ReleaseWithDefaultEpmdPort {
+        Get-ReleaseEpmdNames $epmdPath
+      })
+    } catch {
+      $message = "Could not inspect Dala release epmd before stopping it: $($_.Exception.Message)"
+      if ($RequireStop) { throw $message }
+      Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+      return
+    }
+    if ([regex]::IsMatch($names, '(?im)^\s*name\s+\S+')) {
+      $message = "Dala release epmd still has registered nodes; retaining it: $epmdPath"
+      if ($RequireStop) { throw $message }
+      Write-Warning $message -WarningAction Continue
+      return
+    }
+    try {
+      Invoke-ReleaseEpmdKill $epmdPath ([uint32]$epmdTarget.ProcessId)
+    } catch {
+      $message = "Could not safely stop Dala release epmd: $($_.Exception.Message)"
+      if ($RequireStop) { throw $message }
+      Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+      return
+    }
+  }
+
+  $epmdPaths = @($epmdTargets | ForEach-Object { [string]$_.ExecutablePath })
+  if ($epmdPaths.Count -eq 0) {
+    try {
+      $epmdPaths = @(
+        Get-ReleaseIdentities $InstallRoot |
+          ForEach-Object { [string]$_.Epmd } |
+          Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+          Select-Object -Unique
+      )
+    } catch {
+      $message = "Could not inspect Dala release identities before stopping epmd: $($_.Exception.Message)"
+      if ($RequireStop) { throw $message }
+      Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+      return
+    }
+  }
+  for ($attempt = 0; $attempt -lt 100; $attempt++) {
+    try {
+      $remainingEpmd = @(Get-ReleaseEpmdProcesses $InstallRoot)
+    } catch {
+      $message = "Could not verify Dala release epmd shutdown: $($_.Exception.Message)"
+      if ($RequireStop) { throw $message }
+      Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+      return
+    }
+    $epmdFilesAvailable = $true
+    if ($remainingEpmd.Count -eq 0) {
+      foreach ($epmdPath in $epmdPaths) {
+        $probe = $null
+        $fileAvailable = $false
+        try {
+          $attributes = [IO.File]::GetAttributes($epmdPath)
+          if (($attributes -band [IO.FileAttributes]::Directory) -eq 0 -and
+              ($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            $probe = [IO.File]::Open(
+              $epmdPath,
+              [IO.FileMode]::Open,
+              [IO.FileAccess]::Read,
+              [IO.FileShare]::None
+            )
+            $fileAvailable = $true
+          }
+        } catch [IO.FileNotFoundException] {
+          $fileAvailable = $true
+        } catch [IO.DirectoryNotFoundException] {
+          $fileAvailable = $true
+        } catch {
+          # Access denied, a transient image lock, and malformed paths are not
+          # evidence that the executable is absent; keep the wait fail-closed.
+          $fileAvailable = $false
+        } finally {
+          if ($probe) { $probe.Dispose() }
+        }
+        if (-not $fileAvailable) {
+          $epmdFilesAvailable = $false
+          break
+        }
+      }
+    } else {
+      $epmdFilesAvailable = $false
+    }
+    if ($remainingEpmd.Count -eq 0 -and $epmdFilesAvailable) { return }
+    Start-Sleep -Milliseconds 100
+  }
+
+  $message = "Dala release epmd processes did not stop under $InstallRoot"
+  if ($RequireStop) { throw $message }
+  Write-Warning "$message; retaining the shared daemon" -WarningAction Continue
+}
+
+function Stop-DalaRelease([string]$InstallRoot, [string]$Executable, [bool]$RequireEpmdStop = $false) {
+  # Probe before invoking the release client so an already-stopped release
+  # cannot reattach to epmd during destructive tree removal.
+  if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+    Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
+    return
+  }
+
   if ($Executable) {
     try {
-      & $Executable stop 2>$null | Out-Null
+      Invoke-ReleaseWithDefaultEpmdPort {
+        & $Executable stop 2>$null | Out-Null
+      }
     } catch {
       # An unhealthy release may reject RPC stop. The identity-checked process
       # probes below remain authoritative and provide the force-stop fallback.
@@ -457,7 +806,10 @@ function Stop-DalaRelease([string]$InstallRoot, [string]$Executable) {
   }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) { return }
+    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+      Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
+      return
+    }
     Start-Sleep -Milliseconds 100
   }
 
@@ -466,7 +818,10 @@ function Stop-DalaRelease([string]$InstallRoot, [string]$Executable) {
   }
 
   for ($attempt = 0; $attempt -lt 50; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) { return }
+    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+      Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
+      return
+    }
     Start-Sleep -Milliseconds 100
   }
 
@@ -745,7 +1100,7 @@ if ($task) {
   Assert-DalaTaskOwnership $task $Root
   Stop-DalaTaskVerified $TaskName $Root
 }
-Stop-DalaRelease $Root $currentExecutable
+Stop-DalaRelease $Root $currentExecutable $true
 Remove-DalaTaskVerified $TaskName $Root
 
 $stoppedTerminalPids = @(Stop-ScopedHolders $Root)

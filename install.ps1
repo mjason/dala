@@ -750,6 +750,7 @@ function Test-CompleteDalaRelease([string]$Path, [string]$Version) {
       "releases\$appVersion\start.boot",
       "releases\$appVersion\dala.rel",
       "erts-$ertsVersion\bin\erl.exe",
+      "erts-$ertsVersion\bin\epmd.exe",
       "lib\dala-$appVersion\ebin\dala.app",
       "lib\dala-$appVersion\ebin\Elixir.Dala.beam"
     )) {

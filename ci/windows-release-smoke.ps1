@@ -28,6 +28,125 @@ function Assert-UpdateResultAttempt($Result, [string]$AttemptId) {
   Assert-True ([string]$Result.attempt_id -ceq $AttemptId) "Update result does not match attempt $AttemptId"
 }
 
+function Assert-ReleaseEpmdKillSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @(
+    "Test-SamePath",
+    "Invoke-ReleaseWithDefaultEpmdPort",
+    "Test-ReleaseEpmdSafeToKill",
+    "Invoke-ReleaseEpmdKill"
+  )
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  try {
+    $result = & $module {
+      $script:rows = @()
+      $script:listenerIds = @()
+      $script:wrapperCalls = 0
+
+      Set-Item -Path Function:Test-SamePath -Value {
+        param([string]$Left, [string]$Right)
+        $Left -ceq $Right
+      }
+      Set-Item -Path Function:Get-CimInstance -Value {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        $script:rows
+      }
+      Set-Item -Path Function:Get-NetTCPConnection -Value {
+        [CmdletBinding()]
+        param([string]$State, [int]$LocalPort)
+        $script:listenerIds | ForEach-Object {
+          [pscustomobject]@{ OwningProcess = [uint32]$_; LocalAddress = "127.0.0.1" }
+        }
+      }
+      # Do not execute a fake epmd binary. This wrapper proves that the real
+      # kill function reached the command only after its identity checks.
+      Set-Item -Path Function:Invoke-ReleaseWithDefaultEpmdPort -Value {
+        param([scriptblock]$Action)
+        $script:wrapperCalls++
+      }
+
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $script:listenerIds = @([uint32]74)
+      Invoke-ReleaseEpmdKill "C:\dala\epmd.exe" ([uint32]74)
+      $validAccepted = $script:wrapperCalls -eq 1
+
+      $script:wrapperCalls = 0
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]75
+      })
+      $pidRejected = $false
+      try { Invoke-ReleaseEpmdKill "C:\dala\epmd.exe" ([uint32]74) } catch { $pidRejected = $true }
+      $pidRevalidationHeld = $pidRejected -and $script:wrapperCalls -eq 0
+
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = "C:\foreign\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $pathRejected = $false
+      try { Invoke-ReleaseEpmdKill "C:\dala\epmd.exe" ([uint32]74) } catch { $pathRejected = $true }
+      $pathRevalidationHeld = $pathRejected -and $script:wrapperCalls -eq 0
+
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = ""
+        ProcessId = [uint32]74
+      })
+      $commandRejected = $false
+      try { Invoke-ReleaseEpmdKill "C:\dala\epmd.exe" ([uint32]74) } catch { $commandRejected = $true }
+      $commandRevalidationHeld = $commandRejected -and $script:wrapperCalls -eq 0
+
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $script:listenerIds = @([uint32]999)
+      $listenerRejected = $false
+      try { Invoke-ReleaseEpmdKill "C:\dala\epmd.exe" ([uint32]74) } catch { $listenerRejected = $true }
+      $listenerRevalidationHeld = $listenerRejected -and $script:wrapperCalls -eq 0
+
+      [pscustomobject]@{
+        valid_kill_reached_wrapper = $validAccepted
+        pid_revalidation_held = $pidRevalidationHeld
+        path_revalidation_held = $pathRevalidationHeld
+        command_revalidation_held = $commandRevalidationHeld
+        listener_revalidation_held = $listenerRevalidationHeld
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "Release epmd kill smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Enter-SmokeLifecycleMutex {
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
   $name = "Global\DalaLifecycle-" + ($sid.Value -replace '[^0-9A-Za-z_-]', '_')
@@ -51,6 +170,20 @@ function Test-SamePath([string]$Left, [string]$Right) {
   $leftFull.Equals($rightFull, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-NoOwnedEpmdProcess([string]$EpmdPath, [string]$Label) {
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='epmd.exe'" -ErrorAction Stop)) {
+    if ($null -eq $process -or
+        [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath) -or
+        [string]::IsNullOrWhiteSpace([string]$process.CommandLine) -or
+        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+      throw "$Label returned an epmd.exe process with incomplete identity"
+    }
+    if (Test-SamePath ([string]$process.ExecutablePath) $EpmdPath) {
+      throw "$Label left release-owned epmd.exe running: $EpmdPath (PID $($process.ProcessId))"
+    }
+  }
+}
+
 function Assert-ScriptParses([string]$Path) {
   $tokens = $null
   $errors = $null
@@ -67,7 +200,7 @@ function Assert-BestEffortReleaseStop($Definitions, [string]$ScriptPath) {
   $stopBody = $stopDefinitions[0].Extent.Text
   Assert-True ([regex]::IsMatch(
       $stopBody,
-      'try\s*\{\s*&\s+\$Executable\s+stop[^\r\n]*\r?\n\s*\}\s*catch\s*\{',
+      'try\s*\{[\s\S]*?&\s+\$Executable\s+stop[\s\S]*?\}\s*catch\s*\{',
       [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )) "$ScriptPath does not treat graceful release stop as best-effort"
 }
@@ -106,10 +239,13 @@ function Assert-DalaExecutableIdentity([string]$ScriptPath, [string]$ReleaseDir,
     Assert-True ($startData.Count -eq 2 -and [string]$startData[1] -ceq $Version) `
       "Release fixture has malformed start_erl.data"
     $expectedErl = Join-Path $ReleaseDir "erts-$($startData[0])\bin\erl.exe"
+    $expectedEpmd = Join-Path $ReleaseDir "erts-$($startData[0])\bin\epmd.exe"
     $expectedBoot = Join-Path $ReleaseDir "releases\$Version\start"
     $expectedBootFile = Join-Path $ReleaseDir "releases\$Version\start.boot"
     Assert-True (Test-SamePath ([string]$identity.Executable) $expectedErl) `
       "$ScriptPath resolved the wrong erl.exe from bin\dala.bat"
+    Assert-True (Test-SamePath ([string]$identity.Epmd) $expectedEpmd) `
+      "$ScriptPath resolved the wrong epmd.exe from bin\dala.bat"
     Assert-True (Test-SamePath ([string]$identity.Boot) $expectedBoot) `
       "$ScriptPath resolved the wrong -boot path from bin\dala.bat"
     Assert-True (Test-SamePath ([string]$identity.BootFile) $expectedBootFile) `
@@ -128,7 +264,8 @@ function Write-DalaIdentityFixture([string]$SourceRelease, [string]$Destination,
     "bin\dala.bat",
     "releases\start_erl.data",
     "releases\$Version\start.boot",
-    "erts-$($startData[0])\bin\erl.exe"
+    "erts-$($startData[0])\bin\erl.exe",
+    "erts-$($startData[0])\bin\epmd.exe"
   )) {
     $source = Join-Path $SourceRelease $relative
     Assert-True (Test-Path -LiteralPath $source -PathType Leaf) "Release fixture is missing $relative"
@@ -895,7 +1032,13 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
   $requiredFunctions = @(
     "Test-SamePath",
     "Test-ReleaseBootCommand",
+    "Invoke-ReleaseWithDefaultEpmdPort",
     "Get-ReleaseBeamProcesses",
+    "Get-ReleaseEpmdProcesses",
+    "Test-ReleaseEpmdSafeToKill",
+    "Get-ReleaseEpmdNames",
+    "Invoke-ReleaseEpmdKill",
+    "Stop-ReleaseEpmd",
     "Stop-DalaRelease"
   )
   $definitions = @(
@@ -918,6 +1061,7 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
       [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )) "$ScriptPath process identity query is not fail-closed"
   $stopBody = @($definitions | Where-Object { $_.Name -ceq "Stop-DalaRelease" })[0].Extent.Text
+  $killBody = @($definitions | Where-Object { $_.Name -ceq "Invoke-ReleaseEpmdKill" })[0].Extent.Text
   Assert-True ([regex]::IsMatch(
       $stopBody,
       'IsNullOrWhiteSpace\(\$Executable\)[\s\S]*?throw',
@@ -928,6 +1072,13 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
       'Test-Path\s+-LiteralPath\s+\$Executable[\s\S]*?throw',
       [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )) "$ScriptPath silently accepts a missing release executable"
+  Assert-True ([regex]::IsMatch(
+      $stopBody,
+      'Stop-ReleaseEpmd\s+\$identity\s+\$RequireEpmdStop',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath does not apply its required epmd-stop policy"
+  Assert-True ($scriptText -match 'ERL_EPMD_PORT') "$ScriptPath does not isolate the epmd client environment"
+  Assert-True ($killBody -match 'Test-ReleaseEpmdSafeToKill') "$ScriptPath does not revalidate epmd safety before kill"
 
   $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
   $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
@@ -935,12 +1086,21 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
     $result = & $module {
       $script:identity = [pscustomobject]@{
         Executable = "C:\dala\erts-14\bin\erl.exe"
+        Epmd = "C:\dala\erts-14\bin\epmd.exe"
         Boot = "C:\dala\releases\1.2.3\start"
         BootFile = "C:\dala\releases\1.2.3\start.boot"
       }
       $script:rows = @()
+      $script:epmdRows = @()
+      $script:epmdKillPaths = @()
+      $script:epmdKillPids = @()
+      $script:epmdKillFails = $false
+      $script:epmdListenerIds = @()
+      $script:epmdNamesOutput = ""
       $script:pathMode = "missing"
       $script:cimFails = $false
+      $script:epmdQueryCount = 0
+      $script:epmdQueryFailureAfter = -1
 
       Set-Item -Path Function:Get-ReleaseIdentity -Value {
         param([string]$Executable)
@@ -954,7 +1114,34 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
         [CmdletBinding()]
         param([string]$ClassName, [string]$Filter)
         if ($script:cimFails) { throw "injected CIM query failure" }
+        if ([string]$Filter -match "epmd") {
+          $script:epmdQueryCount++
+          if ($script:epmdQueryFailureAfter -ge 0 -and
+              $script:epmdQueryCount -gt $script:epmdQueryFailureAfter) {
+            throw "injected EPMD CIM query failure"
+          }
+          return $script:epmdRows
+        }
         $script:rows
+      }
+      Set-Item -Path Function:Get-NetTCPConnection -Value {
+        [CmdletBinding()]
+        param([string]$State, [int]$LocalPort)
+        $script:epmdListenerIds | ForEach-Object {
+          [pscustomobject]@{ OwningProcess = [uint32]$_; LocalAddress = "127.0.0.1" }
+        }
+      }
+      Set-Item -Path Function:Get-ReleaseEpmdNames -Value { $script:epmdNamesOutput }
+      Set-Item -Path Function:Invoke-ReleaseEpmdKill -Value {
+        param([string]$EpmdPath, [uint32]$ExpectedProcessId = 0)
+        $script:epmdKillPaths += $EpmdPath
+        $script:epmdKillPids += $ExpectedProcessId
+        if ($ExpectedProcessId -gt 0 -and @($script:epmdRows | Where-Object {
+            [uint32]$_.ProcessId -eq $ExpectedProcessId
+          }).Count -ne 1) {
+          throw "epmd kill target PID did not match the current process row"
+        }
+        if (-not $script:epmdKillFails) { $script:epmdRows = @() }
       }
       Set-Item -Path Function:Test-Path -Value {
         [CmdletBinding()]
@@ -1002,6 +1189,195 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
       $script:rows = @($validRow)
       $validRowAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
 
+      # Reproduce the rollback race where CIM no longer reports epmd.exe but
+      # Windows still has its image section open. The stop path must wait for
+      # the executable lock instead of treating an empty process query as done.
+      $lockedEpmdPath = Join-Path ([IO.Path]::GetTempPath()) `
+        ("dala-epmd-lock-" + [guid]::NewGuid().ToString("N") + ".exe")
+      [IO.File]::WriteAllText($lockedEpmdPath, "fixture")
+      $lockedEpmdHandle = $null
+      $lockedEpmdRejected = $false
+      $originalEpmdPath = [string]$script:identity.Epmd
+      try {
+        $lockedEpmdHandle = [IO.File]::Open(
+          $lockedEpmdPath,
+          [IO.FileMode]::Open,
+          [IO.FileAccess]::Read,
+          [IO.FileShare]::None
+        )
+        $script:identity.Epmd = $lockedEpmdPath
+        $script:epmdRows = @()
+        try { Stop-ReleaseEpmd $script:identity $true } catch {
+          $lockedEpmdRejected = $_.Exception.Message -match "epmd did not stop"
+        }
+      } finally {
+        if ($lockedEpmdHandle) { $lockedEpmdHandle.Dispose() }
+        $script:identity.Epmd = $originalEpmdPath
+        Remove-Item -LiteralPath $lockedEpmdPath -Force -ErrorAction SilentlyContinue
+      }
+
+      $script:epmdRows = @(
+        [pscustomobject]@{
+          ExecutablePath = [string]$script:identity.Epmd
+          CommandLine = "epmd.exe -daemon"
+          ProcessId = [uint32]71
+        },
+        [pscustomobject]@{
+          ExecutablePath = "C:\foreign\epmd.exe"
+          CommandLine = "epmd.exe -daemon"
+          ProcessId = [uint32]72
+        }
+      )
+      $epmdMatches = @(Get-ReleaseEpmdProcesses $script:identity)
+      $targetEpmdAccepted = $epmdMatches.Count -eq 1 -and
+        [string]$epmdMatches[0].ExecutablePath -ceq [string]$script:identity.Epmd
+      $foreignEpmdIgnored = @($script:epmdRows | Where-Object {
+        [string]$_.ExecutablePath -ceq "C:\foreign\epmd.exe"
+      }).Count -eq 1 -and $epmdMatches.Count -eq 1
+
+      $epmdMissingPathRejected = $false
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]73
+      })
+      try { $null = @(Get-ReleaseEpmdProcesses $script:identity) } catch {
+        $epmdMissingPathRejected = $_.Exception.Message -match "identity.*epmd.*refusing to continue"
+      }
+
+      # A transient EPMD identity query must retain the daemon in ordinary
+      # update mode, while StopOnly/uninstall-style strict mode must fail.
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Epmd
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $script:epmdKillPaths = @()
+      $script:epmdListenerIds = @([uint32]74)
+      $script:cimFails = $true
+      $optionalEpmdQueryFailureAccepted = $false
+      $previousWarningPreference = $WarningPreference
+      $WarningPreference = "Continue"
+      try {
+        Stop-ReleaseEpmd $script:identity $false
+        $optionalEpmdQueryFailureAccepted = $true
+      } finally {
+        $WarningPreference = $previousWarningPreference
+      }
+      $optionalEpmdQueryFailurePreserved = $script:epmdKillPaths.Count -eq 0
+      $strictEpmdQueryFailureRejected = $false
+      try { Stop-ReleaseEpmd $script:identity $true } catch {
+        $strictEpmdQueryFailureRejected = $_.Exception.Message -match "CIM query failure"
+      }
+      $script:cimFails = $false
+
+      # Exercise the same policy when the daemon disappears between the kill
+      # request and the first post-kill identity poll.
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Epmd
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]76
+      })
+      $script:epmdListenerIds = @([uint32]76)
+      $script:epmdKillPaths = @()
+      $script:epmdKillFails = $true
+      $script:epmdQueryCount = 0
+      $script:epmdQueryFailureAfter = 1
+      $optionalEpmdPollFailureAccepted = $false
+      try {
+        Stop-ReleaseEpmd $script:identity $false
+        $optionalEpmdPollFailureAccepted = $true
+      } finally {
+        $script:epmdQueryFailureAfter = -1
+      }
+      $strictEpmdPollFailureRejected = $false
+      $script:epmdQueryCount = 0
+      $script:epmdQueryFailureAfter = 1
+      try { Stop-ReleaseEpmd $script:identity $true } catch {
+        $strictEpmdPollFailureRejected = $_.Exception.Message -match "EPMD CIM query failure"
+      } finally {
+        $script:epmdQueryFailureAfter = -1
+      }
+      $script:epmdKillFails = $false
+
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Epmd
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $script:epmdKillPaths = @()
+      $script:epmdKillPids = @()
+      $script:epmdKillFails = $false
+      $script:epmdListenerIds = @([uint32]74)
+      $safetyProcess = $script:epmdRows[0]
+      $defaultEpmdSafe = Test-ReleaseEpmdSafeToKill $safetyProcess
+      $safetyProcess.CommandLine = "epmd.exe -daemon -relaxed_command_check"
+      $relaxedEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $safetyProcess.CommandLine = "epmd.exe -daemon -relaxed_command_check=1"
+      $relaxedEqualsEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $safetyProcess.CommandLine = "epmd.exe -daemon -address 127.0.0.1"
+      $addressEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $safetyProcess.CommandLine = "epmd.exe -daemon -port 4370"
+      $customPortEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $safetyProcess.CommandLine = "epmd.exe -daemon -port foo"
+      $malformedPortEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $safetyProcess.CommandLine = "epmd.exe -daemon"
+      $script:epmdListenerIds = @([uint32]999)
+      $wrongListenerEpmdRejected = -not (Test-ReleaseEpmdSafeToKill $safetyProcess)
+      $script:epmdListenerIds = @([uint32]74)
+      Stop-ReleaseEpmd $script:identity $true
+      $epmdKillVerified = $script:epmdKillPaths.Count -eq 1 -and
+        $script:epmdKillPids.Count -eq 1 -and
+        $script:epmdKillPids[0] -eq [uint32]74 -and
+        [string]$script:epmdKillPaths[0] -ceq [string]$script:identity.Epmd -and
+        @(Get-ReleaseEpmdProcesses $script:identity).Count -eq 0
+
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Epmd
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]75
+      })
+      $script:epmdListenerIds = @([uint32]75)
+      $script:epmdKillFails = $true
+      $requiredEpmdFailureRejected = $false
+      try { Stop-ReleaseEpmd $script:identity $true } catch {
+        $requiredEpmdFailureRejected = $_.Exception.Message -match "epmd did not stop"
+      }
+      $sharedEpmdPreserved = @(Get-ReleaseEpmdProcesses $script:identity).Count -eq 1
+      $optionalEpmdFailureAccepted = $false
+      $previousWarningPreference = $WarningPreference
+      $WarningPreference = "Continue"
+      try {
+        Stop-ReleaseEpmd $script:identity $false
+        $optionalEpmdFailureAccepted = $true
+      } catch {
+      } finally {
+        $WarningPreference = $previousWarningPreference
+      }
+
+      $script:epmdKillFails = $false
+      $script:epmdKillPaths = @()
+      $script:epmdNamesOutput = "epmd: up and running on port 4369 with data:`nname foreign at port 1234"
+      $registeredEpmdPreserved = $false
+      try { Stop-ReleaseEpmd $script:identity $true } catch {
+        $registeredEpmdPreserved = $_.Exception.Message -match "registered nodes"
+      }
+      $registeredEpmdPreserved = $registeredEpmdPreserved -and $script:epmdKillPaths.Count -eq 0
+      $script:epmdNamesOutput = ""
+
+      $script:pathMode = "present"
+      $script:rows = @()
+      $script:epmdRows = @()
+      $script:rpcAttempted = $false
+      Set-Item -Path Function:Invoke-ReleaseWithDefaultEpmdPort -Value {
+        param([scriptblock]$Action)
+        $script:rpcAttempted = $true
+        & $Action
+      }
+      Stop-DalaRelease "C:\dala\bin\dala.bat"
+      $noBeamSkippedRpc = -not $script:rpcAttempted
+
+      $script:pathMode = "missing"
       $emptyExecutableRejected = $false
       try { Stop-DalaRelease "" } catch {
         $emptyExecutableRejected = $_.Exception.Message -match "executable path is empty"
@@ -1021,6 +1397,28 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
         unknown_command_rejected = $unknownCommandRejected
         missing_pid_rejected = $missingPidRejected
         valid_row_accepted = $validRowAccepted
+        locked_epmd_without_process_rejected = $lockedEpmdRejected
+        target_epmd_accepted = $targetEpmdAccepted
+        foreign_epmd_ignored = $foreignEpmdIgnored
+        epmd_missing_path_rejected = $epmdMissingPathRejected
+        optional_epmd_query_failure_accepted = $optionalEpmdQueryFailureAccepted
+        optional_epmd_query_failure_preserved = $optionalEpmdQueryFailurePreserved
+        strict_epmd_query_failure_rejected = $strictEpmdQueryFailureRejected
+        optional_epmd_poll_failure_accepted = $optionalEpmdPollFailureAccepted
+        strict_epmd_poll_failure_rejected = $strictEpmdPollFailureRejected
+        epmd_kill_verified = $epmdKillVerified
+        required_epmd_failure_rejected = $requiredEpmdFailureRejected
+        shared_epmd_preserved = $sharedEpmdPreserved
+        optional_epmd_failure_accepted = $optionalEpmdFailureAccepted
+        default_epmd_safe = $defaultEpmdSafe
+        relaxed_epmd_rejected = $relaxedEpmdRejected
+        relaxed_equals_epmd_rejected = $relaxedEqualsEpmdRejected
+        address_epmd_rejected = $addressEpmdRejected
+        custom_port_epmd_rejected = $customPortEpmdRejected
+        malformed_port_epmd_rejected = $malformedPortEpmdRejected
+        wrong_listener_epmd_rejected = $wrongListenerEpmdRejected
+        registered_epmd_preserved = $registeredEpmdPreserved
+        no_beam_skipped_rpc = $noBeamSkippedRpc
         empty_executable_rejected = $emptyExecutableRejected
         missing_executable_rejected = $missingExecutableRejected
         executable_query_failure_rejected = $queryFailureRejected
@@ -1146,7 +1544,14 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
 
   $requiredFunctions = @(
     "Test-ReleaseBootCommand",
+    "Invoke-ReleaseWithDefaultEpmdPort",
     "Get-ReleaseBeamProcesses",
+    "Get-ReleaseIdentities",
+    "Get-ReleaseEpmdProcesses",
+    "Test-ReleaseEpmdSafeToKill",
+    "Get-ReleaseEpmdNames",
+    "Invoke-ReleaseEpmdKill",
+    "Stop-ReleaseEpmd",
     "Stop-DalaRelease",
     "Get-ScopedHolders",
     "Get-ProcessTreeIds",
@@ -1184,11 +1589,15 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
   }
 
   $scriptText = [IO.File]::ReadAllText($ScriptPath)
-  $releaseStop = $scriptText.LastIndexOf('Stop-DalaRelease $Root $currentExecutable')
+  $killBody = @($definitions | Where-Object { $_.Name -ceq "Invoke-ReleaseEpmdKill" })[0].Extent.Text
+  $releaseStop = $scriptText.LastIndexOf('Stop-DalaRelease $Root $currentExecutable $true')
   $holderStop = $scriptText.LastIndexOf('$stoppedTerminalPids = @(Stop-ScopedHolders $Root)')
   $firstRemoval = $scriptText.IndexOf('Remove-RequiredPath $target', $holderStop)
   Assert-True ($releaseStop -ge 0 -and $holderStop -gt $releaseStop -and $firstRemoval -gt $holderStop) `
     "$ScriptPath does not complete fail-closed process queries before removing install paths"
+  Assert-True ($scriptText -match 'Stop-DalaRelease\s+\$Root\s+\$currentExecutable\s+\$true') `
+    "$ScriptPath does not require epmd cleanup before uninstall removal"
+  Assert-True ($killBody -match 'Test-ReleaseEpmdSafeToKill') "$ScriptPath does not revalidate epmd safety before kill"
 
   $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
   $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
@@ -1198,10 +1607,29 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
       $script:directoryFails = $false
       $script:cimFails = $false
       $script:cimRows = @()
+      $script:releaseLauncherMissing = $false
+      $script:releaseStartDataMissing = $false
+      $script:releaseRuntimePresent = $false
+      $script:epmdRows = @()
+      $script:epmdKillPaths = @()
+      $script:epmdKillPids = @()
+      $script:epmdKillFails = $false
+      $script:epmdListenerIds = @()
 
       Set-Item -Path Function:Test-Path -Value {
         [CmdletBinding()]
         param([string]$LiteralPath, $PathType)
+        $normalizedPath = $LiteralPath.Replace('/', '\')
+        if ($script:releaseLauncherMissing -and $normalizedPath -like "*\bin\dala.bat") {
+          return $false
+        }
+        if ($normalizedPath -like "*\releases\start_erl.data") {
+          return -not $script:releaseStartDataMissing
+        }
+        if ($normalizedPath -like "*\erts-14\bin\erl.exe" -or
+            $normalizedPath -like "*\erts-14\bin\epmd.exe") {
+          return $script:releaseRuntimePresent
+        }
         $true
       }
       Set-Item -Path Function:Get-ChildItem -Value {
@@ -1211,11 +1639,19 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
           Write-Error "injected directory query failure"
           return
         }
+        $normalizedPath = $LiteralPath.Replace('/', '\')
+        if ($normalizedPath -match "versions\\v1\.2\.3$") {
+          if ($script:releaseRuntimePresent) {
+            [pscustomobject]@{ Name = "erts-14"; FullName = "$LiteralPath\erts-14" }
+          }
+          return
+        }
         [pscustomobject]@{ Name = "v1.2.3"; FullName = "$LiteralPath\v1.2.3" }
       }
       Set-Item -Path Function:Get-ReleaseIdentity -Value {
         [pscustomobject]@{
           Executable = "C:\dala\erl.exe"
+          Epmd = "C:\dala\epmd.exe"
           Boot = "C:\dala\start"
           BootFile = "C:\dala\start.boot"
         }
@@ -1224,7 +1660,27 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         [CmdletBinding()]
         param([string]$ClassName, [string]$Filter)
         if ($script:cimFails) { Write-Error "injected CIM query failure" }
+        if ([string]$Filter -match "epmd") { return $script:epmdRows }
         $script:cimRows
+      }
+      Set-Item -Path Function:Get-NetTCPConnection -Value {
+        [CmdletBinding()]
+        param([string]$State, [int]$LocalPort)
+        $script:epmdListenerIds | ForEach-Object {
+          [pscustomobject]@{ OwningProcess = [uint32]$_; LocalAddress = "127.0.0.1" }
+        }
+      }
+      Set-Item -Path Function:Get-ReleaseEpmdNames -Value { "" }
+      Set-Item -Path Function:Invoke-ReleaseEpmdKill -Value {
+        param([string]$EpmdPath, [uint32]$ExpectedProcessId = 0)
+        $script:epmdKillPaths += $EpmdPath
+        $script:epmdKillPids += $ExpectedProcessId
+        if ($ExpectedProcessId -gt 0 -and @($script:epmdRows | Where-Object {
+            [uint32]$_.ProcessId -eq $ExpectedProcessId
+          }).Count -ne 1) {
+          throw "epmd kill target PID did not match the current process row"
+        }
+        if (-not $script:epmdKillFails) { $script:epmdRows = @() }
       }
       Set-Item -Path Function:Test-SamePath -Value {
         param([string]$Left, [string]$Right)
@@ -1307,6 +1763,84 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
       $script:cimRows = @($validRow)
       $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
 
+      $identityEnumerationAccepted = @(Get-ReleaseIdentities "root").Count -eq 1
+      $script:releaseLauncherMissing = $true
+      $missingLauncherWithMarkerAccepted = @(Get-ReleaseIdentities "root").Count -eq 1
+      $script:releaseStartDataMissing = $true
+      $script:releaseRuntimePresent = $true
+      $missingLauncherWithRuntimeAccepted = @(Get-ReleaseIdentities "root").Count -eq 1
+      $script:releaseRuntimePresent = $false
+      $missingLauncherWithoutMarkersIgnored = @(Get-ReleaseIdentities "root").Count -eq 0
+      $script:releaseStartDataMissing = $false
+      $script:releaseLauncherMissing = $false
+      $script:epmdRows = @(
+        [pscustomobject]@{
+          ExecutablePath = "C:\dala\epmd.exe"
+          CommandLine = "epmd.exe -daemon"
+          ProcessId = [uint32]71
+        },
+        [pscustomobject]@{
+          ExecutablePath = "C:\foreign\epmd.exe"
+          CommandLine = "epmd.exe -daemon"
+          ProcessId = [uint32]72
+        }
+      )
+      $epmdMatches = @(Get-ReleaseEpmdProcesses "root")
+      $targetEpmdAccepted = $epmdMatches.Count -eq 1 -and
+        [string]$epmdMatches[0].ExecutablePath -ceq "C:\dala\epmd.exe"
+      $foreignEpmdIgnored = @($script:epmdRows | Where-Object {
+        [string]$_.ExecutablePath -ceq "C:\foreign\epmd.exe"
+      }).Count -eq 1 -and $epmdMatches.Count -eq 1
+
+      $epmdMissingPathRejected = $false
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]73
+      })
+      try { $null = @(Get-ReleaseEpmdProcesses "root") } catch {
+        $epmdMissingPathRejected = $_.Exception.Message -match "identity.*epmd.*refusing to continue"
+      }
+
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]74
+      })
+      $script:epmdKillPaths = @()
+      $script:epmdKillPids = @()
+      $script:epmdKillFails = $false
+      $script:epmdListenerIds = @([uint32]74)
+      Stop-ReleaseEpmd "root" $true
+      $epmdKillVerified = $script:epmdKillPaths.Count -eq 1 -and
+        $script:epmdKillPids.Count -eq 1 -and
+        $script:epmdKillPids[0] -eq [uint32]74 -and
+        [string]$script:epmdKillPaths[0] -ceq "C:\dala\epmd.exe" -and
+        @(Get-ReleaseEpmdProcesses "root").Count -eq 0
+
+      $script:epmdRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]75
+      })
+      $script:epmdListenerIds = @([uint32]75)
+      $script:epmdKillFails = $true
+      $requiredEpmdFailureRejected = $false
+      try { Stop-ReleaseEpmd "root" $true } catch {
+        $requiredEpmdFailureRejected = $_.Exception.Message -match "epmd processes did not stop"
+      }
+      $sharedEpmdPreserved = @(Get-ReleaseEpmdProcesses "root").Count -eq 1
+      $optionalEpmdFailureAccepted = $false
+      $previousWarningPreference = $WarningPreference
+      $WarningPreference = "Continue"
+      try {
+        Stop-ReleaseEpmd "root" $false
+        $optionalEpmdFailureAccepted = $true
+      } catch {
+      } finally {
+        $WarningPreference = $previousWarningPreference
+      }
+
       $script:cimFails = $true
       $script:holderProbeCount = 0
       Set-Item -Path Function:Get-ScopedHolders -Value {
@@ -1331,6 +1865,17 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         mismatched_release_boot_rejected = $mismatchedBootRejected
         missing_release_pid_rejected = $missingPidRejected
         valid_release_row_accepted = $validReleaseRowAccepted
+        identity_enumeration_accepted = $identityEnumerationAccepted
+        missing_launcher_with_marker_accepted = $missingLauncherWithMarkerAccepted
+        missing_launcher_with_runtime_accepted = $missingLauncherWithRuntimeAccepted
+        missing_launcher_without_markers_ignored = $missingLauncherWithoutMarkersIgnored
+        target_epmd_accepted = $targetEpmdAccepted
+        foreign_epmd_ignored = $foreignEpmdIgnored
+        epmd_missing_path_rejected = $epmdMissingPathRejected
+        epmd_kill_verified = $epmdKillVerified
+        required_epmd_failure_rejected = $requiredEpmdFailureRejected
+        shared_epmd_preserved = $sharedEpmdPreserved
+        optional_epmd_failure_accepted = $optionalEpmdFailureAccepted
         process_snapshot_failure_surfaced = $snapshotFailureSurfaced
       }
     }
@@ -1352,7 +1897,13 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
   $requiredFunctions = @(
     "Test-SamePath",
     "Test-ReleaseBootCommand",
+    "Invoke-ReleaseWithDefaultEpmdPort",
     "Get-ReleaseBeamProcesses",
+    "Get-ReleaseEpmdProcesses",
+    "Test-ReleaseEpmdSafeToKill",
+    "Get-ReleaseEpmdNames",
+    "Invoke-ReleaseEpmdKill",
+    "Stop-ReleaseEpmd",
     "Stop-DalaRelease",
     "Get-DalaTaskExact",
     "Assert-DalaTaskPrincipal",
@@ -1377,6 +1928,7 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
   Assert-BestEffortReleaseStop $definitions $ScriptPath
 
   $scriptText = [IO.File]::ReadAllText($ScriptPath)
+  $killBody = @($definitions | Where-Object { $_.Name -ceq "Invoke-ReleaseEpmdKill" })[0].Extent.Text
   Assert-True (-not [regex]::IsMatch(
       $scriptText,
       '(?:Get-CimInstance|Get-ScheduledTask)[^\r\n]*-ErrorAction\s+SilentlyContinue',
@@ -1388,6 +1940,10 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         'Where-Object\s+\{\s*\[string\]\$_\.TaskName\s+-ceq\s+\$Name',
       [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )) "$ScriptPath does not query the root task by exact name"
+  Assert-True ($scriptText -match 'Stop-DalaRelease\s+\$Executable\s+\(\[bool\]\$OnlyStop\)') `
+    "$ScriptPath does not require epmd cleanup for StopOnly rollback"
+  Assert-True ($scriptText -match 'ERL_EPMD_PORT') "$ScriptPath does not isolate the epmd client environment"
+  Assert-True ($killBody -match 'Test-ReleaseEpmdSafeToKill') "$ScriptPath does not revalidate epmd safety before kill"
 
   $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
   $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
@@ -1398,6 +1954,10 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
       $script:commandMode = "postcommit"
       $script:restartCimFails = $false
       $script:restartCimRows = @()
+      $script:restartEpmdRows = @()
+      $script:restartEpmdKillPaths = @()
+      $script:restartEpmdKillPids = @()
+      $script:restartEpmdListenerIds = @()
       $script:restartPathMode = "missing"
 
       Set-Item -Path Function:Assert-DalaTaskOwnership -Value {
@@ -1408,6 +1968,7 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
       Set-Item -Path Function:Get-ReleaseIdentity -Value {
         [pscustomobject]@{
           Executable = "C:\dala\erl.exe"
+          Epmd = "C:\dala\epmd.exe"
           Boot = "C:\dala\start"
           BootFile = "C:\dala\start.boot"
         }
@@ -1416,7 +1977,27 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         [CmdletBinding()]
         param([string]$ClassName, [string]$Filter)
         if ($script:restartCimFails) { Write-Error "injected restart CIM query failure" }
+        if ([string]$Filter -match "epmd") { return $script:restartEpmdRows }
         $script:restartCimRows
+      }
+      Set-Item -Path Function:Get-NetTCPConnection -Value {
+        [CmdletBinding()]
+        param([string]$State, [int]$LocalPort)
+        $script:restartEpmdListenerIds | ForEach-Object {
+          [pscustomobject]@{ OwningProcess = [uint32]$_; LocalAddress = "127.0.0.1" }
+        }
+      }
+      Set-Item -Path Function:Get-ReleaseEpmdNames -Value { "" }
+      Set-Item -Path Function:Invoke-ReleaseEpmdKill -Value {
+        param([string]$EpmdPath, [uint32]$ExpectedProcessId = 0)
+        $script:restartEpmdKillPaths += $EpmdPath
+        $script:restartEpmdKillPids += $ExpectedProcessId
+        if ($ExpectedProcessId -gt 0 -and @($script:restartEpmdRows | Where-Object {
+            [uint32]$_.ProcessId -eq $ExpectedProcessId
+          }).Count -ne 1) {
+          throw "epmd kill target PID did not match the current process row"
+        }
+        $script:restartEpmdRows = @()
       }
       Set-Item -Path Function:Test-SamePath -Value {
         param([string]$Left, [string]$Right)
@@ -1483,6 +2064,21 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
       }
       $script:restartCimRows = @($validRow)
       $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $script:restartEpmdRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\epmd.exe"
+        CommandLine = "epmd.exe -daemon"
+        ProcessId = [uint32]61
+      })
+      $script:restartEpmdListenerIds = @([uint32]61)
+      $script:restartEpmdKillPaths = @()
+      $script:restartEpmdKillPids = @()
+      Stop-ReleaseEpmd (Get-ReleaseIdentity "dala.bat") $true
+      $epmdKillVerified = $script:restartEpmdKillPaths.Count -eq 1 -and
+        $script:restartEpmdKillPids.Count -eq 1 -and
+        $script:restartEpmdKillPids[0] -eq [uint32]61 -and
+        [string]$script:restartEpmdKillPaths[0] -ceq "C:\dala\epmd.exe" -and
+        $script:restartEpmdRows.Count -eq 0
 
       $emptyExecutableRejected = $false
       try { Stop-DalaRelease "" } catch {
@@ -1591,6 +2187,7 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         mismatched_release_boot_rejected = $mismatchedBootRejected
         missing_release_pid_rejected = $missingPidRejected
         valid_release_row_accepted = $validReleaseRowAccepted
+        epmd_kill_verified = $epmdKillVerified
         empty_release_executable_rejected = $emptyExecutableRejected
         missing_release_executable_file_rejected = $missingExecutableFileRejected
         release_executable_query_failure_rejected = $executableQueryFailureRejected
@@ -1919,6 +2516,7 @@ function Write-PublishFixture([string]$Path, [string]$Version, [string]$Marker, 
   [IO.File]::WriteAllText((Join-Path $release "start.boot"), "boot")
   [IO.File]::WriteAllText((Join-Path $release "dala.rel"), "release")
   [IO.File]::WriteAllText((Join-Path $ertsBin "erl.exe"), "erl")
+  [IO.File]::WriteAllText((Join-Path $ertsBin "epmd.exe"), "epmd")
   [IO.File]::WriteAllText((Join-Path $ebin "dala.app"), "{application,dala,[{vsn,`"$Version`"}]}.`r`n")
   [IO.File]::WriteAllText((Join-Path $ebin "Elixir.Dala.beam"), "beam")
   [IO.File]::WriteAllText((Join-Path $privateBin "dala_task_launcher.exe"), "fixture launcher")
@@ -2408,6 +3006,7 @@ $expandedNew = Join-Path $smokeRoot "expanded new"
 $expandedOld = Join-Path $smokeRoot "expanded old"
 $expandedDecoy = Join-Path $smokeRoot "expanded decoy"
 $expandedIncomplete = Join-Path $smokeRoot "expanded incomplete"
+$expandedMissingEpmd = Join-Path $smokeRoot "expanded missing epmd"
 $expandedStopFailure = Join-Path $smokeRoot "expanded stop failure"
 $oldArchive = Join-Path $smokeRoot "dala-old-windows-x86_64.zip"
 $oldChecksum = "$oldArchive.sha256"
@@ -2417,6 +3016,8 @@ $stopFailureArchive = Join-Path $smokeRoot "dala-stop-failure-windows-x86_64.zip
 $stopFailureChecksum = "$stopFailureArchive.sha256"
 $incompleteArchive = Join-Path $smokeRoot "dala-incomplete-windows-x86_64.zip"
 $incompleteChecksum = "$incompleteArchive.sha256"
+$missingEpmdArchive = Join-Path $smokeRoot "dala-missing-epmd-windows-x86_64.zip"
+$missingEpmdChecksum = "$missingEpmdArchive.sha256"
 $installRoot = Join-Path $smokeRoot "install root"
 $dataDir = Join-Path $smokeRoot "data dir"
 $appDataRoot = Join-Path $smokeRoot "roaming app data"
@@ -2482,7 +3083,9 @@ $environmentNames = @(
   "RELEASE_TMP", "RELEASE_VM_ARGS", "RELEASE_REMOTE_VM_ARGS", "RELEASE_DISTRIBUTION",
   "RELEASE_BOOT_SCRIPT", "RELEASE_BOOT_SCRIPT_CLEAN", "RELEASE_SYS_CONFIG", "RELEASE_ROOT",
   "RELEASE_COMMAND", "RELEASE_PROG", "RELEASE_MUTABLE_DIR", "RELEASE_READ_ONLY",
-  "ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS", "ERL_INETRC", "ELIXIR_ERL_OPTIONS",
+  "ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS", "ERL_INETRC",
+  "ERL_EPMD_PORT", "ERL_EPMD_ADDRESS", "ERL_EPMD_RELAXED_COMMAND_CHECK",
+  "ELIXIR_ERL_OPTIONS",
   "SECRET_KEY_BASE", "TOKEN_SIGNING_SECRET",
   "DALA_SECRET_KEY_BASE", "DALA_TOKEN_SIGNING_SECRET"
 )
@@ -2493,7 +3096,7 @@ foreach ($name in $environmentNames) {
 
 try {
   New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, $expandedIncomplete, `
-    $expandedStopFailure, $configDir | Out-Null
+    $expandedMissingEpmd, $expandedStopFailure, $configDir | Out-Null
   Assert-InstallerArtifactRollbackSemantics $installer $smokeRoot
   Assert-VerifiedTaskCommandSemantics $installer
   Assert-InstallerReleaseProcessSemantics $installer
@@ -2502,6 +3105,9 @@ try {
   Assert-UninstallerVerifiedTaskSemantics $uninstall
   Assert-UninstallerFailClosedQuerySemantics $uninstall
   Assert-RestartVerifiedTaskSemantics $restartHelperSource
+  Assert-ReleaseEpmdKillSemantics $updateHelperSource
+  Assert-ReleaseEpmdKillSemantics $restartHelperSource
+  Assert-ReleaseEpmdKillSemantics $uninstall
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
   Assert-PublisherSafeRemovalSemantics $publishHelperSource $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
@@ -2544,6 +3150,27 @@ try {
   Assert-True ($incompleteOutput -match "complete Dala Windows release|Elixir.Dala.beam") "Incomplete release returned an unrelated error"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $env:DALA_HOME "current.txt"))) "Incomplete release changed current.txt"
 
+  Copy-Item -Path (Join-Path $expandedNew "*") -Destination $expandedMissingEpmd -Recurse -Force
+  $missingEpmdStartData = @((Get-Content -LiteralPath (Join-Path $expandedMissingEpmd "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  Assert-True ($missingEpmdStartData.Count -eq 2) "Missing-epmd release fixture has malformed start_erl.data"
+  Remove-Item -LiteralPath (Join-Path $expandedMissingEpmd "erts-$($missingEpmdStartData[0])\bin\epmd.exe") -Force
+  Compress-Archive -Path (Join-Path $expandedMissingEpmd "*") -DestinationPath $missingEpmdArchive -CompressionLevel Optimal
+  Write-ArchiveChecksum $missingEpmdArchive $missingEpmdChecksum
+
+  $env:APPDATA = Join-Path $smokeRoot "missing epmd appdata"
+  $env:DALA_HOME = Join-Path $smokeRoot "missing epmd install"
+  $env:DALA_DATA_DIR = Join-Path $smokeRoot "missing epmd data"
+  $env:DALA_CONFIG = Join-Path $smokeRoot "missing epmd config.jsonc"
+  $env:DALA_SERVICE = $taskName + "-missing-epmd"
+  $env:DALA_PORT = [string](Get-FreePort)
+  $missingEpmdOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer `
+    -Version $newTag -ArchivePath $missingEpmdArchive -ChecksumPath $missingEpmdChecksum `
+    -ExpectedVersion $newVersion -HealthTimeoutSeconds 5 2>&1 | Out-String
+  $missingEpmdStatus = $LASTEXITCODE
+  Assert-True ($missingEpmdStatus -ne 0) "Installer accepted a release missing epmd.exe"
+  Assert-True ($missingEpmdOutput -match "complete Dala Windows release|epmd.exe") "Missing-epmd release returned an unrelated error"
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $env:DALA_HOME "current.txt"))) "Missing-epmd release changed current.txt"
+
   Copy-Item -Path (Join-Path $expandedNew "*") -Destination $expandedOld -Recurse -Force
   Set-DalaAppVersion $expandedOld $oldVersion $fixtureErl
   Add-Content -LiteralPath (Join-Path $expandedOld "run-dala.ps1") -Value "# old-version runner fixture"
@@ -2573,6 +3200,11 @@ try {
   $env:DALA_SERVICE = $freshDecoyTask
   $env:DALA_PORT = [string]$freshDecoyPort
   $env:DALA_REPO = "mjason/dala"
+  $freshStartData = @((Get-Content -LiteralPath (Join-Path $expandedDecoy "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  Assert-True ($freshStartData.Count -eq 2) "Fresh health rollback fixture has malformed start_erl.data"
+  $freshEpmdPath = [IO.Path]::GetFullPath(
+    (Join-Path $freshDecoyRoot "versions\$oldTag\erts-$($freshStartData[0])\bin\epmd.exe")
+  )
   $freshDecoyProcess = Start-VersionDecoy $freshDecoyPort $oldVersion
   $freshHealthRejected = $false
   $freshHealthMessage = $null
@@ -2605,6 +3237,13 @@ try {
   $freshCurrentLeft = Test-Path -LiteralPath (Join-Path $freshDecoyRoot "current.txt")
   $freshDiscoveryLeft = Test-Path -LiteralPath (Join-Path $freshDecoyAppData "Dala\install.json")
   $freshReleaseLeft = Test-Path -LiteralPath (Join-Path $freshDecoyRoot "versions\$oldTag") -PathType Container
+  $freshEpmdLeft = $false
+  try {
+    Assert-NoOwnedEpmdProcess $freshEpmdPath "Fresh health rollback"
+  } catch {
+    $freshEpmdLeft = $true
+    $freshEpmdError = $_.Exception.Message
+  }
   Stop-ScheduledTask -TaskName $freshDecoyTask -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $freshDecoyTask -Confirm:$false -ErrorAction SilentlyContinue
   Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
@@ -2622,6 +3261,7 @@ try {
   Assert-True (-not $freshCurrentLeft) "Fresh health rollback left current.txt behind"
   Assert-True (-not $freshDiscoveryLeft) "Fresh health rollback left discovery metadata behind"
   Assert-True (-not $freshReleaseLeft) "Fresh health rollback left the installed release tree behind"
+  Assert-True (-not $freshEpmdLeft) "Fresh health rollback left release-owned epmd.exe running: $freshEpmdPath ($freshEpmdError)"
   Remove-Item -LiteralPath $freshDecoyRoot, $freshDecoyData, $freshDecoyAppData, $freshDecoyConfig `
     -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -2892,6 +3532,9 @@ try {
 `$env:ERL_ZFLAGS = 'ambient-erl-zflags'
 `$env:ERL_LIBS = 'ambient-erl-libs'
 `$env:ERL_INETRC = 'ambient-erl-inetrc'
+`$env:ERL_EPMD_PORT = 'ambient-erl-epmd-port'
+`$env:ERL_EPMD_ADDRESS = '127.0.0.1'
+`$env:ERL_EPMD_RELAXED_COMMAND_CHECK = '1'
 `$env:ELIXIR_ERL_OPTIONS = 'ambient-elixir-options'
 `$env:DALA_CONFIG = '$ambientRunnerConfig'
 `$env:DALA_UPDATE_REPO = 'ambient/foreign-repo'
@@ -2929,7 +3572,8 @@ clean_names = ~w(
   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS RELEASE_DISTRIBUTION RELEASE_BOOT_SCRIPT
   RELEASE_BOOT_SCRIPT_CLEAN RELEASE_SYS_CONFIG RELEASE_ROOT RELEASE_COMMAND RELEASE_PROG
   RELEASE_MUTABLE_DIR RELEASE_READ_ONLY ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS ERL_LIBS
-  ERL_INETRC ELIXIR_ERL_OPTIONS
+  ERL_INETRC ERL_EPMD_PORT ERL_EPMD_ADDRESS ERL_EPMD_RELAXED_COMMAND_CHECK
+  ELIXIR_ERL_OPTIONS
 )
 true = Enum.all?(clean_names, &(System.get_env(&1) == nil))
 secrets = data_dir |> Path.join("secrets.json") |> File.read!() |> Jason.decode!()
@@ -3329,6 +3973,10 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Assert-True ($healthDecoyOutput -match "did not become healthy") "Update decoy failure returned the wrong error"
   Assert-True (-not $healthDecoyResult.success -and $healthDecoyResult.rolled_back) "Update decoy did not roll back"
   Assert-True (((Get-Content -LiteralPath (Join-Path $installRoot "current.txt") -Raw).Trim()) -ceq $oldTag) "Update decoy rollback did not restore current.txt"
+  $targetStartData = @((Get-Content -LiteralPath (Join-Path $newDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
+  Assert-True ($targetStartData.Count -eq 2) "Update decoy target has malformed start_erl.data"
+  $targetEpmdPath = Join-Path $newDir "erts-$($targetStartData[0])\bin\epmd.exe"
+  Assert-NoOwnedEpmdProcess $targetEpmdPath "Update health rollback"
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
   Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
     Where-Object {
