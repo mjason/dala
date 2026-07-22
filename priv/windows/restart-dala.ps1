@@ -48,6 +48,8 @@ function Get-ReleaseIdentity([string]$DalaExecutable) {
     Epmd = [IO.Path]::GetFullPath($expectedEpmd)
     Boot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start"))
     BootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start.boot"))
+    CleanBoot = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start_clean"))
+    CleanBootFile = [IO.Path]::GetFullPath((Join-Path $releaseDir "releases\$version\start_clean.boot"))
   }
 }
 
@@ -55,6 +57,7 @@ function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates
   $command = $CommandLine.Replace('/', '\')
   foreach ($boot in $BootCandidates) {
     $normalizedBoot = ([string]$boot).Replace('/', '\')
+    if ([string]::IsNullOrWhiteSpace($normalizedBoot)) { continue }
     $escapedBoot = [regex]::Escape($normalizedBoot)
     $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
     if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
@@ -87,30 +90,48 @@ function Invoke-ReleaseWithDefaultEpmdPort([scriptblock]$Action) {
 function Get-ReleaseBeamProcesses([string]$Executable) {
   $identity = Get-ReleaseIdentity $Executable
   if (-not $identity) { return @() }
-  $releaseProcesses = @()
-  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
-    if ($null -eq $process) {
-      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
+  $lastIdentityError = $null
+  for ($attempt = 0; $attempt -lt 5; $attempt++) {
+    $releaseProcesses = @()
+    $lastIdentityError = $null
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop)) {
+      if ($null -eq $process) {
+        $lastIdentityError = "Cannot determine the identity of an erl.exe process; refusing to continue"
+        break
+      }
+
+      $processExecutable = [string]$process.ExecutablePath
+      if ([string]::IsNullOrWhiteSpace($processExecutable)) {
+        $lastIdentityError = "Cannot determine the identity of an erl.exe process; refusing to continue"
+        break
+      }
+      if (-not (Test-SamePath $processExecutable $identity.Executable)) { continue }
+
+      $processCommandLine = [string]$process.CommandLine
+      if ([string]::IsNullOrWhiteSpace($processCommandLine)) {
+        $lastIdentityError = "Cannot determine the identity of an erl.exe process; refusing to continue"
+        break
+      }
+      if (-not (Test-ReleaseBootCommand $processCommandLine @(
+            $identity.Boot,
+            $identity.BootFile,
+            $identity.CleanBoot,
+            $identity.CleanBootFile
+          ))) {
+        throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
+      }
+      if ($null -eq $process.PSObject.Properties["ProcessId"] -or
+          [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
+        $lastIdentityError = "Cannot determine the process id of an erl.exe process; refusing to continue"
+        break
+      }
+      $releaseProcesses += $process
     }
 
-    $processExecutable = [string]$process.ExecutablePath
-    $processCommandLine = [string]$process.CommandLine
-    if ([string]::IsNullOrWhiteSpace($processExecutable) -or
-        [string]::IsNullOrWhiteSpace($processCommandLine)) {
-      throw "Cannot determine the identity of an erl.exe process; refusing to continue"
-    }
-    if (-not (Test-SamePath $processExecutable $identity.Executable)) { continue }
-
-    if (-not (Test-ReleaseBootCommand $processCommandLine @($identity.Boot, $identity.BootFile))) {
-      throw "Cannot confirm the Dala release identity of erl.exe at $processExecutable; refusing to continue"
-    }
-    if ($null -eq $process.PSObject.Properties["ProcessId"] -or
-        [string]::IsNullOrWhiteSpace([string]$process.ProcessId)) {
-      throw "Cannot determine the process id of an erl.exe process; refusing to continue"
-    }
-    $releaseProcesses += $process
+    if (-not $lastIdentityError) { return $releaseProcesses }
+    if ($attempt -lt 4) { Start-Sleep -Milliseconds 50 }
   }
-  $releaseProcesses
+  throw $lastIdentityError
 }
 
 function Get-ReleaseEpmdProcesses($Identity) {

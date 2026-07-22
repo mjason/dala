@@ -317,6 +317,7 @@ defmodule Dala.Updater do
              "erts-#{erts_version}/bin/#{erts_executable()}",
              "ERTS runtime"
            ),
+         :ok <- validate_platform_runtime(root, erts_version),
          :ok <- validate_dala_app(app_root, version),
          :ok <- validate_platform_release(root, app_root) do
       :ok
@@ -448,6 +449,14 @@ defmodule Dala.Updater do
     end
   rescue
     _error -> nil
+  end
+
+  defp validate_platform_runtime(root, erts_version) do
+    if platform() == "windows-x86_64" do
+      require_release_file(root, "erts-#{erts_version}/bin/epmd.exe", "EPMD runtime")
+    else
+      :ok
+    end
   end
 
   defp validate_platform_release(root, app_root) do

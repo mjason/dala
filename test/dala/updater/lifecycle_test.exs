@@ -343,6 +343,20 @@ defmodule Dala.Updater.LifecycleTest do
     assert File.read!(Path.join(root, "current.txt")) == "v0.25.16\n"
   end
 
+  test "a Windows archive without the EPMD runtime is rejected", %{root: root} do
+    {release, archive} =
+      release_fixture("v99.0.15", omit: ["erts-16.1.2/bin/epmd.exe"])
+
+    stub_release_assets(archive)
+    put_app_env(:updater_restart, fn _, _, _ -> flunk("restart must not be scheduled") end)
+
+    assert {:error, "release archive is missing EPMD runtime"} =
+             Updater.apply_release(release)
+
+    refute File.exists?(Path.join(root, "versions/v99.0.15"))
+    assert File.read!(Path.join(root, "current.txt")) == "v0.25.16\n"
+  end
+
   test "a Windows archive with a traversal entry is rejected before extraction", %{root: root} do
     {release, archive} =
       release_fixture("v99.0.12", extra: [{"../escape", "must not be written"}])
@@ -644,6 +658,7 @@ defmodule Dala.Updater.LifecycleTest do
         {String.to_charlist("releases/#{app_version}/start.boot"), start_boot},
         {String.to_charlist("releases/#{app_version}/dala.rel"), release_metadata},
         {String.to_charlist("erts-#{erts_version}/bin/erl.exe"), "erl"},
+        {String.to_charlist("erts-#{erts_version}/bin/epmd.exe"), "epmd"},
         {String.to_charlist("lib/dala-#{app_version}/ebin/dala.app"), app_metadata},
         {String.to_charlist("lib/dala-#{app_version}/ebin/Elixir.Dala.beam"), "beam"},
         {String.to_charlist("lib/dala-#{app_version}/priv/bin/dala_task_launcher.exe"),
@@ -730,6 +745,7 @@ defmodule Dala.Updater.LifecycleTest do
 
   defp stage_windows_release(release, version) do
     stage_release_layout(release, version, "erl.exe")
+    File.write!(Path.join(release, "erts-16.1.2/bin/epmd.exe"), "epmd")
     File.write!(Path.join(release, "bin/dala.bat"), "@echo off\r\n")
     File.write!(Path.join(release, "run-dala.ps1"), "runner\r\n")
     app = Path.join(release, "lib/dala-#{version}")

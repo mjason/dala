@@ -242,6 +242,8 @@ function Assert-DalaExecutableIdentity([string]$ScriptPath, [string]$ReleaseDir,
     $expectedEpmd = Join-Path $ReleaseDir "erts-$($startData[0])\bin\epmd.exe"
     $expectedBoot = Join-Path $ReleaseDir "releases\$Version\start"
     $expectedBootFile = Join-Path $ReleaseDir "releases\$Version\start.boot"
+    $expectedCleanBoot = Join-Path $ReleaseDir "releases\$Version\start_clean"
+    $expectedCleanBootFile = Join-Path $ReleaseDir "releases\$Version\start_clean.boot"
     Assert-True (Test-SamePath ([string]$identity.Executable) $expectedErl) `
       "$ScriptPath resolved the wrong erl.exe from bin\dala.bat"
     Assert-True (Test-SamePath ([string]$identity.Epmd) $expectedEpmd) `
@@ -250,6 +252,10 @@ function Assert-DalaExecutableIdentity([string]$ScriptPath, [string]$ReleaseDir,
       "$ScriptPath resolved the wrong -boot path from bin\dala.bat"
     Assert-True (Test-SamePath ([string]$identity.BootFile) $expectedBootFile) `
       "$ScriptPath resolved the wrong start.boot path from bin\dala.bat"
+    Assert-True (Test-SamePath ([string]$identity.CleanBoot) $expectedCleanBoot) `
+      "$ScriptPath resolved the wrong start_clean path from bin\dala.bat"
+    Assert-True (Test-SamePath ([string]$identity.CleanBootFile) $expectedCleanBootFile) `
+      "$ScriptPath resolved the wrong start_clean.boot path from bin\dala.bat"
   } finally {
     Remove-Module $module -Force -ErrorAction SilentlyContinue
   }
@@ -264,6 +270,7 @@ function Write-DalaIdentityFixture([string]$SourceRelease, [string]$Destination,
     "bin\dala.bat",
     "releases\start_erl.data",
     "releases\$Version\start.boot",
+    "releases\$Version\start_clean.boot",
     "erts-$($startData[0])\bin\erl.exe",
     "erts-$($startData[0])\bin\epmd.exe"
   )) {
@@ -932,8 +939,19 @@ function Assert-InstallerReleaseProcessSemantics([string]$ScriptPath) {
       $script:expectedBoot = [IO.Path]::GetFullPath(
         (Join-Path $script:releaseDir "releases\1.2.3\start")
       )
+      $script:expectedBootFile = [IO.Path]::GetFullPath(
+        (Join-Path $script:releaseDir "releases\1.2.3\start.boot")
+      )
+      $script:expectedCleanBoot = [IO.Path]::GetFullPath(
+        (Join-Path $script:releaseDir "releases\1.2.3\start_clean")
+      )
+      $script:expectedCleanBootFile = [IO.Path]::GetFullPath(
+        (Join-Path $script:releaseDir "releases\1.2.3\start_clean.boot")
+      )
       $script:installerCimFails = $false
       $script:installerCimRows = @()
+      $script:installerProcessQueryCount = 0
+      $script:installerProcessTransient = $false
 
       Set-Item -Path Function:Get-Content -Value {
         [CmdletBinding()]
@@ -944,6 +962,10 @@ function Assert-InstallerReleaseProcessSemantics([string]$ScriptPath) {
         [CmdletBinding()]
         param([string]$ClassName, [string]$Filter)
         if ($script:installerCimFails) { throw "injected installer CIM query failure" }
+        $script:installerProcessQueryCount++
+        if ($script:installerProcessTransient -and $script:installerProcessQueryCount -gt 1) {
+          return @()
+        }
         $script:installerCimRows
       }
       Set-Item -Path Function:Test-SamePath -Value {
@@ -984,9 +1006,25 @@ function Assert-InstallerReleaseProcessSemantics([string]$ScriptPath) {
         CommandLine = "erl.exe -boot `"$($script:expectedBoot)-foreign`""
         ProcessId = [uint32]63
       })
+      $script:installerProcessQueryCount = 0
       try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
         $prefixedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
       }
+      $prefixedBootRejected = $prefixedBootRejected -and
+        $script:installerProcessQueryCount -eq 1
+
+      $prefixedCleanBootRejected = $false
+      $script:installerCimRows = @([pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = "erl.exe -boot `"$($script:expectedCleanBoot)-foreign`""
+        ProcessId = [uint32]69
+      })
+      $script:installerProcessQueryCount = 0
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $prefixedCleanBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+      $prefixedCleanBootRejected = $prefixedCleanBootRejected -and
+        $script:installerProcessQueryCount -eq 1
 
       $missingPidRejected = $false
       $script:installerCimRows = @([pscustomobject]@{
@@ -1003,15 +1041,92 @@ function Assert-InstallerReleaseProcessSemantics([string]$ScriptPath) {
         ProcessId = [uint32]64
       }
       $script:installerCimRows = @($validRow)
+      $script:installerProcessQueryCount = 0
       $validRowAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 1)
+
+      $startBootFileRow = [pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = '"' + $script:expectedExecutable + '" --boot="' + $script:expectedBootFile + '"'
+        ProcessId = [uint32]65
+      }
+      $script:installerCimRows = @($startBootFileRow)
+      $script:installerProcessQueryCount = 0
+      $startBootFileAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 1)
+
+      $cleanBootRow = [pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = '"' + $script:expectedExecutable + '" -boot "' + $script:expectedCleanBoot + '"'
+        ProcessId = [uint32]66
+      }
+      $script:installerCimRows = @($cleanBootRow)
+      $script:installerProcessQueryCount = 0
+      $cleanBootAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 1)
+
+      $cleanBootFileRow = [pscustomobject]@{
+        ExecutablePath = $script:expectedExecutable
+        CommandLine = '"' + $script:expectedExecutable + '" --boot="' + $script:expectedCleanBootFile + '"'
+        ProcessId = [uint32]67
+      }
+      $script:installerCimRows = @($cleanBootFileRow)
+      $script:installerProcessQueryCount = 0
+      $cleanBootFileAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 1)
+
+      $script:installerCimRows = @($validRow, $cleanBootRow)
+      $script:installerProcessQueryCount = 0
+      $mixedServerCleanAccepted = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 2)
+
+      $foreignEmptyRow = [pscustomobject]@{
+        ExecutablePath = "C:\foreign\erl.exe"
+        CommandLine = ""
+        ProcessId = $null
+      }
+      $script:installerCimRows = @($foreignEmptyRow)
+      $script:installerProcessQueryCount = 0
+      $foreignEmptyIgnored = (@(Get-ReleaseBeamProcesses $script:releaseDir).Count -eq 0) -and
+        $script:installerProcessQueryCount -eq 1
+
+      $transientIncompleteRow = [pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = ""
+        ProcessId = [uint32]68
+      }
+      $script:installerCimRows = @($validRow, $transientIncompleteRow)
+      $script:installerProcessQueryCount = 0
+      $script:installerProcessTransient = $true
+      $transientResult = @(Get-ReleaseBeamProcesses $script:releaseDir)
+      $transientFirstSnapshotPidDiscarded = @($transientResult | Where-Object {
+        [uint32]$_.ProcessId -eq [uint32]$validRow.ProcessId
+      }).Count -eq 0
+      $transientIncompleteAccepted = $transientResult.Count -eq 0 -and
+        $transientFirstSnapshotPidDiscarded -and
+        $script:installerProcessQueryCount -eq 2
+      $script:installerProcessTransient = $false
+
+      $script:installerCimRows = @($transientIncompleteRow)
+      $script:installerProcessQueryCount = 0
+      $persistentIncompleteRejected = $false
+      try { $null = @(Get-ReleaseBeamProcesses $script:releaseDir) } catch {
+        $persistentIncompleteRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+      $persistentIncompleteRejected = $persistentIncompleteRejected -and
+        $script:installerProcessQueryCount -eq 5
 
       [pscustomobject]@{
         query_failure_rejected = $queryFailureRejected
         missing_executable_rejected = $missingExecutableRejected
         missing_command_rejected = $missingCommandRejected
         prefixed_boot_rejected = $prefixedBootRejected
+        prefixed_clean_boot_rejected = $prefixedCleanBootRejected
         missing_pid_rejected = $missingPidRejected
         valid_row_accepted = $validRowAccepted
+        start_boot_file_accepted = $startBootFileAccepted
+        clean_boot_accepted = $cleanBootAccepted
+        clean_boot_file_accepted = $cleanBootFileAccepted
+        mixed_server_clean_accepted = $mixedServerCleanAccepted
+        foreign_empty_ignored = $foreignEmptyIgnored
+        transient_incomplete_accepted = $transientIncompleteAccepted
+        transient_first_snapshot_pid_discarded = $transientFirstSnapshotPidDiscarded
+        persistent_incomplete_rejected = $persistentIncompleteRejected
       }
     }
 
@@ -1089,8 +1204,12 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
         Epmd = "C:\dala\erts-14\bin\epmd.exe"
         Boot = "C:\dala\releases\1.2.3\start"
         BootFile = "C:\dala\releases\1.2.3\start.boot"
+        CleanBoot = "C:\dala\releases\1.2.3\start_clean"
+        CleanBootFile = "C:\dala\releases\1.2.3\start_clean.boot"
       }
       $script:rows = @()
+      $script:processQueryCount = 0
+      $script:processTransient = $false
       $script:epmdRows = @()
       $script:epmdKillPaths = @()
       $script:epmdKillPids = @()
@@ -1121,6 +1240,10 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
             throw "injected EPMD CIM query failure"
           }
           return $script:epmdRows
+        }
+        $script:processQueryCount++
+        if ($script:processTransient -and $script:processQueryCount -gt 1) {
+          return @()
         }
         $script:rows
       }
@@ -1168,9 +1291,25 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
         CommandLine = "erl.exe -boot `"$($script:identity.Boot)-foreign`""
         ProcessId = [uint32]43
       })
+      $script:processQueryCount = 0
       try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
         $unknownCommandRejected = $_.Exception.Message -match "release identity.*refusing to continue"
       }
+      $unknownCommandRejected = $unknownCommandRejected -and
+        $script:processQueryCount -eq 1
+
+      $unknownCleanCommandRejected = $false
+      $script:rows = @([pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = "erl.exe -boot `"$($script:identity.CleanBoot)-foreign`""
+        ProcessId = [uint32]49
+      })
+      $script:processQueryCount = 0
+      try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
+        $unknownCleanCommandRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+      $unknownCleanCommandRejected = $unknownCleanCommandRejected -and
+        $script:processQueryCount -eq 1
 
       $missingPidRejected = $false
       $script:rows = @([pscustomobject]@{
@@ -1187,7 +1326,75 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
         ProcessId = [uint32]44
       }
       $script:rows = @($validRow)
+      $script:processQueryCount = 0
       $validRowAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
+
+      $startBootFileRow = [pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = '"' + $script:identity.Executable + '" --boot="' + $script:identity.BootFile + '"'
+        ProcessId = [uint32]45
+      }
+      $script:rows = @($startBootFileRow)
+      $script:processQueryCount = 0
+      $startBootFileAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
+
+      $cleanBootRow = [pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = '"' + $script:identity.Executable + '" -boot "' + $script:identity.CleanBoot + '"'
+        ProcessId = [uint32]46
+      }
+      $script:rows = @($cleanBootRow)
+      $script:processQueryCount = 0
+      $cleanBootAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
+
+      $cleanBootFileRow = [pscustomobject]@{
+        ExecutablePath = [string]$script:identity.Executable
+        CommandLine = '"' + $script:identity.Executable + '" --boot="' + $script:identity.CleanBootFile + '"'
+        ProcessId = [uint32]47
+      }
+      $script:rows = @($cleanBootFileRow)
+      $script:processQueryCount = 0
+      $cleanBootFileAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 1)
+
+      $script:rows = @($validRow, $cleanBootRow)
+      $script:processQueryCount = 0
+      $mixedServerCleanAccepted = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 2)
+
+      $foreignEmptyRow = [pscustomobject]@{
+        ExecutablePath = "C:\foreign\erl.exe"
+        CommandLine = ""
+        ProcessId = $null
+      }
+      $script:rows = @($foreignEmptyRow)
+      $script:processQueryCount = 0
+      $foreignEmptyIgnored = (@(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat").Count -eq 0) -and
+        $script:processQueryCount -eq 1
+
+      $transientIncompleteRow = [pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = ""
+        ProcessId = [uint32]48
+      }
+      $script:rows = @($validRow, $transientIncompleteRow)
+      $script:processQueryCount = 0
+      $script:processTransient = $true
+      $transientResult = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat")
+      $transientFirstSnapshotPidDiscarded = @($transientResult | Where-Object {
+        [uint32]$_.ProcessId -eq [uint32]$validRow.ProcessId
+      }).Count -eq 0
+      $transientIncompleteAccepted = $transientResult.Count -eq 0 -and
+        $transientFirstSnapshotPidDiscarded -and
+        $script:processQueryCount -eq 2
+      $script:processTransient = $false
+
+      $script:rows = @($transientIncompleteRow)
+      $script:processQueryCount = 0
+      $persistentIncompleteRejected = $false
+      try { $null = @(Get-ReleaseBeamProcesses "C:\dala\bin\dala.bat") } catch {
+        $persistentIncompleteRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+      $persistentIncompleteRejected = $persistentIncompleteRejected -and
+        $script:processQueryCount -eq 5
 
       # Reproduce the rollback race where CIM no longer reports epmd.exe but
       # Windows still has its image section open. The stop path must wait for
@@ -1395,8 +1602,17 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
       [pscustomobject]@{
         unknown_fields_rejected = $unknownFieldsRejected
         unknown_command_rejected = $unknownCommandRejected
+        unknown_clean_command_rejected = $unknownCleanCommandRejected
         missing_pid_rejected = $missingPidRejected
         valid_row_accepted = $validRowAccepted
+        start_boot_file_accepted = $startBootFileAccepted
+        clean_boot_accepted = $cleanBootAccepted
+        clean_boot_file_accepted = $cleanBootFileAccepted
+        mixed_server_clean_accepted = $mixedServerCleanAccepted
+        foreign_empty_ignored = $foreignEmptyIgnored
+        transient_incomplete_accepted = $transientIncompleteAccepted
+        transient_first_snapshot_pid_discarded = $transientFirstSnapshotPidDiscarded
+        persistent_incomplete_rejected = $persistentIncompleteRejected
         locked_epmd_without_process_rejected = $lockedEpmdRejected
         target_epmd_accepted = $targetEpmdAccepted
         foreign_epmd_ignored = $foreignEpmdIgnored
@@ -1607,6 +1823,8 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
       $script:directoryFails = $false
       $script:cimFails = $false
       $script:cimRows = @()
+      $script:processQueryCount = 0
+      $script:processTransient = $false
       $script:releaseLauncherMissing = $false
       $script:releaseStartDataMissing = $false
       $script:releaseRuntimePresent = $false
@@ -1654,6 +1872,8 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
           Epmd = "C:\dala\epmd.exe"
           Boot = "C:\dala\start"
           BootFile = "C:\dala\start.boot"
+          CleanBoot = "C:\dala\start_clean"
+          CleanBootFile = "C:\dala\start_clean.boot"
         }
       }
       Set-Item -Path Function:Get-CimInstance -Value {
@@ -1661,6 +1881,10 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         param([string]$ClassName, [string]$Filter)
         if ($script:cimFails) { Write-Error "injected CIM query failure" }
         if ([string]$Filter -match "epmd") { return $script:epmdRows }
+        $script:processQueryCount++
+        if ($script:processTransient -and $script:processQueryCount -gt 1) {
+          return @()
+        }
         $script:cimRows
       }
       Set-Item -Path Function:Get-NetTCPConnection -Value {
@@ -1742,9 +1966,25 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         CommandLine = "erl.exe -boot `"C:\dala\start-foreign`""
         ProcessId = [uint32]43
       })
+      $script:processQueryCount = 0
       try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
         $mismatchedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
       }
+      $mismatchedBootRejected = $mismatchedBootRejected -and
+        $script:processQueryCount -eq 1
+
+      $mismatchedCleanBootRejected = $false
+      $script:cimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot `"C:\dala\start_clean-foreign`""
+        ProcessId = [uint32]45
+      })
+      $script:processQueryCount = 0
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $mismatchedCleanBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+      $mismatchedCleanBootRejected = $mismatchedCleanBootRejected -and
+        $script:processQueryCount -eq 1
 
       $missingPidRejected = $false
       $script:cimRows = @([pscustomobject]@{
@@ -1761,7 +2001,75 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         ProcessId = [uint32]44
       }
       $script:cimRows = @($validRow)
+      $script:processQueryCount = 0
       $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
+
+      $startBootFileRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" --boot="C:\dala\start.boot"'
+        ProcessId = [uint32]46
+      }
+      $script:cimRows = @($startBootFileRow)
+      $script:processQueryCount = 0
+      $startBootFileAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
+
+      $cleanBootRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" -boot "C:\dala\start_clean"'
+        ProcessId = [uint32]47
+      }
+      $script:cimRows = @($cleanBootRow)
+      $script:processQueryCount = 0
+      $cleanBootAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
+
+      $cleanBootFileRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" --boot="C:\dala\start_clean.boot"'
+        ProcessId = [uint32]48
+      }
+      $script:cimRows = @($cleanBootFileRow)
+      $script:processQueryCount = 0
+      $cleanBootFileAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 1)
+
+      $script:cimRows = @($validRow, $cleanBootRow)
+      $script:processQueryCount = 0
+      $mixedServerCleanAccepted = (@(Get-ReleaseBeamProcesses "root").Count -eq 2)
+
+      $foreignEmptyRow = [pscustomobject]@{
+        ExecutablePath = "C:\foreign\erl.exe"
+        CommandLine = ""
+        ProcessId = $null
+      }
+      $script:cimRows = @($foreignEmptyRow)
+      $script:processQueryCount = 0
+      $foreignEmptyIgnored = (@(Get-ReleaseBeamProcesses "root").Count -eq 0) -and
+        $script:processQueryCount -eq 1
+
+      $transientIncompleteRow = [pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = ""
+        ProcessId = [uint32]49
+      }
+      $script:cimRows = @($validRow, $transientIncompleteRow)
+      $script:processQueryCount = 0
+      $script:processTransient = $true
+      $transientResult = @(Get-ReleaseBeamProcesses "root")
+      $transientFirstSnapshotPidDiscarded = @($transientResult | Where-Object {
+        [uint32]$_.ProcessId -eq [uint32]$validRow.ProcessId
+      }).Count -eq 0
+      $transientIncompleteAccepted = $transientResult.Count -eq 0 -and
+        $transientFirstSnapshotPidDiscarded -and
+        $script:processQueryCount -eq 2
+      $script:processTransient = $false
+
+      $script:cimRows = @($transientIncompleteRow)
+      $script:processQueryCount = 0
+      $persistentIncompleteRejected = $false
+      try { $null = @(Get-ReleaseBeamProcesses "root") } catch {
+        $persistentIncompleteRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+      $persistentIncompleteRejected = $persistentIncompleteRejected -and
+        $script:processQueryCount -eq 5
 
       $identityEnumerationAccepted = @(Get-ReleaseIdentities "root").Count -eq 1
       $script:releaseLauncherMissing = $true
@@ -1863,8 +2171,17 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         missing_release_executable_rejected = $missingExecutableRejected
         missing_release_command_rejected = $missingCommandRejected
         mismatched_release_boot_rejected = $mismatchedBootRejected
+        mismatched_clean_boot_rejected = $mismatchedCleanBootRejected
         missing_release_pid_rejected = $missingPidRejected
         valid_release_row_accepted = $validReleaseRowAccepted
+        start_boot_file_accepted = $startBootFileAccepted
+        clean_boot_accepted = $cleanBootAccepted
+        clean_boot_file_accepted = $cleanBootFileAccepted
+        mixed_server_clean_accepted = $mixedServerCleanAccepted
+        foreign_empty_ignored = $foreignEmptyIgnored
+        transient_incomplete_accepted = $transientIncompleteAccepted
+        transient_first_snapshot_pid_discarded = $transientFirstSnapshotPidDiscarded
+        persistent_incomplete_rejected = $persistentIncompleteRejected
         identity_enumeration_accepted = $identityEnumerationAccepted
         missing_launcher_with_marker_accepted = $missingLauncherWithMarkerAccepted
         missing_launcher_with_runtime_accepted = $missingLauncherWithRuntimeAccepted
@@ -1954,6 +2271,8 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
       $script:commandMode = "postcommit"
       $script:restartCimFails = $false
       $script:restartCimRows = @()
+      $script:restartProcessQueryCount = 0
+      $script:restartProcessTransient = $false
       $script:restartEpmdRows = @()
       $script:restartEpmdKillPaths = @()
       $script:restartEpmdKillPids = @()
@@ -1971,6 +2290,8 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
           Epmd = "C:\dala\epmd.exe"
           Boot = "C:\dala\start"
           BootFile = "C:\dala\start.boot"
+          CleanBoot = "C:\dala\start_clean"
+          CleanBootFile = "C:\dala\start_clean.boot"
         }
       }
       Set-Item -Path Function:Get-CimInstance -Value {
@@ -1978,6 +2299,10 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         param([string]$ClassName, [string]$Filter)
         if ($script:restartCimFails) { Write-Error "injected restart CIM query failure" }
         if ([string]$Filter -match "epmd") { return $script:restartEpmdRows }
+        $script:restartProcessQueryCount++
+        if ($script:restartProcessTransient -and $script:restartProcessQueryCount -gt 1) {
+          return @()
+        }
         $script:restartCimRows
       }
       Set-Item -Path Function:Get-NetTCPConnection -Value {
@@ -2044,9 +2369,25 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         CommandLine = "erl.exe -boot `"C:\dala\start-foreign`""
         ProcessId = [uint32]53
       })
+      $script:restartProcessQueryCount = 0
       try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
         $mismatchedBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
       }
+      $mismatchedBootRejected = $mismatchedBootRejected -and
+        $script:restartProcessQueryCount -eq 1
+
+      $mismatchedCleanBootRejected = $false
+      $script:restartCimRows = @([pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = "erl.exe -boot `"C:\dala\start_clean-foreign`""
+        ProcessId = [uint32]55
+      })
+      $script:restartProcessQueryCount = 0
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $mismatchedCleanBootRejected = $_.Exception.Message -match "release identity.*refusing to continue"
+      }
+      $mismatchedCleanBootRejected = $mismatchedCleanBootRejected -and
+        $script:restartProcessQueryCount -eq 1
 
       $missingPidRejected = $false
       $script:restartCimRows = @([pscustomobject]@{
@@ -2063,7 +2404,75 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         ProcessId = [uint32]54
       }
       $script:restartCimRows = @($validRow)
+      $script:restartProcessQueryCount = 0
       $validReleaseRowAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $startBootFileRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" --boot="C:\dala\start.boot"'
+        ProcessId = [uint32]56
+      }
+      $script:restartCimRows = @($startBootFileRow)
+      $script:restartProcessQueryCount = 0
+      $startBootFileAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $cleanBootRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" -boot "C:\dala\start_clean"'
+        ProcessId = [uint32]57
+      }
+      $script:restartCimRows = @($cleanBootRow)
+      $script:restartProcessQueryCount = 0
+      $cleanBootAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $cleanBootFileRow = [pscustomobject]@{
+        ExecutablePath = "C:\dala\erl.exe"
+        CommandLine = '"C:\dala\erl.exe" --boot="C:\dala\start_clean.boot"'
+        ProcessId = [uint32]58
+      }
+      $script:restartCimRows = @($cleanBootFileRow)
+      $script:restartProcessQueryCount = 0
+      $cleanBootFileAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 1)
+
+      $script:restartCimRows = @($validRow, $cleanBootRow)
+      $script:restartProcessQueryCount = 0
+      $mixedServerCleanAccepted = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 2)
+
+      $foreignEmptyRow = [pscustomobject]@{
+        ExecutablePath = "C:\foreign\erl.exe"
+        CommandLine = ""
+        ProcessId = $null
+      }
+      $script:restartCimRows = @($foreignEmptyRow)
+      $script:restartProcessQueryCount = 0
+      $foreignEmptyIgnored = (@(Get-ReleaseBeamProcesses "dala.bat").Count -eq 0) -and
+        $script:restartProcessQueryCount -eq 1
+
+      $transientIncompleteRow = [pscustomobject]@{
+        ExecutablePath = ""
+        CommandLine = ""
+        ProcessId = [uint32]59
+      }
+      $script:restartCimRows = @($validRow, $transientIncompleteRow)
+      $script:restartProcessQueryCount = 0
+      $script:restartProcessTransient = $true
+      $transientResult = @(Get-ReleaseBeamProcesses "dala.bat")
+      $transientFirstSnapshotPidDiscarded = @($transientResult | Where-Object {
+        [uint32]$_.ProcessId -eq [uint32]$validRow.ProcessId
+      }).Count -eq 0
+      $transientIncompleteAccepted = $transientResult.Count -eq 0 -and
+        $transientFirstSnapshotPidDiscarded -and
+        $script:restartProcessQueryCount -eq 2
+      $script:restartProcessTransient = $false
+
+      $script:restartCimRows = @($transientIncompleteRow)
+      $script:restartProcessQueryCount = 0
+      $persistentIncompleteRejected = $false
+      try { $null = @(Get-ReleaseBeamProcesses "dala.bat") } catch {
+        $persistentIncompleteRejected = $_.Exception.Message -match "identity.*refusing to continue"
+      }
+      $persistentIncompleteRejected = $persistentIncompleteRejected -and
+        $script:restartProcessQueryCount -eq 5
 
       $script:restartEpmdRows = @([pscustomobject]@{
         ExecutablePath = "C:\dala\epmd.exe"
@@ -2185,8 +2594,17 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
         missing_release_executable_rejected = $missingExecutableRejected
         missing_release_command_rejected = $missingCommandRejected
         mismatched_release_boot_rejected = $mismatchedBootRejected
+        mismatched_clean_boot_rejected = $mismatchedCleanBootRejected
         missing_release_pid_rejected = $missingPidRejected
         valid_release_row_accepted = $validReleaseRowAccepted
+        start_boot_file_accepted = $startBootFileAccepted
+        clean_boot_accepted = $cleanBootAccepted
+        clean_boot_file_accepted = $cleanBootFileAccepted
+        mixed_server_clean_accepted = $mixedServerCleanAccepted
+        foreign_empty_ignored = $foreignEmptyIgnored
+        transient_incomplete_accepted = $transientIncompleteAccepted
+        transient_first_snapshot_pid_discarded = $transientFirstSnapshotPidDiscarded
+        persistent_incomplete_rejected = $persistentIncompleteRejected
         epmd_kill_verified = $epmdKillVerified
         empty_release_executable_rejected = $emptyExecutableRejected
         missing_release_executable_file_rejected = $missingExecutableFileRejected
