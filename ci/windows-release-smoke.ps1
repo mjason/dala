@@ -2589,6 +2589,7 @@ try {
   $freshTaskLeft = [bool](Get-ScheduledTask -TaskName $freshDecoyTask -ErrorAction SilentlyContinue)
   $freshCurrentLeft = Test-Path -LiteralPath (Join-Path $freshDecoyRoot "current.txt")
   $freshDiscoveryLeft = Test-Path -LiteralPath (Join-Path $freshDecoyAppData "Dala\install.json")
+  $freshReleaseLeft = Test-Path -LiteralPath (Join-Path $freshDecoyRoot "versions\$oldTag") -PathType Container
   Stop-ScheduledTask -TaskName $freshDecoyTask -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $freshDecoyTask -Confirm:$false -ErrorAction SilentlyContinue
   Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
@@ -2605,6 +2606,7 @@ try {
   Assert-True (-not $freshTaskLeft) "Fresh health rollback left the Scheduled Task behind: $freshHealthMessage"
   Assert-True (-not $freshCurrentLeft) "Fresh health rollback left current.txt behind"
   Assert-True (-not $freshDiscoveryLeft) "Fresh health rollback left discovery metadata behind"
+  Assert-True (-not $freshReleaseLeft) "Fresh health rollback left the installed release tree behind"
   Remove-Item -LiteralPath $freshDecoyRoot, $freshDecoyData, $freshDecoyAppData, $freshDecoyConfig `
     -Recurse -Force -ErrorAction SilentlyContinue
 
