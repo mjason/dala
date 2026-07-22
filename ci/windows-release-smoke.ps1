@@ -2016,12 +2016,16 @@ function Write-DummyReleaseRunner([string]$Path, [string]$Tag) {
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSCommandPath
 $releaseDir = Join-Path $root "versions\__TAG__"
+$version = ("__TAG__").Substring(1)
+$boot = Join-Path $releaseDir "releases\$version\start"
 $erl = @(
   Get-ChildItem -LiteralPath $releaseDir -Filter "erl.exe" -Recurse -File |
     Where-Object { $_.FullName -like "*\erts-*\bin\erl.exe" }
 )
 if ($erl.Count -ne 1) { throw "Expected one target erl.exe, found $($erl.Count)" }
-& $erl[0].FullName -noshell -eval "timer:sleep(600000)."
+# Keep the process idle and unhealthy while exposing the same release identity
+# that the fail-closed stop helper requires before terminating erl.exe.
+& $erl[0].FullName -noshell -eval "timer:sleep(600000)." -extra -boot "$boot"
 exit $LASTEXITCODE
 '@
   $source = $source.Replace("__TAG__", $Tag)
@@ -2596,7 +2600,9 @@ try {
 
   Assert-True $freshHealthRejected "Fresh installer accepted a same-version response from a foreign port owner"
   Assert-True ($freshHealthMessage -match "did not become healthy") "Fresh decoy failure returned the wrong error: $freshHealthMessage"
-  Assert-True (-not $freshTaskLeft) "Fresh health rollback left the Scheduled Task behind"
+  Assert-True ($freshHealthMessage -notmatch "rollback failed") `
+    "Fresh health failure did not complete rollback: $freshHealthMessage"
+  Assert-True (-not $freshTaskLeft) "Fresh health rollback left the Scheduled Task behind: $freshHealthMessage"
   Assert-True (-not $freshCurrentLeft) "Fresh health rollback left current.txt behind"
   Assert-True (-not $freshDiscoveryLeft) "Fresh health rollback left discovery metadata behind"
   Remove-Item -LiteralPath $freshDecoyRoot, $freshDecoyData, $freshDecoyAppData, $freshDecoyConfig `
