@@ -59,21 +59,40 @@ defmodule Dala.Terminal.SessionTest do
   defp arithmetic_command,
     do: if(windows?(), do: "set /a 40 + 2\r", else: "echo dala-$((40 + 2))\r")
 
+  defp raw_output_timeout, do: if(windows?(), do: 20_000, else: 5_000)
+
+  # Windows ConPTY test commands start a fresh Node + PowerShell process. On
+  # a busy runner the shell can echo the command for several seconds before
+  # Node writes the payload, so the caller must wait for an explicit output
+  # marker instead of assuming that send_sequence means "executed".
   defp raw_output(session_id, bytes, hold_ms \\ 2_000) do
     encoded = Base.encode64(bytes)
+    ready = "dala-raw-output-ready-#{System.unique_integer([:positive])}"
 
     command =
       if windows?() do
         Dala.TestPlatform.node_eval_command(
           "process.stdin.setRawMode(true);process.stdin.resume();" <>
             "process.stdout.write(Buffer.from('#{encoded}','base64'));" <>
+            "process.stdout.write('#{ready}\\r\\n');" <>
             "setTimeout(()=>process.exit(0),#{hold_ms})"
         )
       else
-        "printf %s '#{encoded}' | base64 -d"
+        "printf %s '#{encoded}' | base64 -d; printf '%s\\n' '#{ready}'"
       end
 
-    Server.send_sequence(session_id, [{command, 50}, {"\r", 0}])
+    with {:ok, baseline} <- Server.current_seq(session_id),
+         {:ok, seq} <- Server.send_sequence(session_id, [{command, 50}, {"\r", 0}]),
+         {:ok, %{reason: "match"}} <-
+           Server.wait(session_id, baseline, timeout: raw_output_timeout(), match: ready) do
+      {:ok, seq}
+    else
+      {:ok, %{reason: "timeout", seq: seq}} ->
+        {:error, {:raw_output_not_ready, ready, seq}}
+
+      other ->
+        other
+    end
   end
 
   defp queue_commands(path) do

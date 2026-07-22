@@ -3,6 +3,26 @@ defmodule Dala.ReleaseTest do
 
   import ExUnit.CaptureLog
 
+  # `Path.wildcard/1` has different absolute-drive handling on Windows. The
+  # release code only creates these artifacts beside the destination, so list
+  # that directory and compare names instead of relying on wildcard parsing.
+  defp metadata_temporaries(path, suffix) do
+    prefix = String.downcase(Path.basename(path) <> suffix)
+
+    case File.ls(Path.dirname(path)) do
+      {:ok, names} ->
+        names
+        |> Enum.filter(&String.starts_with?(String.downcase(&1), prefix))
+        |> Enum.map(&Path.join(Path.dirname(path), &1))
+
+      {:error, :enoent} ->
+        []
+
+      {:error, reason} ->
+        flunk("could not list metadata temporary directory: #{inspect(reason)}")
+    end
+  end
+
   test "sync_install_metadata makes root and discovery reflect the runtime config" do
     base =
       Path.join(System.tmp_dir!(), "dala-release-metadata-#{System.unique_integer([:positive])}")
@@ -219,10 +239,10 @@ defmodule Dala.ReleaseTest do
                false
            end)
 
-    assert Path.wildcard(root_metadata <> ".new-*") == []
-    assert Path.wildcard(root_metadata <> ".rollback-*") == []
-    assert Path.wildcard(discovery <> ".new-*") == []
-    assert Path.wildcard(discovery <> ".rollback-*") == []
+    assert metadata_temporaries(root_metadata, ".new-") == []
+    assert metadata_temporaries(root_metadata, ".rollback-") == []
+    assert metadata_temporaries(discovery, ".new-") == []
+    assert metadata_temporaries(discovery, ".rollback-") == []
   end
 
   test "ambiguous rollback keeps the original known backup when its copy is consumed" do
@@ -811,11 +831,11 @@ defmodule Dala.ReleaseTest do
     assert {:error, _error} = result
     assert File.read!(root_metadata) == original
     assert File.dir?(discovery)
-    assert Path.wildcard(root_metadata <> ".new-*") == []
-    assert Path.wildcard(root_metadata <> ".backup-*") == []
-    assert Path.wildcard(root_metadata <> ".rollback-*") == []
-    assert Path.wildcard(discovery <> ".new-*") == []
-    assert Path.wildcard(discovery <> ".backup-*") == []
+    assert metadata_temporaries(root_metadata, ".new-") == []
+    assert metadata_temporaries(root_metadata, ".backup-") == []
+    assert metadata_temporaries(root_metadata, ".rollback-") == []
+    assert metadata_temporaries(discovery, ".new-") == []
+    assert metadata_temporaries(discovery, ".backup-") == []
   end
 
   test "snapshot rollback retains old bytes when a post-commit restore consumes its source" do
@@ -873,7 +893,7 @@ defmodule Dala.ReleaseTest do
       end
 
     assert Exception.message(error) =~ "rollback failed"
-    retained = Path.wildcard(root_metadata <> ".rollback-recovery-*")
+    retained = metadata_temporaries(root_metadata, ".rollback-recovery-")
     assert length(retained) == 1
     assert File.read!(hd(retained)) == original
   end
