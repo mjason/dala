@@ -298,7 +298,7 @@ try {
   $rollbackPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.rollback-[0-9A-Fa-f]{32}$'
   $orphanBackups = @(
     Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
-      Where-Object { $_.Name -cmatch $rollbackPattern }
+      Where-Object { $_.Name -match $rollbackPattern }
   )
   if ($orphanBackups.Count -gt 0) {
     if ($orphanBackups.Count -gt 1) {

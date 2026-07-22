@@ -28,6 +28,13 @@ defmodule Dala.Terminal.SessionTest do
     {client, peer}
   end
 
+  defp recv_packets(socket, count, timeout \\ 1_000) do
+    Enum.map(1..count, fn _index ->
+      assert {:ok, packet} = :gen_tcp.recv(socket, 0, timeout)
+      packet
+    end)
+  end
+
   defp windows?, do: Dala.TestPlatform.windows?()
 
   defp test_shell, do: Dala.TestPlatform.shell()
@@ -238,11 +245,16 @@ defmodule Dala.Terminal.SessionTest do
       Server.claim_size(session.id, self(), "queue-test", "queue-device", 26, 82)
       _ = Server.size_info(session.id)
 
-      assert {:ok, <<0x17, 0>>} = :gen_tcp.recv(peer, 0, 1_000)
+      # Holder negotiation may race the two resize writes: both orders are
+      # valid because the socket is FIFO, but HELLO/query-owner setup happens
+      # independently of the resize calls. Consume the three protocol frames
+      # and assert their set rather than depending on scheduling.
+      frames = recv_packets(peer, 3)
+      assert Enum.count(frames, &(&1 == <<0x17, 0>>)) == 1
+      assert Enum.count(frames, &(&1 == <<0x12, 25::16, 81::16>>)) == 1
+      assert Enum.count(frames, &(&1 == <<0x12, 26::16, 82::16>>)) == 1
       send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 0>>})
       _ = Server.size_info(session.id)
-      assert {:ok, <<0x12, 25::16, 81::16>>} = :gen_tcp.recv(peer, 0, 1_000)
-      assert {:ok, <<0x12, 26::16, 82::16>>} = :gen_tcp.recv(peer, 0, 1_000)
       assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
 
       saturated = :sys.get_state(server)

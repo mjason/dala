@@ -1485,7 +1485,7 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   $orphanPublishStaging = Join-Path $publishStagingRoot "orphan candidate"
   $orphanPublishDestination = Join-Path $publishDestinationRoot "orphan release"
   $orphanPublishBackup = Join-Path $publishDestinationRoot `
-    (".orphan release.rollback-" + [guid]::NewGuid().ToString("N"))
+    (".ORPHAN RELEASE.rollback-" + [guid]::NewGuid().ToString("N").ToUpperInvariant())
   Write-PublishFixture $orphanPublishStaging $newVersion "orphan-candidate" $newPublishHelper
   Write-PublishFixture $orphanPublishDestination $newVersion "orphan-destination" $newPublishHelper
   Write-PublishFixture $orphanPublishBackup $newVersion "orphan-backup" $newPublishHelper
