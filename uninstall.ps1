@@ -447,7 +447,14 @@ function Get-ReleaseBeamProcesses([string]$InstallRoot) {
 }
 
 function Stop-DalaRelease([string]$InstallRoot, [string]$Executable) {
-  if ($Executable) { & $Executable stop 2>$null | Out-Null }
+  if ($Executable) {
+    try {
+      & $Executable stop 2>$null | Out-Null
+    } catch {
+      # An unhealthy release may reject RPC stop. The identity-checked process
+      # probes below remain authoritative and provide the force-stop fallback.
+    }
+  }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
     if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) { return }

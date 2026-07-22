@@ -61,6 +61,17 @@ function Assert-ScriptParses([string]$Path) {
   }
 }
 
+function Assert-BestEffortReleaseStop($Definitions, [string]$ScriptPath) {
+  $stopDefinitions = @($Definitions | Where-Object { $_.Name -ceq "Stop-DalaRelease" })
+  Assert-True ($stopDefinitions.Count -eq 1) "$ScriptPath must define exactly one Stop-DalaRelease function"
+  $stopBody = $stopDefinitions[0].Extent.Text
+  Assert-True ([regex]::IsMatch(
+      $stopBody,
+      'try\s*\{\s*&\s+\$Executable\s+stop[^\r\n]*\r?\n\s*\}\s*catch\s*\{',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) "$ScriptPath does not treat graceful release stop as best-effort"
+}
+
 function Assert-DalaExecutableIdentity([string]$ScriptPath, [string]$ReleaseDir, [string]$Version) {
   $tokens = $null
   $errors = $null
@@ -898,6 +909,7 @@ function Assert-UpdateReleaseProcessSemantics([string]$ScriptPath) {
     Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
       "$ScriptPath must define exactly one $name function"
   }
+  Assert-BestEffortReleaseStop $definitions $ScriptPath
 
   $scriptText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ScriptPath).Path)
   Assert-True ([regex]::IsMatch(
@@ -1135,6 +1147,7 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
   $requiredFunctions = @(
     "Test-ReleaseBootCommand",
     "Get-ReleaseBeamProcesses",
+    "Stop-DalaRelease",
     "Get-ScopedHolders",
     "Get-ProcessTreeIds",
     "Get-LiveProcessIds",
@@ -1151,6 +1164,7 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
     Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
       "$ScriptPath must define exactly one $name function"
   }
+  Assert-BestEffortReleaseStop $definitions $ScriptPath
 
   foreach ($commandName in @("Get-ChildItem", "Get-CimInstance")) {
     $commands = @(
@@ -1360,6 +1374,7 @@ function Assert-RestartVerifiedTaskSemantics([string]$ScriptPath) {
     Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
       "$ScriptPath must define exactly one $name function"
   }
+  Assert-BestEffortReleaseStop $definitions $ScriptPath
 
   $scriptText = [IO.File]::ReadAllText($ScriptPath)
   Assert-True (-not [regex]::IsMatch(

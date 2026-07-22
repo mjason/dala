@@ -104,7 +104,12 @@ function Stop-DalaRelease([string]$Executable) {
     throw "Cannot stop Dala release: executable is missing or not a regular file: $Executable"
   }
 
-  & $Executable stop 2>$null | Out-Null
+  try {
+    & $Executable stop 2>$null | Out-Null
+  } catch {
+    # An unhealthy release may reject RPC stop. The identity-checked process
+    # probes below remain authoritative and provide the force-stop fallback.
+  }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
     if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) { return }
