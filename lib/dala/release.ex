@@ -5,6 +5,8 @@ defmodule Dala.Release do
   unit's ExecStartPre) call this before every start, so upgrades migrate
   automatically.
   """
+  require Logger
+
   @app :dala
 
   def migrate do
@@ -119,24 +121,37 @@ defmodule Dala.Release do
   defp write_json_pair_atomic!(writes) do
     staged = stage_metadata_entries!(writes)
 
-    try do
-      case replace_metadata_entries(staged) do
-        {:ok, _replaced} ->
-          :ok
+    case replace_metadata_entries(staged) do
+      {:ok, _replaced} ->
+        cleanup_staged_entries(staged)
+        :ok
 
-        {:error, error, stacktrace, replaced} ->
-          case rollback_metadata_entries(replaced) do
-            :ok ->
-              :erlang.raise(:error, error, stacktrace)
+      {:error, error, stacktrace, replaced} ->
+        case rollback_metadata_entries(replaced) do
+          :ok ->
+            cleanup_staged_entries(staged)
+            :erlang.raise(:error, error, stacktrace)
 
-            {:error, rollback_reason} ->
-              raise "Dala install metadata update failed and rollback failed: " <>
-                      Exception.message(error) <>
-                      " (rollback: #{inspect(rollback_reason)})"
-          end
-      end
-    after
-      cleanup_staged_entries(staged)
+          {:error, rollback_reason} ->
+            # Keep any staged bytes that survived the failed replacement. They
+            # are the only durable copy of the intended metadata when both the
+            # destination and Windows recovery backup are unavailable.
+            retained =
+              staged
+              |> Enum.map(& &1.fresh)
+              |> Enum.filter(&File.exists?/1)
+
+            retained_text =
+              case retained do
+                [] -> "<none>"
+                paths -> Enum.join(paths, ", ")
+              end
+
+            raise "Dala install metadata update failed and rollback failed: " <>
+                    Exception.message(error) <>
+                    " (rollback: #{inspect(rollback_reason)}); " <>
+                    "staged metadata retained for recovery: #{retained_text}"
+        end
     end
   end
 
@@ -178,7 +193,10 @@ defmodule Dala.Release do
           {:cont, [entry | replaced]}
         rescue
           error ->
-            {:halt, {:error, error, __STACKTRACE__, replaced}}
+            # Include the entry whose replacement raised. A platform rename
+            # can fail after it has already moved the destination, so omitting
+            # it from rollback can leave one metadata copy missing or stale.
+            {:halt, {:error, error, __STACKTRACE__, [entry | replaced]}}
         end
       end)
 
@@ -225,8 +243,18 @@ defmodule Dala.Release do
     end
   end
 
-  defp restore_metadata_target(%{path: path, original: {:other, type}}),
-    do: {:error, {path, {:cannot_restore_metadata_entry, type}}}
+  defp restore_metadata_target(%{path: path, original: {:other, type}}) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: ^type}} ->
+        :ok
+
+      {:ok, %File.Stat{type: actual}} ->
+        {:error, {path, {:cannot_restore_metadata_entry, type, actual}}}
+
+      {:error, reason} ->
+        {:error, {path, {:cannot_restore_metadata_entry, type, reason}}}
+    end
+  end
 
   defp snapshot_metadata_target!(path) do
     case File.lstat(path) do
@@ -248,7 +276,8 @@ defmodule Dala.Release do
   end
 
   defp metadata_temp_path(path, suffix) do
-    path <> ".#{suffix}-#{System.unique_integer([:positive, :monotonic])}"
+    token = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    path <> ".#{suffix}-#{token}"
   end
 
   defp cleanup_staged_entries(entries) do
@@ -256,22 +285,126 @@ defmodule Dala.Release do
   end
 
   defp replace_file!(fresh, path) do
-    if match?({:win32, _}, :os.type()) and File.exists?(path) do
-      command =
-        "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $null)"
+    if match?({:win32, _}, :os.type()) do
+      ensure_no_windows_backups!(path)
+    end
 
-      case System.cmd("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command],
+    if match?({:win32, _}, :os.type()) and File.exists?(path) do
+      backup = metadata_temp_path(path, "backup")
+
+      command =
+        "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
+
+      case System.cmd(
+             "powershell.exe",
+             ["-NoProfile", "-NonInteractive", "-Command", command],
              env: [
                {"DALA_METADATA_SOURCE", fresh},
-               {"DALA_METADATA_DESTINATION", path}
+               {"DALA_METADATA_DESTINATION", path},
+               {"DALA_METADATA_BACKUP", backup}
              ],
              stderr_to_stdout: true
            ) do
-        {_output, 0} -> :ok
-        {output, status} -> raise "could not replace Dala install metadata (#{status}): #{output}"
+        {_output, 0} ->
+          case cleanup_windows_backup(backup) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              raise "metadata replacement succeeded but recovery backup remains at #{backup}: " <>
+                      inspect(reason)
+          end
+
+        {output, status} ->
+          case restore_windows_backup(backup, path) do
+            :ok ->
+              raise "could not replace Dala install metadata (#{status}): #{output}"
+
+            {:error, reason} ->
+              raise "could not replace Dala install metadata (#{status}): #{output}; " <>
+                      "backup recovery failed at #{backup}: #{inspect(reason)}"
+          end
       end
     else
       File.rename!(fresh, path)
+    end
+  end
+
+  defp cleanup_windows_backup(backup) do
+    case File.rm(backup) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "could not remove temporary Dala metadata backup #{backup}: #{inspect(reason)}; " <>
+            "leaving it for recovery"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp ensure_no_windows_backups!(path) do
+    parent = Path.dirname(path)
+    leaf = Path.basename(path)
+    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$")
+
+    backups =
+      case File.ls(parent) do
+        {:ok, names} ->
+          names
+          |> Enum.filter(&Regex.match?(pattern, &1))
+          |> Enum.map(&Path.join(parent, &1))
+
+        {:error, :enoent} ->
+          []
+
+        {:error, reason} ->
+          raise "could not inspect metadata recovery backups under #{parent}: #{inspect(reason)}"
+      end
+
+    case backups do
+      [] ->
+        :ok
+
+      _ ->
+        raise "existing metadata recovery backup requires manual recovery: #{Enum.join(backups, ", ")}"
+    end
+  end
+
+  defp restore_windows_backup(backup, path) do
+    case File.lstat(backup) do
+      {:error, :enoent} ->
+        case File.lstat(path) do
+          {:ok, _destination_stat} -> :ok
+          {:error, :enoent} -> {:error, :backup_missing_and_destination_missing}
+          {:error, reason} -> {:error, {:destination_stat, reason}}
+        end
+
+      {:ok, %File.Stat{type: :regular}} ->
+        case File.lstat(path) do
+          {:error, :enoent} ->
+            case File.rename(backup, path) do
+              :ok -> :ok
+              {:error, reason} -> {:error, {:restore_rename, reason}}
+            end
+
+          {:ok, _destination_stat} ->
+            {:error, :destination_still_exists}
+
+          {:error, reason} ->
+            {:error, {:destination_stat, reason}}
+        end
+
+      {:ok, %File.Stat{type: type}} ->
+        {:error, {:invalid_backup_type, type}}
+
+      {:error, reason} ->
+        {:error, {:backup_stat, reason}}
     end
   end
 

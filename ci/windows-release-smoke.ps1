@@ -250,6 +250,53 @@ function Assert-InstallerArchiveTypeSemantics([string]$ScriptPath, [string]$Work
   }
 }
 
+function Assert-PublisherSafeRemovalSemantics([string]$ScriptPath, [string]$WorkDir) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $requiredFunctions = @("Test-NoReparseAncestors", "Remove-SafePublishTree")
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $requiredFunctions -contains $node.Name
+    }, $true)
+  )
+  foreach ($name in $requiredFunctions) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+
+  $moduleBody = @($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($moduleBody))
+  $root = Join-Path $WorkDir "publisher safe removal"
+  $victim = Join-Path $WorkDir "publisher removal victim"
+  $junction = Join-Path $root "external-junction"
+  $sentinel = Join-Path $victim "must-survive.txt"
+
+  New-Item -ItemType Directory -Force -Path $root, $victim | Out-Null
+  [IO.File]::WriteAllText($sentinel, "must survive publisher cleanup`n", [Text.UTF8Encoding]::new($false))
+  New-Item -ItemType Junction -Path $junction -Target $victim | Out-Null
+  try {
+    $rejected = $false
+    try {
+      & $module { param($Path) Remove-SafePublishTree $Path } $root
+    } catch {
+      if ($_.Exception.Message -notmatch "reparse") { throw }
+      $rejected = $true
+    }
+    Assert-True $rejected "Publisher cleanup followed a junction"
+    Assert-True (Test-Path -LiteralPath $sentinel -PathType Leaf) "Publisher cleanup removed an external target"
+  } finally {
+    if (Test-Path -LiteralPath $junction) { [IO.Directory]::Delete($junction) }
+    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    if (Test-Path -LiteralPath $victim) { Remove-Item -LiteralPath $victim -Recurse -Force }
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-FreePort {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
   $listener.Start()
@@ -299,7 +346,7 @@ function Get-DalaAppVersion([string]$ReleaseDir) {
   $match.Groups[1].Value
 }
 
-function Set-DalaAppVersion([string]$ReleaseDir, [string]$Version) {
+function Set-DalaAppVersion([string]$ReleaseDir, [string]$Version, [string]$ErlPath) {
   $sourceVersion = Get-DalaAppVersion $ReleaseDir
   if ($sourceVersion -ceq $Version) { return }
 
@@ -345,20 +392,12 @@ function Set-DalaAppVersion([string]$ReleaseDir, [string]$Version) {
   [IO.Directory]::Move($sourceReleaseRoot, $targetReleaseRoot)
   Assert-True ((Get-DalaAppVersion $ReleaseDir) -ceq $Version) "dala.app version rewrite did not stick"
 
-  $erlMatches = @(
-    Get-ChildItem -LiteralPath $ReleaseDir -Filter "erl.exe" -Recurse -File |
-      Where-Object { $_.FullName -like "*\erts-*\bin\erl.exe" }
-  )
-  if ($erlMatches.Count -ne 1) {
-    throw "Expected one packaged erl.exe in $ReleaseDir, found $($erlMatches.Count)"
-  }
-
   foreach ($scriptName in @("start", "start_clean")) {
     $scriptBase = Join-Path $targetReleaseRoot $scriptName
     $scriptBase = $scriptBase.Replace('\', '/')
     $escapedScriptBase = $scriptBase.Replace('"', '\"')
     $eval = "case systools:script2boot(`"$escapedScriptBase`") of ok -> halt(0); Error -> io:format(standard_error, `"~p~n`", [Error]), halt(1) end."
-    & $erlMatches[0].FullName -noshell -eval $eval
+    & $ErlPath -noshell -eval $eval
     if ($LASTEXITCODE -ne 0) { throw "Could not rebuild $scriptName.boot for fixture version $Version" }
   }
 }
@@ -532,7 +571,9 @@ function Start-BootedErl([string]$ReleaseDir, [string]$Version) {
   }
 
   # Keep the identity-shaped -boot token in the command line without starting
-  # the full release, whose application config is intentionally absent here.
+  # the full release, whose application/config files are intentionally absent
+  # from this reduced fixture. Everything after `-extra` is user data, so the
+  # token remains visible to ownership checks without being parsed by Erlang.
   $arguments = "-noshell -eval `"timer:sleep(600000).`" -extra -boot `"$boot`""
   $process = Start-Process -FilePath $erl -ArgumentList $arguments -WindowStyle Hidden -PassThru
   Start-Sleep -Milliseconds 500
@@ -810,6 +851,7 @@ $checksum = (Resolve-Path -LiteralPath $ChecksumPath).Path
 $installer = (Resolve-Path -LiteralPath $InstallerScript).Path
 $update = (Resolve-Path -LiteralPath $UpdateScript).Path
 $uninstall = (Resolve-Path -LiteralPath $UninstallScript).Path
+$fixtureErl = (Get-Command erl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $repoRoot = Split-Path -Parent $installer
 $updateHelperSource = Join-Path $repoRoot "priv\windows\update-dala.ps1"
 $restartHelperSource = Join-Path $repoRoot "priv\windows\restart-dala.ps1"
@@ -914,6 +956,7 @@ try {
   New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, $expandedIncomplete, `
     $expandedStopFailure, $configDir | Out-Null
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
+  Assert-PublisherSafeRemovalSemantics $publishHelperSource $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
   Expand-Archive -LiteralPath $archive -DestinationPath $expandedNew -Force
 
@@ -955,7 +998,7 @@ try {
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $env:DALA_HOME "current.txt"))) "Incomplete release changed current.txt"
 
   Copy-Item -Path (Join-Path $expandedNew "*") -Destination $expandedOld -Recurse -Force
-  Set-DalaAppVersion $expandedOld $oldVersion
+  Set-DalaAppVersion $expandedOld $oldVersion $fixtureErl
   Add-Content -LiteralPath (Join-Path $expandedOld "run-dala.ps1") -Value "# old-version runner fixture"
   Compress-Archive -Path (Join-Path $expandedOld "*") -DestinationPath $oldArchive -CompressionLevel Optimal
   Write-ArchiveChecksum $oldArchive $oldChecksum
@@ -1435,6 +1478,27 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Write-PublishFixture $publishStaging $newVersion "first-winner" $newPublishHelper
   [IO.Directory]::CreateDirectory($publishDestination) | Out-Null
   [IO.File]::WriteAllText($publishDestinationSentinel, "must remain while locked")
+
+  # A rollback directory left by an interrupted publisher is ambiguous even
+  # when the previous destination still exists. Refuse to guess which tree is
+  # authoritative and leave both paths available for manual recovery.
+  $orphanPublishStaging = Join-Path $publishStagingRoot "orphan candidate"
+  $orphanPublishDestination = Join-Path $publishDestinationRoot "orphan release"
+  $orphanPublishBackup = Join-Path $publishDestinationRoot `
+    (".orphan release.rollback-" + [guid]::NewGuid().ToString("N"))
+  Write-PublishFixture $orphanPublishStaging $newVersion "orphan-candidate" $newPublishHelper
+  Write-PublishFixture $orphanPublishDestination $newVersion "orphan-destination" $newPublishHelper
+  Write-PublishFixture $orphanPublishBackup $newVersion "orphan-backup" $newPublishHelper
+  $orphanPublishOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $newPublishHelper -StagingDir $orphanPublishStaging -DestinationDir $orphanPublishDestination `
+    -ExpectedVersion $newVersion 2>&1 | Out-String
+  $orphanPublishStatus = $LASTEXITCODE
+  Assert-True ($orphanPublishStatus -ne 0) "Publisher ignored an orphan rollback beside a complete destination"
+  Assert-True ($orphanPublishOutput -match "manual recovery") "Publisher returned the wrong orphan rollback error"
+  Assert-True (Test-Path -LiteralPath $orphanPublishBackup -PathType Container) "Publisher removed an orphan rollback"
+  Assert-True (((Get-Content -LiteralPath (Join-Path $orphanPublishDestination "publish-marker.txt") -Raw) -ceq "orphan-destination")) `
+    "Publisher changed the destination while rejecting an orphan rollback"
+  Remove-Item -LiteralPath $orphanPublishStaging, $orphanPublishDestination, $orphanPublishBackup -Recurse -Force
 
   $failedPublishStaging = Join-Path $publishStagingRoot "copy failure candidate"
   $failedPublishDestination = Join-Path $publishDestinationRoot "failed release"
@@ -2039,6 +2103,7 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
     concurrent_uninstall_rejected = $true
     global_lifecycle_lock_cross_session = $true
     failure_safe_release_publish = $true
+    publisher_orphan_rejected = $true
     failed_publish_preserved_destination = $true
     complete_publish_winner_preserved = $true
     mismatched_publish_version_replaced = $true

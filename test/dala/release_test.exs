@@ -136,7 +136,9 @@ defmodule Dala.ReleaseTest do
     assert File.read!(root_metadata) == original
     assert File.dir?(discovery)
     assert Path.wildcard(root_metadata <> ".new-*") == []
+    assert Path.wildcard(root_metadata <> ".backup-*") == []
     assert Path.wildcard(root_metadata <> ".rollback-*") == []
     assert Path.wildcard(discovery <> ".new-*") == []
+    assert Path.wildcard(discovery <> ".backup-*") == []
   end
 end

@@ -645,6 +645,16 @@ defmodule Dala.Updater do
   end
 
   defp replace_file(source, destination) do
+    if platform() == "windows-x86_64" do
+      with :ok <- ensure_no_windows_backups(destination) do
+        do_replace_file(source, destination)
+      end
+    else
+      do_replace_file(source, destination)
+    end
+  end
+
+  defp do_replace_file(source, destination) do
     case File.rename(source, destination) do
       :ok ->
         :ok
@@ -658,20 +668,113 @@ defmodule Dala.Updater do
   end
 
   defp replace_windows_file(source, destination) do
-    command = "[IO.File]::Replace($env:DALA_UPDATE_SOURCE, $env:DALA_UPDATE_DESTINATION, $null)"
+    backup =
+      destination <> ".backup-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
 
-    case System.cmd("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command],
+    command =
+      "[IO.File]::Replace($env:DALA_UPDATE_SOURCE, $env:DALA_UPDATE_DESTINATION, $env:DALA_UPDATE_BACKUP)"
+
+    case System.cmd(
+           "powershell.exe",
+           ["-NoProfile", "-NonInteractive", "-Command", command],
            env: [
              {"DALA_UPDATE_SOURCE", source},
-             {"DALA_UPDATE_DESTINATION", destination}
+             {"DALA_UPDATE_DESTINATION", destination},
+             {"DALA_UPDATE_BACKUP", backup}
            ],
            stderr_to_stdout: true
          ) do
-      {_output, 0} -> :ok
-      {output, status} -> {:error, {:replace_failed, status, String.trim(output)}}
+      {_output, 0} ->
+        case cleanup_windows_backup(backup) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            {:error, {:replace_succeeded_backup_cleanup_failed, backup, reason}}
+        end
+
+      {output, status} ->
+        case restore_windows_backup(backup, destination) do
+          :ok ->
+            {:error, {:replace_failed, status, String.trim(output)}}
+
+          {:error, restore_reason} ->
+            {:error,
+             {:replace_failed, status, String.trim(output), {:backup_restore, restore_reason}}}
+        end
     end
   rescue
     error -> {:error, {:replace_failed, Exception.message(error)}}
+  end
+
+  defp cleanup_windows_backup(backup) do
+    case File.rm(backup) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "updater: could not remove temporary current-pointer backup #{backup}: " <>
+            "#{inspect(reason)}; leaving it for recovery"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp ensure_no_windows_backups(path) do
+    parent = Path.dirname(path)
+    leaf = Path.basename(path)
+    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$")
+
+    case File.ls(parent) do
+      {:ok, names} ->
+        case Enum.find(names, &Regex.match?(pattern, &1)) do
+          nil -> :ok
+          backup -> {:error, {:orphan_recovery_backup, Path.join(parent, backup)}}
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:backup_directory_unreadable, parent, reason}}
+    end
+  end
+
+  defp restore_windows_backup(backup, destination) do
+    case File.lstat(backup) do
+      {:error, :enoent} ->
+        case File.lstat(destination) do
+          {:ok, _destination_stat} -> :ok
+          {:error, :enoent} -> {:error, :backup_missing_and_destination_missing}
+          {:error, reason} -> {:error, {:destination_stat, reason}}
+        end
+
+      {:ok, %File.Stat{type: :regular}} ->
+        case File.lstat(destination) do
+          {:error, :enoent} ->
+            case File.rename(backup, destination) do
+              :ok -> :ok
+              {:error, reason} -> {:error, {:rename, reason, backup}}
+            end
+
+          {:ok, _destination_stat} ->
+            {:error, {:destination_still_exists, backup}}
+
+          {:error, reason} ->
+            {:error, {:destination_stat, reason, backup}}
+        end
+
+      {:ok, %File.Stat{type: type}} ->
+        {:error, {:invalid_backup_type, type, backup}}
+
+      {:error, reason} ->
+        {:error, {:backup_stat, reason, backup}}
+    end
   end
 
   defp activate_update(tag, previous_tag, attempt_id) do
@@ -1095,15 +1198,40 @@ defmodule Dala.Updater do
 
   defp write_json_atomic(path, payload) do
     with :ok <- File.mkdir_p(Path.dirname(path)) do
-      fresh = path <> ".new-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+      fresh = path <> ".new-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
 
-      try do
-        with :ok <- File.write(fresh, Jason.encode!(payload) <> "\n", [:binary]),
-             :ok <- replace_file(fresh, path) do
-          :ok
-        end
-      after
-        File.rm(fresh)
+      case File.write(fresh, Jason.encode!(payload) <> "\n", [:binary]) do
+        :ok ->
+          case replace_file(fresh, path) do
+            :ok ->
+              File.rm(fresh)
+              :ok
+
+            {:error, reason} = error ->
+              # A failed Windows replacement can have consumed the source or
+              # left destination/backup state ambiguous. Do not erase the
+              # staged result unconditionally; it may be the only recoverable
+              # copy left for an operator.
+              if File.exists?(fresh) do
+                Logger.error(
+                  "updater: replacement failed; staged attempt result retained at #{fresh}: " <>
+                    "#{inspect(reason)}"
+                )
+              else
+                Logger.error(
+                  "updater: replacement failed after consuming staged result: #{inspect(reason)}"
+                )
+              end
+
+              error
+
+            other ->
+              other
+          end
+
+        {:error, _reason} = error ->
+          File.rm(fresh)
+          error
       end
     end
   end

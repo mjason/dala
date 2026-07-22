@@ -30,6 +30,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Test recoverable Windows file replacement
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./ci/windows-atomic-replace-smoke.ps1
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"

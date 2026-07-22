@@ -243,6 +243,9 @@ jobs:
       MIX_ENV: prod
     steps:
       - uses: actions/checkout@v4
+      - name: Test recoverable file replacement
+        shell: powershell
+        run: ./ci/windows-atomic-replace-smoke.ps1
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"

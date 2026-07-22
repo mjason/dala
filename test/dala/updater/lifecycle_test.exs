@@ -741,7 +741,12 @@ defmodule Dala.Updater.LifecycleTest do
   end
 
   defp replace_symlink(link, target) do
-    File.rm(link)
+    case File.rm(link) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, _reason} -> File.rmdir!(link)
+    end
+
     File.ln_s!(target, link)
   end
 

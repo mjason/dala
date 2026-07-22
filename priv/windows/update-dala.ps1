@@ -30,6 +30,88 @@ $Port = 4400
 $HadRunner = $false
 $UpdateLock = $null
 
+function Invoke-RecoverableFileReplace(
+  [Parameter(Mandatory = $true)][string]$Source,
+  [Parameter(Mandatory = $true)][string]$Destination,
+  [scriptblock]$ReplaceOperation
+) {
+  $destinationParent = Split-Path -Parent $Destination
+  $destinationLeaf = Split-Path -Leaf $Destination
+  # Any leftover backup for this destination is ambiguous, regardless of
+  # which previous release generated its token. Refuse to guess recovery.
+  $backupPattern = '^' + [regex]::Escape($destinationLeaf) + '\.backup-.+$'
+  $existingBackups = @(
+    Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
+      Where-Object { $_.Name -match $backupPattern }
+  )
+  if ($existingBackups.Count -gt 0) {
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+    throw "Existing recovery backup requires manual recovery: $($existingBackups[0].FullName)"
+  }
+
+  do {
+    $backup = "$Destination.backup-$([guid]::NewGuid().ToString('N'))"
+  } while (Test-Path -LiteralPath $backup)
+
+  if (-not $ReplaceOperation) {
+    $ReplaceOperation = {
+      param([string]$SourcePath, [string]$DestinationPath, [string]$BackupPath)
+      [IO.File]::Replace($SourcePath, $DestinationPath, $BackupPath)
+    }
+  }
+
+  try {
+    & $ReplaceOperation $Source $Destination $backup
+  } catch {
+    $replaceError = $_
+    $recoveryFailure = $null
+
+    try {
+      $destinationExists = Test-Path -LiteralPath $Destination -ErrorAction Stop
+      $backupExists = Test-Path -LiteralPath $backup -ErrorAction Stop
+
+      if (-not $destinationExists -and $backupExists) {
+        $backupAttributes = [IO.File]::GetAttributes($backup)
+        if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+            ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+          $recoveryFailure = "recovery backup is not a regular file and remains at $backup"
+        } else {
+          [IO.File]::Move($backup, $Destination)
+        }
+      } elseif (-not $destinationExists) {
+        $recoveryFailure = "destination and recovery backup are both missing"
+      } elseif ($backupExists) {
+        $recoveryFailure = "replacement state is ambiguous; recovery backup remains at $backup"
+      }
+    } catch {
+      $recoveryFailure = "could not restore destination; recovery backup remains at $backup`: $($_.Exception.Message)"
+    }
+
+    if ($recoveryFailure) {
+      if (Test-Path -LiteralPath $Source) {
+        $recoveryFailure += "; replacement source remains at $Source"
+      }
+      throw "$($replaceError.Exception.Message); $recoveryFailure"
+    }
+
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+    throw $replaceError
+  }
+
+  if (Test-Path -LiteralPath $backup) {
+    try {
+      $backupAttributes = [IO.File]::GetAttributes($backup)
+      if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+          ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "recovery backup is not a regular file"
+      }
+      Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+    } catch {
+      throw "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
+    }
+  }
+}
+
 function Write-UpdateResult([bool]$Success, [bool]$RolledBack, [string]$Message) {
   if ([string]::IsNullOrWhiteSpace($ResultFile)) { return }
 
@@ -51,14 +133,18 @@ function Write-UpdateResult([bool]$Success, [bool]$RolledBack, [string]$Message)
   }
   [IO.File]::WriteAllText($fresh, ($result | ConvertTo-Json -Depth 3) + "`n", [Text.UTF8Encoding]::new($false))
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $ResultFile -PathType Leaf) {
-      [IO.File]::Replace($fresh, $ResultFile, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $ResultFile
     } else {
       [IO.File]::Move($fresh, $ResultFile)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -374,14 +460,18 @@ function Set-Current([string]$Tag) {
   $fresh = Join-Path $Root (".current-" + [guid]::NewGuid().ToString("N") + ".new")
   [IO.File]::WriteAllText($fresh, "$Tag`n", [Text.UTF8Encoding]::new($false))
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $CurrentFile -PathType Leaf) {
-      [IO.File]::Replace($fresh, $CurrentFile, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $CurrentFile
     } else {
       [IO.File]::Move($fresh, $CurrentFile)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -396,14 +486,18 @@ function Deploy-Runner([string]$Source) {
   $fresh = Join-Path $Root (".run-dala-" + [guid]::NewGuid().ToString("N") + ".new")
   Copy-Item -LiteralPath $Source -Destination $fresh -Force
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $Runner -PathType Leaf) {
-      [IO.File]::Replace($fresh, $Runner, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $Runner
     } else {
       [IO.File]::Move($fresh, $Runner)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 

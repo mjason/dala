@@ -160,6 +160,88 @@ function Assert-TaskName([string]$Name) {
   }
 }
 
+function Invoke-RecoverableFileReplace(
+  [Parameter(Mandatory = $true)][string]$Source,
+  [Parameter(Mandatory = $true)][string]$Destination,
+  [scriptblock]$ReplaceOperation
+) {
+  $destinationParent = Split-Path -Parent $Destination
+  $destinationLeaf = Split-Path -Leaf $Destination
+  # Any leftover backup for this destination is ambiguous, regardless of
+  # which previous release generated its token. Refuse to guess recovery.
+  $backupPattern = '^' + [regex]::Escape($destinationLeaf) + '\.backup-.+$'
+  $existingBackups = @(
+    Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
+      Where-Object { $_.Name -match $backupPattern }
+  )
+  if ($existingBackups.Count -gt 0) {
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+    throw "Existing recovery backup requires manual recovery: $($existingBackups[0].FullName)"
+  }
+
+  do {
+    $backup = "$Destination.backup-$([guid]::NewGuid().ToString('N'))"
+  } while (Test-Path -LiteralPath $backup)
+
+  if (-not $ReplaceOperation) {
+    $ReplaceOperation = {
+      param([string]$SourcePath, [string]$DestinationPath, [string]$BackupPath)
+      [IO.File]::Replace($SourcePath, $DestinationPath, $BackupPath)
+    }
+  }
+
+  try {
+    & $ReplaceOperation $Source $Destination $backup
+  } catch {
+    $replaceError = $_
+    $recoveryFailure = $null
+
+    try {
+      $destinationExists = Test-Path -LiteralPath $Destination -ErrorAction Stop
+      $backupExists = Test-Path -LiteralPath $backup -ErrorAction Stop
+
+      if (-not $destinationExists -and $backupExists) {
+        $backupAttributes = [IO.File]::GetAttributes($backup)
+        if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+            ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+          $recoveryFailure = "recovery backup is not a regular file and remains at $backup"
+        } else {
+          [IO.File]::Move($backup, $Destination)
+        }
+      } elseif (-not $destinationExists) {
+        $recoveryFailure = "destination and recovery backup are both missing"
+      } elseif ($backupExists) {
+        $recoveryFailure = "replacement state is ambiguous; recovery backup remains at $backup"
+      }
+    } catch {
+      $recoveryFailure = "could not restore destination; recovery backup remains at $backup`: $($_.Exception.Message)"
+    }
+
+    if ($recoveryFailure) {
+      if (Test-Path -LiteralPath $Source) {
+        $recoveryFailure += "; replacement source remains at $Source"
+      }
+      throw "$($replaceError.Exception.Message); $recoveryFailure"
+    }
+
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+    throw $replaceError
+  }
+
+  if (Test-Path -LiteralPath $backup) {
+    try {
+      $backupAttributes = [IO.File]::GetAttributes($backup)
+      if (($backupAttributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+          ($backupAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "recovery backup is not a regular file"
+      }
+      Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+    } catch {
+      throw "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
+    }
+  }
+}
+
 function Write-TextAtomic([string]$Path, [string]$Body) {
   if (-not (Test-NoReparseAncestors $Path)) {
     throw "Refusing to write through a reparse point: $Path"
@@ -169,14 +251,18 @@ function Write-TextAtomic([string]$Path, [string]$Body) {
   $fresh = "$Path.new-$([guid]::NewGuid().ToString('N'))"
   [IO.File]::WriteAllText($fresh, $Body, [Text.UTF8Encoding]::new($false))
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-      [IO.File]::Replace($fresh, $Path, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $Path
     } else {
       [IO.File]::Move($fresh, $Path)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -335,14 +421,18 @@ function Set-Current([string]$InstallRoot, [string]$Tag) {
   $fresh = Join-Path $InstallRoot (".current-" + [guid]::NewGuid().ToString("N") + ".new")
   [IO.File]::WriteAllText($fresh, "$Tag`n", [Text.UTF8Encoding]::new($false))
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $current -PathType Leaf) {
-      [IO.File]::Replace($fresh, $current, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $current
     } else {
       [IO.File]::Move($fresh, $current)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -418,6 +508,48 @@ function Test-NoReparseAncestors([string]$Path) {
     $true
   } catch {
     $false
+  }
+}
+
+function Remove-SafeInstallTree([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to remove through a reparse point: $Path"
+  }
+
+  $attributes = [IO.File]::GetAttributes($Path)
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to remove a reparse point: $Path"
+  }
+
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+      $childAttributes = [IO.File]::GetAttributes($entry.FullName)
+      if (($childAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to remove a reparse point: $($entry.FullName)"
+      }
+      Remove-SafeInstallTree $entry.FullName
+    }
+
+    $attributes = [IO.File]::GetAttributes($Path)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Refusing to remove a reparse point: $Path"
+    }
+    if (-not (Test-NoReparseAncestors $Path)) {
+      throw "Refusing to remove through a reparse point: $Path"
+    }
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.Directory]::Delete($Path)
+  } else {
+    $attributes = [IO.File]::GetAttributes($Path)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Refusing to remove a reparse point: $Path"
+    }
+    if (-not (Test-NoReparseAncestors $Path)) {
+      throw "Refusing to remove through a reparse point: $Path"
+    }
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.File]::Delete($Path)
   }
 }
 
@@ -558,14 +690,18 @@ function Deploy-Runner([string]$Source, [string]$Destination) {
   $fresh = "$Destination.new-$([guid]::NewGuid().ToString('N'))"
   Copy-Item -LiteralPath $Source -Destination $fresh -Force
 
+  $helperOwnsFresh = $false
   try {
     if (Test-Path -LiteralPath $Destination -PathType Leaf) {
-      [IO.File]::Replace($fresh, $Destination, $null)
+      $helperOwnsFresh = $true
+      Invoke-RecoverableFileReplace $fresh $Destination
     } else {
       [IO.File]::Move($fresh, $Destination)
     }
   } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    if (-not $helperOwnsFresh) {
+      Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -939,8 +1075,13 @@ if (-not (Test-CompleteDalaRelease $Dest $ReleaseVersion)) {
       }
     }
   } finally {
-    Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($cleanupPath in @($temp, $staging)) {
+      try {
+        Remove-SafeInstallTree $cleanupPath
+      } catch {
+        Write-Warning "Could not safely remove installer staging at $cleanupPath`: $($_.Exception.Message)"
+      }
+    }
   }
 }
 
@@ -1083,8 +1224,12 @@ if ($PreviousTag) {
     if ($LASTEXITCODE -ne 0) { throw "Dala update failed and the previous release was restored; see $resultFile" }
   } catch {
     if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
-      Remove-Item -LiteralPath $ReplacedDestinationBackup -Recurse -Force -ErrorAction SilentlyContinue
-      $ReplacedDestinationBackup = $null
+      try {
+        Remove-SafeInstallTree $ReplacedDestinationBackup
+        $ReplacedDestinationBackup = $null
+      } catch {
+        Write-Warning "Could not safely remove repaired release backup at $ReplacedDestinationBackup`: $($_.Exception.Message)"
+      }
     }
     throw
   }
@@ -1158,9 +1303,14 @@ if ($PreviousTag) {
 
     Remove-Item -LiteralPath (Join-Path $Root "current.txt"), $Runner -Force -ErrorAction SilentlyContinue
     if ($InstalledNow) {
-      Remove-Item -LiteralPath $Dest -Recurse -Force -ErrorAction SilentlyContinue
-      if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
-        Move-Item -LiteralPath $ReplacedDestinationBackup -Destination $Dest -ErrorAction SilentlyContinue
+      try {
+        Remove-SafeInstallTree $Dest
+        if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
+          Move-Item -LiteralPath $ReplacedDestinationBackup -Destination $Dest -ErrorAction Stop
+          $ReplacedDestinationBackup = $null
+        }
+      } catch {
+        throw "$installError; release tree rollback failed: $($_.Exception.Message)"
       }
     }
     if ($CreatedMetadata) {
@@ -1173,7 +1323,7 @@ if ($PreviousTag) {
 }
 
 if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
-  Remove-Item -LiteralPath $ReplacedDestinationBackup -Recurse -Force -ErrorAction Stop
+  Remove-SafeInstallTree $ReplacedDestinationBackup
   $ReplacedDestinationBackup = $null
 }
 

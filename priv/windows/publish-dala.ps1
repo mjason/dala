@@ -147,8 +147,12 @@ function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string
       return $false
     }
 
-    $sourceRoot = (Get-NormalizedFullPath $Source).TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
-    $candidateRoot = (Get-NormalizedFullPath $Candidate).TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
+    # Resolve both roots through the filesystem before slicing child paths.
+    # Erlang can pass an 8.3 temporary path while PowerShell reports long names
+    # from Get-ChildItem; using the raw argument length corrupts every relative
+    # path on those hosts.
+    $sourceRoot = (Get-Item -LiteralPath $Source -Force -ErrorAction Stop).FullName.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
+    $candidateRoot = (Get-Item -LiteralPath $Candidate -Force -ErrorAction Stop).FullName.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
     $sourceFiles = @(
       Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction Stop |
         ForEach-Object { $_.FullName.Substring($sourceRoot.Length) } |
@@ -210,6 +214,52 @@ function Move-PublishPath([string]$Source, [string]$Destination) {
   }
 }
 
+function Remove-SafePublishTree([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  if (-not (Test-NoReparseAncestors $Path)) {
+    throw "Refusing to remove through a reparse point: $Path"
+  }
+
+  $attributes = [IO.File]::GetAttributes($Path)
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to remove a reparse point: $Path"
+  }
+
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+      $childAttributes = [IO.File]::GetAttributes($entry.FullName)
+      if (($childAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to remove a reparse point: $($entry.FullName)"
+      }
+      Remove-SafePublishTree $entry.FullName
+    }
+
+    # Use a non-recursive delete after rechecking the root. If a child is
+    # replaced while cleanup is in progress, the delete fails closed.
+    $attributes = [IO.File]::GetAttributes($Path)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Refusing to remove a reparse point: $Path"
+    }
+    if (-not (Test-NoReparseAncestors $Path)) {
+      throw "Refusing to remove through a reparse point: $Path"
+    }
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.Directory]::Delete($Path)
+  } else {
+    # Recheck immediately before deleting files as well; File.Delete removes
+    # a junction itself, but never allow attribute changes through one.
+    $attributes = [IO.File]::GetAttributes($Path)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Refusing to remove a reparse point: $Path"
+    }
+    if (-not (Test-NoReparseAncestors $Path)) {
+      throw "Refusing to remove through a reparse point: $Path"
+    }
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.File]::Delete($Path)
+  }
+}
+
 $LifecycleMutex = Enter-DalaLifecycleMutex
 $publishTemp = $null
 $operationError = $null
@@ -250,19 +300,11 @@ try {
     Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
       Where-Object { $_.Name -cmatch $rollbackPattern }
   )
-  if (-not (Test-Path -LiteralPath $destination)) {
+  if ($orphanBackups.Count -gt 0) {
     if ($orphanBackups.Count -gt 1) {
       throw "Multiple previous destination backups require manual recovery under $destinationParent"
     }
-    if ($orphanBackups.Count -eq 1) {
-      $orphan = $orphanBackups[0]
-      if (-not $orphan.PSIsContainer -or
-          -not (Test-NoReparsePoints $orphan.FullName) -or
-          -not (Test-CompleteDalaRelease $orphan.FullName $ExpectedVersion)) {
-        throw "Previous destination backup is not a complete safe Dala release: $($orphan.FullName)"
-      }
-      Move-PublishPath $orphanBackups[0].FullName $destination
-    }
+    throw "Previous destination backup has no publisher journal; manual recovery is required: $($orphanBackups[0].FullName)"
   }
   if ((Test-Path -LiteralPath $destination) -and -not (Test-NoReparsePoints $destination)) {
     throw "DestinationDir contains a reparse point or cannot be inspected safely: $destination"
@@ -316,7 +358,7 @@ try {
 
       if ($destinationBackup -and (Test-Path -LiteralPath $destinationBackup)) {
         try {
-          Remove-Item -LiteralPath $destinationBackup -Recurse -Force -ErrorAction Stop
+          Remove-SafePublishTree $destinationBackup
           $destinationBackup = $null
         } catch {
           Write-Warning "Published $destination but could not remove previous destination at $destinationBackup`: $($_.Exception.Message)"
@@ -329,7 +371,7 @@ try {
 } finally {
   try {
     if ($publishTemp -and (Test-Path -LiteralPath $publishTemp)) {
-      Remove-Item -LiteralPath $publishTemp -Recurse -Force -ErrorAction Stop
+      Remove-SafePublishTree $publishTemp
     }
   } catch {
     $cleanupError = $_
