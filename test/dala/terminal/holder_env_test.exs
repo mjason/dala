@@ -4,6 +4,12 @@ defmodule Dala.Terminal.HolderEnvTest do
 
   alias Dala.Terminal.{Holder, Shell}
 
+  # A Windows holder is launched through the WMI broker, so a busy hosted
+  # runner can take several seconds to get the shell to its first command.
+  # Keep the fast local timeout on Unix while giving that startup path a
+  # bounded, explicit budget instead of making the test race the broker.
+  @file_wait_attempts if(Dala.TestPlatform.windows?(), do: 1_500, else: 200)
+
   # POLICY (user decision): dala does NOT touch the environment it passes to
   # shells. The server process is kept clean at the SOURCE — configuration
   # lives in config.jsonc and secrets in the data dir, so there is nothing
@@ -44,7 +50,7 @@ defmodule Dala.Terminal.HolderEnvTest do
       end)
 
       assert :ok = Holder.send_input(socket, capture_env_command(out))
-      env = out |> await_file() |> parse_env()
+      env = out |> await_file(@file_wait_attempts) |> parse_env()
       :gen_tcp.close(socket)
 
       # Inherited environment arrives untouched; explicit spawn env arrives.
@@ -71,7 +77,7 @@ defmodule Dala.Terminal.HolderEnvTest do
     end)
   end
 
-  defp await_file(path, attempts \\ 200) do
+  defp await_file(path, attempts) do
     case File.read(path) do
       {:ok, contents} when contents != "" ->
         contents
