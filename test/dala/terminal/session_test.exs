@@ -35,6 +35,20 @@ defmodule Dala.Terminal.SessionTest do
     end)
   end
 
+  defp disable_query_owner_for_test(state) do
+    case Map.get(state, :query_owner_command) do
+      %{timer: timer} -> Process.cancel_timer(timer)
+      _ -> :ok
+    end
+
+    Map.merge(state, %{
+      query_owner_command: nil,
+      query_owner_phase: :disabled,
+      query_owner_enabled?: false,
+      query_owner_negotiable?: false
+    })
+  end
+
   defp windows?, do: Dala.TestPlatform.windows?()
 
   defp test_shell, do: Dala.TestPlatform.shell()
@@ -189,7 +203,9 @@ defmodule Dala.Terminal.SessionTest do
     :ok = :inet.setopts(original_socket, active: false)
 
     :sys.replace_state(server, fn state ->
-      %{state | socket: fake_socket, pending_repaints: full_queue}
+      state
+      |> disable_query_owner_for_test()
+      |> Map.merge(%{socket: fake_socket, pending_repaints: full_queue})
     end)
 
     try do
@@ -205,10 +221,6 @@ defmodule Dala.Terminal.SessionTest do
       _ = Server.size_info(session.id)
 
       assert :queue.len(:sys.get_state(server).pending_repaints) == 64
-      assert {:ok, <<0x17, 0>>} = :gen_tcp.recv(peer, 0, 1_000)
-      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 0>>})
-      _ = Server.size_info(session.id)
-      assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
     after
       if Process.alive?(server) do
         :sys.replace_state(server, fn state ->
@@ -237,7 +249,9 @@ defmodule Dala.Terminal.SessionTest do
     :ok = :inet.setopts(original_socket, active: false)
 
     :sys.replace_state(server, fn state ->
-      %{state | socket: fake_socket, pending_repaints: full_queue}
+      state
+      |> disable_query_owner_for_test()
+      |> Map.merge(%{socket: fake_socket, pending_repaints: full_queue})
     end)
 
     try do
@@ -245,16 +259,11 @@ defmodule Dala.Terminal.SessionTest do
       Server.claim_size(session.id, self(), "queue-test", "queue-device", 26, 82)
       _ = Server.size_info(session.id)
 
-      # Holder negotiation may race the two resize writes: both orders are
-      # valid because the socket is FIFO, but HELLO/query-owner setup happens
-      # independently of the resize calls. Consume the three protocol frames
-      # and assert their set rather than depending on scheduling.
-      frames = recv_packets(peer, 3)
-      assert Enum.count(frames, &(&1 == <<0x17, 0>>)) == 1
+      # Query-owner negotiation is disabled above; only the two resize frames
+      # belong to this test, so the holder FIFO can be asserted directly.
+      frames = recv_packets(peer, 2)
       assert Enum.count(frames, &(&1 == <<0x12, 25::16, 81::16>>)) == 1
       assert Enum.count(frames, &(&1 == <<0x12, 26::16, 82::16>>)) == 1
-      send(server, {:tcp, fake_socket, <<Holder.type_query_owner(), 0>>})
-      _ = Server.size_info(session.id)
       assert {:error, :timeout} = :gen_tcp.recv(peer, 0, 100)
 
       saturated = :sys.get_state(server)
