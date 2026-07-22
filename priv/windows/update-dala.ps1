@@ -226,6 +226,46 @@ function Test-SamePath([string]$Left, [string]$Right) {
   $leftFull.Equals($rightFull, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-MetadataField($Metadata, [string]$Name) {
+  if ($null -eq $Metadata) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  $property = $Metadata.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  if ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+    throw "Dala install metadata field '$Name' is empty"
+  }
+  [pscustomobject]@{ Present = $true; Value = [string]$property.Value }
+}
+
+function Get-CanonicalDiscoveryFile([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or
+      $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or
+      $Path -match '^\\\\[.?]\\' -or
+      ($Path.Length -gt 2 -and $Path.Substring(2).Contains(":"))) {
+    throw "Dala discoveryFile must be an absolute Windows path: $Path"
+  }
+  try {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]"\\/")
+  } catch {
+    throw "Dala discoveryFile is invalid: $Path"
+  }
+  if (-not (Test-NoReparseAncestors $full)) {
+    throw "Refusing to use Dala discoveryFile through a reparse point: $full"
+  }
+  if (Test-Path -LiteralPath $full) {
+    $attributes = [IO.File]::GetAttributes($full)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+        -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+      throw "Dala discoveryFile must be a regular file: $full"
+    }
+  }
+  $full
+}
+
 function Assert-DalaTaskPrincipal($Task) {
   $expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $userId = [string]$Task.Principal.UserId
@@ -262,6 +302,10 @@ function Read-InstallMetadata([string]$Path) {
     }
     if ([int]$metadata.port -lt 1 -or [int]$metadata.port -gt 65535) { throw "invalid port" }
     if ([string]$metadata.platform -ne "windows-x86_64") { throw "unsupported platform" }
+    $discoveryField = Get-MetadataField $metadata "discoveryFile"
+    if ($discoveryField.Present) {
+      $null = Get-CanonicalDiscoveryFile ([string]$discoveryField.Value)
+    }
     $metadata
   } catch {
     throw "Invalid Dala install metadata at $Path`: $($_.Exception.Message)"

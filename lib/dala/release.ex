@@ -13,6 +13,7 @@ defmodule Dala.Release do
   end
 
   @app :dala
+  @discovery_metadata_key "discoveryFile"
 
   def migrate do
     load_app()
@@ -30,9 +31,26 @@ defmodule Dala.Release do
 
   @doc false
   def sync_install_metadata(root_metadata_path, discovery_path, runtime, opts \\ []) do
+    discovery_path = Path.expand(discovery_path)
+
     with_metadata_pair_lock([root_metadata_path, discovery_path], fn ->
       sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts)
     end)
+  end
+
+  @doc false
+  @spec resolve_discovery_file(map(), keyword()) :: String.t()
+  def resolve_discovery_file(metadata, opts \\ []) when is_map(metadata) do
+    root_metadata_path = Keyword.get(opts, :root_metadata_path)
+    env = Keyword.get(opts, :env, System.get_env())
+
+    path =
+      case Map.fetch(metadata, @discovery_metadata_key) do
+        {:ok, value} -> value
+        :error -> Map.get(env, "DALA_DISCOVERY_FILE") || app_data_discovery_file(env)
+      end
+
+    canonical_discovery_file!(path, root_metadata_path)
   end
 
   defp sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts) do
@@ -53,6 +71,9 @@ defmodule Dala.Release do
       raise "Dala runtime port is invalid"
     end
 
+    discovery_path = canonical_discovery_file!(discovery_path, root_metadata_path)
+    validate_metadata_pair_before_sync!(metadata, root_metadata_path, discovery_path)
+
     updated =
       Map.merge(metadata, %{
         "schemaVersion" => 1,
@@ -62,7 +83,8 @@ defmodule Dala.Release do
         "taskName" => runtime_service_name!(runtime),
         "port" => port,
         "repo" => required_runtime!(runtime, :repo),
-        "platform" => "windows-x86_64"
+        "platform" => "windows-x86_64",
+        @discovery_metadata_key => Path.expand(discovery_path)
       })
 
     body = Jason.encode!(updated, pretty: true) <> "\n"
@@ -119,11 +141,16 @@ defmodule Dala.Release do
       endpoint = Application.fetch_env!(@app, DalaWeb.Endpoint)
       http = Keyword.fetch!(endpoint, :http)
       port = Keyword.fetch!(http, :port)
-      app_data = System.fetch_env!("APPDATA")
+      metadata =
+        root_metadata_path
+        |> File.read!()
+        |> Jason.decode!()
+
+      discovery_path = resolve_discovery_file(metadata, root_metadata_path: root_metadata_path)
 
       sync_install_metadata(
         root_metadata_path,
-        Path.join([app_data, "Dala", "install.json"]),
+        discovery_path,
         %{
           root: root,
           data_dir: Application.fetch_env!(@app, :data_dir),
@@ -135,6 +162,131 @@ defmodule Dala.Release do
           repo: Application.fetch_env!(@app, :update_repo)
         }
       )
+    end
+  end
+
+  defp app_data_discovery_file(env) do
+    base =
+      case Map.get(env, "APPDATA") do
+        value when is_binary(value) and value != "" -> Path.join(value, "Dala")
+        _ -> :filename.basedir(:user_config, ~c"Dala") |> List.to_string()
+      end
+
+    Path.join(base, "install.json")
+  end
+
+  defp canonical_discovery_file!(path, _root_metadata_path) do
+    unless is_binary(path) and String.trim(path) != "" do
+      raise "Dala discoveryFile is empty or invalid"
+    end
+
+    unless Path.type(path) == :absolute do
+      raise "Dala discoveryFile must be an absolute path"
+    end
+
+    expanded = Path.expand(path)
+    ensure_no_symlink_ancestors!(expanded)
+
+    case File.lstat(expanded) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        raise "Dala discoveryFile must not be a symbolic link: #{expanded}"
+
+      {:ok, %File.Stat{type: :directory}} ->
+        raise "Dala discoveryFile must be a regular file: #{expanded}"
+
+      {:ok, %File.Stat{type: :regular}} ->
+        expanded
+
+      {:ok, %File.Stat{type: type}} ->
+        raise "Dala discoveryFile must be a regular file: #{expanded} (#{type})"
+
+      {:error, :enoent} ->
+        expanded
+
+      {:error, reason} ->
+        raise "could not inspect Dala discoveryFile #{expanded}: #{inspect(reason)}"
+    end
+  end
+
+  defp ensure_no_symlink_ancestors!(path) do
+    path
+    |> Path.dirname()
+    |> do_ensure_no_symlink_ancestors!()
+  end
+
+  defp do_ensure_no_symlink_ancestors!(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        raise "Dala discoveryFile must not use a symbolic-link ancestor: #{path}"
+
+      {:ok, _stat} ->
+        parent = Path.dirname(path)
+        if parent == path, do: :ok, else: do_ensure_no_symlink_ancestors!(parent)
+
+      {:error, :enoent} ->
+        parent = Path.dirname(path)
+        if parent == path, do: :ok, else: do_ensure_no_symlink_ancestors!(parent)
+
+      {:error, reason} ->
+        raise "could not inspect Dala discoveryFile ancestor #{path}: #{inspect(reason)}"
+    end
+  end
+
+  defp validate_metadata_pair_before_sync!(root_metadata, root_metadata_path, discovery_path) do
+    root_field = metadata_discovery_field!(root_metadata)
+
+    if root_field != :absent do
+      persisted_path = canonical_discovery_file!(root_field, root_metadata_path)
+
+      unless same_path?(persisted_path, discovery_path) do
+        raise "Dala root and discovery metadata disagree on discoveryFile"
+      end
+    end
+
+    case File.read(discovery_path) do
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        raise "could not read Dala discovery metadata #{discovery_path}: #{inspect(reason)}"
+
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, discovery_metadata} when is_map(discovery_metadata) ->
+            discovery_field = metadata_discovery_field!(discovery_metadata)
+
+            if (root_field == :absent) != (discovery_field == :absent) do
+              raise "Dala root and discovery metadata disagree on discoveryFile"
+            end
+
+            if root_field != :absent and
+                 not same_path?(canonical_discovery_file!(root_field, root_metadata_path),
+                   canonical_discovery_file!(discovery_field, root_metadata_path)) do
+              raise "Dala root and discovery metadata disagree on discoveryFile"
+            end
+
+          {:error, reason} ->
+            raise "invalid Dala discovery metadata at #{discovery_path}: #{inspect(reason)}"
+
+          _ ->
+            raise "invalid Dala discovery metadata at #{discovery_path}"
+        end
+    end
+  end
+
+  defp metadata_discovery_field!(metadata) when is_map(metadata) do
+    case Map.fetch(metadata, @discovery_metadata_key) do
+      :error -> :absent
+
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          raise "Dala discoveryFile metadata field is empty or invalid"
+        end
+
+        value
+
+      {:ok, _value} ->
+        raise "Dala discoveryFile metadata field is empty or invalid"
     end
   end
 

@@ -18,6 +18,10 @@ function Read-InstallMetadata([string]$Path) {
     }
     if ([int]$value.port -lt 1 -or [int]$value.port -gt 65535) { throw "invalid port" }
     if ([string]$value.platform -ne "windows-x86_64") { throw "unsupported platform" }
+    $discoveryField = Get-MetadataField $value "discoveryFile"
+    if ($discoveryField.Present) {
+      $null = Get-CanonicalDiscoveryFile ([string]$discoveryField.Value)
+    }
     if (-not ([IO.Path]::GetFullPath([string]$value.root).TrimEnd([char[]]"\/")).Equals(
         $Root, [StringComparison]::OrdinalIgnoreCase)) {
       throw "root does not match the runner location"
@@ -28,7 +32,125 @@ function Read-InstallMetadata([string]$Path) {
   }
 }
 
+function Get-MetadataField($Metadata, [string]$Name) {
+  if ($null -eq $Metadata) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  $property = $Metadata.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  if ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+    throw "Dala install metadata field '$Name' is empty"
+  }
+  [pscustomobject]@{ Present = $true; Value = [string]$property.Value }
+}
+
+function Test-NoReparseAncestors([string]$Path) {
+  try {
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root)) { return $false }
+    $current = $root
+    $remainder = $full.Substring($root.Length)
+    foreach ($segment in @($remainder -split '[\\/]')) {
+      if ([string]::IsNullOrEmpty($segment)) { continue }
+      $current = Join-Path $current $segment
+      if (-not (Test-Path -LiteralPath $current)) { break }
+      if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+      }
+    }
+    $true
+  } catch {
+    $false
+  }
+}
+
+function Get-CanonicalDiscoveryFile([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or
+      $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or
+      $Path -match '^\\\\[.?]\\' -or
+      ($Path.Length -gt 2 -and $Path.Substring(2).Contains(":"))) {
+    throw "Dala discoveryFile must be an absolute Windows path: $Path"
+  }
+  try {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]"\\/")
+  } catch {
+    throw "Dala discoveryFile is invalid: $Path"
+  }
+  if (-not (Test-NoReparseAncestors $full)) {
+    throw "Refusing to use Dala discoveryFile through a reparse point: $full"
+  }
+  if (Test-Path -LiteralPath $full) {
+    $attributes = [IO.File]::GetAttributes($full)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+        -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+      throw "Dala discoveryFile must be a regular file: $full"
+    }
+  }
+  $full
+}
+
+function Assert-InstallMetadataMatch($Left, $Right) {
+  foreach ($name in @("root", "dataDir", "configFile")) {
+    if (-not ([IO.Path]::GetFullPath([string]$Left.$name).TrimEnd([char[]]"\/")).Equals(
+        [IO.Path]::GetFullPath([string]$Right.$name).TrimEnd([char[]]"\/"),
+        [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Dala discovery and root install metadata disagree on $name"
+    }
+  }
+  foreach ($name in @("taskName", "repo", "platform")) {
+    if ([string]$Left.$name -cne [string]$Right.$name) {
+      throw "Dala discovery and root install metadata disagree on $name"
+    }
+  }
+  if ([int]$Left.port -ne [int]$Right.port) {
+    throw "Dala discovery and root install metadata disagree on port"
+  }
+  $leftField = Get-MetadataField $Left "discoveryFile"
+  $rightField = Get-MetadataField $Right "discoveryFile"
+  if ($leftField.Present -ne $rightField.Present) {
+    throw "Dala discovery and root install metadata disagree on discoveryFile"
+  }
+  if ($leftField.Present -and
+      -not ([IO.Path]::GetFullPath([string]$leftField.Value).TrimEnd([char[]]"\/")).Equals(
+        [IO.Path]::GetFullPath([string]$rightField.Value).TrimEnd([char[]]"\/"),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Dala discovery and root install metadata disagree on discoveryFile"
+  }
+}
+
+function Resolve-DiscoveryFile($RootMetadata) {
+  $field = Get-MetadataField $RootMetadata "discoveryFile"
+  $candidate = if ($field.Present) {
+    [string]$field.Value
+  } elseif (-not [string]::IsNullOrWhiteSpace($env:DALA_DISCOVERY_FILE)) {
+    $env:DALA_DISCOVERY_FILE
+  } elseif (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+    Join-Path $env:APPDATA "Dala\install.json"
+  } else {
+    throw "Dala discoveryFile is missing and APPDATA is not set"
+  }
+  Get-CanonicalDiscoveryFile $candidate
+}
+
 $metadata = Read-InstallMetadata $MetadataFile
+$DiscoveryFile = Resolve-DiscoveryFile $metadata
+$discoveryMetadata = Read-InstallMetadata $DiscoveryFile
+if ($metadata -and $discoveryMetadata) {
+  Assert-InstallMetadataMatch $metadata $discoveryMetadata
+}
+if (-not $metadata -and $discoveryMetadata) {
+  $field = Get-MetadataField $discoveryMetadata "discoveryFile"
+  if ($field.Present -and
+      -not ([IO.Path]::GetFullPath([string]$field.Value).TrimEnd([char[]]"\/")).Equals(
+        $DiscoveryFile, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Dala discovery metadata disagrees with its path"
+  }
+  $metadata = $discoveryMetadata
+}
 $ConfigFile = if ($metadata) {
   [string]$metadata.configFile
 } else {
@@ -46,6 +168,7 @@ $ConfigFile = [IO.Path]::GetFullPath($ConfigFile)
 # secrets so neither the server nor shells spawned from it can inherit them.
 foreach ($name in @(
   "DALA_HOME", "DALA_CONFIG", "DALA_DATA_DIR", "DALA_RELEASE_ROOT", "DALA_SERVICE",
+  "DALA_DISCOVERY_FILE",
   "DALA_UPDATE_REPO", "DALA_SERVER", "DALA_PORT", "DALA_LISTEN_IP", "DALA_HOST",
   "DALA_SCHEME", "DALA_URL_PORT", "DALA_CHECK_ORIGIN", "DALA_DATABASE_PATH", "DALA_POOL_SIZE",
   "DALA_AUTH_ENABLED", "DALA_USERS", "DALA_USERS_RESET", "DALA_SECRET_KEY_BASE",
@@ -65,6 +188,7 @@ foreach ($name in @(
   [Environment]::SetEnvironmentVariable($name, $null, "Process")
 }
 [Environment]::SetEnvironmentVariable("DALA_CONFIG", $ConfigFile, "Process")
+[Environment]::SetEnvironmentVariable("DALA_DISCOVERY_FILE", $DiscoveryFile, "Process")
 
 $tag = (Get-Content -LiteralPath (Join-Path $Root "current.txt") -Raw).Trim()
 if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {

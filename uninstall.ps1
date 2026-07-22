@@ -5,8 +5,17 @@ $ErrorActionPreference = "Stop"
 $TagPattern = '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
 $DefaultRoot = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Dala"
 $DefaultDataDir = Join-Path $DefaultRoot "data"
-$DefaultConfigDir = Join-Path $env:APPDATA "Dala"
-$DiscoveryFile = Join-Path $DefaultConfigDir "install.json"
+$DefaultConfigDir = if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+  $null
+} else {
+  Join-Path $env:APPDATA "Dala"
+}
+$DefaultDiscoveryFile = if ($DefaultConfigDir) { Join-Path $DefaultConfigDir "install.json" } else { $null }
+$DiscoveryFile = if (-not [string]::IsNullOrWhiteSpace($env:DALA_DISCOVERY_FILE)) {
+  $env:DALA_DISCOVERY_FILE
+} else {
+  $DefaultDiscoveryFile
+}
 
 function Read-InstallMetadata([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -47,6 +56,19 @@ function Assert-InstallMetadataMatch($Left, $Right) {
   }
   if ([int]$Left.port -ne [int]$Right.port) {
     throw "Dala discovery and root install metadata disagree on port"
+  }
+
+  $leftField = Get-MetadataField $Left "discoveryFile"
+  $rightField = Get-MetadataField $Right "discoveryFile"
+  if ($leftField.Present -ne $rightField.Present) {
+    throw "Dala discovery and root install metadata disagree on discoveryFile"
+  }
+  if ($leftField.Present) {
+    $leftPath = Get-CanonicalDiscoveryFile ([string]$leftField.Value)
+    $rightPath = Get-CanonicalDiscoveryFile ([string]$rightField.Value)
+    if (-not (Test-SamePath $leftPath $rightPath)) {
+      throw "Dala discovery and root install metadata disagree on discoveryFile"
+    }
   }
 }
 
@@ -193,6 +215,73 @@ function Test-NoReparseAncestors([string]$Path) {
   } catch {
     $false
   }
+}
+
+function Get-MetadataField($Metadata, [string]$Name) {
+  if ($null -eq $Metadata) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  $property = $Metadata.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return [pscustomobject]@{ Present = $false; Value = $null }
+  }
+  if ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+    throw "Dala install metadata field '$Name' is empty"
+  }
+  [pscustomobject]@{ Present = $true; Value = [string]$property.Value }
+}
+
+function Get-CanonicalDiscoveryFile([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or
+      $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or
+      $Path -match '^\\\\[.?]\\' -or
+      ($Path.Length -gt 2 -and $Path.Substring(2).Contains(":"))) {
+    throw "Dala discoveryFile must be an absolute Windows path: $Path"
+  }
+  try {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]"\\/")
+  } catch {
+    throw "Dala discoveryFile is invalid: $Path"
+  }
+  if (-not (Test-NoReparseAncestors $full)) {
+    throw "Refusing to use Dala discoveryFile through a reparse point: $full"
+  }
+  if (Test-Path -LiteralPath $full) {
+    $attributes = [IO.File]::GetAttributes($full)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+        -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+      throw "Dala discoveryFile must be a regular file: $full"
+    }
+  }
+  $full
+}
+
+function Resolve-DiscoveryMetadata(
+  $RootMetadata,
+  $BootstrapMetadata,
+  [string]$BootstrapPath
+) {
+  $rootField = Get-MetadataField $RootMetadata "discoveryFile"
+  $bootstrapField = Get-MetadataField $BootstrapMetadata "discoveryFile"
+  $candidate = if ($rootField.Present) { [string]$rootField.Value } else { $BootstrapPath }
+  $path = Get-CanonicalDiscoveryFile $candidate
+  $metadata = if ($BootstrapMetadata -and (Test-SamePath $path $BootstrapPath)) {
+    $BootstrapMetadata
+  } else {
+    Read-InstallMetadata $path
+  }
+  if ($RootMetadata -and $metadata) {
+    Assert-InstallMetadataMatch $metadata $RootMetadata
+  }
+  if (-not $RootMetadata -and $metadata) {
+    $metadataField = Get-MetadataField $metadata "discoveryFile"
+    if ($metadataField.Present -and
+        -not (Test-SamePath (Get-CanonicalDiscoveryFile ([string]$metadataField.Value)) $path)) {
+      throw "Dala discovery metadata disagrees with its path"
+    }
+  }
+  [pscustomobject]@{ Path = $path; Metadata = $metadata }
 }
 
 function Assert-NoReparseTree([string]$Path, [string]$Label) {
@@ -1069,18 +1158,33 @@ function Remove-OwnedConfigFile([string]$Path) {
 
 $LifecycleLock = Enter-LifecycleLock
 try {
-$discoveryMetadata = Read-InstallMetadata $DiscoveryFile
+$defaultRootMetadataPath = Join-Path ([IO.Path]::GetFullPath($DefaultRoot)) "install.json"
+$defaultRootMetadata = if ($env:DALA_HOME) { $null } else { Read-InstallMetadata $defaultRootMetadataPath }
+$bootstrapPath = $null
+$discoveryMetadata = $null
 $rootHint = if ($env:DALA_HOME) {
   $env:DALA_HOME
-} elseif ($discoveryMetadata) {
-  [string]$discoveryMetadata.root
-} else {
+} elseif ($defaultRootMetadata) {
   $DefaultRoot
+} else {
+  $bootstrapPath = Get-CanonicalDiscoveryFile $DiscoveryFile
+  $discoveryMetadata = Read-InstallMetadata $bootstrapPath
+  if ($discoveryMetadata) { [string]$discoveryMetadata.root } else { $DefaultRoot }
 }
-$rootMetadata = Read-InstallMetadata (Join-Path ([IO.Path]::GetFullPath($rootHint)) "install.json")
-if ($discoveryMetadata -and $rootMetadata) {
-  Assert-InstallMetadataMatch $discoveryMetadata $rootMetadata
+$rootMetadataPath = Join-Path ([IO.Path]::GetFullPath($rootHint)) "install.json"
+$rootMetadata = if ($defaultRootMetadata -and (Test-SamePath $rootMetadataPath $defaultRootMetadataPath)) {
+  $defaultRootMetadata
+} else {
+  Read-InstallMetadata $rootMetadataPath
 }
+$rootField = Get-MetadataField $rootMetadata "discoveryFile"
+if (-not $rootField.Present) {
+  $bootstrapPath = if ($bootstrapPath) { $bootstrapPath } else { Get-CanonicalDiscoveryFile $DiscoveryFile }
+  $discoveryMetadata = if ($discoveryMetadata) { $discoveryMetadata } else { Read-InstallMetadata $bootstrapPath }
+}
+$discoveryResolution = Resolve-DiscoveryMetadata $rootMetadata $discoveryMetadata $bootstrapPath
+$DiscoveryFile = $discoveryResolution.Path
+$discoveryMetadata = $discoveryResolution.Metadata
 $metadata = if ($rootMetadata) { $rootMetadata } else { $discoveryMetadata }
 
 $Root = if ($env:DALA_HOME) { $env:DALA_HOME } elseif ($metadata) { [string]$metadata.root } else { $DefaultRoot }
@@ -1094,6 +1198,7 @@ $ConfigFile = if ($env:DALA_CONFIG) {
 } elseif (Test-Path -LiteralPath (Join-Path $DefaultConfigDir "config.jsonc") -PathType Leaf) {
   Join-Path $DefaultConfigDir "config.jsonc"
 } else {
+  if (-not $DefaultConfigDir) { throw "APPDATA is required when Dala metadata is unavailable" }
   Join-Path $DefaultConfigDir "dala.env"
 }
 
@@ -1154,8 +1259,9 @@ if ($PurgeData) {
   if (Test-RemovableDalaConfigDir $ConfigDir $ownedConfigPath $ownedDiscoveryPath) {
     $ConfigDirRemovalTarget = Get-SafeRemovalTarget $ConfigDir "config directory"
   }
-  if (Test-RemovableDalaConfigDir $DefaultConfigDir $ownedConfigPath $ownedDiscoveryPath) {
-    $DiscoveryDirRemovalTarget = Get-SafeRemovalTarget $DefaultConfigDir "config discovery directory"
+  $discoveryConfigDir = Split-Path -Parent $DiscoveryFile
+  if (Test-RemovableDalaConfigDir $discoveryConfigDir $ownedConfigPath $ownedDiscoveryPath) {
+    $DiscoveryDirRemovalTarget = Get-SafeRemovalTarget $discoveryConfigDir "config discovery directory"
   }
 }
 

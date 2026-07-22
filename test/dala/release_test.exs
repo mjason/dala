@@ -71,6 +71,57 @@ defmodule Dala.ReleaseTest do
     assert root_value["taskName"] == "DalaCustom"
     assert root_value["port"] == 4555
     assert root_value["repo"] == "mjason/dala"
+    assert root_value["discoveryFile"] == Path.expand(discovery)
+  end
+
+  test "resolve_discovery_file prefers persisted metadata over bootstrap environment" do
+    base =
+      Path.join(System.tmp_dir!(), "dala-release-discovery-path-#{System.unique_integer([:positive])}")
+
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    persisted = Path.join(base, "persisted", "install.json")
+    ambient = Path.join(base, "ambient", "install.json")
+    on_exit(fn -> File.rm_rf(base) end)
+
+    assert Dala.Release.resolve_discovery_file(
+             %{"root" => root, "discoveryFile" => persisted},
+             root_metadata_path: root_metadata,
+             env: %{"DALA_DISCOVERY_FILE" => ambient, "APPDATA" => Path.join(base, "appdata")}
+           ) == Path.expand(persisted)
+
+    assert Dala.Release.resolve_discovery_file(
+             %{"root" => root},
+             root_metadata_path: root_metadata,
+             env: %{"DALA_DISCOVERY_FILE" => ambient, "APPDATA" => Path.join(base, "appdata")}
+           ) == Path.expand(ambient)
+
+    assert Dala.Release.resolve_discovery_file(
+             %{"root" => root},
+             root_metadata_path: root_metadata,
+             env: %{"APPDATA" => Path.join(base, "appdata")}
+           ) == Path.expand(Path.join([base, "appdata", "Dala", "install.json"]))
+  end
+
+  test "resolve_discovery_file rejects relative and root metadata paths" do
+    base =
+      Path.join(System.tmp_dir!(), "dala-release-invalid-discovery-#{System.unique_integer([:positive])}")
+
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    on_exit(fn -> File.rm_rf(base) end)
+
+    assert_raise RuntimeError, ~r/absolute path/, fn ->
+      Dala.Release.resolve_discovery_file(
+        %{"root" => root, "discoveryFile" => "relative/install.json"},
+        root_metadata_path: root_metadata
+      )
+    end
+
+    assert Dala.Release.resolve_discovery_file(
+             %{"root" => root, "discoveryFile" => root_metadata},
+             root_metadata_path: root_metadata
+           ) == Path.expand(root_metadata)
   end
 
   test "sync_install_metadata rejects metadata for another root without touching discovery" do
@@ -124,6 +175,86 @@ defmodule Dala.ReleaseTest do
 
     assert root_metadata |> File.read!() |> Jason.decode!() |> Map.fetch!("taskName") == "Dala"
     assert discovery |> File.read!() |> Jason.decode!() |> Map.fetch!("taskName") == "Dala"
+  end
+
+  test "sync_install_metadata fails closed when root and discovery field presence diverges" do
+    base =
+      Path.join(System.tmp_dir!(), "dala-release-discovery-presence-#{System.unique_integer([:positive])}")
+
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    discovery = Path.join(base, "discovery.json")
+    File.mkdir_p!(root)
+    File.write!(root_metadata, Jason.encode!(%{"root" => root, "discoveryFile" => discovery}))
+    original_discovery = Jason.encode!(%{"root" => root})
+    File.write!(discovery, original_discovery)
+    on_exit(fn -> File.rm_rf(base) end)
+
+    assert_raise RuntimeError, ~r/disagree on discoveryFile/, fn ->
+      Dala.Release.sync_install_metadata(root_metadata, discovery, %{
+        root: root,
+        data_dir: Path.join(base, "data"),
+        config_file: Path.join(base, "config.jsonc"),
+        task_name: "Dala",
+        port: 4400,
+        repo: "mjason/dala"
+      })
+    end
+
+    assert File.read!(discovery) == original_discovery
+  end
+
+  test "sync_install_metadata permits a root metadata file as the discovery destination" do
+    base =
+      Path.join(System.tmp_dir!(), "dala-release-discovery-same-path-#{System.unique_integer([:positive])}")
+
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    File.mkdir_p!(root)
+    File.write!(root_metadata, Jason.encode!(%{"root" => root, "discoveryFile" => root_metadata}))
+    on_exit(fn -> File.rm_rf(base) end)
+
+    assert :ok =
+             Dala.Release.sync_install_metadata(root_metadata, root_metadata, %{
+               root: root,
+               data_dir: Path.join(base, "data"),
+               config_file: Path.join(base, "config.jsonc"),
+               task_name: "Dala",
+               port: 4400,
+               repo: "mjason/dala"
+             })
+
+    assert root_metadata |> File.read!() |> Jason.decode!() |> Map.fetch!("discoveryFile") ==
+             Path.expand(root_metadata)
+  end
+
+  test "resolve_discovery_file rejects a symlinked ancestor" do
+    if match?({:win32, _}, :os.type()) do
+      :ok
+    else
+      base =
+        Path.join(System.tmp_dir!(), "dala-release-discovery-symlink-#{System.unique_integer([:positive])}")
+
+      real = Path.join(base, "real")
+      link = Path.join(base, "link")
+      root = Path.join(base, "root")
+      File.mkdir_p!(real)
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(base) end)
+
+      case File.ln_s(real, link) do
+        :ok ->
+          assert_raise RuntimeError, ~r/symbolic-link ancestor/, fn ->
+            Dala.Release.resolve_discovery_file(
+              %{"root" => root, "discoveryFile" => Path.join(link, "install.json")},
+              root_metadata_path: Path.join(root, "install.json")
+            )
+          end
+
+        {:error, _reason} ->
+          :ok
+      end
+    end
   end
 
   test "committed Windows metadata replacement survives backup cleanup failure" do
@@ -259,7 +390,7 @@ defmodule Dala.ReleaseTest do
     root_original = Jason.encode!(%{"root" => root, "copy" => "durable-old-bytes"})
     File.mkdir_p!(root)
     File.write!(root_metadata, root_original)
-    File.write!(discovery, "old discovery")
+    File.write!(discovery, Jason.encode!(%{"root" => root, "copy" => "old discovery"}))
     on_exit(fn -> File.rm_rf(base) end)
 
     replace = fn source, destination, phase ->
@@ -323,7 +454,7 @@ defmodule Dala.ReleaseTest do
     root_original = Jason.encode!(%{"root" => root, "copy" => "root-original"})
     File.mkdir_p!(root)
     File.write!(root_metadata, root_original)
-    File.write!(discovery, "discovery-original")
+    File.write!(discovery, Jason.encode!(%{"root" => root, "copy" => "discovery-original"}))
     on_exit(fn -> File.rm_rf(base) end)
 
     replace = fn source, destination, phase ->
@@ -447,7 +578,7 @@ defmodule Dala.ReleaseTest do
     discovery = Path.join(base, "discovery.json")
     File.mkdir_p!(root)
     File.write!(root_metadata, Jason.encode!(%{"root" => root}))
-    File.write!(discovery, "old discovery")
+    File.write!(discovery, Jason.encode!(%{"root" => root, "copy" => "old discovery"}))
     on_exit(fn -> File.rm_rf(base) end)
 
     {:ok, events} = Agent.start_link(fn -> [] end)
