@@ -3685,6 +3685,7 @@ function Assert-InstallContract(
   [string]$TaskName,
   [int]$Port
 ) {
+  Write-Host "[port-trace] Assert-InstallContract expected=$Port script-port=$script:port env=$env:DALA_PORT"
   $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
   Assert-True ($config.server -eq $true) "config.jsonc did not enable the server"
   $configuredPort = [int]$config.port
@@ -3898,6 +3899,7 @@ $ambientRunnerConfig = Join-Path $smokeRoot "ambient foreign runner config.jsonc
 $discoveryFile = Join-Path $discoveryDir "install.json"
 $taskName = "DalaReleaseSmoke-" + [guid]::NewGuid().ToString("N")
 $port = Get-FreePort
+Write-Host "[port-trace] initial=$port"
 $logFile = Join-Path $installRoot "logs\server.log"
 $runner = Join-Path $installRoot "run-dala.ps1"
 $smokeRunner = Join-Path $installRoot "smoke-runner.ps1"
@@ -3917,6 +3919,7 @@ $freshDecoyAppData = Join-Path $smokeRoot "fresh decoy appdata"
 $freshDecoyConfig = Join-Path $smokeRoot "fresh decoy config.jsonc"
 $freshDecoyTask = $taskName + "-health-decoy"
 $freshDecoyPort = Get-FreePort
+Write-Host "[port-trace] fresh-decoy=$freshDecoyPort script-port=$port"
 while ($freshDecoyPort -eq $port) { $freshDecoyPort = Get-FreePort }
 $stopFailureRoot = Join-Path $smokeRoot "stop failure install"
 $stopFailureData = Join-Path $smokeRoot "stop failure data"
@@ -3924,6 +3927,7 @@ $stopFailureAppData = Join-Path $smokeRoot "stop failure appdata"
 $stopFailureConfig = Join-Path $smokeRoot "stop failure config.jsonc"
 $stopFailureTask = $taskName + "-stop-failure"
 $stopFailurePort = Get-FreePort
+Write-Host "[port-trace] stop-failure=$stopFailurePort script-port=$port"
 $sessionId = "release-smoke-" + [guid]::NewGuid().ToString("N")
 $marker = "DALA_RELEASE_REATTACH_" + [guid]::NewGuid().ToString("N")
 $releaseNode = "dala_smoke_" + [guid]::NewGuid().ToString("N") + "@127.0.0.1"
@@ -4010,6 +4014,7 @@ try {
   $env:DALA_CONFIG = Join-Path $smokeRoot "incomplete config.jsonc"
   $env:DALA_SERVICE = $taskName + "-incomplete"
   $env:DALA_PORT = [string](Get-FreePort)
+  Write-Host "[port-trace] incomplete-env=$env:DALA_PORT script-port=$port"
   $incompleteOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer `
     -Version $newTag -ArchivePath $incompleteArchive -ChecksumPath $incompleteChecksum `
     -ExpectedVersion $newVersion -HealthTimeoutSeconds 5 2>&1 | Out-String
@@ -4031,6 +4036,7 @@ try {
   $env:DALA_CONFIG = Join-Path $smokeRoot "missing epmd config.jsonc"
   $env:DALA_SERVICE = $taskName + "-missing-epmd"
   $env:DALA_PORT = [string](Get-FreePort)
+  Write-Host "[port-trace] missing-epmd-env=$env:DALA_PORT script-port=$port"
   $missingEpmdOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer `
     -Version $newTag -ArchivePath $missingEpmdArchive -ChecksumPath $missingEpmdChecksum `
     -ExpectedVersion $newVersion -HealthTimeoutSeconds 5 2>&1 | Out-String
@@ -4174,6 +4180,7 @@ try {
   $env:DALA_DATA_DIR = $dataDir
   $env:DALA_CONFIG = $configFile
   $env:DALA_SERVICE = $taskName
+  Write-Host "[port-trace] before-main-install script-port=$port env=$env:DALA_PORT"
   $env:DALA_PORT = [string]$port
   $env:DALA_REPO = "mjason/dala"
   $env:RELEASE_NODE = $releaseNode
@@ -4239,6 +4246,7 @@ try {
 
   & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
     -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
+  Write-Host "[port-trace] after-main-install script-port=$port env=$env:DALA_PORT"
   Wait-DalaVersion $port $oldVersion
 
   $oldDir = Join-Path $installRoot "versions\$oldTag"
@@ -4292,6 +4300,7 @@ try {
   }
 
   Remove-Item -LiteralPath $discoveryFile -Force
+  Write-Host "[port-trace] before-recovery script-port=$port env=$env:DALA_PORT"
   try {
     & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
       -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
@@ -4312,6 +4321,7 @@ try {
     throw
   }
   Assert-True (Test-Path -LiteralPath $discoveryFile -PathType Leaf) "Installer did not recover missing discovery metadata"
+  Write-Host "[port-trace] after-recovery script-port=$port env=$env:DALA_PORT"
   Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $port
 
   $mismatchedMetadata = $rootMetadataText | ConvertFrom-Json
