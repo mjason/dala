@@ -629,7 +629,8 @@ function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
     "Register-DalaTaskVerified",
     "Remove-DalaTaskVerified",
     "Stop-DalaTaskVerified",
-    "Start-DalaTaskVerified"
+    "Start-DalaTaskVerified",
+    "Test-ReleaseTaskRunning"
   )
   $definitions = @(
     $ast.FindAll({
@@ -735,6 +736,20 @@ function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
       Remove-DalaTaskVerified "Dala" "release" "runner" "log"
       $removedAfterThrow = $null -eq $script:fakeTask
 
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42 })
+      Set-Item -Path Function:Get-ReleaseBeamProcesses -Value { $script:releaseProcesses }
+      $script:fakeTask = [pscustomobject]@{
+        TaskName = "Dala"
+        State = "Queued"
+        owned = $true
+      }
+      $queuedWithBeamAccepted = Test-ReleaseTaskRunning "Dala" "release"
+      $script:releaseProcesses = @()
+      $queuedWithoutBeamRejected = -not (Test-ReleaseTaskRunning "Dala" "release")
+      $script:fakeTask.State = "Ready"
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43 })
+      $readyWithBeamRejected = -not (Test-ReleaseTaskRunning "Dala" "release")
+
       [pscustomobject]@{
         registered_after_throw = $registeredAfterThrow
         absent_unambiguous = $absentRejected
@@ -742,6 +757,9 @@ function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
         stopped_after_throw = $stoppedAfterThrow
         started_after_throw = $startedAfterThrow
         removed_after_throw = $removedAfterThrow
+        queued_with_beam_accepted = $queuedWithBeamAccepted
+        queued_without_beam_rejected = $queuedWithoutBeamRejected
+        ready_with_beam_rejected = $readyWithBeamRejected
       }
     }
 
@@ -764,7 +782,8 @@ function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
     "Assert-DalaTaskObjectOwnership",
     "Stop-DalaTaskVerified",
     "Start-DalaTaskVerified",
-    "Set-TaskAction"
+    "Set-TaskAction",
+    "Test-ReleaseTaskRunning"
   )
   $definitions = @(
     $ast.FindAll({
@@ -878,6 +897,17 @@ function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
         $startPreCommitRejected = [string]$script:fakeTask.State -ceq "Ready"
       }
 
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42 })
+      Set-Item -Path Function:Get-ReleaseBeamProcesses -Value { $script:releaseProcesses }
+      $script:fakeTask.committed = $true
+      $script:fakeTask.State = "Queued"
+      $queuedWithBeamAccepted = Test-ReleaseTaskRunning "target"
+      $script:releaseProcesses = @()
+      $queuedWithoutBeamRejected = -not (Test-ReleaseTaskRunning "target")
+      $script:fakeTask.State = "Ready"
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43 })
+      $readyWithBeamRejected = -not (Test-ReleaseTaskRunning "target")
+
       [pscustomobject]@{
         query_failure_surfaced = $queryFailureSurfaced
         set_postcommit_accepted = $setPostCommitAccepted
@@ -886,6 +916,9 @@ function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
         start_postcommit_accepted = $startPostCommitAccepted
         stop_precommit_rejected = $stopPreCommitRejected
         start_precommit_rejected = $startPreCommitRejected
+        queued_with_beam_accepted = $queuedWithBeamAccepted
+        queued_without_beam_rejected = $queuedWithoutBeamRejected
+        ready_with_beam_rejected = $readyWithBeamRejected
       }
     }
 
@@ -3846,6 +3879,10 @@ try {
     & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
       -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
   } catch {
+    $task = Get-ScheduledTask -TaskName $taskName -TaskPath "\" -ErrorAction SilentlyContinue
+    if ($task) {
+      Write-Warning "Same-version recovery task state: $([string]$task.State)"
+    }
     $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -TaskPath "\" -ErrorAction SilentlyContinue
     if ($taskInfo) {
       Write-Warning "Same-version recovery task result: $($taskInfo.LastTaskResult)"

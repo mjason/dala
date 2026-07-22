@@ -92,16 +92,20 @@ fn wait_endpoint(path: &PathBuf) -> serde_json::Value {
     }
 }
 
-fn wait_processes_exit(pids: &[Pid]) {
+fn wait_processes_exit(processes: &[(Pid, u64)]) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut system = System::new();
 
     loop {
         system.refresh_processes(ProcessesToUpdate::All, true);
-        let running: Vec<_> = pids
+        let running: Vec<_> = processes
             .iter()
-            .copied()
-            .filter(|pid| system.process(*pid).is_some())
+            .filter_map(|(pid, start_time)| {
+                system
+                    .process(*pid)
+                    .filter(|process| process.start_time() == *start_time)
+                    .map(|_| *pid)
+            })
             .collect();
 
         if running.is_empty() {
@@ -111,6 +115,24 @@ fn wait_processes_exit(pids: &[Pid]) {
         assert!(
             Instant::now() < deadline,
             "holder process tree did not exit: {running:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_process_instance(pid: Pid, timeout: Duration) -> (Pid, u64) {
+    let deadline = Instant::now() + timeout;
+    let mut system = System::new();
+
+    loop {
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        if let Some(process) = system.process(pid) {
+            return (pid, process.start_time());
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "process {pid:?} was not visible after its pid was published"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -173,6 +195,13 @@ fn detached_holder_does_not_show_a_host_console() {
         .process(shell_pid)
         .and_then(|process| process.parent())
         .expect("shell parent holder process was not found");
+    let process_instances = [holder_pid, shell_pid].map(|pid| {
+        let start_time = system
+            .process(pid)
+            .expect("holder process tree changed before the console probe")
+            .start_time();
+        (pid, start_time)
+    });
 
     let probe = Command::new(std::env::current_exe().unwrap())
         .args(["console_probe_helper", "--exact"])
@@ -181,11 +210,15 @@ fn detached_holder_does_not_show_a_host_console() {
         .unwrap();
 
     write_frame(&mut stream, T_KILL, b"");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while endpoint_path.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
-    wait_processes_exit(&[holder_pid, shell_pid]);
+    assert!(
+        !endpoint_path.exists(),
+        "holder did not clean up its endpoint"
+    );
+    wait_processes_exit(&process_instances);
     let _ = std::fs::remove_dir_all(root);
 
     assert!(
@@ -422,11 +455,13 @@ fn exec_proxy_closes_its_job_before_joining_stdout_from_cmd_descendants() {
         );
         std::thread::sleep(Duration::from_millis(20));
     };
+    let descendant_pid = Pid::from_u32(descendant_pid);
+    let descendant_instance = wait_process_instance(descendant_pid, Duration::from_secs(5));
 
     drop(proxy_stdin);
     let status = wait_child_exit(&mut proxy, Duration::from_secs(5));
     assert!(status.success(), "exec proxy failed: {status}");
-    wait_processes_exit(&[Pid::from_u32(descendant_pid)]);
+    wait_processes_exit(&[descendant_instance]);
 
     let _ = std::fs::remove_dir_all(root);
 }

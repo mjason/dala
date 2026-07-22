@@ -990,7 +990,8 @@ function Set-TaskAction([string]$ReleaseDir) {
 function Test-ReleaseTaskRunning([string]$ReleaseDir) {
   $task = Get-DalaTaskExact $TaskName
   if ($task) { Assert-DalaTaskObjectOwnership $task $ReleaseDir }
-  $task -and [string]$task.State -ceq "Running" -and (Get-ReleaseBeamProcesses (Join-Path $ReleaseDir "bin\dala.bat")).Count -gt 0
+  $task -and [string]$task.State -in @("Running", "Queued") -and
+    (Get-ReleaseBeamProcesses (Join-Path $ReleaseDir "bin\dala.bat")).Count -gt 0
 }
 
 function Test-ReleaseOwnsPort([string]$ReleaseDir) {

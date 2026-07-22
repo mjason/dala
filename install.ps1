@@ -1191,7 +1191,8 @@ function Test-ReleaseTaskRunning([string]$Name, [string]$ReleaseDir) {
   if ($task) {
     $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
   }
-  $task -and [string]$task.State -ceq "Running" -and (Get-ReleaseBeamProcesses $ReleaseDir).Count -gt 0
+  $task -and [string]$task.State -in @("Running", "Queued") -and
+    (Get-ReleaseBeamProcesses $ReleaseDir).Count -gt 0
 }
 
 function Test-ReleaseOwnsPort([int]$PortNumber, [string]$ReleaseDir) {

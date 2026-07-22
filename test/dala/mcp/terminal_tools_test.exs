@@ -136,7 +136,10 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     assert {:ok, _seq} = Server.send_sequence(session.id, [{command, 50}, {"\r", 0}])
 
-    waited = Server.wait(session.id, baseline, timeout: 10_000, match: "Selected option")
+    # Server.wait caps callers at 25 seconds; use that full budget for the
+    # cold Windows Node + PowerShell fixture startup.
+    fixture_timeout = if Dala.TestPlatform.windows?(), do: 25_000, else: 10_000
+    waited = Server.wait(session.id, baseline, timeout: fixture_timeout, match: "Selected option")
 
     assert match?({:ok, %{reason: "match"}}, waited),
            "fixture did not render: wait=#{inspect(waited)} repaint=#{inspect(repaint_text(session.id))}"

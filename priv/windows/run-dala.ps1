@@ -97,7 +97,10 @@ function Invoke-Dala([ValidateSet("eval", "start")][string]$Command, [string]$Ex
   $exitCode
 }
 
+Write-Output "Dala runner: migration starting"
 $migrateStatus = Invoke-Dala "eval" "Dala.Release.migrate()"
+Write-Output "Dala runner: migration exited with status $migrateStatus"
 if ($migrateStatus -ne 0) { exit $migrateStatus }
 
+Write-Output "Dala runner: server starting"
 exit (Invoke-Dala "start")
