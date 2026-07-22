@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
@@ -16,6 +17,20 @@ const T_AUTH: u8 = 0x10;
 const T_INPUT: u8 = 0x11;
 const T_KILL: u8 = 0x13;
 const T_PROCESSES_REQ: u8 = 0x16;
+
+// WMI process creation and ConPTY teardown are host-global operations on the
+// Windows runner. Running multiple holder sessions concurrently makes the
+// tests race each other's provider/console cleanup, producing false socket
+// timeouts and stale process observations. Keep the real process tests
+// independent while serializing that host-global resource.
+static HOLDER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn holder_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    HOLDER_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap()
+}
 
 fn temp_root() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -103,6 +118,7 @@ fn wait_child_exit(child: &mut Child, timeout: Duration) -> ExitStatus {
 
 #[test]
 fn detached_holder_does_not_show_a_host_console() {
+    let _holder_test_guard = holder_test_guard();
     let root = temp_root();
     let endpoint_path = root.join("hidden-session.sock");
     let token = "windows-hidden-holder-test-token";
@@ -187,6 +203,7 @@ fn console_probe_helper() {
 
 #[test]
 fn detached_cmd_session_authenticates_and_round_trips_terminal_io() {
+    let _holder_test_guard = holder_test_guard();
     let root = temp_root();
     let endpoint_path = root.join("session.sock");
     let token = "windows-holder-test-token";
@@ -317,6 +334,7 @@ fn detached_cmd_session_authenticates_and_round_trips_terminal_io() {
 
 #[test]
 fn exec_proxy_preserves_argv_stdout_and_redirects_stderr() {
+    let _holder_test_guard = holder_test_guard();
     let root = temp_root();
     let stderr_path = root.join("child.stderr");
     let script = "echo proxy-out & echo proxy-error 1>&2";
@@ -351,6 +369,7 @@ fn exec_proxy_preserves_argv_stdout_and_redirects_stderr() {
 
 #[test]
 fn exec_proxy_closes_its_job_before_joining_stdout_from_cmd_descendants() {
+    let _holder_test_guard = holder_test_guard();
     let root = temp_root();
     let wrapper_path = root.join("spawn-descendant.cmd");
     let pid_path = root.join("descendant.pid");
@@ -398,6 +417,7 @@ fn exec_proxy_closes_its_job_before_joining_stdout_from_cmd_descendants() {
 
 #[test]
 fn installed_agent_cmd_shims_execute_inside_conpty() {
+    let _holder_test_guard = holder_test_guard();
     let Ok(raw_commands) = std::env::var("DALA_WINDOWS_AGENT_COMMANDS") else {
         return;
     };
