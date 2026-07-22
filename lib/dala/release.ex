@@ -365,18 +365,19 @@ defmodule Dala.Release do
   end
 
   defp retain_snapshot_recovery(path, body, fresh) do
-    # A surviving source is useful only when it still contains the complete
-    # snapshot; a partial post-commit write must get a fresh recovery copy.
-    case File.read(fresh) do
-      {:ok, ^body} ->
-        fresh
+    # Always give operators a stable, explicitly named recovery artifact when
+    # a restore may have consumed its source. If that copy cannot be written,
+    # a complete staged source is still safer than reporting no recovery data.
+    retained = metadata_temp_path(path, "rollback-recovery")
 
-      _ ->
-        retained = metadata_temp_path(path, "rollback-recovery")
+    case File.write(retained, body) do
+      :ok ->
+        retained
 
-        case File.write(retained, body) do
-          :ok -> retained
-          {:error, _reason} -> nil
+      {:error, _reason} ->
+        case File.read(fresh) do
+          {:ok, ^body} -> fresh
+          _ -> nil
         end
     end
   end
@@ -475,20 +476,21 @@ defmodule Dala.Release do
     end
 
     if windows? and File.exists?(path) do
-      backup = if phase == :commit, do: metadata_temp_path(path, "backup")
+      # File.Replace rejects a null/empty backup argument on PowerShell. Keep a
+      # real recovery path for rollback too; successful replacements clean it
+      # through the normal recovery protocol, while failed ones remain
+      # inspectable instead of silently losing the destination bytes.
+      backup = metadata_temp_path(path, "backup")
 
       command =
-        if backup do
-          "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
-        else
-          "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $null)"
-        end
+        "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
 
       env =
         [
           {"DALA_METADATA_SOURCE", fresh},
-          {"DALA_METADATA_DESTINATION", path}
-        ] ++ if(backup, do: [{"DALA_METADATA_BACKUP", backup}], else: [])
+          {"DALA_METADATA_DESTINATION", path},
+          {"DALA_METADATA_BACKUP", backup}
+        ]
 
       case System.cmd(
              "powershell.exe",
@@ -496,13 +498,10 @@ defmodule Dala.Release do
              env: env,
              stderr_to_stdout: true
            ) do
-        {_output, 0} when is_binary(backup) ->
+        {_output, 0} ->
           {:windows_backup, backup}
 
-        {_output, 0} ->
-          :none
-
-        {output, status} when is_binary(backup) ->
+        {output, status} ->
           case restore_windows_backup(backup, path) do
             :ok ->
               raise MetadataReplacementError,
@@ -520,9 +519,6 @@ defmodule Dala.Release do
                     "backup recovery failed at #{backup}: #{inspect(reason)}",
                 recovery: windows_backup_recovery(backup)
           end
-
-        {output, status} ->
-          raise "could not roll back Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}"
       end
     else
       File.rename!(fresh, path)

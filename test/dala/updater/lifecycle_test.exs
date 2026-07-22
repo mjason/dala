@@ -138,27 +138,46 @@ defmodule Dala.Updater.LifecycleTest do
     end)
 
     first = Task.async(fn -> Updater.apply_latest(@attempt_id, "v99.0.0") end)
-    assert_receive {:same_target_restart, first_pid, "v99.0.0"}
 
-    assert {:error, "another update is already in progress"} =
-             Updater.apply_latest(@other_attempt_id, "v99.0.0")
+    try do
+      # Windows publish/unpack validation can take longer than ExUnit's
+      # default 100ms receive window. Keep the lock-holder alive until the
+      # restart callback is observed so a failed assertion cannot contaminate
+      # the following lifecycle test with a stale global lock.
+      assert_receive {:same_target_restart, first_pid, "v99.0.0"}, 5_000
 
-    assert {:ok,
-            %{
-              attempt_id: @other_attempt_id,
-              status: "failed",
-              message: "another update is already in progress"
-            }} = Updater.update_result(@other_attempt_id)
+      assert {:error, "another update is already in progress"} =
+               Updater.apply_latest(@other_attempt_id, "v99.0.0")
 
-    assert {:ok, %{attempt_id: @attempt_id, status: "pending"}} =
-             Updater.update_result(@attempt_id)
+      assert {:ok,
+              %{
+                attempt_id: @other_attempt_id,
+                status: "failed",
+                message: "another update is already in progress"
+              }} = Updater.update_result(@other_attempt_id)
 
-    send(first_pid, :finish_same_target_restart)
+      assert {:ok, %{attempt_id: @attempt_id, status: "pending"}} =
+               Updater.update_result(@attempt_id)
 
-    assert {:ok, %{attempt_id: @attempt_id, updated_to: "v99.0.0"}} = Task.await(first)
+      send(first_pid, :finish_same_target_restart)
 
-    assert {:ok, %{attempt_id: @attempt_id, status: "pending"}} =
-             Updater.update_result(@attempt_id)
+      assert {:ok, %{attempt_id: @attempt_id, updated_to: "v99.0.0"}} =
+               Task.await(first, 5_000)
+
+      assert {:ok, %{attempt_id: @attempt_id, status: "pending"}} =
+               Updater.update_result(@attempt_id)
+    after
+      # If an assertion above fails before the callback is observed, release
+      # the task's receive and wait for it to leave the global update lock.
+      if Process.alive?(first.pid) do
+        send(first.pid, :finish_same_target_restart)
+
+        case Task.yield(first, 5_000) do
+          nil -> _ = Task.shutdown(first, :brutal_kill)
+          _result -> :ok
+        end
+      end
+    end
   end
 
   test "attempt ids must be lowercase canonical UUIDs before any file is reserved", %{root: root} do
@@ -445,20 +464,33 @@ defmodule Dala.Updater.LifecycleTest do
     end)
 
     newer = Task.async(fn -> Updater.apply_release(unix_release("v99.0.2")) end)
-    assert_receive {:restart_started, newer_pid, "v99.0.2"}
 
-    older = Task.async(fn -> Updater.apply_release(unix_release("v99.0.1")) end)
-    assert {:error, "another update is already in progress"} = Task.await(older, 1_000)
-    refute_receive {:restart_started, _pid, "v99.0.1"}, 100
+    try do
+      assert_receive {:restart_started, newer_pid, "v99.0.2"}, 5_000
 
-    send(newer_pid, :finish_restart)
-    assert {:ok, %{updated_to: "v99.0.2"}} = Task.await(newer)
+      assert {:error, "another update is already in progress"} =
+               Updater.apply_release(unix_release("v99.0.1"))
 
-    assert {:error, "release v99.0.1 is not newer than installed v99.0.2"} =
-             Updater.apply_release(unix_release("v99.0.1"), @attempt_id)
+      refute_receive {:restart_started, _pid, "v99.0.1"}, 100
 
-    assert {:ok, current} = File.read_link(Path.join(root, "current"))
-    assert Path.basename(current) == "v99.0.2"
+      send(newer_pid, :finish_restart)
+      assert {:ok, %{updated_to: "v99.0.2"}} = Task.await(newer, 5_000)
+
+      assert {:error, "release v99.0.1 is not newer than installed v99.0.2"} =
+               Updater.apply_release(unix_release("v99.0.1"), @attempt_id)
+
+      assert {:ok, current} = File.read_link(Path.join(root, "current"))
+      assert Path.basename(current) == "v99.0.2"
+    after
+      if Process.alive?(newer.pid) do
+        send(newer.pid, :finish_restart)
+
+        case Task.yield(newer, 5_000) do
+          nil -> _ = Task.shutdown(newer, :brutal_kill)
+          _result -> :ok
+        end
+      end
+    end
   end
 
   test "an activation exception rolls back, preserves its error and releases the lock", %{
