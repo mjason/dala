@@ -293,7 +293,19 @@ defmodule Dala.Release do
       backup = metadata_temp_path(path, "backup")
 
       command =
-        "[IO.File]::Replace($env:DALA_METADATA_SOURCE, $env:DALA_METADATA_DESTINATION, $env:DALA_METADATA_BACKUP)"
+        """
+        $destination = Get-Item -LiteralPath $env:DALA_METADATA_DESTINATION -Force
+        if ($destination.PSIsContainer) { throw 'metadata destination is not a file' }
+        Move-Item -LiteralPath $env:DALA_METADATA_DESTINATION -Destination $env:DALA_METADATA_BACKUP -Force
+        try {
+          Move-Item -LiteralPath $env:DALA_METADATA_SOURCE -Destination $env:DALA_METADATA_DESTINATION -Force
+        } catch {
+          if (Test-Path -LiteralPath $env:DALA_METADATA_BACKUP) {
+            Move-Item -LiteralPath $env:DALA_METADATA_BACKUP -Destination $env:DALA_METADATA_DESTINATION -Force
+          }
+          throw
+        }
+        """
 
       case System.cmd(
              "powershell.exe",
@@ -318,10 +330,10 @@ defmodule Dala.Release do
         {output, status} ->
           case restore_windows_backup(backup, path) do
             :ok ->
-              raise "could not replace Dala install metadata (#{status}): #{output}"
+              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}"
 
             {:error, reason} ->
-              raise "could not replace Dala install metadata (#{status}): #{output}; " <>
+              raise "could not replace Dala install metadata (#{status}) #{fresh} -> #{path}: #{output}; " <>
                       "backup recovery failed at #{backup}: #{inspect(reason)}"
           end
       end

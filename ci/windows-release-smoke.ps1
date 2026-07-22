@@ -393,12 +393,15 @@ function Set-DalaAppVersion([string]$ReleaseDir, [string]$Version, [string]$ErlP
   Assert-True ((Get-DalaAppVersion $ReleaseDir) -ceq $Version) "dala.app version rewrite did not stick"
 
   foreach ($scriptName in @("start", "start_clean")) {
-    $scriptBase = Join-Path $targetReleaseRoot $scriptName
-    $scriptBase = $scriptBase.Replace('\', '/')
-    $escapedScriptBase = $scriptBase.Replace('"', '\"')
-    $eval = "case systools:script2boot(`"$escapedScriptBase`") of ok -> halt(0); Error -> io:format(standard_error, `"~p~n`", [Error]), halt(1) end."
-    & $ErlPath -noshell -eval $eval
-    if ($LASTEXITCODE -ne 0) { throw "Could not rebuild $scriptName.boot for fixture version $Version" }
+    $scriptBase = "releases/$Version/$scriptName"
+    $eval = "case systools:script2boot(`"$scriptBase`") of ok -> halt(0); Error -> io:format(standard_error, `"~p~n`", [Error]), halt(1) end."
+    Push-Location $ReleaseDir
+    try {
+      & $ErlPath -noshell -eval $eval
+      if ($LASTEXITCODE -ne 0) { throw "Could not rebuild $scriptName.boot for fixture version $Version" }
+    } finally {
+      Pop-Location
+    }
   }
 }
 
