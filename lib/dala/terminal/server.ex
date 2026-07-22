@@ -41,6 +41,14 @@ defmodule Dala.Terminal.Server do
   # FIFO and this process's request FIFO can never diverge under overload.
   @max_pending_repaints 64
   @max_pending_text_snapshots 64
+  @max_pending_foregrounds 64
+  @foreground_timeout_ms 4_000
+  @process_request_proto 6
+  @pty_query_proto 7
+  # A healthy holder writes this local-socket ACK after draining at most its
+  # bounded 1 MiB transit queue. Its own socket write timeout is two seconds,
+  # so waiting longer means the ownership state can no longer be trusted.
+  @query_owner_ack_timeout_ms 2_500
   @wait_timeout_max_ms 25_000
   @waiters_per_session 8
   @match_buffer_bytes 128 * 1024
@@ -155,6 +163,34 @@ defmodule Dala.Terminal.Server do
       pid -> GenServer.call(pid, :size_info)
     end
   end
+
+  @doc "Terminal capabilities negotiated with the attached holder."
+  def capabilities(id) do
+    case whereis(id) do
+      nil -> terminal_capabilities(nil, false)
+      pid -> GenServer.call(pid, :capabilities)
+    end
+  end
+
+  @doc "Register a joined terminal channel before it begins receiving output."
+  def register_query_client(id, client, client_ref, supported)
+      when is_pid(client) and is_boolean(supported) do
+    case whereis(id) do
+      nil ->
+        {:ok, terminal_capabilities(nil, false)}
+
+      pid ->
+        {:ok, GenServer.call(pid, {:register_query_client, client, client_ref, supported}, 5_000)}
+    end
+  catch
+    :exit, _reason -> {:error, :query_owner_unavailable}
+  end
+
+  @doc "Confirm that this browser has installed its query-suppression handlers."
+  def query_client_ready(id, client), do: cast_if_alive(id, {:query_client_ready, client})
+
+  @doc "Allow query negotiation after a full BEAM boot reattaches this holder."
+  def allow_query_owner(id), do: cast_if_alive(id, :allow_query_owner)
 
   @doc "Current PTY size as `{rows, cols}`, or nil if the session is not running."
   def viewport(id) do
@@ -326,11 +362,7 @@ defmodule Dala.Terminal.Server do
   # Best-effort kill of a holder no server is attached to (session destroy
   # while dala never reattached after a restart).
   defp kill_detached_holder(id) do
-    with {:ok, socket} <- Holder.connect(id) do
-      Holder.send_kill(socket)
-      :gen_tcp.close(socket)
-    end
-
+    _ = Holder.kill(id)
     :ok
   end
 
@@ -339,19 +371,23 @@ defmodule Dala.Terminal.Server do
   @impl true
   def init(session) do
     id = to_string(session.id)
+    shell = Dala.Terminal.Shell.normalize_executable(session.shell)
+    shell_options = Dala.Terminal.Shell.spawn_options(shell)
 
     opts = [
-      shell: session.shell,
+      shell: shell,
+      args: shell_options[:args],
       cwd: session.cwd,
-      env: [
-        {"TERM", "xterm-256color"},
-        {"COLORTERM", "truecolor"},
-        # Advertise Warp's open cli-agent notification protocol: the agent
-        # plugins (claude-code-warp, opencode-warp, …) emit OSC 777 events
-        # only when these are present.
-        {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
-        {"WARP_CLIENT_VERSION", "dala"}
-      ],
+      env:
+        [
+          {"TERM", "xterm-256color"},
+          {"COLORTERM", "truecolor"},
+          # Advertise Warp's open cli-agent notification protocol: the agent
+          # plugins (claude-code-warp, opencode-warp, …) emit OSC 777 events
+          # only when these are present.
+          {"WARP_CLI_AGENT_PROTOCOL_VERSION", "1"},
+          {"WARP_CLIENT_VERSION", "dala"}
+        ] ++ shell_options[:env],
       rows: 24,
       cols: 80,
       history_lines: Dala.Terminal.Session.history_lines(session.scrollback_limit)
@@ -380,7 +416,28 @@ defmodule Dala.Terminal.Server do
           deferred_all_client_repaint: false,
           # Machine snapshots use the holder's FIFO response queue.
           pending_text_snapshots: :queue.new(),
+          pending_foregrounds: %{},
+          foreground_request_seq: 0,
           holder_proto: nil,
+          # Query ownership is an opt-in protocol-7 handshake. The holder is
+          # always disabled on connection; every joined channel (including
+          # pre-attach legacy clients) must declare support and then confirm
+          # its xterm suppression handlers are ready before it can be enabled.
+          query_clients: %{},
+          query_owner_phase: :disabled,
+          query_owner_enabled?: false,
+          query_owner_command: nil,
+          query_owner_recovery_attempt: 0,
+          # A reattached holder may still have browser channels from the
+          # previous Server process. Their capabilities are unknowable here,
+          # so keep xterm authoritative for this Server lifetime. Freshly
+          # spawned sessions can negotiate normally.
+          query_owner_negotiable?: not reattached?,
+          query_register_waiters: [],
+          # An ACK timeout replaces only the BEAM/holder control connection;
+          # the PTY and shell stay alive. HELLO then requests one authoritative
+          # repaint to cover output that landed during the handoff.
+          recovering_holder?: false,
           # Bounded long polls used by MCP. Waiters hold GenServer.from values
           # and are released by output, agent events, exit, timeout or caller
           # death without blocking this process.
@@ -454,6 +511,39 @@ defmodule Dala.Terminal.Server do
     {:reply, ownership_snapshot(state), state}
   end
 
+  def handle_call(:capabilities, _from, state) do
+    {:reply,
+     terminal_capabilities(
+       state.holder_proto,
+       state.query_owner_enabled?,
+       state.query_owner_negotiable?
+     ), state}
+  end
+
+  def handle_call(
+        {:register_query_client, client, client_ref, supported},
+        from,
+        state
+      ) do
+    # Registration runs inside Channel.join/3, before the socket starts
+    # receiving output. A newly joined client is deliberately not ready yet:
+    # if the holder currently owns queries, first wait for its disable ACK so
+    # the join reply can safely tell the browser to arm xterm.
+    state =
+      state
+      |> track_client(client, client_ref)
+      |> put_query_client(client, supported, false)
+      |> reconcile_query_owner()
+
+    if query_owner_safely_disabled?(state) do
+      {:reply, terminal_capabilities(state.holder_proto, false, state.query_owner_negotiable?),
+       state}
+    else
+      waiter = %{from: from, client: client}
+      {:noreply, %{state | query_register_waiters: [waiter | state.query_register_waiters]}}
+    end
+  end
+
   def handle_call(:current_seq, _from, state), do: {:reply, {:ok, state.seq}, state}
 
   def handle_call({:text_snapshot, _lines, _max_bytes}, _from, %{holder_proto: proto} = state)
@@ -502,21 +592,58 @@ defmodule Dala.Terminal.Server do
   end
 
   @impl true
-  def handle_call(:foreground_app, _from, state) do
-    cmdline =
-      case state.mux do
-        nil ->
-          Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
+  def handle_call(:foreground_app, from, state) do
+    if windows?() do
+      cond do
+        not (is_integer(state.holder_proto) and state.holder_proto >= @process_request_proto) ->
+          {:reply, {:ok, unknown_foreground()}, state}
 
-        mux ->
-          case Dala.Terminal.MuxCwd.focused_command(mux) do
-            {:ok, command} -> command
-            :error -> nil
+        map_size(state.pending_foregrounds) >= @max_pending_foregrounds ->
+          {:reply, {:error, "too many pending foreground process requests"}, state}
+
+        true ->
+          request_id = rem(state.foreground_request_seq, 0xFFFFFFFFFFFFFFFF) + 1
+
+          case Holder.send_processes_req(state.socket, request_id) do
+            :ok ->
+              timer =
+                Process.send_after(
+                  self(),
+                  {:foreground_timeout, request_id},
+                  @foreground_timeout_ms
+                )
+
+              pending =
+                Map.put(state.pending_foregrounds, request_id, %{from: from, timer: timer})
+
+              {:noreply,
+               %{
+                 state
+                 | pending_foregrounds: pending,
+                   foreground_request_seq: request_id
+               }}
+
+            {:error, _reason} ->
+              {:reply, {:ok, unknown_foreground()}, state}
           end
       end
+    else
+      cmdline =
+        case state.mux do
+          nil ->
+            Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
 
-    {:reply,
-     {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}}, state}
+          mux ->
+            case Dala.Terminal.MuxCwd.focused_command(mux) do
+              {:ok, command} -> command
+              :error -> nil
+            end
+        end
+
+      {:reply,
+       {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}},
+       state}
+    end
   end
 
   @impl true
@@ -589,7 +716,20 @@ defmodule Dala.Terminal.Server do
     # BEAM shutdowns and code reloads is the point of the holder split.
     # Explicit kills go through handle_cast(:shutdown) instead.
     cancel_cwd_poll(state)
+    cancel_query_owner_command(state)
     if state.socket, do: :gen_tcp.close(state.socket)
+
+    Enum.each(state.pending_foregrounds, fn {_id, request} ->
+      Process.cancel_timer(request.timer)
+      GenServer.reply(request.from, {:ok, unknown_foreground()})
+    end)
+
+    Enum.each(state.query_register_waiters, fn waiter ->
+      if Process.alive?(waiter.client) do
+        GenServer.reply(waiter.from, terminal_capabilities(nil, false))
+      end
+    end)
+
     Enum.each(state.waiters, fn _entry -> Dala.Terminal.WaiterLimiter.release(self()) end)
     :ok
   rescue
@@ -599,6 +739,39 @@ defmodule Dala.Terminal.Server do
   @impl true
   def handle_cast({:input, data}, state) do
     _ = Holder.send_input(state.socket, data)
+    {:noreply, state}
+  end
+
+  def handle_cast({:query_client_ready, client}, state) do
+    state =
+      case Map.get(state.query_clients, client) do
+        %{supported?: true} = capability ->
+          query_clients =
+            Map.put(state.query_clients, client, %{capability | ready?: true})
+
+          reconcile_query_owner(%{state | query_clients: query_clients})
+
+        _legacy_or_unknown ->
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:allow_query_owner, state) do
+    # Terminal.Boot is the only caller: after a full BEAM restart no old
+    # Phoenix channels can survive. If a new channel raced application boot,
+    # stay conservative and leave xterm authoritative for this Server.
+    state =
+      if map_size(state.query_clients) == 0 do
+        state
+        |> Map.put(:query_owner_negotiable?, true)
+        |> broadcast_terminal_capabilities()
+        |> reconcile_query_owner()
+      else
+        state
+      end
+
     {:noreply, state}
   end
 
@@ -706,6 +879,13 @@ defmodule Dala.Terminal.Server do
     exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
   end
 
+  # A replaced control connection can still leave close/error/data messages
+  # in this process's mailbox. They belong to an older holder generation and
+  # must not stop (or feed) the recovered server.
+  def handle_info({:tcp, _stale_socket, _frame}, state), do: {:noreply, state}
+  def handle_info({:tcp_closed, _stale_socket}, state), do: {:noreply, state}
+  def handle_info({:tcp_error, _stale_socket, _reason}, state), do: {:noreply, state}
+
   # CWD poll workers are monitored separately from channel and waiter
   # monitors. This clause must precede the generic DOWN handlers below.
   def handle_info(
@@ -732,8 +912,12 @@ defmodule Dala.Terminal.Server do
     state = %{
       state
       | clients: Map.delete(state.clients, pid),
-        visible_clients: MapSet.delete(state.visible_clients, pid)
+        visible_clients: MapSet.delete(state.visible_clients, pid),
+        query_clients: Map.delete(state.query_clients, pid),
+        query_register_waiters: Enum.reject(state.query_register_waiters, &(&1.client == pid))
     }
+
+    state = reconcile_query_owner(state)
 
     state =
       if was_visible? and MapSet.size(state.visible_clients) == 0,
@@ -784,6 +968,42 @@ defmodule Dala.Terminal.Server do
         GenServer.reply(waiter.from, {:ok, %{reason: "timeout", seq: state.seq}})
         release_waiter(waiter)
         {:noreply, %{state | waiters: waiters}}
+    end
+  end
+
+  def handle_info({:foreground_timeout, request_id}, state) do
+    case Map.pop(state.pending_foregrounds, request_id) do
+      {nil, _pending} ->
+        {:noreply, state}
+
+      {%{from: from}, pending} ->
+        GenServer.reply(from, {:ok, unknown_foreground()})
+        {:noreply, %{state | pending_foregrounds: pending}}
+    end
+  end
+
+  def handle_info({:query_owner_ack_timeout, ref}, state) do
+    case Map.get(state, :query_owner_command) do
+      %{ref: ^ref, enabled: enabled} ->
+        attempt = Map.get(state, :query_owner_recovery_attempt, 0) + 1
+
+        if attempt == 1 or rem(attempt, 12) == 0 do
+          Logger.warning(
+            "terminal #{state.id} query-owner #{if(enabled, do: "enable", else: "disable")} " <>
+              "ACK timed out; replacing the holder control connection " <>
+              "(attempt #{attempt})"
+          )
+        end
+
+        state =
+          state
+          |> Map.put(:query_owner_command, nil)
+          |> Map.put(:query_owner_recovery_attempt, attempt)
+
+        {:noreply, recover_holder_connection(state, enabled)}
+
+      _stale_generation ->
+        {:noreply, state}
     end
   end
 
@@ -950,6 +1170,46 @@ defmodule Dala.Terminal.Server do
       frame_type == Holder.type_agent() ->
         {:noreply, broadcast_agent_event(state, payload)}
 
+      frame_type == Holder.type_processes() ->
+        case payload do
+          <<request_id::64, encoded::binary>> ->
+            case Map.pop(state.pending_foregrounds, request_id) do
+              {%{from: from, timer: timer}, pending} ->
+                Process.cancel_timer(timer)
+
+                result =
+                  case Jason.decode(encoded) do
+                    {:ok, processes} when is_list(processes) ->
+                      Dala.Terminal.AgentEvent.foreground_from_processes(processes)
+
+                    _other ->
+                      unknown_foreground()
+                  end
+
+                GenServer.reply(from, {:ok, result})
+                {:noreply, %{state | pending_foregrounds: pending}}
+
+              {nil, _pending} ->
+                {:noreply, state}
+            end
+
+          _invalid ->
+            {:noreply, state}
+        end
+
+      frame_type == Holder.type_query_owner() ->
+        case payload do
+          <<enabled>> when enabled in [0, 1] ->
+            # The holder's ACK is an output barrier. Preserve that FIFO at the
+            # Phoenix layer too: micro-batched bytes before it must reach xterm
+            # before browsers switch which side answers terminal queries.
+            state = flush_now(state)
+            {:noreply, handle_query_owner_ack(state, enabled == 1)}
+
+          _invalid ->
+            {:noreply, state}
+        end
+
       frame_type == Holder.type_repaint() ->
         state = flush_now(state)
 
@@ -1027,10 +1287,25 @@ defmodule Dala.Terminal.Server do
         # matches the size this server last applied.
         {rows, cols} = state.size
 
-        {:noreply,
-         apply_size(%{state | shell_pid: shell_pid, holder_proto: holder_proto}, rows, cols,
-           force: true
-         )}
+        recovering? = Map.get(state, :recovering_holder?, false)
+
+        state =
+          state
+          |> cancel_query_owner_command()
+          |> Map.merge(%{
+            shell_pid: shell_pid,
+            holder_proto: holder_proto,
+            query_owner_phase: :disabled,
+            query_owner_enabled?: false,
+            recovering_holder?: false
+          })
+          |> apply_size(rows, cols, force: true)
+          |> broadcast_terminal_capabilities()
+          |> reset_holder_query_owner()
+
+        state = if recovering?, do: request_repaint_all(state), else: state
+
+        {:noreply, state}
 
       frame_type == Holder.type_exit() ->
         <<status::32>> = payload
@@ -1115,11 +1390,23 @@ defmodule Dala.Terminal.Server do
     %{state | cwd_poll_timer: {message_ref, timer}}
   end
 
+  defp windows?, do: match?({:win32, _}, :os.type())
+
+  defp unknown_foreground, do: %{app: "unknown", cmdline: ""}
+
   # Monitor each client the first time we hear from it, so ownership is
   # released when its channel process exits.
   defp track_client(state, client, client_ref) do
     unless Map.has_key?(state.clients, client), do: Process.monitor(client)
-    %{state | clients: Map.put(state.clients, client, client_ref)}
+
+    state = %{
+      state
+      | clients: Map.put(state.clients, client, client_ref),
+        query_clients:
+          Map.put_new(state.query_clients, client, %{supported?: false, ready?: false})
+    }
+
+    reconcile_query_owner(state)
   end
 
   # Makes `client` the size owner, applies its size, and announces the new
@@ -1167,6 +1454,231 @@ defmodule Dala.Terminal.Server do
       end
 
     %{owner: owner_ref, owner_device: state.size_owner_device, rows: rows, cols: cols}
+  end
+
+  defp terminal_capabilities(proto, enabled, negotiable? \\ true) do
+    supported = negotiable? and is_integer(proto) and proto >= @pty_query_proto
+
+    %{
+      holder_query_owner: supported and enabled,
+      holder_query_owner_supported: supported
+    }
+  end
+
+  defp put_query_client(state, client, supported, ready) do
+    capability = %{supported?: supported, ready?: supported and ready}
+    %{state | query_clients: Map.put(state.query_clients, client, capability)}
+  end
+
+  defp query_owner_desired?(state) do
+    state.query_owner_negotiable? and is_integer(state.holder_proto) and
+      state.holder_proto >= @pty_query_proto and
+      state.socket != nil and
+      (map_size(state.query_clients) == 0 or
+         Enum.all?(state.query_clients, fn {_pid, capability} ->
+           capability.supported? and capability.ready?
+         end))
+  end
+
+  defp query_owner_safely_disabled?(state) do
+    not is_nil(state.holder_proto) and state.query_owner_phase == :disabled and
+      not state.query_owner_enabled?
+  end
+
+  defp reconcile_query_owner(state) do
+    desired? = query_owner_desired?(state)
+
+    case {state.query_owner_phase, desired?} do
+      {:disabled, true} -> send_query_owner_command(state, true)
+      {:enabled, false} -> send_query_owner_command(state, false)
+      # A target change while an ACK is in flight is serialized: once that
+      # ACK arrives, handle_query_owner_ack/2 immediately sends the inverse
+      # command without ever advertising the transient state to browsers.
+      _unchanged_or_in_flight -> state
+    end
+  end
+
+  defp send_query_owner_command(state, enabled) do
+    case Holder.send_query_owner(state.socket, enabled) do
+      :ok ->
+        state
+        |> cancel_query_owner_command()
+        |> Map.put(:query_owner_recovery_attempt, 0)
+        |> Map.put(:query_owner_phase, if(enabled, do: :enabling, else: :disabling))
+        |> schedule_query_owner_timeout(enabled)
+
+      {:error, reason} ->
+        Logger.warning(
+          "terminal #{state.id} could not send query-owner command: #{inspect(reason)}; " <>
+            "replacing the holder control connection"
+        )
+
+        state
+        |> cancel_query_owner_command()
+        |> Map.put(:query_owner_phase, if(enabled, do: :enabling, else: :disabling))
+        |> Map.put(:query_owner_recovery_attempt, 1)
+        |> recover_holder_connection(enabled)
+    end
+  end
+
+  defp reset_holder_query_owner(state) do
+    if is_integer(state.holder_proto) and state.holder_proto >= @pty_query_proto do
+      send_query_owner_command(state, false)
+    else
+      state
+      |> Map.merge(%{query_owner_phase: :disabled, query_owner_enabled?: false})
+      |> reply_query_register_waiters()
+    end
+  end
+
+  defp handle_query_owner_ack(state, enabled) do
+    state =
+      state
+      |> cancel_query_owner_command()
+      |> Map.put(:query_owner_recovery_attempt, 0)
+
+    state = %{
+      state
+      | query_owner_phase: if(enabled, do: :enabled, else: :disabled),
+        query_owner_enabled?: enabled
+    }
+
+    cond do
+      enabled and not query_owner_desired?(state) ->
+        # A legacy/unready client joined while ENABLE was in flight. Disable
+        # again without broadcasting the transient enabled state.
+        send_query_owner_command(state, false)
+
+      enabled ->
+        broadcast_terminal_capabilities(state)
+
+      true ->
+        state
+        |> broadcast_terminal_capabilities()
+        |> reply_query_register_waiters()
+        |> reconcile_query_owner()
+    end
+  end
+
+  defp reply_query_register_waiters(state) do
+    capabilities =
+      terminal_capabilities(state.holder_proto, false, state.query_owner_negotiable?)
+
+    Enum.each(state.query_register_waiters, fn waiter ->
+      if Process.alive?(waiter.client), do: GenServer.reply(waiter.from, capabilities)
+    end)
+
+    %{state | query_register_waiters: []}
+  end
+
+  defp broadcast_terminal_capabilities(state) do
+    DalaWeb.Endpoint.broadcast(
+      "terminal:" <> state.id,
+      "terminal_capabilities",
+      terminal_capabilities(
+        state.holder_proto,
+        state.query_owner_enabled?,
+        state.query_owner_negotiable?
+      )
+    )
+
+    state
+  end
+
+  defp cancel_query_owner_command(state) do
+    case Map.get(state, :query_owner_command) do
+      %{timer: timer} -> Process.cancel_timer(timer)
+      _none -> :ok
+    end
+
+    Map.put(state, :query_owner_command, nil)
+  end
+
+  defp schedule_query_owner_timeout(state, enabled) do
+    ref = make_ref()
+
+    timer =
+      Process.send_after(
+        self(),
+        {:query_owner_ack_timeout, ref},
+        @query_owner_ack_timeout_ms
+      )
+
+    Map.put(state, :query_owner_command, %{enabled: enabled, ref: ref, timer: timer})
+  end
+
+  # Reconnecting installs a fresh holder client generation. The holder does
+  # that under its ownership lock and starts the new generation with query
+  # handling disabled, giving us a known browser-owned baseline without
+  # killing the shell. Requests queued on the old generation are settled
+  # before their holder-side FIFOs are discarded, then HELLO rebuilds state
+  # and requests a reset repaint for every attached channel.
+  defp recover_holder_connection(state, enabled) do
+    old_socket = state.socket
+
+    case Holder.connect(state.id) do
+      {:ok, socket} ->
+        state =
+          state
+          |> flush_now()
+          |> settle_abandoned_holder_requests()
+          |> Map.merge(%{
+            socket: socket,
+            holder_proto: nil,
+            query_owner_phase: :disabled,
+            query_owner_enabled?: false,
+            query_owner_recovery_attempt: 0,
+            recovering_holder?: true
+          })
+          |> schedule_query_owner_timeout(false)
+
+        if old_socket && old_socket != socket, do: :gen_tcp.close(old_socket)
+        state
+
+      {:error, reason} ->
+        # Keep the original connection in place: it may still deliver the
+        # late ACK or a close notification. Never claim browser ownership
+        # without an ACK; retain the normal five-second join bound and keep a
+        # generation-tagged recovery attempt alive instead.
+        if Map.get(state, :query_owner_recovery_attempt, 0) == 1 do
+          Logger.error(
+            "terminal #{state.id} could not replace holder connection after query-owner timeout: " <>
+              inspect(reason)
+          )
+        end
+
+        schedule_query_owner_timeout(state, enabled)
+    end
+  end
+
+  defp settle_abandoned_holder_requests(state) do
+    Enum.each(:queue.to_list(state.pending_repaints), fn
+      {client, _history_budget, request_ref} when is_pid(client) ->
+        send_repaint(client, "", state.seq, false, request_ref)
+
+      {client, _history_budget} when is_pid(client) ->
+        send_repaint(client, "", state.seq, false, nil)
+
+      {:all_clients, _history_budget} ->
+        :ok
+    end)
+
+    Enum.each(:queue.to_list(state.pending_text_snapshots), fn
+      {:caller, from} -> GenServer.reply(from, {:error, "terminal holder reconnected"})
+    end)
+
+    Enum.each(state.pending_foregrounds, fn {_request_id, request} ->
+      Process.cancel_timer(request.timer)
+      GenServer.reply(request.from, {:ok, unknown_foreground()})
+    end)
+
+    %{
+      state
+      | pending_repaints: :queue.new(),
+        deferred_all_client_repaint: false,
+        pending_text_snapshots: :queue.new(),
+        pending_foregrounds: %{}
+    }
   end
 
   # Asks the holder for one snapshot to be delivered to EVERY tracked client

@@ -3,6 +3,7 @@ import Windowed from "./Windowed";
 import { useI18n } from "./i18n";
 import { lspServers } from "../ash_rpc";
 import { call } from "./rpc";
+import { basenameHost, hostPathKey } from "./hostPath";
 
 type RecentMessage = { dir: "in" | "out"; at: number; preview: string };
 
@@ -95,8 +96,8 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
   }, []);
 
   const list = [...(servers ?? [])].sort((a, b) => {
-    const aMine = a.path === path ? 0 : 1;
-    const bMine = b.path === path ? 0 : 1;
+    const aMine = hostPathKey(a.path) === hostPathKey(path) ? 0 : 1;
+    const bMine = hostPathKey(b.path) === hostPathKey(path) ? 0 : 1;
     return aMine - bMine || b.started_at - a.started_at;
   });
 
@@ -107,7 +108,7 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
       <div className="flex h-full flex-col gap-3 overflow-y-auto p-4 font-mono text-xs">
         {resolved && (
           <div className="rounded-lg border border-line/70 bg-bg0 p-3 text-fg-muted">
-            <span className="text-fg">{path.split("/").pop()}</span>
+            <span className="text-fg">{basenameHost(path)}</span>
             {" · "}
             {resolved.language === null
               ? t("lspNoLanguage")
@@ -141,7 +142,7 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
               key={entry.id}
               className={[
                 "rounded-lg border border-line bg-bg0 p-3",
-                entry.path === path ? "border-mint/40" : "",
+                hostPathKey(entry.path) === hostPathKey(path) ? "border-mint/40" : "",
               ].join(" ")}
             >
               <div className="flex flex-wrap items-center gap-2">
@@ -161,7 +162,7 @@ export default function LspDebug({ path, onClose }: { path: string; onClose: () 
                   ↑{entry.in_count} ↓{entry.out_count}
                 </span>
                 <span className="ml-auto truncate text-fg-muted" title={entry.path}>
-                  {entry.path.split("/").pop()}
+                  {basenameHost(entry.path)}
                 </span>
               </div>
               <div className="mt-1 truncate text-fg-muted" title={entry.command}>

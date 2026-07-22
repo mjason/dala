@@ -157,13 +157,13 @@ defmodule Dala.Terminal.AgentCommands do
 
   # commands/a.md → /a; commands/git/pr.md → /git:pr (Claude's namespacing).
   defp command_files(dir) do
-    for path <- Path.wildcard(Path.join(dir, "**/*.md")) do
+    for path <- recursive_markdown_files(dir) do
       name =
         "/" <>
           (path
            |> Path.relative_to(dir)
            |> String.replace_suffix(".md", "")
-           |> String.replace("/", ":"))
+           |> String.replace(["/", "\\"], ":"))
 
       %{name: name, description: frontmatter_description(path)}
     end
@@ -172,12 +172,14 @@ defmodule Dala.Terminal.AgentCommands do
   # skills/name.md and skills/name/SKILL.md both define skill "name".
   defp skills(dir) do
     flat =
-      for path <- Path.wildcard(Path.join(dir, "*.md")) do
+      for path <- direct_markdown_files(dir) do
         %{name: "/" <> Path.basename(path, ".md"), description: frontmatter_description(path)}
       end
 
     nested =
-      for path <- Path.wildcard(Path.join(dir, "*/SKILL.md")) do
+      for skill_dir <- literal_child_dirs(dir),
+          path = Path.join(skill_dir, "SKILL.md"),
+          literal_file?(path) do
         %{
           name: "/" <> (path |> Path.dirname() |> Path.basename()),
           description: frontmatter_description(path)
@@ -189,14 +191,35 @@ defmodule Dala.Terminal.AgentCommands do
 
   defp plugin_commands do
     cache = home(".claude/plugins/cache")
+    scan_plugin_cache(cache)
+  end
+
+  @doc false
+  def scan_plugin_cache(cache) do
+    plugin_dirs = literal_child_dirs(cache)
+
+    command_paths =
+      plugin_dirs
+      |> Enum.flat_map(&recursive_markdown_files(Path.join(&1, "commands")))
+      |> Enum.sort()
 
     commands =
-      for path <- Path.wildcard(Path.join(cache, "*/commands/**/*.md")) do
+      for path <- command_paths do
         %{name: "/" <> Path.basename(path, ".md"), description: frontmatter_description(path)}
       end
 
+    skill_paths =
+      plugin_dirs
+      |> Enum.flat_map(fn plugin_dir ->
+        for skill_dir <- literal_child_dirs(Path.join(plugin_dir, "skills")),
+            path = Path.join(skill_dir, "SKILL.md"),
+            literal_file?(path),
+            do: path
+      end)
+      |> Enum.sort()
+
     plugin_skills =
-      for path <- Path.wildcard(Path.join(cache, "*/skills/*/SKILL.md")) do
+      for path <- skill_paths do
         %{
           name: "/" <> (path |> Path.dirname() |> Path.basename()),
           description: frontmatter_description(path)
@@ -204,6 +227,67 @@ defmodule Dala.Terminal.AgentCommands do
       end
 
     commands ++ plugin_skills
+  end
+
+  # `Path.wildcard/1` treats metacharacters in the absolute directory itself
+  # as glob syntax. Enumerate literal directory entries so valid paths such as
+  # `C:\Users\name[work]` keep working on Windows.
+  defp recursive_markdown_files(dir) do
+    dir
+    |> literal_entries()
+    |> Enum.flat_map(fn name ->
+      path = Path.join(dir, name)
+
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory}} ->
+          recursive_markdown_files(path)
+
+        {:ok, %File.Stat{type: :regular}} ->
+          if String.ends_with?(name, ".md"), do: [path], else: []
+
+        {:ok, %File.Stat{type: :symlink}} ->
+          if String.ends_with?(name, ".md") and File.regular?(path), do: [path], else: []
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.sort()
+  end
+
+  defp direct_markdown_files(dir) do
+    for name <- literal_entries(dir),
+        String.ends_with?(name, ".md"),
+        path = Path.join(dir, name),
+        literal_file?(path),
+        do: path
+  end
+
+  defp literal_child_dirs(dir) do
+    for name <- literal_entries(dir),
+        path = Path.join(dir, name),
+        match?({:ok, %File.Stat{type: :directory}}, File.lstat(path)),
+        do: path
+  end
+
+  defp literal_entries(dir) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&(String.valid?(&1) and not String.starts_with?(&1, ".")))
+        |> Enum.sort()
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp literal_file?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> true
+      {:ok, %File.Stat{type: :symlink}} -> File.regular?(path)
+      _ -> false
+    end
   end
 
   # The `description:` value from a leading YAML frontmatter block.

@@ -86,4 +86,97 @@ defmodule Dala.Terminal.AgentEvent do
       true -> "unknown"
     end
   end
+
+  @doc "Classifies the foreground program from a Windows shell process tree."
+  def foreground_from_processes([]), do: %{app: "shell", cmdline: ""}
+
+  def foreground_from_processes(processes) when is_list(processes) do
+    parents =
+      Map.new(processes, fn process ->
+        {process["pid"], process["parent_pid"]}
+      end)
+
+    ranked =
+      Enum.map(processes, fn process ->
+        cmdline = process_cmdline(process)
+
+        %{
+          app: classify_process(process),
+          cmdline: cmdline,
+          depth: process_depth(process["pid"], parents, MapSet.new())
+        }
+      end)
+
+    selected =
+      ranked
+      |> Enum.filter(&(&1.app != "unknown"))
+      |> Enum.max_by(& &1.depth, fn -> Enum.max_by(ranked, & &1.depth) end)
+
+    %{app: selected.app, cmdline: selected.cmdline}
+  end
+
+  defp classify_process(process) do
+    executable = process |> Map.get("executable", "") |> basename()
+    argv = Map.get(process, "argv", [])
+    command = Enum.join([Map.get(process, "executable", "") | argv], " ")
+    normalized = command |> String.replace("\\", "/") |> String.downcase()
+
+    cond do
+      executable == "claude" or
+        normalized =~ ~r{(?:^|[\s/"'])claude(?:\.cmd|\.exe)?(?:$|[\s"'])} or
+          String.contains?(normalized, "/@anthropic-ai/claude-code/") ->
+        "claude"
+
+      executable == "codex" or
+        normalized =~ ~r{(?:^|[\s/"'])codex(?:\.cmd|\.exe)?(?:$|[\s"'])} or
+          String.contains?(normalized, "/@openai/codex/") ->
+        "codex"
+
+      executable == "opencode" or
+        normalized =~ ~r{(?:^|[\s/"'])opencode(?:\.cmd|\.exe)?(?:$|[\s"'])} or
+          String.contains?(normalized, "/opencode-ai/") ->
+        "opencode"
+
+      executable == "gemini" or
+        normalized =~ ~r{(?:^|[\s/"'])gemini(?:\.cmd|\.exe)?(?:$|[\s"'])} or
+          String.contains?(normalized, "/@google/gemini-cli/") ->
+        "gemini"
+
+      true ->
+        "unknown"
+    end
+  end
+
+  defp process_cmdline(process) do
+    case Map.get(process, "argv", []) do
+      [] -> Map.get(process, "executable", "")
+      argv -> Enum.join(argv, " ")
+    end
+  end
+
+  defp process_depth(nil, _parents, _seen), do: 0
+
+  defp process_depth(pid, parents, seen) do
+    if MapSet.member?(seen, pid) do
+      0
+    else
+      case Map.get(parents, pid) do
+        parent when is_integer(parent) and is_map_key(parents, parent) ->
+          1 + process_depth(parent, parents, MapSet.put(seen, pid))
+
+        _root_or_missing ->
+          0
+      end
+    end
+  end
+
+  defp basename(path) do
+    path
+    |> String.replace("\\", "/")
+    |> Path.basename()
+    |> String.downcase()
+    |> String.replace_suffix(".exe", "")
+    |> String.replace_suffix(".cmd", "")
+    |> String.replace_suffix(".bat", "")
+  end
 end

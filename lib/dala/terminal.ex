@@ -60,6 +60,7 @@ defmodule Dala.Terminal do
     resource Dala.Terminal.Updater do
       rpc_action :check_update, :check_update
       rpc_action :apply_update, :apply_update
+      rpc_action :update_status, :update_status
     end
   end
 

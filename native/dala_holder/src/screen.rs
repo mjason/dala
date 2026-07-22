@@ -17,6 +17,7 @@ use alacritty_terminal::vte::ansi::{
 };
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 /// Byte budget for the scrollback portion of an attach repaint. The client
 /// parses the whole repaint synchronously; ~512 KiB is tens of milliseconds
@@ -74,11 +75,20 @@ pub struct HighlightedRange {
 
 const MAX_HIGHLIGHT_RANGES: usize = 256;
 
-#[derive(Clone)]
-struct Quiet;
+#[derive(Clone, Default)]
+struct TerminalEvents {
+    pty_writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
+}
 
-impl EventListener for Quiet {
-    fn send_event(&self, _event: Event) {}
+impl EventListener for TerminalEvents {
+    fn send_event(&self, event: Event) {
+        if let Event::PtyWrite(reply) = event {
+            self.pty_writes
+                .lock()
+                .unwrap()
+                .push_back(reply.into_bytes());
+        }
+    }
 }
 
 struct Size {
@@ -101,13 +111,14 @@ impl Dimensions for Size {
 }
 
 pub struct Screen {
-    term: Term<Quiet>,
+    term: Term<TerminalEvents>,
     parser: Processor,
     scroll_tracker: ScrollTracker,
     scroll_parser: Processor,
     alt_tracker: AltTracker,
     alt_parser: alacritty_terminal::vte::Parser,
     normal_grid: Grid<Cell>,
+    pty_writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 /// Alacritty keeps DECSTBM private to `Term`, and RIS/resize reset it without
@@ -287,7 +298,8 @@ impl Screen {
             lines: rows.max(1) as usize,
             columns: cols.max(1) as usize,
         };
-        let term = Term::new(config, &size, Quiet);
+        let events = TerminalEvents::default();
+        let term = Term::new(config, &size, events.clone());
         let normal_grid = term.grid().clone();
         Screen {
             term,
@@ -297,6 +309,7 @@ impl Screen {
             alt_tracker: AltTracker::default(),
             alt_parser: alacritty_terminal::vte::Parser::new(),
             normal_grid,
+            pty_writes: events.pty_writes,
         }
     }
 
@@ -366,6 +379,10 @@ impl Screen {
         {
             self.scroll_parser.stop_sync(&mut self.scroll_tracker);
         }
+    }
+
+    pub fn take_pty_writes(&self) -> Vec<Vec<u8>> {
+        self.pty_writes.lock().unwrap().drain(..).collect()
     }
 
     pub fn columns(&self) -> usize {
@@ -960,7 +977,7 @@ fn render_hyperlink(out: &mut Vec<u8>, hyperlink: Option<&Hyperlink>) {
     }
 }
 
-fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
+fn render_palette(out: &mut Vec<u8>, term: &Term<TerminalEvents>) {
     for index in 0..alacritty_terminal::term::color::COUNT {
         let Some(color) = term.colors()[index] else {
             continue;
@@ -986,7 +1003,7 @@ fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
     }
 }
 
-fn render_modes(out: &mut Vec<u8>, term: &Term<Quiet>, mode: &TermMode) {
+fn render_modes(out: &mut Vec<u8>, term: &Term<TerminalEvents>, mode: &TermMode) {
     let mut set = |flag: TermMode, seq: &[u8]| {
         if mode.contains(flag) {
             out.extend_from_slice(seq);
@@ -1245,6 +1262,40 @@ mod tests {
 
     fn text(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[test]
+    fn terminal_query_replies_are_captured_for_the_pty_owner() {
+        let mut screen = Screen::new(24, 80, 100);
+
+        screen.advance(b"\x1b[c");
+        assert_eq!(screen.take_pty_writes(), [b"\x1b[?6c".to_vec()]);
+
+        screen.advance(b"\x1b[>c");
+        let secondary = screen.take_pty_writes();
+        assert_eq!(secondary.len(), 1);
+        assert!(secondary[0].starts_with(b"\x1b[>0;"));
+        assert!(secondary[0].ends_with(b";1c"));
+
+        screen.advance(b"\x1b[5n\x1b[3;4H\x1b[6n");
+        assert_eq!(
+            screen.take_pty_writes(),
+            [b"\x1b[0n".to_vec(), b"\x1b[3;4R".to_vec()]
+        );
+
+        screen.advance(b"\x1b[4$p\x1b[?2004$p\x1b[18t");
+        assert_eq!(
+            screen.take_pty_writes(),
+            [
+                b"\x1b[4;2$y".to_vec(),
+                b"\x1b[?2004;2$y".to_vec(),
+                b"\x1b[8;24;80t".to_vec(),
+            ]
+        );
+
+        // Alacritty does not own DEC private DSR; xterm must still answer it.
+        screen.advance(b"\x1b[?6n");
+        assert!(screen.take_pty_writes().is_empty());
     }
 
     #[test]

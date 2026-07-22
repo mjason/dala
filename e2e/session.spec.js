@@ -3,6 +3,7 @@
 const { test, expect } = require("@playwright/test");
 const fs = require("node:fs");
 const os = require("node:os");
+const path = require("node:path");
 const h = require("./helpers");
 
 /** __dalaTerm 读整个 active buffer 的文本(WebGL 下 DOM 没有文字)。 */
@@ -75,6 +76,49 @@ test.describe("Given 一个打开 dala 的用户", () => {
       await expect(page.locator("#session-reference-copy")).toContainText(id);
       await page.locator("#session-reference-copy").click();
       await expect.poll(() => page.evaluate(() => window.__dalaCopiedSessionId)).toBe(id);
+    } finally {
+      if (id) await h.deleteSession(page, id).catch(() => {});
+    }
+  });
+
+  test("shell 查询终端状态时只收到 holder 的一份响应", async ({ page }) => {
+    const probe = path.join(cwd, "terminal-query.py");
+    fs.writeFileSync(
+      probe,
+      [
+        "import os, select, termios, time, tty",
+        'fd = os.open("/dev/tty", os.O_RDWR)',
+        "saved = termios.tcgetattr(fd)",
+        'data = b""',
+        "try:",
+        "    tty.setraw(fd)",
+        '    os.write(fd, b"\\x1b[5n")',
+        "    deadline = time.monotonic() + 1.0",
+        "    while time.monotonic() < deadline:",
+        "        readable, _, _ = select.select([fd], [], [], 0.1)",
+        "        if readable:",
+        "            data += os.read(fd, 1024)",
+        "finally:",
+        "    termios.tcsetattr(fd, termios.TCSANOW, saved)",
+        "    os.close(fd)",
+        'reply_count = data.count(b"\\x1b[0n")',
+        'print(f"DALA-DSR-REPLIES={reply_count} DATA={data.hex()}", flush=True)',
+      ].join("\n"),
+    );
+
+    await h.gotoApp(page);
+    let id;
+    try {
+      id = await h.createSession(page, cwd);
+      await expect(page.locator(".xterm").first()).toBeVisible();
+      await waitTerminalReady(page);
+
+      await page.keyboard.type(`python3 ${probe}`);
+      await page.keyboard.press("Enter");
+
+      await expect.poll(() => bufferText(page), { timeout: 10_000 }).toContain(
+        "DALA-DSR-REPLIES=1",
+      );
     } finally {
       if (id) await h.deleteSession(page, id).catch(() => {});
     }

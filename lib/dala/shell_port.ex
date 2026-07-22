@@ -10,14 +10,34 @@ defmodule Dala.ShellPort do
   @doc """
   Opens a port running `command` (an argv list) through the shell wrapper,
   with stderr redirected to the `stderr` path (a capture file or
-  `"/dev/null"`). Extra `Port.open/2` options (`:hide`, `cd:`, …) are
-  appended to the defaults (`:binary`, `:exit_status`).
+  `"/dev/null"`). Windows helpers are hidden by default so background
+  processes never open the system terminal. Extra `Port.open/2` options
+  (`cd:`, line mode, …) are appended to the defaults.
   """
   def open([_ | _] = command, stderr, port_opts \\ []) do
-    Port.open(
-      {:spawn_executable, "/bin/sh"},
-      [:binary, :exit_status, args: ["-c", shell_command(command, stderr)]] ++ port_opts
-    )
+    if windows?() do
+      config = Jason.encode!(%{command: command, stderr: stderr})
+
+      Port.open(
+        {:spawn_executable, proxy_path()},
+        port_options([{:args, ["exec", config]} | port_opts])
+      )
+    else
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        port_options([{:args, ["-c", shell_command(command, stderr)]} | port_opts])
+      )
+    end
+  end
+
+  @doc false
+  def port_options(port_opts) when is_list(port_opts) do
+    port_opts =
+      if windows?() and :hide not in port_opts,
+        do: [:hide | port_opts],
+        else: port_opts
+
+    [:binary, :exit_status, :use_stdio | port_opts]
   end
 
   @doc "The `sh -c` command string: escaped argv `exec`'d, stderr redirected."
@@ -36,9 +56,11 @@ defmodule Dala.ShellPort do
   def close(nil), do: :ok
 
   def close(port) do
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", ["-TERM", Integer.to_string(os_pid)])
-      _ -> :ok
+    unless windows?() do
+      case Port.info(port, :os_pid) do
+        {:os_pid, os_pid} -> System.cmd("kill", ["-TERM", Integer.to_string(os_pid)])
+        _ -> :ok
+      end
     end
 
     Port.close(port)
@@ -46,4 +68,10 @@ defmodule Dala.ShellPort do
   catch
     _, _ -> :ok
   end
+
+  defp proxy_path do
+    Path.join([:code.priv_dir(:dala), "bin", "dala_holder.exe"])
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 end

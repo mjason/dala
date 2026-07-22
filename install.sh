@@ -18,6 +18,41 @@ PORT="${DALA_PORT:-4400}"
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+verify_checksum() {
+  checksum_file=$1
+  archive=$2
+  asset=$3
+
+  # Release checksums are a one-line sha256sum record. Reject missing,
+  # ambiguous, or differently named records before invoking the checker so a
+  # valid checksum for another file cannot authorize this archive.
+  parsed=$(awk '
+    { count++ }
+    NF == 2 {
+      name = $2
+      sub(/^\*/, "", name)
+      sub(/\r$/, "", name)
+      print $1 "\t" name
+      valid++
+    }
+    END { if (count != 1 || valid != 1) exit 1 }
+  ' "$checksum_file") || die "malformed checksum for $asset"
+
+  expected_hash=${parsed%%$'\t'*}
+  expected_name=${parsed#*$'\t'}
+  printf '%s\n' "$expected_hash" | grep -Eq '^[[:xdigit:]]{64}$' ||
+    die "malformed checksum for $asset"
+  [ "$expected_name" = "$asset" ] || die "checksum names unexpected asset"
+
+  if [ "$PLATFORM" = "macos-arm64" ]; then
+    (cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "$checksum_file")" >/dev/null) ||
+      die "checksum mismatch"
+  else
+    (cd "$(dirname "$archive")" && sha256sum -c -- "$(basename "$checksum_file")" >/dev/null) ||
+      die "checksum mismatch"
+  fi
+}
+
 command -v curl >/dev/null || die "curl is required"
 command -v tar >/dev/null || die "tar is required"
 
@@ -62,14 +97,10 @@ else
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
   curl -fSL --progress-bar -o "$TMP/$ASSET" "$URL"
-  if curl -fsSL -o "$TMP/$ASSET.sha256" "$URL.sha256" 2>/dev/null; then
-    if [ "$PLATFORM" = "macos-arm64" ]; then
-      (cd "$TMP" && shasum -a 256 -c "$ASSET.sha256" >/dev/null) || die "checksum mismatch"
-    else
-      (cd "$TMP" && sha256sum -c "$ASSET.sha256" >/dev/null) || die "checksum mismatch"
-    fi
-    say "checksum ok"
-  fi
+  curl -fsSL -o "$TMP/$ASSET.sha256" "$URL.sha256" 2>/dev/null ||
+    die "could not download checksum for $ASSET"
+  verify_checksum "$TMP/$ASSET.sha256" "$TMP/$ASSET" "$ASSET"
+  say "checksum ok"
   mkdir -p "$DEST"
   tar -xzf "$TMP/$ASSET" -C "$DEST"
 fi

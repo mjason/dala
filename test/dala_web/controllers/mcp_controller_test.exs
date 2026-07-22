@@ -267,7 +267,7 @@ defmodule DalaWeb.McpControllerTest do
       # base_url is derived from THIS request's host (ConnTest default).
       assert String.starts_with?(result["url"], "http://www.example.com/files/raw?")
       params = URI.parse(result["url"]).query |> URI.decode_query()
-      assert params["path"] == path
+      assert Dala.TestPlatform.same_path?(params["path"], path)
       assert DalaWeb.FileDownloadToken.valid_for?(params["token"], path)
       assert result["bytes"] == 3
     end

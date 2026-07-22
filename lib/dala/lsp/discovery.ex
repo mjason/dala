@@ -118,13 +118,22 @@ defmodule Dala.Lsp.Discovery do
 
   # ".venv/bin/basedpyright-langserver --stdio" → "basedpyright"; "dm lsp" → "dm lsp"
   defp server_name([bin | args]) do
-    base = Path.basename(bin)
+    base = executable_basename(bin)
 
     case {base, args} do
       {"dm", ["lsp" | _]} -> "dm lsp"
       {"dmi", ["lsp" | _]} -> "dm lsp"
       _ -> String.replace_suffix(base, "-langserver", "")
     end
+  end
+
+  defp executable_basename(path) do
+    path
+    |> String.replace("\\", "/")
+    |> Path.basename()
+    |> String.replace_suffix(".exe", "")
+    |> String.replace_suffix(".cmd", "")
+    |> String.replace_suffix(".bat", "")
   end
 
   # Walk up from the file's directory to the nearest dala.jsonc /
@@ -288,7 +297,8 @@ defmodule Dala.Lsp.Discovery do
       |> String.replace("${root}", root)
       |> then(fn w ->
         Regex.replace(~r/\$\{(\w+)\}|\$(\w+)/, w, fn _, braced, bare ->
-          System.get_env(if(braced != "", do: braced, else: bare)) || ""
+          name = if(braced != "", do: braced, else: bare)
+          System.get_env(name) || if(name == "HOME", do: System.user_home(), else: nil) || ""
         end)
       end)
 
@@ -302,8 +312,8 @@ defmodule Dala.Lsp.Discovery do
   defp absolutize([bin | args], root) do
     resolved =
       cond do
-        Path.type(bin) == :absolute -> bin
-        String.contains?(bin, "/") -> Path.expand(bin, root)
+        Path.type(bin) == :absolute -> Path.expand(bin)
+        String.contains?(bin, ["/", "\\"]) -> Path.expand(bin, root)
         true -> System.find_executable(bin) || bin
       end
 
@@ -316,16 +326,17 @@ defmodule Dala.Lsp.Discovery do
   defp local_bin(name), do: home(".local/bin/#{name}")
 
   defp discover("python", root) do
-    first_existing([
-      {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
-      {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]},
-      {System.find_executable("basedpyright-langserver"), ["--stdio"]},
-      {System.find_executable("pyright-langserver"), ["--stdio"]},
-      {local_bin("basedpyright-langserver"), ["--stdio"]},
-      {local_bin("pyright-langserver"), ["--stdio"]},
-      {mason_bin("basedpyright-langserver"), ["--stdio"]},
-      {mason_bin("pyright-langserver"), ["--stdio"]}
-    ])
+    first_existing(
+      python_project_candidates(root) ++
+        [
+          {System.find_executable("basedpyright-langserver"), ["--stdio"]},
+          {System.find_executable("pyright-langserver"), ["--stdio"]},
+          {local_bin("basedpyright-langserver"), ["--stdio"]},
+          {local_bin("pyright-langserver"), ["--stdio"]},
+          {mason_bin("basedpyright-langserver"), ["--stdio"]},
+          {mason_bin("pyright-langserver"), ["--stdio"]}
+        ]
+    )
   end
 
   defp discover("rust", _root) do
@@ -339,6 +350,7 @@ defmodule Dala.Lsp.Discovery do
   defp discover("elixir", _root) do
     first_existing([
       {System.find_executable("elixir-ls"), []},
+      {System.find_executable("language_server.bat"), []},
       {local_bin("elixir-ls"), []},
       {home(".local/elixir-ls/language_server.sh"), []},
       {mason_bin("elixir-ls"), []}
@@ -353,8 +365,9 @@ defmodule Dala.Lsp.Discovery do
     ])
   end
 
-  defp discover(language, _root) when language in ["typescript", "javascript"] do
+  defp discover(language, root) when language in ["typescript", "javascript"] do
     first_existing([
+      {typescript_project_bin(root), ["--stdio"]},
       {System.find_executable("typescript-language-server"), ["--stdio"]},
       {local_bin("typescript-language-server"), ["--stdio"]},
       {mason_bin("typescript-language-server"), ["--stdio"]}
@@ -371,6 +384,31 @@ defmodule Dala.Lsp.Discovery do
   end
 
   defp discover(_language, _root), do: {[], []}
+
+  defp python_project_candidates(root) do
+    if windows?() do
+      for name <- [
+            "basedpyright-langserver.cmd",
+            "basedpyright-langserver.exe",
+            "pyright-langserver.cmd",
+            "pyright-langserver.exe"
+          ] do
+        {Path.join([root, ".venv", "Scripts", name]), ["--stdio"]}
+      end
+    else
+      [
+        {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
+        {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]}
+      ]
+    end
+  end
+
+  defp typescript_project_bin(root) do
+    name = if windows?(), do: "typescript-language-server.cmd", else: "typescript-language-server"
+    Path.join([root, "node_modules", ".bin", name])
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   # First candidate whose binary exists wins; every probe is recorded so the
   # debug window can show what was looked at and what was missing.

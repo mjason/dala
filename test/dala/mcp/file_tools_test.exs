@@ -21,7 +21,7 @@ defmodule Dala.Mcp.FileToolsTest do
     assert {:ok, result} =
              FileTools.call("get_download_url", %{"path" => path}, %{base_url: "http://host:4400"})
 
-    assert result.path == path
+    assert Dala.TestPlatform.same_path?(result.path, path)
     assert result.filename == "data.csv"
     assert result.bytes == 5
     assert result.contentType =~ "csv"
@@ -30,7 +30,7 @@ defmodule Dala.Mcp.FileToolsTest do
     assert String.starts_with?(result.url, "http://host:4400/files/raw?")
     %{query: query} = URI.parse(result.url)
     params = URI.decode_query(query)
-    assert params["path"] == path
+    assert Dala.TestPlatform.same_path?(params["path"], path)
     assert params["download"] == "1"
     # The embedded token unlocks exactly this path.
     assert DalaWeb.FileDownloadToken.valid_for?(params["token"], path)

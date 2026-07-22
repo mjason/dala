@@ -1,6 +1,7 @@
 import { LanguageDescription, LanguageSupport } from "@codemirror/language";
 import { languages as builtin } from "@codemirror/language-data";
 import type { Extension } from "@codemirror/state";
+import { basenameHost } from "../hostPath";
 
 /**
  * Language registry: CodeMirror's built-in descriptions (each grammar is
@@ -52,7 +53,7 @@ export const languageRegistry: LanguageDescription[] = [
 ];
 
 export function languageFor(filename: string): LanguageDescription | null {
-  return LanguageDescription.matchFilename(languageRegistry, filename.split("/").pop() ?? "");
+  return LanguageDescription.matchFilename(languageRegistry, basenameHost(filename));
 }
 
 /** Loads the language support for a filename; null when unknown. */

@@ -8,6 +8,7 @@ export default defineConfig({
     include: ["js/**/*.test.{ts,tsx}"],
     setupFiles: ["./vitest.setup.ts"],
     globals: false,
+    maxWorkers: 4,
     coverage: {
       provider: "istanbul",
       include: ["js/app/**/*.{ts,tsx}"],

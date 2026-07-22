@@ -117,21 +117,33 @@ fn affected_dir(path: &Path, root: &Path) -> PathBuf {
     }
 }
 
-/// Roots that must never be watched recursively: `/` and `$HOME` itself.
+/// Roots that must never be watched recursively: a filesystem root and the
+/// user's home itself.
 /// Compared canonicalized so symlinked spellings don't slip through.
 fn pathological_root(root: &Path) -> Option<&'static str> {
     let canon = root.canonicalize().ok()?;
-    if canon == Path::new("/") {
-        return Some("root is /");
+    if canon.parent().is_none() || canon.parent() == Some(canon.as_path()) {
+        return Some("root is a filesystem root");
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         if let Ok(home) = PathBuf::from(home).canonicalize() {
-            if canon == home {
+            if same_path(&canon, &home) {
                 return Some("root is $HOME");
             }
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 /// Sentinel lines share stdout with the change reports; a single locked
@@ -185,7 +197,7 @@ pub fn run() -> ! {
     let mut _current: Option<Arc<Mutex<RecommendedWatcher>>> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
-        let root = PathBuf::from(line.trim());
+        let root = PathBuf::from(line);
         if root.as_os_str().is_empty() {
             continue;
         }
@@ -196,6 +208,7 @@ pub fn run() -> ! {
             // Tolerable: the drawer can navigate somewhere that just got
             // deleted; the next root replaces us anyway.
             eprintln!("dala_holder watch: {}: not a directory", root.display());
+            emit_sentinel(&format!("!fallback not a directory: {}", root.display()));
             continue;
         }
         if let Some(reason) = pathological_root(&root) {

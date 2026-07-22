@@ -78,6 +78,12 @@ describe("path-shaped queries", () => {
     expect(rankFiles("/Abs/Root/lib/foo.ex", files, 10, "/abs/root")[0]?.path).toBe("lib/foo.ex");
   });
 
+  it("strips a Windows drive root from a pasted path", () => {
+    expect(
+      rankFiles("C:\\Work\\Repo\\lib\\foo.ex", files, 10, "c:\\work\\repo")[0]?.path,
+    ).toBe("lib/foo.ex");
+  });
+
   it("strips a leading ./ and a leading /", () => {
     expect(rankFiles("./lib/foo.ex", files)[0]?.path).toBe("lib/foo.ex");
     expect(rankFiles("/lib/foo.ex", files)[0]?.path).toBe("lib/foo.ex");

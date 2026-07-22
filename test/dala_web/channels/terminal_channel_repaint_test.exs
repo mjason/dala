@@ -18,7 +18,7 @@ defmodule DalaWeb.TerminalChannelRepaintTest do
   @chunk 32 * 1024
 
   defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
+    session = Dala.Terminal.create_session!(%{shell: Dala.TestPlatform.shell()})
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -94,7 +94,7 @@ defmodule DalaWeb.TerminalChannelRepaintTest do
     bytes
   end
 
-  # Count only OUR flood chunks — the live bash session emits its own output.
+  # Count only OUR flood chunks — the live shell emits its own output.
   defp count_output_pushes(acc \\ 0) do
     expected = byte_size(Base.encode64(:binary.copy("x", @chunk)))
 
@@ -115,7 +115,7 @@ defmodule DalaWeb.TerminalChannelRepaintTest do
     socket = join_and_attach!(session.id)
 
     # Print a marker so the snapshot has verifiable content.
-    push(socket, "input", %{"data" => "printf 'REPAINT_MARK\\n'\n"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.echo("REPAINT_MARK")})
     await_output_containing("REPAINT_MARK")
 
     push(socket, "repaint", %{})
@@ -178,7 +178,7 @@ defmodule DalaWeb.TerminalChannelRepaintTest do
     # Kill the shell and wait for the exit broadcast, then for the session
     # server to actually be gone (the broadcast races its :stop) and for the
     # holder's final-screen file to exist.
-    push(socket, "input", %{"data" => "printf 'FINAL_MARK\\n'; exit\n"})
+    push(socket, "input", %{"data" => Dala.TestPlatform.echo("FINAL_MARK") <> "exit\r"})
     assert_push "exit", %{}, 8_000
 
     wait_until(fn ->

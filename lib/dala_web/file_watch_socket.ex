@@ -58,6 +58,7 @@ defmodule DalaWeb.FileWatchSocket do
         dirs =
           dirs
           |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
+          |> Enum.map(&normalize_host_path/1)
           |> Enum.take(@max_dirs)
 
         {:ok, state |> set_dirs(dirs) |> set_root(watch_root(payload, dirs))}
@@ -86,7 +87,7 @@ defmodule DalaWeb.FileWatchSocket do
         {:ok, degrade_to_poll(state, "watcher reported #{inspect(line)}")}
 
       _ ->
-        dir = String.trim_trailing(line, "/")
+        dir = normalize_host_path(line)
         {:ok, schedule_flush(%{state | pending: MapSet.put(state.pending, dir)})}
     end
   end
@@ -136,7 +137,7 @@ defmodule DalaWeb.FileWatchSocket do
   # naming only expanded dirs) the shallowest of them — the tree root is
   # always in the expanded set.
   defp watch_root(%{"root" => root}, _dirs) when is_binary(root) do
-    if File.dir?(root), do: root
+    if File.dir?(root), do: normalize_host_path(root)
   end
 
   defp watch_root(_payload, []), do: nil
@@ -202,8 +203,21 @@ defmodule DalaWeb.FileWatchSocket do
   end
 
   defp watcher_binary do
-    path = Path.join(:code.priv_dir(:dala), "bin/dala_holder")
+    executable = if match?({:win32, _}, :os.type()), do: "dala_holder.exe", else: "dala_holder"
+    path = Path.join([:code.priv_dir(:dala), "bin", executable])
     if File.exists?(path), do: path
+  end
+
+  defp normalize_host_path(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> String.trim_trailing("/")
+    |> case do
+      <<letter, ?:>> = drive when letter in ?A..?Z or letter in ?a..?z -> drive <> "/"
+      "" -> "/"
+      normalized -> normalized
+    end
   end
 
   defp schedule_flush(%{flush: nil} = state),

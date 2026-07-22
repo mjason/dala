@@ -4030,11 +4030,16 @@ export async function validateTranscribe(
 }
 
 
-export type ApplyUpdateFields = UnifiedFieldSelection<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}>[];
+export type ApplyUpdateInput = {
+  attemptId: UUID;
+  expectedTarget: string;
+};
+
+export type ApplyUpdateFields = UnifiedFieldSelection<{attemptId: string, status: string, updatedTo: string, __type: "TypedMap", __primitiveFields: "attemptId" | "status" | "updatedTo"}>[];
 
 export type InferApplyUpdateResult<
   Fields extends ApplyUpdateFields | undefined,
-> = InferResult<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}, Fields>;
+> = InferResult<{attemptId: string, status: string, updatedTo: string, __type: "TypedMap", __primitiveFields: "attemptId" | "status" | "updatedTo"}, Fields>;
 
 export type ApplyUpdateResult<Fields extends ApplyUpdateFields | undefined = undefined> = | { success: true; data: InferApplyUpdateResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -4049,6 +4054,7 @@ export type ApplyUpdateResult<Fields extends ApplyUpdateFields | undefined = und
 export async function applyUpdate<Fields extends ApplyUpdateFields | undefined = undefined>(
   config: {
   tenant?: string;
+  input: ApplyUpdateInput;
   fields: Fields;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
@@ -4058,6 +4064,7 @@ export async function applyUpdate<Fields extends ApplyUpdateFields | undefined =
   const payload = {
     action: "apply_update",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   };
 
@@ -4077,6 +4084,7 @@ export async function applyUpdate<Fields extends ApplyUpdateFields | undefined =
 export async function validateApplyUpdate(
   config: {
   tenant?: string;
+  input: ApplyUpdateInput;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
   customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -4084,7 +4092,8 @@ export async function validateApplyUpdate(
 ): Promise<ValidationResult> {
   const payload = {
     action: "apply_update",
-    ...(config.tenant !== undefined && { tenant: config.tenant })
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
   };
 
   return executeValidationRpcRequest<ValidationResult>(
@@ -4149,6 +4158,78 @@ export async function validateCheckUpdate(
   const payload = {
     action: "check_update",
     ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type UpdateStatusInput = {
+  attemptId: UUID;
+};
+
+export type UpdateStatusFields = UnifiedFieldSelection<{attemptId: string | null, status: string, target: string | null, message: string | null, rolledBack: boolean | null, startedAt: string | null, completedAt: string | null, __type: "TypedMap", __primitiveFields: "attemptId" | "status" | "target" | "message" | "rolledBack" | "startedAt" | "completedAt"}>[];
+
+export type InferUpdateStatusResult<
+  Fields extends UpdateStatusFields | undefined,
+> = InferResult<{attemptId: string | null, status: string, target: string | null, message: string | null, rolledBack: boolean | null, startedAt: string | null, completedAt: string | null, __type: "TypedMap", __primitiveFields: "attemptId" | "status" | "target" | "message" | "rolledBack" | "startedAt" | "completedAt"}, Fields>;
+
+export type UpdateStatusResult<Fields extends UpdateStatusFields | undefined = undefined> = | { success: true; data: InferUpdateStatusResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Updater
+ *
+ * @ashActionType :action
+ */
+export async function updateStatus<Fields extends UpdateStatusFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: UpdateStatusInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<UpdateStatusResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "update_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<UpdateStatusResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on Updater
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateUpdateStatus(
+  config: {
+  tenant?: string;
+  input: UpdateStatusInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "update_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
   };
 
   return executeValidationRpcRequest<ValidationResult>(

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createSession,
   deleteSession,
@@ -35,7 +35,8 @@ import { serverVersion } from "./meta";
 import { checkServerUpdated } from "./versionCheck";
 import { planDelivery, resolveApp } from "./agentDelivery";
 import LeaderMenu from "./LeaderMenu";
-import { nextWarmSession, terminalWarmLimit, touchTerminalPool } from "./terminalPool";
+import { terminalWarmLimit } from "./terminalPool";
+import { useTerminalPool } from "./hooks/useTerminalPool";
 
 type Toast = { id: number; message: string };
 
@@ -93,6 +94,7 @@ export default function App() {
     Record<string, { state: "working" | "attention" | "done"; at: number }>
   >({});
   const [quickPreview, setQuickPreview] = useState<Preview | null>(null);
+  const [hostPlatform, setHostPlatform] = useState<"windows" | "macos" | "linux" | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
   const termActions = useRef<TerminalActions | null>(null);
@@ -550,54 +552,13 @@ export default function App() {
     coarsePointer,
     deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
   });
-  const [termPool, setTermPool] = useState<string[]>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("dala:terminal-pool") || "[]");
-      return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
-    } catch {
-      return [];
-    }
+  const sessionIds = useMemo(() => ordered.map((session) => session.id), [ordered]);
+  const termPool = useTerminalPool({
+    activeId: active?.id ?? null,
+    sessionIds,
+    connected,
+    limit: termPoolLimit,
   });
-  useEffect(() => {
-    if (!active?.id) return;
-    setTermPool((prev) => touchTerminalPool(prev, active.id, termPoolLimit));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id, termPoolLimit]);
-  // Deleted sessions leave the pool (their channel/process is gone).
-  useEffect(() => {
-    if (!connected) return;
-    setTermPool((prev) => {
-      const alive = prev
-        .filter((id) => sessions.some((s) => s.id === id))
-        .slice(0, termPoolLimit);
-      return alive.length === prev.length ? prev : alive;
-    });
-  }, [connected, sessions, termPoolLimit]);
-  useEffect(() => {
-    localStorage.setItem("dala:terminal-pool", JSON.stringify(termPool));
-  }, [termPool]);
-  useEffect(() => {
-    if (!connected || termPool.length >= termPoolLimit) return;
-    const preferred = ordered.map((session) => session.id);
-    const warm = () => {
-      setTermPool((prev) => {
-        const candidate = nextWarmSession(prev, preferred, termPoolLimit);
-        return candidate ? [...prev, candidate] : prev;
-      });
-    };
-
-    const idleWindow = window as Window & {
-      requestIdleCallback?: typeof window.requestIdleCallback;
-      cancelIdleCallback?: typeof window.cancelIdleCallback;
-    };
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      const id = idleWindow.requestIdleCallback(warm, { timeout: 1_500 });
-      return () => idleWindow.cancelIdleCallback?.(id);
-    }
-
-    const id = globalThis.setTimeout(warm, 250);
-    return () => globalThis.clearTimeout(id);
-  }, [connected, ordered, termPool, termPoolLimit]);
 
   // Leader-menu executor: every which-key leaf lands here.
   const runLeaderAction = (action: string) => {
@@ -917,9 +878,14 @@ export default function App() {
                       id="toolbar-tools"
                       className="absolute right-0 top-full z-40 mt-1.5 flex w-56 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
                     >
-                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), t("kickViewersHint"), null, () =>
-                        void kickOtherViewers(),
-                      )}
+                      {hostPlatform != null && hostPlatform !== "windows" &&
+                        toolsItem(
+                          "kick-viewers-header-button",
+                          t("kickViewersAction"),
+                          t("kickViewersHint"),
+                          null,
+                          () => void kickOtherViewers(),
+                        )}
                       {toolsItem("terminal-refit-button", t("refitWidth"), t("refitDesc"), modShiftCombo("f"), () =>
                         termActions.current?.refit(true),
                       )}
@@ -974,9 +940,10 @@ export default function App() {
                       {overflowItem("overflow-quick-open", t("quickOpenTitle"), () =>
                         setQuickOpen(true),
                       )}
-                      {overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
-                        void kickOtherViewers(),
-                      )}
+                      {hostPlatform != null && hostPlatform !== "windows" &&
+                        overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
+                          void kickOtherViewers(),
+                        )}
                       {overflowItem("overflow-refit", t("refitWidth"), () =>
                         termActions.current?.refit(true),
                       )}
@@ -1011,6 +978,7 @@ export default function App() {
                       inputHookRef={termInputHookRef}
                       debugHandle
                       onError={toast}
+                      onPlatform={setHostPlatform}
                       onCwdChange={(cwd) => {
                         // Only the ACTIVE session drives the drawer path.
                         if (followCwd && id === activeIdRef.current) setDrawerPath(cwd);
@@ -1318,6 +1286,7 @@ export default function App() {
             if (activeId === settingsSession.id) setActiveId(null);
           }}
           onError={toast}
+          platform={hostPlatform}
         />
       )}
 

@@ -5,6 +5,14 @@ defmodule Dala.Terminal.MuxCwdTest do
   alias Dala.Terminal.MuxCwd
 
   setup do
+    if Dala.TestPlatform.windows?() do
+      {:ok, dir: nil}
+    else
+      setup_fake_bins()
+    end
+  end
+
+  defp setup_fake_bins do
     dir = Path.join(System.tmp_dir!(), "mux-cwd-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     old_path = System.get_env("PATH")
@@ -32,6 +40,8 @@ defmodule Dala.Terminal.MuxCwdTest do
   end
 
   describe "cwd/1 for zellij (dump-layout KDL parsing)" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     test "focused pane without inline cwd falls back to the session base", %{dir: dir} do
       fake_zellij_layout(dir, """
       layout {
@@ -142,6 +152,8 @@ defmodule Dala.Terminal.MuxCwdTest do
   end
 
   describe "focused_command/1 for zellij" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     test "reads the command of the innermost focused pane", %{dir: dir} do
       fake_zellij_layout(dir, """
       layout {
@@ -173,6 +185,8 @@ defmodule Dala.Terminal.MuxCwdTest do
   end
 
   describe "cwd/1 and focused_command/1 for tmux" do
+    @describetag skip: Dala.TestPlatform.windows?()
+
     test "returns the trimmed pane_current_path", %{dir: dir} do
       fake_bin(dir, "tmux", "printf '/work/project\\n'\n")
 
@@ -203,6 +217,17 @@ defmodule Dala.Terminal.MuxCwdTest do
       assert MuxCwd.cwd(nil) == :error
       assert MuxCwd.cwd({:screen, "s"}) == :error
       assert MuxCwd.focused_command(nil) == :error
+    end
+  end
+
+  describe "Windows multiplexer policy" do
+    @describetag skip: not Dala.TestPlatform.windows?()
+
+    test "unavailable zellij/tmux sessions do not report cwd or commands" do
+      assert MuxCwd.cwd({:zellij, "missing"}) == :error
+      assert MuxCwd.cwd({:tmux, 999_999_999}) == :error
+      assert MuxCwd.focused_command({:zellij, "missing"}) == :error
+      assert MuxCwd.focused_command({:tmux, 999_999_999}) == :error
     end
   end
 end

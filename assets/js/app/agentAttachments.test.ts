@@ -29,6 +29,15 @@ describe("extractAgentAttachments", () => {
     });
   });
 
+  it("extracts a quoted Windows attachment path containing spaces", () => {
+    const windows =
+      "C:\\Users\\Sea So\\AppData\\Local\\Dala\\tmp\\attachments\\f85984c1-686b-43c6-a6d1-129d436b2db2\\image.png";
+    expect(extractAgentAttachments(`分析 \"${windows}\" now`)).toEqual({
+      paths: [windows],
+      rest: "分析 now",
+    });
+  });
+
   it("does not extract ordinary absolute paths", () => {
     const prompt = "查看 /home/user/project/image.png 并修复布局";
     expect(extractAgentAttachments(prompt)).toEqual({ paths: [], rest: prompt });

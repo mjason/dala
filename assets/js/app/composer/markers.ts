@@ -48,5 +48,6 @@ export function appendWithSpace(text: string, addition: string): string {
 /** The pasted representation of uploaded paths (trailing space so the user
  * can keep typing right after). */
 export function pathsText(paths: string[]): string {
-  return paths.length > 0 ? paths.join(" ") + " " : "";
+  const references = paths.map((path) => (/\s/.test(path) ? `"${path}"` : path));
+  return references.length > 0 ? references.join(" ") + " " : "";
 }

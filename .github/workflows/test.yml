@@ -18,15 +18,31 @@ concurrency:
 
 jobs:
   elixir:
-    name: Elixir（覆盖率门槛 75%）
-    runs-on: ubuntu-latest
+    name: Elixir（${{ matrix.label }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux，覆盖率门槛 75%
+          - os: windows-2022
+            label: Windows，覆盖率门槛 75%
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Test recoverable Windows file replacement
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./ci/windows-atomic-replace-smoke.ps1
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
           elixir-version: "1.19"
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
       - uses: actions/cache@v4
         with:
           path: |
@@ -35,30 +51,65 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          # v3: BEAM-without-NIF poisoning happened twice (v2 was the first
-          # bump). The guard step below now self-heals it; the bump just
-          # discards the currently poisoned generation.
-          key: elixir-v3-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
-      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler .so（取消/中断的
-      # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
-      # app 的 _build 强制重编，自愈而不是再红一轮。
+          # v4: discard the generation that was saved with Windows BEAMs but
+          # without the native DLLs. The guards below also self-heal any future
+          # interrupted or otherwise incomplete cache saves.
+          key: elixir-v4-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler native library
+      # （取消/中断的 run 存下的半成品缓存），mix 会认为已编译而静默跳过
+      # NIF——删掉该 app 的 _build 强制重编，自愈而不是再红一轮。
       - name: guard against BEAM-without-NIF poisoned cache
+        if: runner.os == 'Linux'
         run: |
           for env in dev test; do
-            if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
-              echo "poisoned cache: _build/$env has BEAMs but no NIF — forcing rebuild"
-              rm -rf "_build/$env/lib/dala"
-            fi
+            if [ ! -d "_build/$env/lib/dala/ebin" ]; then continue; fi
+            for nif in dala_git dala_theme_renderer; do
+              if [ ! -f "_build/$env/lib/dala/priv/native/$nif.so" ]; then
+                echo "poisoned cache: _build/$env has BEAMs but no $nif NIF — forcing rebuild"
+                rm -rf "_build/$env/lib/dala"
+                break
+              fi
+            done
           done
+      - name: guard against BEAM-without-NIF poisoned cache (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($envName in @("dev", "test")) {
+            $appRoot = Join-Path "_build" "$envName\lib\dala"
+            $ebin = Join-Path $appRoot "ebin"
+            if (-not (Test-Path -LiteralPath $ebin -PathType Container)) { continue }
+
+            $missing = @(
+              @("dala_git.dll", "dala_theme_renderer.dll") | Where-Object {
+                -not (Test-Path -LiteralPath (Join-Path $appRoot ("priv\native\" + $_)) -PathType Leaf)
+              }
+            )
+            if ($missing.Count -gt 0) {
+              Write-Host "poisoned cache: $appRoot has BEAMs but is missing $($missing -join ', ') — forcing rebuild"
+              Remove-Item -LiteralPath $appRoot -Recurse -Force
+            }
+          }
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
+        if: runner.os == 'Linux'
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
-      - run: mix test --cover
+      - name: Run tests with coverage
+        run: mix test --cover
 
   frontend:
-    name: 前端（vitest 分层门槛 + typecheck）
-    runs-on: ubuntu-latest
+    name: 前端（${{ matrix.label }}，vitest 分层门槛 + typecheck）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       # phoenix/phoenix_html/phoenix_live_view 的 JS 是 file:../deps 链接，
@@ -97,24 +148,130 @@ jobs:
         working-directory: clients/desktop
 
   rust:
-    name: Rust holder + theme renderer（cargo test）
-    runs-on: ubuntu-latest
+    name: Rust native crates（${{ matrix.label }}，cargo test）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
       - uses: actions/cache@v4
         with:
           path: |
             native/dala_holder/target
+            native/dala_git/target
             native/dala_theme_renderer/target
-          key: rust-native-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock', 'native/dala_theme_renderer/Cargo.lock') }}
+          key: rust-native-${{ runner.os }}-${{ hashFiles('native/dala_holder/Cargo.lock', 'native/dala_git/Cargo.lock', 'native/dala_theme_renderer/Cargo.lock') }}
       - run: cargo test
         working-directory: native/dala_holder
       - run: cargo test
+        working-directory: native/dala_git
+      - run: cargo test
         working-directory: native/dala_theme_renderer
 
+  release-smoke:
+    name: Release smoke（${{ matrix.label }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux
+          - os: macos-14
+            label: macOS
+          - os: windows-2022
+            label: Windows
+    runs-on: ${{ matrix.os }}
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Install dependencies (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mix deps.get --only prod
+          npm ci --prefix assets
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          mix deps.get --only prod
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mix compile --warnings-as-errors
+          mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+      - name: Build release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          mix compile --warnings-as-errors
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix tailwind.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix esbuild.install --if-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix assets.deploy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mix release --overwrite
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke-test Windows installation lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Copy-Item "priv/windows/run-dala.ps1" "_build/prod/rel/dala/run-dala.ps1"
+          $release = "_build/prod/rel/dala"
+          $archive = Join-Path $env:RUNNER_TEMP "dala-v0.0.0-ci-windows-x86_64.zip"
+          $checksum = "$archive.sha256"
+          Compress-Archive -Path "$release/*" -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($checksum, "$hash  $(Split-Path -Leaf $archive)`n", [Text.UTF8Encoding]::new($false))
+          ./ci/windows-release-smoke.ps1 -ArchivePath $archive -ChecksumPath $checksum
+          if (-not $?) { exit 1 }
+      - name: Smoke-test Unix release lifecycle
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./ci/unix-release-smoke.sh
+
   e2e:
-    name: BDD e2e（Playwright 8 场景）
+    name: BDD e2e（Playwright）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,17 +291,22 @@ jobs:
             native/dala_holder/target
             native/dala_git/target
             native/dala_theme_renderer/target
-          key: elixir-v3-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
-      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler .so（取消/中断的
-      # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
-      # app 的 _build 强制重编，自愈而不是再红一轮。
+          key: elixir-v4-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex') }}
+      # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler native library
+      # （取消/中断的 run 存下的半成品缓存），mix 会认为已编译而静默跳过
+      # NIF——删掉该 app 的 _build 强制重编，自愈而不是再红一轮。
       - name: guard against BEAM-without-NIF poisoned cache
         run: |
+          set -euo pipefail
           for env in dev test; do
-            if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
-              echo "poisoned cache: _build/$env has BEAMs but no NIF — forcing rebuild"
-              rm -rf "_build/$env/lib/dala"
-            fi
+            if [ ! -d "_build/$env/lib/dala/ebin" ]; then continue; fi
+            for nif in dala_git dala_theme_renderer; do
+              if [ ! -f "_build/$env/lib/dala/priv/native/$nif.so" ]; then
+                echo "poisoned cache: _build/$env has BEAMs but no $nif NIF — forcing rebuild"
+                rm -rf "_build/$env/lib/dala"
+                break
+              fi
+            done
           done
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: mix setup

@@ -13,7 +13,7 @@ defmodule DalaWeb.TerminalChannelFlowTest do
   @chunk 32 * 1024
 
   defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
+    session = Dala.Terminal.create_session!(%{shell: Dala.TestPlatform.shell()})
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -65,7 +65,7 @@ defmodule DalaWeb.TerminalChannelFlowTest do
     client
   end
 
-  # Count only OUR flood chunks — the live bash session emits its own
+  # Count only OUR flood chunks — the live shell emits its own
   # output (prompt, motd) that would skew exact-count assertions.
   defp count_output_pushes(acc \\ 0) do
     expected = byte_size(Base.encode64(:binary.copy("x", @chunk)))
@@ -91,7 +91,20 @@ defmodule DalaWeb.TerminalChannelFlowTest do
   end
 
   test "output sent before the first ack is charged to the flow ledger" do
-    session = create_session!()
+    # This assertion measures one exact output frame. Keep a real shell's
+    # asynchronous startup/prompt output from entering the ledger between the
+    # two snapshots; an exited session exercises the same Channel path without
+    # a PTY producer.
+    session =
+      Ash.Seed.seed!(Dala.Terminal.Session, %{
+        name: "flow-ledger",
+        shell: Dala.TestPlatform.shell(),
+        cwd: System.tmp_dir!(),
+        status: :exited,
+        exit_code: 0,
+        position: 1.0
+      })
+
     socket = join_and_attach!(session.id)
     before = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
 

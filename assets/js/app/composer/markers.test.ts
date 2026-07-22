@@ -56,4 +56,10 @@ describe("pathsText", () => {
     expect(pathsText(["/a.png", "/b.png"])).toBe("/a.png /b.png ");
     expect(pathsText([])).toBe("");
   });
+
+  it("quotes uploaded paths containing whitespace", () => {
+    expect(pathsText(["C:\\Users\\me\\Dala files\\image.png"])).toBe(
+      '"C:\\Users\\me\\Dala files\\image.png" ',
+    );
+  });
 });

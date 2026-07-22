@@ -1,3 +1,5 @@
+import { basenameHost } from "./hostPath";
+
 export function base64ToBytes(b64: string): Uint8Array {
   const raw = atob(b64);
   const bytes = new Uint8Array(raw.length);
@@ -20,8 +22,7 @@ export function humanBytes(size: number): string {
 
 export function shortPath(path: string, max = 34): string {
   if (path.length <= max) return path;
-  const parts = path.split("/");
-  let tail = parts.pop() ?? "";
+  let tail = basenameHost(path);
   if (tail.length > max - 2) tail = "…" + tail.slice(-(max - 2));
   return `…/${tail}`;
 }

@@ -18,19 +18,34 @@ defmodule Dala.Lsp.DiscoveryTest do
     path
   end
 
+  defp python_bin(name) do
+    if match?({:win32, _}, :os.type()),
+      do: ".venv/Scripts/#{name}.cmd",
+      else: ".venv/bin/#{name}"
+  end
+
+  defp same_path?(left, right) do
+    normalize = fn path ->
+      path |> Path.expand() |> String.replace("\\", "/") |> String.downcase()
+    end
+
+    normalize.(left) == normalize.(right)
+  end
+
   test "unknown extensions get no servers", %{root: root} do
     assert Discovery.servers(root, "notes.txt") == []
   end
 
   test "venv basedpyright wins for python", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/basedpyright-langserver")
-    fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = fake_bin(root, python_bin("basedpyright-langserver"))
+    fake_bin(root, python_bin("pyright-langserver"))
 
     assert [%{name: "basedpyright", command: [^bin, "--stdio"]}] =
              Discovery.servers(root, "main.py")
   end
 
   test "framework servers are NOT guessed — dala.jsonc declares them", %{root: root} do
+    fake_bin(root, python_bin("pyright-langserver"))
     pyright = fake_bin(root, ".venv/bin/pyright-langserver")
     dm = fake_bin(root, ".venv/bin/dm")
     File.write!(Path.join(root, "dmagic.py"), "workspace = ...\n")
@@ -50,9 +65,12 @@ defmodule Dala.Lsp.DiscoveryTest do
     """)
 
     assert [
-             %{id: 0, name: "pyright", command: [^pyright, "--stdio"]},
-             %{id: 1, name: "dm lsp", command: [^dm, "lsp"]}
+             %{id: 0, name: "pyright", command: [resolved_pyright, "--stdio"]},
+             %{id: 1, name: "dm lsp", command: [resolved_dm, "lsp"]}
            ] = Discovery.servers(root, "strategies/alpha.py")
+
+    assert same_path?(resolved_pyright, pyright)
+    assert same_path?(resolved_dm, dm)
   end
 
   test ".dala/lsp.json overrides discovery, relative commands resolve", %{root: root} do
@@ -65,12 +83,14 @@ defmodule Dala.Lsp.DiscoveryTest do
       ~s({"python": [{"command": ["tools/my-lsp", "--custom"]}]})
     )
 
-    assert [%{name: "my-lsp", command: [^custom, "--custom"]}] =
+    assert [%{name: "my-lsp", command: [resolved, "--custom"]}] =
              Discovery.servers(root, "main.py")
+
+    assert same_path?(resolved, custom)
   end
 
   test "malformed .dala/lsp.json falls back to discovery", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = fake_bin(root, python_bin("pyright-langserver"))
     File.mkdir_p!(Path.join(root, ".dala"))
     File.write!(Path.join(root, ".dala/lsp.json"), "not json {")
 
@@ -78,7 +98,7 @@ defmodule Dala.Lsp.DiscoveryTest do
   end
 
   test "probe records every candidate checked, found or not", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = fake_bin(root, python_bin("pyright-langserver"))
 
     probe = Discovery.probe(root, "main.py")
     assert probe.language == "python"
@@ -104,7 +124,9 @@ defmodule Dala.Lsp.DiscoveryTest do
 
   test "root dala.jsonc with comments, $HOME and ${root} expansion", %{root: root} do
     fake_bin(root, "tools/custom-lsp")
-    home_rel = Path.relative_to(root, System.user_home!(), force: true)
+    home_name = "dala-lsp-#{System.unique_integer([:positive])}"
+    home_bin = fake_bin(System.user_home!(), "#{home_name}/custom-lsp")
+    on_exit(fn -> File.rm_rf!(Path.dirname(home_bin)) end)
 
     File.write!(Path.join(root, "dala.jsonc"), """
     {
@@ -113,7 +135,7 @@ defmodule Dala.Lsp.DiscoveryTest do
         /* python uses a custom server */
         "python": [
           { "command": ["${root}/tools/custom-lsp", "--stdio"] },
-          { "command": ["$HOME/#{home_rel}/tools/custom-lsp", "--alt"] },
+          { "command": ["$HOME/#{home_name}/custom-lsp", "--alt"] },
         ],
       },
     }
@@ -123,13 +145,12 @@ defmodule Dala.Lsp.DiscoveryTest do
     expected = Path.join(root, "tools/custom-lsp")
 
     assert [
-             %{name: "custom-lsp", command: [^expected, "--stdio"]},
+             %{name: "custom-lsp", command: [resolved, "--stdio"]},
              %{name: "custom-lsp", command: [alt_path, "--alt"]}
            ] = probe.servers
 
-    # $HOME expansion keeps the ../-traversal verbatim (the FILE is what
-    # must exist); compare the normalized form.
-    assert Path.expand(alt_path) == expected
+    assert same_path?(resolved, expected)
+    assert same_path?(alt_path, home_bin)
 
     assert Enum.all?(probe.checked, & &1.found)
   end
@@ -164,12 +185,14 @@ defmodule Dala.Lsp.DiscoveryTest do
     """)
 
     backend = Discovery.probe_file(Path.join(root, "lib/app.ex"))
-    assert backend.root == root
-    assert [%{command: [^elixir_ls]}] = backend.servers
+    assert same_path?(backend.root, root)
+    assert [%{command: [resolved_elixir_ls]}] = backend.servers
+    assert same_path?(resolved_elixir_ls, elixir_ls)
 
     frontend = Discovery.probe_file(Path.join(root, "assets/js/app/App.tsx"))
-    assert frontend.root == Path.join(root, "assets")
-    assert [%{name: "tsls", command: [^ts_ls, "--stdio"]}] = frontend.servers
+    assert same_path?(frontend.root, Path.join(root, "assets"))
+    assert [%{name: "tsls", command: [resolved_ts_ls, "--stdio"]}] = frontend.servers
+    assert same_path?(resolved_ts_ls, ts_ls)
   end
 
   test "monorepo: nested dala.jsonc wins over the top one", %{root: root} do
@@ -183,13 +206,14 @@ defmodule Dala.Lsp.DiscoveryTest do
     )
 
     probe = Discovery.probe_file(Path.join(root, "clients/desktop/main.js"))
-    assert probe.root == Path.join(root, "clients/desktop")
-    assert [%{command: [^nested]}] = probe.servers
+    assert same_path?(probe.root, Path.join(root, "clients/desktop"))
+    assert [%{command: [resolved]}] = probe.servers
+    assert same_path?(resolved, nested)
   end
 
   test "projects entry without lsp falls back to discovery at the sub-root", %{root: root} do
     File.mkdir_p!(Path.join(root, ".git"))
-    venv = fake_bin(root, "backend/.venv/bin/pyright-langserver")
+    venv = fake_bin(root, Path.join("backend", python_bin("pyright-langserver")))
 
     File.write!(
       Path.join(root, "dala.jsonc"),
@@ -197,8 +221,9 @@ defmodule Dala.Lsp.DiscoveryTest do
     )
 
     probe = Discovery.probe_file(Path.join(root, "backend/main.py"))
-    assert probe.root == Path.join(root, "backend")
-    assert [%{command: [^venv, "--stdio"]}] = probe.servers
+    assert same_path?(probe.root, Path.join(root, "backend"))
+    assert [%{command: [resolved, "--stdio"]}] = probe.servers
+    assert same_path?(resolved, venv)
   end
 
   test "initializationOptions and settings pass through with expansion", %{root: root} do
@@ -227,7 +252,7 @@ defmodule Dala.Lsp.DiscoveryTest do
 
     # auto-discovered servers carry nil options
     File.rm!(Path.join(root, "dala.jsonc"))
-    fake_bin(root, ".venv/bin/pyright-langserver")
+    fake_bin(root, python_bin("pyright-langserver"))
     assert [%{initialization_options: nil, settings: nil}] = Discovery.servers(root, "main.py")
   end
 

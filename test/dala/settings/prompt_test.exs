@@ -20,7 +20,8 @@ defmodule Dala.Settings.PromptTest do
 
   describe "stash + list" do
     test "captured prompts come back stashed, newest first" do
-      stash!("first idea")
+      first = stash!("first idea")
+      wait_for_next_storage_tick(first.inserted_at)
       stash!("second idea")
 
       assert [%{content: "second idea", status: :stashed}, %{content: "first idea"}] = list()
@@ -42,6 +43,20 @@ defmodule Dala.Settings.PromptTest do
     test "empty content is rejected" do
       assert {:error, %Ash.Error.Invalid{}} =
                Prompt |> Ash.Changeset.for_create(:stash, %{content: ""}) |> Ash.create()
+    end
+  end
+
+  defp wait_for_next_storage_tick(timestamp) do
+    now = DateTime.utc_now() |> DateTime.truncate(:millisecond)
+    timestamp = DateTime.truncate(timestamp, :millisecond)
+
+    if DateTime.after?(now, timestamp) do
+      :ok
+    else
+      receive do
+      after
+        1 -> wait_for_next_storage_tick(timestamp)
+      end
     end
   end
 

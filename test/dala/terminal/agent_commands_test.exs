@@ -6,7 +6,11 @@ defmodule Dala.Terminal.AgentCommandsTest do
   alias Dala.Terminal.AgentCommands
 
   setup do
-    cwd = Path.join(System.tmp_dir!(), "agent-cmds-#{System.unique_integer([:positive])}")
+    cwd =
+      Dala.TestPlatform.normalize_path(
+        Path.join(System.tmp_dir!(), "agent-cmds-[literal]-#{System.unique_integer([:positive])}")
+      )
+
     File.mkdir_p!(cwd)
     on_exit(fn -> File.rm_rf!(cwd) end)
     {:ok, cwd: cwd}
@@ -59,6 +63,24 @@ defmodule Dala.Terminal.AgentCommandsTest do
       assert %{description: ""} = find(AgentCommands.list("claude", cwd), "/dalatest-plain")
     end
 
+    test "does not traverse a directory symlink", %{cwd: cwd} do
+      outside = Path.join(cwd, "outside-commands")
+      write_md(outside, "dalatest-linked.md", "---\ndescription: linked\n---\n")
+
+      link = Path.join(cwd, ".claude/commands/linked")
+      File.mkdir_p!(Path.dirname(link))
+
+      case File.ln_s(outside, link) do
+        :ok ->
+          refute find(AgentCommands.list("claude", cwd), "/linked:dalatest-linked")
+
+        {:error, reason} ->
+          if Dala.TestPlatform.windows?(),
+            do: :ok,
+            else: flunk("could not create directory symlink: #{inspect(reason)}")
+      end
+    end
+
     test "quoted descriptions are unquoted and long ones truncated to 120 chars", %{cwd: cwd} do
       write_md(cwd, ".claude/commands/dalatest-quoted.md", """
       ---
@@ -96,6 +118,41 @@ defmodule Dala.Terminal.AgentCommandsTest do
 
       assert %{description: "Flat skill"} = find(commands, "/dalatest-flat")
       assert %{description: "Nested skill"} = find(commands, "/dalatest-nested")
+    end
+  end
+
+  describe "Claude plugin cache" do
+    test "scans commands and skills below a literal cache path in deterministic order", %{
+      cwd: cwd
+    } do
+      cache = Path.join(cwd, "plugin-cache-[literal]")
+
+      write_md(
+        cache,
+        "z-plugin/commands/deep/dalatest-zed.md",
+        "---\ndescription: Zed plugin command\n---\n"
+      )
+
+      write_md(
+        cache,
+        "a-plugin/commands/dalatest-alpha.md",
+        "---\ndescription: Alpha plugin command\n---\n"
+      )
+
+      write_md(
+        cache,
+        "a-plugin/skills/dalatest-plugin-skill/SKILL.md",
+        "---\ndescription: Plugin skill\n---\n"
+      )
+
+      commands = AgentCommands.scan_plugin_cache(cache)
+
+      assert Enum.map(commands, & &1.name) ==
+               ["/dalatest-alpha", "/dalatest-zed", "/dalatest-plugin-skill"]
+
+      assert %{description: "Alpha plugin command"} = find(commands, "/dalatest-alpha")
+      assert %{description: "Zed plugin command"} = find(commands, "/dalatest-zed")
+      assert %{description: "Plugin skill"} = find(commands, "/dalatest-plugin-skill")
     end
   end
 

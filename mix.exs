@@ -4,7 +4,7 @@ defmodule Dala.MixProject do
   def project do
     [
       app: :dala,
-      version: "0.25.16",
+      version: "0.25.17",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -104,6 +104,7 @@ defmodule Dala.MixProject do
   # ignored modules (e.g. Dala.Updater.Release) stay counted.
   defp test_coverage do
     [
+      tool: test_coverage_tool(),
       summary: [threshold: 75],
       ignore_modules: [
         Dala.Application,
@@ -128,6 +129,13 @@ defmodule Dala.MixProject do
     ]
   end
 
+  defp test_coverage_tool do
+    case :os.type() do
+      {:win32, _} -> Dala.TestCoverage
+      _ -> Mix.Tasks.Test.Coverage
+    end
+  end
+
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
@@ -149,12 +157,115 @@ defmodule Dala.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format",
-        "cmd --cd assets npm run check",
+        &npm_check/1,
         "test"
       ],
       "ash.setup": ["ash.setup", "run priv/repo/seeds.exs"]
     ]
   end
+
+  defp npm_check(_args) do
+    case :os.type() do
+      {:win32, _} -> windows_npm_check()
+      _ -> run_npm_check("npm")
+    end
+  end
+
+  defp run_npm_check(command) do
+    {output, status} = System.cmd(command, ["run", "check"], cd: "assets", stderr_to_stdout: true)
+
+    IO.write(output)
+    if status != 0, do: Mix.raise("npm run check failed with exit status #{status}")
+  end
+
+  # Erlang Port children remain inside a Windows Job Object. Vitest workers
+  # cannot establish their suite context there, so launch npm through WMI just
+  # as the durable PTY holder does, then collect its log and exit status.
+  defp windows_npm_check do
+    powershell = windows_executable!("powershell.exe")
+    npm = windows_executable!("npm.cmd")
+    assets = Path.expand("assets")
+    run_id = :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)
+    base = Path.join(System.tmp_dir!(), "dala-precommit-#{run_id}")
+    log = base <> ".log"
+    status_file = base <> ".status"
+
+    script = """
+    $ErrorActionPreference = 'Stop'
+    try {
+      Set-Location -LiteralPath '#{powershell_quote(assets)}'
+      $ErrorActionPreference = 'Continue'
+      & '#{powershell_quote(npm)}' run check 2>&1 | Out-File -LiteralPath '#{powershell_quote(log)}' -Encoding utf8
+      $status = $LASTEXITCODE
+    } catch {
+      $_ | Out-File -LiteralPath '#{powershell_quote(log)}' -Encoding utf8
+      $status = 1
+    } finally {
+      [IO.File]::WriteAllText('#{powershell_quote(status_file)}', [string]$status)
+    }
+    """
+
+    encoded =
+      script
+      |> :unicode.characters_to_binary(:utf8, {:utf16, :little})
+      |> Base.encode64()
+
+    command_line = ~s("#{powershell}" -NoProfile -NonInteractive -EncodedCommand #{encoded})
+
+    launcher = """
+    $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$env:DALA_NPM_COMMAND}
+    if ($result.ReturnValue -ne 0) { exit $result.ReturnValue }
+    """
+
+    try do
+      case System.cmd(powershell, ["-NoProfile", "-NonInteractive", "-Command", launcher],
+             env: [{"DALA_NPM_COMMAND", command_line}],
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} -> :ok
+        {output, status} -> Mix.raise("could not launch npm check: #{status}: #{output}")
+      end
+
+      status = wait_for_npm_status(status_file, 600)
+      IO.write(File.read!(log))
+
+      if status != 0, do: Mix.raise("npm run check failed with exit status #{status}")
+    after
+      File.rm(log)
+      File.rm(status_file)
+    end
+  end
+
+  @doc false
+  def wait_for_npm_status(_status_file, attempts) when attempts <= 0,
+    do: Mix.raise("npm run check timed out")
+
+  @doc false
+  def wait_for_npm_status(status_file, attempts) do
+    case File.read(status_file) do
+      {:ok, status} ->
+        case Integer.parse(String.trim(status)) do
+          {code, ""} -> code
+          _ -> Mix.raise("npm run check returned an invalid exit status")
+        end
+
+      {:error, :enoent} ->
+        Process.sleep(1_000)
+        wait_for_npm_status(status_file, attempts - 1)
+
+      {:error, reason} ->
+        Mix.raise("could not read npm exit status: #{inspect(reason)}")
+    end
+  end
+
+  defp windows_executable!(name) do
+    case System.find_executable(name) do
+      nil -> Mix.raise("required executable not found: #{name}")
+      path -> String.replace(path, "/", "\\")
+    end
+  end
+
+  defp powershell_quote(value), do: String.replace(value, "'", "''")
 
   defp usage_rules do
     # Example for those using claude.

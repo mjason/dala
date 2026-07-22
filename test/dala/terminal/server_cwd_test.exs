@@ -1,12 +1,12 @@
 defmodule Dala.Terminal.ServerCwdTest do
   use Dala.DataCase, async: false
 
-  alias Dala.Terminal.{Holder, Server}
+  alias Dala.Terminal.{Holder, Server, Shell}
 
   @moduletag :terminal
 
   defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
+    session = Dala.Terminal.create_session!(Map.merge(%{shell: Shell.default_shell()}, attrs))
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -47,6 +47,7 @@ defmodule Dala.Terminal.ServerCwdTest do
     end
   end
 
+  @tag skip: Dala.TestPlatform.windows?()
   test "a slow mux cwd query does not block attach or size_info" do
     dir = Path.join(System.tmp_dir!(), "dala-server-cwd-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -156,6 +157,7 @@ defmodule Dala.Terminal.ServerCwdTest do
     assert is_integer(remaining) and remaining >= 20_000
   end
 
+  @tag skip: Dala.TestPlatform.windows?()
   test "a transient mux query failure does not promote an old OSC 7 candidate" do
     dir =
       Path.join(System.tmp_dir!(), "dala-server-cwd-fail-#{System.unique_integer([:positive])}")
@@ -213,6 +215,7 @@ defmodule Dala.Terminal.ServerCwdTest do
     eventually(fn -> :sys.get_state(pid).cwd == latest_candidate end)
   end
 
+  @tag skip: Dala.TestPlatform.windows?()
   test "a cwd poll starts when upgrading state without the cwd_poll_task key" do
     dir =
       Path.join(
@@ -267,6 +270,7 @@ defmodule Dala.Terminal.ServerCwdTest do
     end
   end
 
+  @tag skip: Dala.TestPlatform.windows?()
   test "stopping a session terminates an in-flight cwd worker" do
     dir =
       Path.join(System.tmp_dir!(), "dala-server-cwd-stop-#{System.unique_integer([:positive])}")

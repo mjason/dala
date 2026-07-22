@@ -6,6 +6,7 @@ import { marked } from "marked";
 import { LanguageServerClient, WebSocketTransport } from "codemirror-languageserver";
 import { lspServers } from "../../ash_rpc";
 import { call } from "../rpc";
+import { basenameHost, isAbsoluteHost, toFileUri } from "../hostPath";
 
 export type LspServerInfo = {
   id: number;
@@ -23,7 +24,7 @@ export async function lspExtensionsFor(
   path: string,
   readOnly = false,
 ): Promise<Extension[] | null> {
-  if (!path.startsWith("/")) return null;
+  if (!isAbsoluteHost(path)) return null;
   const result = await call<{
     root: string;
     language: string | null;
@@ -88,9 +89,9 @@ export function lspExtensions({
   servers,
   readOnly = false,
 }: LspTarget): Extension[] {
-  const rootUri = `file://${root}`;
-  const documentUri = `file://${path}`;
-  const workspaceFolders = [{ uri: rootUri, name: root.split("/").pop() ?? root }];
+  const rootUri = toFileUri(root);
+  const documentUri = toFileUri(path);
+  const workspaceFolders = [{ uri: rootUri, name: basenameHost(root) || root }];
   const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
 
   const handles: ClientHandle[] = servers.map((server) => {

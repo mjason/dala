@@ -24,7 +24,8 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
   alias Dala.Terminal.{Holder, Server}
 
   defp create_session!(extra \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, extra))
+    session =
+      Dala.Terminal.create_session!(Map.merge(%{shell: Dala.TestPlatform.shell()}, extra))
 
     on_exit(fn ->
       Server.shutdown_and_wait(session.id)
@@ -643,8 +644,8 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
     session =
       Ash.Seed.seed!(Dala.Terminal.Session, %{
         name: "gone",
-        shell: "/bin/bash",
-        cwd: "/tmp",
+        shell: Dala.TestPlatform.shell(),
+        cwd: System.tmp_dir!(),
         status: :exited,
         exit_code: 0,
         size_owner_device: "dev-a",

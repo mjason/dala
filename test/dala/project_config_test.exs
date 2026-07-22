@@ -5,9 +5,11 @@ defmodule Dala.ProjectConfigTest do
 
   setup do
     dir =
-      Path.join(
-        System.tmp_dir!(),
-        "dala-project-config-#{System.unique_integer([:positive])}"
+      Dala.TestPlatform.normalize_path(
+        Path.join(
+          System.tmp_dir!(),
+          "dala-project-config-#{System.unique_integer([:positive])}"
+        )
       )
 
     File.mkdir_p!(dir)

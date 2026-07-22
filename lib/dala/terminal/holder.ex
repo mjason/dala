@@ -14,15 +14,21 @@ defmodule Dala.Terminal.Holder do
   @type_cwd 0x05
   @type_agent 0x06
   @type_text_snapshot 0x07
+  @type_processes 0x08
+  # Protocol 7, bidirectional: request/ack payload is <<0 | 1>>.
+  @type_query_owner 0x17
+  @type_auth 0x10
   @type_input 0x11
   @type_resize 0x12
   @type_kill 0x13
   @type_repaint_req 0x14
   @type_text_snapshot_req 0x15
   @repaint_history_budget 512 * 1024
+  @type_processes_req 0x16
 
   @connect_attempts 40
   @connect_delay_ms 25
+  @kill_timeout_ms 5_000
 
   def type_hello, do: @type_hello
   def type_output, do: @type_output
@@ -31,6 +37,8 @@ defmodule Dala.Terminal.Holder do
   def type_cwd, do: @type_cwd
   def type_agent, do: @type_agent
   def type_text_snapshot, do: @type_text_snapshot
+  def type_processes, do: @type_processes
+  def type_query_owner, do: @type_query_owner
 
   def dir do
     base = System.get_env("XDG_RUNTIME_DIR") || System.tmp_dir!()
@@ -114,11 +122,7 @@ defmodule Dala.Terminal.Holder do
     path = socket_path(id)
 
     if File.exists?(path) do
-      :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
-        :binary,
-        packet: 4,
-        active: true
-      ])
+      connect_endpoint(path)
     else
       {:error, :enoent}
     end
@@ -130,6 +134,29 @@ defmodule Dala.Terminal.Holder do
     do: :gen_tcp.send(socket, <<@type_resize, rows::16, cols::16>>)
 
   def send_kill(socket), do: :gen_tcp.send(socket, <<@type_kill>>)
+
+  @doc "Connect to a detached holder and wait until it has accepted a kill request."
+  def kill(id, timeout \\ @kill_timeout_ms) when is_integer(timeout) and timeout > 0 do
+    case connect(id) do
+      {:ok, socket} ->
+        deadline = System.monotonic_time(:millisecond) + timeout
+
+        try do
+          with :ok <- await_hello(socket, deadline),
+               :ok <- send_kill(socket) do
+            await_exit(socket, deadline)
+          end
+        after
+          :gen_tcp.close(socket)
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @doc """
   Ask the holder for a synthesized repaint (answered as a REPAINT frame).
@@ -148,12 +175,22 @@ defmodule Dala.Terminal.Holder do
   def send_text_snapshot_req(socket, lines, max_bytes),
     do: :gen_tcp.send(socket, <<@type_text_snapshot_req, lines::32, max_bytes::32>>)
 
+  def send_processes_req(socket, request_id)
+      when is_integer(request_id) and request_id >= 0 and request_id <= 0xFFFFFFFFFFFFFFFF,
+      do: :gen_tcp.send(socket, <<@type_processes_req, request_id::64>>)
+
+  @doc "Enable or disable holder-owned terminal query replies (protocol 7)."
+  def send_query_owner(socket, enabled) when is_boolean(enabled),
+    do: :gen_tcp.send(socket, <<@type_query_owner, if(enabled, do: 1, else: 0)>>)
+
   defp spawn_holder(id, opts) do
     binary = binary_path()
+    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
 
     config =
       Jason.encode!(%{
         socket: socket_path(id),
+        token: token,
         shell: Keyword.fetch!(opts, :shell),
         args: Keyword.get(opts, :args, []),
         cwd: Keyword.get(opts, :cwd, ""),
@@ -188,6 +225,76 @@ defmodule Dala.Terminal.Holder do
   end
 
   defp binary_path do
-    Path.join(:code.priv_dir(:dala), "bin/dala_holder")
+    executable = if windows?(), do: "dala_holder.exe", else: "dala_holder"
+    Path.join([:code.priv_dir(:dala), "bin", executable])
   end
+
+  defp connect_endpoint(path) do
+    if windows?(), do: connect_windows(path), else: connect_unix(path)
+  end
+
+  defp connect_unix(path) do
+    :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
+      :binary,
+      packet: 4,
+      active: true
+    ])
+  end
+
+  defp connect_windows(path) do
+    with {:ok, body} <- File.read(path),
+         {:ok, %{"host" => "127.0.0.1", "port" => port, "token" => token}}
+         when is_integer(port) and port in 1..65_535 and is_binary(token) and token != "" <-
+           Jason.decode(body),
+         {:ok, socket} <-
+           :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: 4, active: false]) do
+      result =
+        with :ok <- :gen_tcp.send(socket, <<@type_auth, token::binary>>),
+             :ok <- :inet.setopts(socket, active: true),
+             do: :ok
+
+      case result do
+        :ok ->
+          {:ok, socket}
+
+        {:error, reason} ->
+          :gen_tcp.close(socket)
+          {:error, reason}
+      end
+    else
+      {:error, _reason} = error ->
+        error
+
+      _invalid_endpoint ->
+        {:error, :invalid_endpoint}
+    end
+  end
+
+  defp await_hello(socket, deadline) do
+    receive do
+      {:tcp, ^socket, <<@type_hello, _payload::binary>>} -> :ok
+      {:tcp, ^socket, _other_frame} -> await_hello(socket, deadline)
+      {:tcp_closed, ^socket} -> {:error, :closed}
+      {:tcp_error, ^socket, reason} -> {:error, reason}
+    after
+      remaining_timeout(deadline) -> {:error, :timeout}
+    end
+  end
+
+  defp await_exit(socket, deadline) do
+    receive do
+      {:tcp, ^socket, <<@type_exit, _status::binary>>} -> :ok
+      {:tcp, ^socket, _other_frame} -> await_exit(socket, deadline)
+      {:tcp_closed, ^socket} -> :ok
+      {:tcp_error, ^socket, reason} -> {:error, reason}
+    after
+      remaining_timeout(deadline) -> {:error, :timeout}
+    end
+  end
+
+  defp remaining_timeout(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), 0)
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 end
