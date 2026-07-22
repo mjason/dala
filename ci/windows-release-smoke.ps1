@@ -3842,8 +3842,20 @@ try {
   }
 
   Remove-Item -LiteralPath $discoveryFile -Force
-  & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
-    -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
+  try {
+    & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
+      -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
+  } catch {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -TaskPath "\" -ErrorAction SilentlyContinue
+    if ($taskInfo) {
+      Write-Warning "Same-version recovery task result: $($taskInfo.LastTaskResult)"
+    }
+    if (Test-Path -LiteralPath $logFile -PathType Leaf) {
+      Write-Warning "Same-version recovery server.log tail follows"
+      Get-Content -LiteralPath $logFile -Tail 200 | Write-Warning
+    }
+    throw
+  }
   Assert-True (Test-Path -LiteralPath $discoveryFile -PathType Leaf) "Installer did not recover missing discovery metadata"
   Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $port
 

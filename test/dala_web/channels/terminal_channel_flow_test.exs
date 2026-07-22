@@ -91,7 +91,20 @@ defmodule DalaWeb.TerminalChannelFlowTest do
   end
 
   test "output sent before the first ack is charged to the flow ledger" do
-    session = create_session!()
+    # This assertion measures one exact output frame. Keep a real shell's
+    # asynchronous startup/prompt output from entering the ledger between the
+    # two snapshots; an exited session exercises the same Channel path without
+    # a PTY producer.
+    session =
+      Ash.Seed.seed!(Dala.Terminal.Session, %{
+        name: "flow-ledger",
+        shell: Dala.TestPlatform.shell(),
+        cwd: System.tmp_dir!(),
+        status: :exited,
+        exit_code: 0,
+        position: 1.0
+      })
+
     socket = join_and_attach!(session.id)
     before = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
 
