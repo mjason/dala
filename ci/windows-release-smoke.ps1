@@ -144,6 +144,39 @@ function Assert-ReleaseEnvironmentIsolationSemantics([string]$ScriptPath) {
   }
 }
 
+function Assert-SmokeLifecycleCommandSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -in @("Invoke-ReleaseRpc", "Set-SmokeTaskRunner", "Stop-SmokeRelease")
+    }, $true)
+  )
+  foreach ($name in @("Invoke-ReleaseRpc", "Set-SmokeTaskRunner", "Stop-SmokeRelease")) {
+    Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+      "$ScriptPath must define exactly one $name function"
+  }
+  $rpcBody = @($definitions | Where-Object { $_.Name -ceq "Invoke-ReleaseRpc" })[0].Extent.Text
+  $runnerBody = @($definitions | Where-Object { $_.Name -ceq "Set-SmokeTaskRunner" })[0].Extent.Text
+  $stopBody = @($definitions | Where-Object { $_.Name -ceq "Stop-SmokeRelease" })[0].Extent.Text
+  Assert-True ($rpcBody -match "Invoke-SmokeReleaseWithCleanEnvironment") `
+    "$ScriptPath does not isolate release RPC environment"
+  Assert-True ($rpcBody -match "LASTEXITCODE") `
+    "$ScriptPath does not verify release RPC exit status"
+  Assert-True ($stopBody -match "Get-SmokeRestartHelper") `
+    "$ScriptPath does not resolve the installed restart helper"
+  Assert-True ($stopBody -match "StopOnly") `
+    "$ScriptPath does not use the verified StopOnly release path"
+  Assert-True ($stopBody -match "LASTEXITCODE") `
+    "$ScriptPath does not verify release stop exit status"
+  Assert-True ($runnerBody -match "Stop-SmokeRelease") `
+    "$ScriptPath does not route task runner switches through verified release stop"
+}
+
 $SmokeAttemptIds = @{}
 
 function New-SmokeAttemptId {
@@ -3249,6 +3282,15 @@ function Get-UpdateHelper([string]$ReleaseDir, [string]$Version) {
   [IO.Path]::GetFullPath($candidate)
 }
 
+function Get-SmokeRestartHelper([string]$ReleaseDir, [string]$Version) {
+  $version = Get-SmokeReleaseVersion $ReleaseDir $Version
+  if (-not $version) { return $null }
+  $candidate = Join-Path $ReleaseDir "lib\dala-$version\priv\windows\restart-dala.ps1"
+  if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $null }
+  if (([IO.File]::GetAttributes($candidate) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+  [IO.Path]::GetFullPath($candidate)
+}
+
 function Get-PublishHelper([string]$ReleaseDir, [string]$Version) {
   $helper = Join-Path $ReleaseDir "lib\dala-$Version\priv\windows\publish-dala.ps1"
   if (Test-Path -LiteralPath $helper -PathType Leaf) { $helper } else { $null }
@@ -3672,6 +3714,34 @@ function Assert-InstallContract(
   Assert-True (-not $nonSecretText.Contains([string]$secrets.tokenSigningSecret)) "tokenSigningSecret leaked into config or metadata"
 }
 
+function Stop-SmokeRelease(
+  [string]$TaskName,
+  [string]$CurrentExecutable,
+  [string]$InstallRoot,
+  [int]$Port
+) {
+  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  $releaseDir = Split-Path -Parent (Split-Path -Parent $CurrentExecutable)
+  $restartHelper = Get-SmokeRestartHelper $releaseDir $null
+  Assert-True $restartHelper "Release is missing restart-dala.ps1: $releaseDir"
+  $stopResults = @(Invoke-SmokeReleaseWithCleanEnvironment {
+    $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $restartHelper `
+      -TaskName $TaskName -StopOnly -StopExecutable $CurrentExecutable 2>&1 | Out-String
+    [pscustomobject]@{
+      status = [int]$LASTEXITCODE
+      output = $output
+    }
+  })
+  Assert-True ($stopResults.Count -eq 1) "Smoke release stop returned an unexpected result count: $($stopResults.Count)"
+  $stopResult = $stopResults[0]
+  if ([int]$stopResult.status -ne 0) {
+    $details = ([string]$stopResult.output).Trim()
+    if ($details) { throw "Smoke release stop failed with exit status $($stopResult.status): $details" }
+    throw "Smoke release stop failed with exit status $($stopResult.status)"
+  }
+  Wait-NoSmokeBeam $InstallRoot $Port
+}
+
 function Set-SmokeTaskRunner(
   [string]$TaskName,
   [string]$Launcher,
@@ -3682,11 +3752,7 @@ function Set-SmokeTaskRunner(
   [int]$Port,
   [string]$ExpectedVersion
 ) {
-  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  Invoke-SmokeReleaseWithCleanEnvironment {
-    & $CurrentExecutable stop 2>$null | Out-Null
-  }
-  Wait-NoSmokeBeam $InstallRoot $Port
+  Stop-SmokeRelease $TaskName $CurrentExecutable $InstallRoot $Port
   $action = New-ScheduledTaskAction -Execute $Launcher -Argument "`"$Runner`" `"$LogFile`""
   Set-ScheduledTask -TaskName $TaskName -Action $action | Out-Null
   Start-ScheduledTask -TaskName $TaskName
@@ -3696,8 +3762,16 @@ function Set-SmokeTaskRunner(
 function Invoke-ReleaseRpc([string]$Executable, [string]$Source) {
   $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Source))
   $expression = "Code.eval_string(Base.decode64!(`"$encoded`"))"
-  $output = & $Executable rpc $expression 2>&1 | Out-String
-  if ($LASTEXITCODE -ne 0) { throw "Release RPC failed: $output" }
+  $results = @(Invoke-SmokeReleaseWithCleanEnvironment {
+    $output = & $Executable rpc $expression 2>&1 | Out-String
+    [pscustomobject]@{
+      status = [int]$LASTEXITCODE
+      output = $output
+    }
+  })
+  Assert-True ($results.Count -eq 1) "Release RPC returned an unexpected result count: $($results.Count)"
+  $result = $results[0]
+  if ([int]$result.status -ne 0) { throw "Release RPC failed with exit status $($result.status): $([string]$result.output)" }
 }
 
 function Start-DetachedUpdateHelper(
@@ -3896,6 +3970,7 @@ try {
   Assert-ReleaseEnvironmentIsolationSemantics $updateHelperSource
   Assert-ReleaseEnvironmentIsolationSemantics $restartHelperSource
   Assert-ReleaseEnvironmentIsolationSemantics $uninstall
+  Assert-SmokeLifecycleCommandSemantics $PSCommandPath
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
   Assert-PublisherSafeRemovalSemantics $publishHelperSource $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
@@ -3906,6 +3981,7 @@ try {
   }
   Assert-True (Get-TaskLauncher $expandedNew) "Final ZIP is missing dala_task_launcher.exe"
   Assert-True (Get-UpdateHelper $expandedNew) "Final ZIP is missing update-dala.ps1"
+  Assert-True (Get-SmokeRestartHelper $expandedNew $null) "Final ZIP is missing restart-dala.ps1"
 
   $newVersion = Get-DalaAppVersion $expandedNew
   Assert-True (Test-Path -LiteralPath (Join-Path $expandedNew "lib\dala-$newVersion\ebin\Elixir.Dala.beam") -PathType Leaf) "Final ZIP is missing Elixir.Dala.beam"
@@ -4739,11 +4815,7 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
   Wait-DalaVersion $port $oldVersion
 
-  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  Invoke-SmokeReleaseWithCleanEnvironment {
-    & $oldBatch stop 2>$null | Out-Null
-  }
-  Wait-NoSmokeBeam $installRoot $port
+  Stop-SmokeRelease $taskName $oldBatch $installRoot $port
   $targetRunnerPath = Join-Path $newDir "run-dala.ps1"
   $targetRunnerBody = Get-Content -LiteralPath $targetRunnerPath -Raw
   Write-DummyReleaseRunner $targetRunnerPath $newTag
