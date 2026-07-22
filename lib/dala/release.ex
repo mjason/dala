@@ -351,7 +351,7 @@ defmodule Dala.Release do
   defp ensure_no_windows_backups!(path) do
     parent = Path.dirname(path)
     leaf = Path.basename(path)
-    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$")
+    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$", "i")
 
     backups =
       case File.ls(parent) do
@@ -380,7 +380,7 @@ defmodule Dala.Release do
     case File.lstat(backup) do
       {:error, :enoent} ->
         case File.lstat(path) do
-          {:ok, _destination_stat} -> :ok
+          {:ok, _destination_stat} -> {:error, :backup_missing_destination_present}
           {:error, :enoent} -> {:error, :backup_missing_and_destination_missing}
           {:error, reason} -> {:error, {:destination_stat, reason}}
         end

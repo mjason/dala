@@ -728,7 +728,7 @@ defmodule Dala.Updater do
   defp ensure_no_windows_backups(path) do
     parent = Path.dirname(path)
     leaf = Path.basename(path)
-    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$")
+    pattern = Regex.compile!("^" <> Regex.escape(leaf) <> "\\.backup-.+$", "i")
 
     case File.ls(parent) do
       {:ok, names} ->
@@ -749,7 +749,7 @@ defmodule Dala.Updater do
     case File.lstat(backup) do
       {:error, :enoent} ->
         case File.lstat(destination) do
-          {:ok, _destination_stat} -> :ok
+          {:ok, _destination_stat} -> {:error, :backup_missing_destination_present}
           {:error, :enoent} -> {:error, :backup_missing_and_destination_missing}
           {:error, reason} -> {:error, {:destination_stat, reason}}
         end

@@ -175,7 +175,6 @@ function Invoke-RecoverableFileReplace(
       Where-Object { $_.Name -match $backupPattern }
   )
   if ($existingBackups.Count -gt 0) {
-    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
     throw "Existing recovery backup requires manual recovery: $($existingBackups[0].FullName)"
   }
 
@@ -212,6 +211,11 @@ function Invoke-RecoverableFileReplace(
         $recoveryFailure = "destination and recovery backup are both missing"
       } elseif ($backupExists) {
         $recoveryFailure = "replacement state is ambiguous; recovery backup remains at $backup"
+      } else {
+        # A destination that remains present without a backup is not proof
+        # that Replace never moved bytes. Keep the source for manual recovery
+        # instead of deleting the only possible new copy.
+        $recoveryFailure = "replacement state is ambiguous; destination remains but no recovery backup was observed"
       }
     } catch {
       $recoveryFailure = "could not restore destination; recovery backup remains at $backup`: $($_.Exception.Message)"

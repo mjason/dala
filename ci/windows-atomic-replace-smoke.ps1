@@ -144,6 +144,29 @@ function Assert-RecoverableReplaceSemantics([string]$ScriptPath, [string]$WorkRo
     Assert-True ((Get-Content -LiteralPath $missingSource -Raw) -ceq "new") `
       "$resolved deleted the only remaining replacement source"
 
+    $presentSource = Join-Path $caseRoot "present-source.txt"
+    $presentDestination = Join-Path $caseRoot "present-destination.txt"
+    [IO.File]::WriteAllText($presentSource, "new")
+    [IO.File]::WriteAllText($presentDestination, "current")
+    $simulatePresentFailure = {
+      param([string]$Source, [string]$Destination, [string]$Backup)
+      throw [IO.IOException]::new("simulated destination-present replacement failure")
+    }
+    $presentFailed = $false
+    try {
+      & $module {
+        param($Source, $Destination, $Operation)
+        Invoke-RecoverableFileReplace $Source $Destination $Operation
+      } $presentSource $presentDestination $simulatePresentFailure
+    } catch {
+      if ($_.Exception.Message -notmatch "ambiguous" -or
+          $_.Exception.Message -notmatch [regex]::Escape($presentSource)) { throw }
+      $presentFailed = $true
+    }
+    Assert-True $presentFailed "$resolved treated a present destination without backup as safe"
+    Assert-True ((Get-Content -LiteralPath $presentSource -Raw) -ceq "new") `
+      "$resolved deleted the source for an ambiguous destination-present failure"
+
     $invalidSource = Join-Path $caseRoot "invalid-source.txt"
     $invalidDestination = Join-Path $caseRoot "invalid-destination.txt"
     [IO.File]::WriteAllText($invalidSource, "new")
@@ -193,8 +216,8 @@ function Assert-RecoverableReplaceSemantics([string]$ScriptPath, [string]$WorkRo
       "$resolved changed the destination while rejecting an orphan backup"
     Assert-True ((Get-Content -LiteralPath $orphanBackup -Raw) -ceq "recovery") `
       "$resolved deleted an orphan recovery backup"
-    Assert-True (-not (Test-Path -LiteralPath $orphanSource)) `
-      "$resolved left an unused source while rejecting an orphan backup"
+    Assert-True ((Get-Content -LiteralPath $orphanSource -Raw) -ceq "new") `
+      "$resolved deleted the staged source while rejecting an orphan backup"
   } finally {
     Remove-Module $module -Force -ErrorAction SilentlyContinue
   }
@@ -273,6 +296,7 @@ try {
   error_1177_recovered = $true
   ambiguous_backup_preserved = $true
   missing_state_source_preserved = $true
+  destination_present_ambiguous = $true
   invalid_backup_rejected = $true
   orphan_backup_rejected = $true
   junction_cleanup_rejected = $true
