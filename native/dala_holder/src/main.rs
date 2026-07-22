@@ -1432,6 +1432,12 @@ fn run_exec_proxy(raw: &str) -> ! {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    // Windows command wrappers can take a short moment to observe a closed
+    // stdin pipe (especially when a descendant inherited the console handles).
+    // Give a normally terminating command time to return before applying the
+    // kill-on-close job cleanup used for descendants that ignore EOF.
+    const EOF_GRACE: Duration = Duration::from_secs(1);
+
     let config: ExecConfig = serde_json::from_str(raw).unwrap_or_else(|e| {
         eprintln!("dala_holder exec: bad config json: {e}");
         exit(2);
@@ -1491,9 +1497,7 @@ fn run_exec_proxy(raw: &str) -> ! {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None)
-                if eof_at.is_some_and(|at: Instant| at.elapsed() >= Duration::from_millis(100)) =>
-            {
+            Ok(None) if eof_at.is_some_and(|at: Instant| at.elapsed() >= EOF_GRACE) => {
                 let _ = child.kill();
                 break child.wait().unwrap_or_else(|e| {
                     eprintln!("dala_holder exec: wait: {e}");
