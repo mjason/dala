@@ -1240,7 +1240,7 @@ function Test-ReleaseTaskRunning([string]$Name, [string]$ReleaseDir) {
     $null = Assert-DalaTaskObjectOwnership $task $Name $ReleaseDir $Runner $LogFile
   }
   $task -and [string]$task.State -in @("Running", "Queued") -and
-    (Get-ReleaseBeamProcesses $ReleaseDir).Count -gt 0
+    @(Get-ReleaseBeamProcesses $ReleaseDir).Count -gt 0
 }
 
 function Test-ReleaseOwnsPort([int]$PortNumber, [string]$ReleaseDir) {
@@ -1266,6 +1266,7 @@ function Wait-DalaVersion([int]$PortNumber, [string]$Expected, [string]$ReleaseD
   $deadline = [DateTime]::UtcNow.AddSeconds($HealthTimeoutSeconds)
   $uri = "http://127.0.0.1:$PortNumber/version"
   $lastHealthError = $null
+  $lastHealthState = "health probe has not run"
 
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
@@ -1279,18 +1280,29 @@ function Wait-DalaVersion([int]$PortNumber, [string]$Expected, [string]$ReleaseD
           if ($ownedBefore -and $ownedAfter) {
             if ($actualVersion -ceq $Expected) { return }
             if ($actualVersion) { throw "Dala returned version '$actualVersion', expected '$Expected'" }
+            $lastHealthState = "version response was empty"
+          } elseif (-not $ownedBefore) {
+            $lastHealthState = "release did not own port $PortNumber before the HTTP probe"
+          } else {
+            $lastHealthState = "release did not own port $PortNumber after the HTTP probe"
           }
+        } else {
+          $lastHealthState = "HTTP status $($response.StatusCode) with Content-Type '$contentType'"
         }
+      } else {
+        $lastHealthState = "Scheduled Task was not running with an owned erl.exe process"
       }
     } catch {
       if ($_.Exception.Message -like "Dala returned version*") { throw }
       $lastHealthError = $_.Exception.Message
+      $lastHealthState = "health probe raised an exception"
     }
     Start-Sleep -Milliseconds 500
   }
 
   $message = "Dala $Expected did not become healthy at $uri"
   if ($lastHealthError) { $message += "; last health probe error: $lastHealthError" }
+  if ($lastHealthState) { $message += "; last health state: $lastHealthState" }
   throw $message
 }
 

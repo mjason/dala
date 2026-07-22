@@ -923,7 +923,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
 
   # Avoid invoking the release client when no owned BEAM remains.  The client
   # can otherwise start or attach to epmd while lifecycle cleanup is running.
-  if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+  if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
     Stop-ReleaseEpmd $identity $RequireEpmdStop
     return
   }
@@ -937,7 +937,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
     # probes below remain authoritative and provide the force-stop fallback.
   }
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
       Stop-ReleaseEpmd $identity $RequireEpmdStop
       return
     }
@@ -949,7 +949,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
   }
 
   for ($attempt = 0; $attempt -lt 50; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
       Stop-ReleaseEpmd $identity $RequireEpmdStop
       return
     }
@@ -1039,7 +1039,7 @@ function Test-ReleaseTaskRunning([string]$ReleaseDir) {
   $task = Get-DalaTaskExact $TaskName
   if ($task) { Assert-DalaTaskObjectOwnership $task $ReleaseDir }
   $task -and [string]$task.State -in @("Running", "Queued") -and
-    (Get-ReleaseBeamProcesses (Join-Path $ReleaseDir "bin\dala.bat")).Count -gt 0
+    @(Get-ReleaseBeamProcesses (Join-Path $ReleaseDir "bin\dala.bat")).Count -gt 0
 }
 
 function Test-ReleaseOwnsPort([string]$ReleaseDir) {
@@ -1065,6 +1065,7 @@ function Wait-DalaVersion([string]$Version, [string]$ReleaseDir) {
   $deadline = [DateTime]::UtcNow.AddSeconds($HealthTimeoutSeconds)
   $uri = "http://127.0.0.1:$Port/version"
   $lastHealthError = $null
+  $lastHealthState = "health probe has not run"
 
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
@@ -1078,12 +1079,22 @@ function Wait-DalaVersion([string]$Version, [string]$ReleaseDir) {
           if ($ownedBefore -and $ownedAfter) {
             if ($actualVersion -ceq $Version) { return }
             if ($actualVersion) { throw "Dala returned version '$actualVersion', expected '$Version'" }
+            $lastHealthState = "version response was empty"
+          } elseif (-not $ownedBefore) {
+            $lastHealthState = "release did not own port $Port before the HTTP probe"
+          } else {
+            $lastHealthState = "release did not own port $Port after the HTTP probe"
           }
+        } else {
+          $lastHealthState = "HTTP status $($response.StatusCode) with Content-Type '$contentType'"
         }
+      } else {
+        $lastHealthState = "Scheduled Task was not running with an owned erl.exe process"
       }
     } catch {
       if ($_.Exception.Message -like "Dala returned version*") { throw }
       $lastHealthError = $_.Exception.Message
+      $lastHealthState = "health probe raised an exception"
     }
 
     Start-Sleep -Milliseconds 500
@@ -1091,6 +1102,7 @@ function Wait-DalaVersion([string]$Version, [string]$ReleaseDir) {
 
   $message = "Dala $Version did not become healthy at $uri"
   if ($lastHealthError) { $message += "; last health probe error: $lastHealthError" }
+  if ($lastHealthState) { $message += "; last health state: $lastHealthState" }
   throw $message
 }
 

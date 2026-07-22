@@ -465,7 +465,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
   # Avoid invoking the release client when no owned BEAM remains.  The client
   # can otherwise start or attach to epmd while rollback is trying to remove
   # the release tree.
-  if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+  if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
     Stop-ReleaseEpmd $identity $RequireEpmdStop
     return
   }
@@ -480,7 +480,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
   }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
       Stop-ReleaseEpmd $identity $RequireEpmdStop
       return
     }
@@ -492,7 +492,7 @@ function Stop-DalaRelease([string]$Executable, [bool]$RequireEpmdStop = $false) 
   }
 
   for ($attempt = 0; $attempt -lt 50; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $Executable).Count -eq 0) {
       Stop-ReleaseEpmd $identity $RequireEpmdStop
       return
     }

@@ -894,7 +894,7 @@ function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
       Remove-DalaTaskVerified "Dala" "release" "runner" "log"
       $removedAfterThrow = $null -eq $script:fakeTask
 
-      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42 })
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42; Count = $null })
       Set-Item -Path Function:Get-ReleaseBeamProcesses -Value { $script:releaseProcesses }
       $script:fakeTask = [pscustomobject]@{
         TaskName = "Dala"
@@ -905,7 +905,7 @@ function Assert-VerifiedTaskCommandSemantics([string]$ScriptPath) {
       $script:releaseProcesses = @()
       $queuedWithoutBeamRejected = -not (Test-ReleaseTaskRunning "Dala" "release")
       $script:fakeTask.State = "Ready"
-      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43 })
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43; Count = $null })
       $readyWithBeamRejected = -not (Test-ReleaseTaskRunning "Dala" "release")
 
       [pscustomobject]@{
@@ -1055,7 +1055,7 @@ function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
         $startPreCommitRejected = [string]$script:fakeTask.State -ceq "Ready"
       }
 
-      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42 })
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]42; Count = $null })
       Set-Item -Path Function:Get-ReleaseBeamProcesses -Value { $script:releaseProcesses }
       $script:fakeTask.committed = $true
       $script:fakeTask.State = "Queued"
@@ -1063,7 +1063,7 @@ function Assert-VerifiedUpdateTaskCommandSemantics([string]$ScriptPath) {
       $script:releaseProcesses = @()
       $queuedWithoutBeamRejected = -not (Test-ReleaseTaskRunning "target")
       $script:fakeTask.State = "Ready"
-      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43 })
+      $script:releaseProcesses = @([pscustomobject]@{ ProcessId = [uint32]43; Count = $null })
       $readyWithBeamRejected = -not (Test-ReleaseTaskRunning "target")
 
       [pscustomobject]@{
@@ -2345,13 +2345,27 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
       Set-Item -Path Function:Get-ScopedHolders -Value {
         $script:holderProbeCount++
         if ($script:holderProbeCount -eq 1) {
-          return [pscustomobject]@{ ProcessId = [uint32]123; ParentProcessId = [uint32]1 }
+          return [pscustomobject]@{ ProcessId = [uint32]123; ParentProcessId = [uint32]1; Count = $null }
         }
         @()
       }
       $snapshotFailureSurfaced = $false
       try { $null = @(Stop-ScopedHolders "root") } catch {
         $snapshotFailureSurfaced = $_.Exception.Message -match "CIM query failure"
+      }
+
+      # A single holder is unwrapped to a scalar by Windows PowerShell 5.1;
+      # keep its Count property null so this path proves the caller arrays the
+      # function result before checking whether cleanup has completed.
+      $script:cimFails = $false
+      $script:cimRows = @()
+      $script:holderProbeCount = 0
+      $singleHolderStopAccepted = $false
+      try {
+        $stoppedHolderIds = @(Stop-ScopedHolders "root")
+        $singleHolderStopAccepted = $stoppedHolderIds.Count -eq 1 -and
+          [uint32]$stoppedHolderIds[0] -eq [uint32]123
+      } catch {
       }
 
       [pscustomobject]@{
@@ -2385,6 +2399,7 @@ function Assert-UninstallerFailClosedQuerySemantics([string]$ScriptPath) {
         shared_epmd_preserved = $sharedEpmdPreserved
         optional_epmd_failure_accepted = $optionalEpmdFailureAccepted
         process_snapshot_failure_surfaced = $snapshotFailureSurfaced
+        single_holder_stop_accepted = $singleHolderStopAccepted
       }
     }
 

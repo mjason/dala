@@ -858,7 +858,7 @@ function Stop-ReleaseEpmd([string]$InstallRoot, [bool]$RequireStop = $false) {
 function Stop-DalaRelease([string]$InstallRoot, [string]$Executable, [bool]$RequireEpmdStop = $false) {
   # Probe before invoking the release client so an already-stopped release
   # cannot reattach to epmd during destructive tree removal.
-  if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+  if (@(Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
     Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
     return
   }
@@ -875,7 +875,7 @@ function Stop-DalaRelease([string]$InstallRoot, [string]$Executable, [bool]$Requ
   }
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
       Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
       return
     }
@@ -887,7 +887,7 @@ function Stop-DalaRelease([string]$InstallRoot, [string]$Executable, [bool]$Requ
   }
 
   for ($attempt = 0; $attempt -lt 50; $attempt++) {
-    if ((Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
+    if (@(Get-ReleaseBeamProcesses $InstallRoot).Count -eq 0) {
       Stop-ReleaseEpmd $InstallRoot $RequireEpmdStop
       return
     }
@@ -972,7 +972,7 @@ function Stop-ScopedHolders([string]$InstallRoot) {
 
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
     $remaining = @(Get-LiveProcessIds $treeIds)
-    if ($remaining.Count -eq 0 -and (Get-ScopedHolders $InstallRoot).Count -eq 0) {
+    if ($remaining.Count -eq 0 -and @(Get-ScopedHolders $InstallRoot).Count -eq 0) {
       return $treeIds
     }
     Start-Sleep -Milliseconds 100
@@ -1173,7 +1173,7 @@ Stop-DalaRelease $Root $currentExecutable $true
 Remove-DalaTaskVerified $TaskName $Root
 
 $stoppedTerminalPids = @(Stop-ScopedHolders $Root)
-if ((Get-ScopedHolders $Root).Count -ne 0) {
+if (@(Get-ScopedHolders $Root).Count -ne 0) {
   throw "Dala terminal holders are still running under $Root"
 }
 
