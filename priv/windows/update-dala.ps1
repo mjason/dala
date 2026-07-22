@@ -111,7 +111,10 @@ function Invoke-RecoverableFileReplace(
       }
       Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
     } catch {
-      throw "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
+      # The destination replacement has already committed. A cleanup failure
+      # must not turn a successful pointer/result write into a transaction
+      # failure that rolls the release back; leave the backup for recovery.
+      Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
     }
   }
 }
@@ -700,9 +703,17 @@ try {
     try {
       if ((Test-NoReparseAncestors $RunnerBackup) -and
           (([IO.File]::GetAttributes($RunnerBackup) -band [IO.FileAttributes]::ReparsePoint) -eq 0)) {
-        Remove-Item -LiteralPath $RunnerBackup -Force -ErrorAction SilentlyContinue
+        # On an incomplete rollback this may be the only copy of the
+        # previously running root runner. Keep it for manual recovery.
+        $keepRunnerBackup = [bool]$failureMessage -and -not [bool]$rolledBack
+        if ($keepRunnerBackup) {
+          Write-Warning "Retaining previous Dala runner backup for recovery: $RunnerBackup"
+        } else {
+          Remove-Item -LiteralPath $RunnerBackup -Force -ErrorAction Stop
+        }
       }
     } catch {
+      Write-Warning "Could not clean previous Dala runner backup at $RunnerBackup`: $($_.Exception.Message)"
     }
   }
   if ($UpdateLock) {

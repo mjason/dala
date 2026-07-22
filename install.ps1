@@ -241,7 +241,10 @@ function Invoke-RecoverableFileReplace(
       }
       Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
     } catch {
-      throw "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
+      # The destination replacement has already committed. Do not report a
+      # successful metadata/pointer write as a failed install just because its
+      # old-byte recovery backup needs operator cleanup.
+      Write-Warning "Replaced $Destination but could not remove recovery backup at $backup`: $($_.Exception.Message)"
     }
   }
 }
@@ -311,7 +314,13 @@ function Write-InstallMetadataPair([string]$RootPath, [string]$DiscoveryPath, $V
         if ($snapshot.exists) {
           Write-TextAtomic ([string]$snapshot.path) ([string]$snapshot.body)
         } else {
-          Remove-Item -LiteralPath ([string]$snapshot.path) -Force -ErrorAction SilentlyContinue
+          $snapshotPath = [string]$snapshot.path
+          if (Test-Path -LiteralPath $snapshotPath) {
+            Remove-Item -LiteralPath $snapshotPath -Force -ErrorAction Stop
+          }
+          if (Test-Path -LiteralPath $snapshotPath) {
+            throw "metadata target remains after rollback: $snapshotPath"
+          }
         }
       } catch {
         $rollbackErrors += $_.Exception.Message
@@ -992,6 +1001,17 @@ $CreatedConfigMarker = $ConfigDirClaimable -and -not $ConfigMarkerExists
 $CreatedMetadata = -not (Test-Path -LiteralPath $DiscoveryFile -PathType Leaf)
 $PreviousTag = $null
 
+$destinationParent = Split-Path -Parent $Dest
+$destinationLeaf = Split-Path -Leaf $Dest
+$repairPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.repair-.+$'
+$orphanRepairs = @(
+  Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match $repairPattern }
+)
+if ($orphanRepairs.Count -gt 0) {
+  throw "Previous damaged release backup requires manual recovery: $($orphanRepairs[0].FullName)"
+}
+
 Assert-ClaimableDirectory $Root $DefaultRoot ".dala-install" "DALA_HOME"
 Assert-ClaimableDirectory $DataDir $DefaultDataDir ".dala-data" "DALA_DATA_DIR"
 if (-not (Test-NoReparseAncestors $Root)) {
@@ -1060,10 +1080,26 @@ if (-not (Test-CompleteDalaRelease $Dest $ReleaseVersion)) {
           $InstalledNow = $true
           $ReplacedDestinationBackup = $backup
         } catch {
-          if (-not (Test-Path -LiteralPath $Dest) -and (Test-Path -LiteralPath $backup)) {
-            Move-Item -LiteralPath $backup -Destination $Dest -ErrorAction SilentlyContinue
+          $installMoveError = $_.Exception.Message
+          $restoreError = $null
+          try {
+            if (Test-Path -LiteralPath $Dest) {
+              $restoreError = "destination exists after failed replacement"
+            } elseif (-not (Test-Path -LiteralPath $backup)) {
+              $restoreError = "original release backup is missing"
+            } else {
+              Move-Item -LiteralPath $backup -Destination $Dest -ErrorAction Stop
+              if (-not (Test-Path -LiteralPath $Dest -PathType Container)) {
+                $restoreError = "destination was not restored"
+              }
+            }
+          } catch {
+            $restoreError = $_.Exception.Message
           }
-          throw
+          if ($restoreError) {
+            throw "$installMoveError; could not restore original release from $backup`: $restoreError"
+          }
+          throw $installMoveError
         }
       }
     } else {
@@ -1225,7 +1261,7 @@ if ($PreviousTag) {
       -InstallRoot $Root -TaskName $TaskName -TargetTag $Version -PreviousTag $PreviousTag `
       -ExpectedVersion $ExpectedVersion -PreviousVersion $previousVersion `
       -AttemptId $updateAttemptId -ResultFile $resultFile -HealthTimeoutSeconds $HealthTimeoutSeconds
-    if ($LASTEXITCODE -ne 0) { throw "Dala update failed and the previous release was restored; see $resultFile" }
+    if ($LASTEXITCODE -ne 0) { throw "Dala update failed; see $resultFile for the correlated recovery result" }
   } catch {
     if ($ReplacedDestinationBackup -and (Test-Path -LiteralPath $ReplacedDestinationBackup)) {
       try {

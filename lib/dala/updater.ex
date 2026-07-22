@@ -690,7 +690,16 @@ defmodule Dala.Updater do
             :ok
 
           {:error, reason} ->
-            {:error, {:replace_succeeded_backup_cleanup_failed, backup, reason}}
+            # File.Replace has already committed the new destination. Treat
+            # cleanup of the old-byte recovery copy as non-transactional so a
+            # successful pointer write cannot trigger a rollback; leave the
+            # backup in place for manual recovery.
+            Logger.warning(
+              "updater: replacement committed but temporary backup remains at #{backup}: " <>
+                "#{inspect(reason)}"
+            )
+
+            :ok
         end
 
       {output, status} ->

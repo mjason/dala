@@ -1492,7 +1492,7 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
     & $installer -Version $newTag -ArchivePath $archive -ChecksumPath $checksum `
       -ExpectedVersion $badExpected -HealthTimeoutSeconds 30 -AttemptId $installerRollbackAttemptId
   } catch {
-    if ($_.Exception.Message -notmatch "previous release was restored") { throw }
+    if ($_.Exception.Message -notmatch "Dala update failed") { throw }
     $installerFailed = $true
   }
   Assert-True $installerFailed "Installer update with the wrong expected version unexpectedly succeeded"
