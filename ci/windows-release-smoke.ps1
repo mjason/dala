@@ -426,6 +426,344 @@ function Assert-ScriptParses([string]$Path) {
   }
 }
 
+function Assert-UninstallerMissingAppDataSemantics(
+  [string]$ScriptPath,
+  [string]$WorkDir
+) {
+  $root = Join-Path $WorkDir "missing appdata uninstall root"
+  $discovery = Join-Path $WorkDir "missing appdata discovery\install.json"
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+  $names = @("APPDATA", "DALA_HOME", "DALA_CONFIG", "DALA_DISCOVERY_FILE")
+  $previous = @{}
+  try {
+    foreach ($name in $names) {
+      $previous[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+    }
+    [Environment]::SetEnvironmentVariable("APPDATA", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_HOME", $root, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_CONFIG", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_DISCOVERY_FILE", $discovery, "Process")
+
+    $rejected = $false
+    try {
+      & $ScriptPath
+    } catch {
+      if ($_.Exception.Message -notmatch "APPDATA is required when Dala metadata is unavailable") {
+        throw
+      }
+      $rejected = $true
+    }
+    Assert-True $rejected "Uninstaller did not report missing APPDATA explicitly"
+  } finally {
+    foreach ($name in $names) {
+      [Environment]::SetEnvironmentVariable($name, $previous[$name], "Process")
+    }
+  }
+}
+
+function Assert-RunnerDiscoveryFallbackSemantics(
+  [string]$ScriptPath,
+  [string]$WorkDir
+) {
+  $root = Join-Path $WorkDir "runner fallback root"
+  $foreignRoot = Join-Path $WorkDir "runner foreign root"
+  $ambientAppData = Join-Path $WorkDir "runner ambient appdata"
+  $config = Join-Path $WorkDir "runner config.jsonc"
+  $discovery = Join-Path $ambientAppData "Dala\install.json"
+  $otherDiscovery = Join-Path $WorkDir "runner other discovery\install.json"
+  $missingDiscovery = Join-Path $WorkDir "runner missing discovery\install.json"
+  $observed = Join-Path $WorkDir "runner observed discovery.txt"
+  $tag = "v0.0.0"
+  $bin = Join-Path $root "versions\$tag\bin"
+  New-Item -ItemType Directory -Force -Path $bin, $foreignRoot | Out-Null
+  Copy-Item -LiteralPath $ScriptPath -Destination (Join-Path $root "run-dala.ps1")
+  [IO.File]::WriteAllText((Join-Path $root "current.txt"), "$tag`r`n", [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($config, '{"server":true}', [Text.UTF8Encoding]::new($false))
+
+  $batch = "@echo off`r`necho %DALA_DISCOVERY_FILE%>>`"$observed`"`r`nexit /b 0`r`n"
+  [IO.File]::WriteAllText((Join-Path $bin "dala.bat"), $batch, [Text.UTF8Encoding]::new($false))
+
+  $writeMetadata = {
+    param([string]$Path, [string]$MetadataRoot, [string]$MetadataDiscovery)
+    $value = [ordered]@{
+      schemaVersion = 1
+      root = $MetadataRoot
+      dataDir = Join-Path $WorkDir "runner data"
+      configFile = $config
+      taskName = "DalaRunnerFallbackSmoke"
+      port = 4400
+      repo = "mjason/dala"
+      platform = "windows-x86_64"
+      discoveryFile = $MetadataDiscovery
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    [IO.File]::WriteAllText($Path, ($value | ConvertTo-Json -Depth 4) + "`n", [Text.UTF8Encoding]::new($false))
+  }
+
+  $names = @("APPDATA", "DALA_HOME", "DALA_CONFIG", "DALA_DISCOVERY_FILE")
+  $previous = @{}
+  try {
+    foreach ($name in $names) {
+      $previous[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+    }
+    [Environment]::SetEnvironmentVariable("APPDATA", $ambientAppData, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_HOME", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_CONFIG", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_DISCOVERY_FILE", $null, "Process")
+
+    & $writeMetadata $discovery $root $discovery
+    $goodOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File (Join-Path $root "run-dala.ps1") 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -eq 0) "Runner rejected same-root discovery fallback: $goodOutput"
+    $observedPaths = @(Get-Content -LiteralPath $observed | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    Assert-True ($observedPaths.Count -eq 2) "Runner did not pass discoveryFile to both release commands"
+    foreach ($path in $observedPaths) {
+      Assert-True (Test-SamePath $path $discovery) "Runner passed a non-canonical discoveryFile to the release"
+    }
+
+    Remove-Item -LiteralPath $observed -Force
+    & $writeMetadata $discovery $foreignRoot $discovery
+    $foreignOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File (Join-Path $root "run-dala.ps1") 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -ne 0 -and $foreignOutput -match "root does not match the runner location") `
+      "Runner accepted discovery metadata for another installation root"
+    Assert-True (-not (Test-Path -LiteralPath $observed)) `
+      "Runner invoked the release after rejecting foreign-root discovery metadata"
+
+    & $writeMetadata $discovery $root $otherDiscovery
+    $pathOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File (Join-Path $root "run-dala.ps1") 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -ne 0 -and $pathOutput -match "discovery metadata disagrees with its path") `
+      "Runner accepted discovery metadata whose discoveryFile points elsewhere"
+    Assert-True (-not (Test-Path -LiteralPath $observed)) `
+      "Runner invoked the release after rejecting inconsistent discoveryFile metadata"
+
+    [Environment]::SetEnvironmentVariable("APPDATA", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DALA_DISCOVERY_FILE", $missingDiscovery, "Process")
+    $missingConfigOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File (Join-Path $root "run-dala.ps1") 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -ne 0 -and
+        $missingConfigOutput -match "Dala configuration is missing and APPDATA is not set") `
+      "Runner did not report missing APPDATA explicitly when fallback metadata was absent"
+    Assert-True (-not (Test-Path -LiteralPath $observed)) `
+      "Runner invoked the release without metadata or a configuration fallback"
+  } finally {
+    foreach ($name in $names) {
+      [Environment]::SetEnvironmentVariable($name, $previous[$name], "Process")
+    }
+  }
+}
+
+function Assert-InstallMetadataReparseReadSemantics([string[]]$ScriptPaths) {
+  $workRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ("dala metadata read smoke " + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
+  $links = @()
+
+  try {
+    $index = 0
+    foreach ($scriptPath in $ScriptPaths) {
+      $tokens = $null
+      $errors = $null
+      $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+      if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $scriptPath" }
+
+      $requiredFunctions = @("Read-InstallMetadata", "Get-SafeInstallMetadataItem", "Test-NoReparseAncestors")
+      $definitions = @(
+        $ast.FindAll({
+          param($node)
+          $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $requiredFunctions -contains $node.Name
+        }, $true) |
+          Sort-Object { $_.Extent.StartOffset }
+      )
+      foreach ($name in $requiredFunctions) {
+        Assert-True (@($definitions | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+          "$scriptPath must define exactly one $name function"
+      }
+
+      $module = New-Module -ScriptBlock ([ScriptBlock]::Create(
+          ($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+        ))
+      try {
+        $index++
+        $target = Join-Path $workRoot ("target-$index.json")
+        $link = Join-Path $workRoot ("metadata-link-$index.json")
+        [IO.File]::WriteAllText($target, "metadata target must remain unchanged`n")
+        New-Item -ItemType SymbolicLink -Path $link -Target $target | Out-Null
+        $links += [pscustomobject]@{ Path = $link; Kind = "file" }
+
+        $message = & $module {
+          param([string]$Path)
+          try {
+            $null = Read-InstallMetadata $Path
+            "accepted"
+          } catch {
+            $_.Exception.Message
+          }
+        } $link
+        Assert-True ([string]$message -ne "accepted" -and
+          [string]$message -match "(?i)(reparse|regular file)") `
+          "$scriptPath followed a root metadata symbolic link"
+        Assert-True ((Get-Content -LiteralPath $target -Raw) -ceq "metadata target must remain unchanged`n") `
+          "$scriptPath changed the root metadata symlink target"
+
+        $ancestorTarget = Join-Path $workRoot ("ancestor-target-$index")
+        $ancestorLink = Join-Path $workRoot ("ancestor-link-$index")
+        $ancestorMetadata = Join-Path $ancestorTarget "install.json"
+        New-Item -ItemType Directory -Force -Path $ancestorTarget | Out-Null
+        [IO.File]::WriteAllText($ancestorMetadata, "metadata ancestor target must remain unchanged`n")
+        New-Item -ItemType Junction -Path $ancestorLink -Target $ancestorTarget | Out-Null
+        $links += [pscustomobject]@{ Path = $ancestorLink; Kind = "directory" }
+
+        $message = & $module {
+          param([string]$Path)
+          try {
+            $null = Read-InstallMetadata $Path
+            "accepted"
+          } catch {
+            $_.Exception.Message
+          }
+        } (Join-Path $ancestorLink "install.json")
+        Assert-True ([string]$message -ne "accepted" -and
+          [string]$message -match "(?i)(reparse|regular file)") `
+          "$scriptPath followed a root metadata junction ancestor"
+        Assert-True ((Get-Content -LiteralPath $ancestorMetadata -Raw) -ceq "metadata ancestor target must remain unchanged`n") `
+          "$scriptPath changed metadata below a junction ancestor"
+      } finally {
+        Remove-Module $module -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } finally {
+    foreach ($link in @($links | Sort-Object { $_.Kind -ne "directory" })) {
+      if ($link.Kind -ceq "directory") {
+        [IO.Directory]::Delete($link.Path)
+      } else {
+        [IO.File]::Delete($link.Path)
+      }
+    }
+    if (Test-Path -LiteralPath $workRoot) {
+      Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Assert-MetadataFieldCasingSemantics([string[]]$ScriptPaths) {
+  foreach ($scriptPath in $ScriptPaths) {
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $scriptPath" }
+
+    $definitions = @(
+      $ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+          $node.Name -ceq "Get-MetadataField"
+      }, $true)
+    )
+    Assert-True ($definitions.Count -eq 1) "$scriptPath must define exactly one Get-MetadataField function"
+    $functionText = $definitions[0].Extent.Text
+    Assert-True (
+      $functionText -match '(?s)\$discoveryProperties\s*=\s*@\(' -and
+      $functionText -match '(?s)\$discoveryProperties\.Count\s+-gt\s+1' -and
+      $functionText -match '(?s)\[string\]\(\$discoveryProperties\[0\]\.Name\)\s+-cne\s+\$Name'
+    ) "$scriptPath does not reject duplicate discoveryFile keys with different casing"
+
+    $module = New-Module -ScriptBlock ([ScriptBlock]::Create($definitions[0].Extent.Text))
+    try {
+      $aliasRejected = $false
+      try {
+        $null = & $module {
+          Get-MetadataField ([pscustomobject]@{ DiscoveryFile = "C:\Dala\install.json" }) "discoveryFile"
+        }
+      } catch {
+        if ($_.Exception.Message -match "invalid casing") {
+          $aliasRejected = $true
+        } else {
+          throw
+        }
+      }
+      Assert-True $aliasRejected "$scriptPath silently accepted a case-variant discoveryFile field"
+
+      $duplicateRejected = $false
+      try {
+        $null = & $module {
+          $metadata = ConvertFrom-Json `
+            '{"discoveryFile":"canonical","DiscoveryFile":"case-variant"}' `
+            -ErrorAction Stop
+          Get-MetadataField $metadata "discoveryFile"
+        }
+      } catch {
+        # A runtime may reject the duplicate keys while decoding; if it
+        # preserves both properties, the field helper must reject them.
+        if ($_.Exception.Message -match "(?i)(duplicate|different casing|invalid casing)") {
+          $duplicateRejected = $true
+        } else {
+          throw
+        }
+      }
+      Assert-True $duplicateRejected "$scriptPath accepted duplicate discoveryFile keys with different casing"
+
+      $exact = & $module {
+        Get-MetadataField ([pscustomobject]@{ discoveryFile = "C:\Dala\install.json" }) "discoveryFile"
+      }
+      Assert-True ($exact.Present -and [string]$exact.Value -ceq "C:\Dala\install.json") `
+        "$scriptPath rejected the canonical discoveryFile field"
+
+      $other = & $module {
+        Get-MetadataField ([pscustomobject]@{ Port = "4400" }) "port"
+      }
+      Assert-True (-not $other.Present) "$scriptPath changed casing behavior for non-discovery metadata fields"
+    } finally {
+      Remove-Module $module -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Assert-CustomDiscoveryFileNameSemantics([string[]]$ScriptPaths) {
+  foreach ($scriptPath in $ScriptPaths) {
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $scriptPath" }
+
+    $definitions = @(
+      $ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+          @("Test-NoReparseAncestors", "Get-CanonicalDiscoveryFile") -contains $node.Name
+      }, $true) |
+        Sort-Object { $_.Extent.StartOffset }
+    )
+    $names = @($definitions | ForEach-Object { $_.Name })
+    Assert-True ($names -contains "Test-NoReparseAncestors" -and
+      $names -contains "Get-CanonicalDiscoveryFile") `
+      "$scriptPath must define discovery path validation helpers"
+
+    $module = New-Module -ScriptBlock ([ScriptBlock]::Create(
+        ($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
+      ))
+    try {
+      $candidate = if ([IO.Path]::GetTempPath() -match '^[A-Za-z]:[\\/]') {
+        Join-Path ([IO.Path]::GetTempPath()) `
+          ("dala-custom-discovery-" + [guid]::NewGuid().ToString("N") + "\metadata.json")
+      } else {
+        "C:/Dala/" + [guid]::NewGuid().ToString("N") + "/metadata.json"
+      }
+      $resolved = & $module {
+        param([string]$Path)
+        Get-CanonicalDiscoveryFile $Path $null
+      } $candidate
+      Assert-True ([IO.Path]::GetFileName([string]$resolved) -ceq "metadata.json") `
+        "$scriptPath rejected a valid custom discovery metadata filename"
+    } finally {
+      Remove-Module $module -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Assert-ReleaseBootCommandSemantics([string]$ScriptPath) {
   $tokens = $null
   $errors = $null
@@ -3660,7 +3998,8 @@ function Write-InstallMetadata(
   [string]$DataDir,
   [string]$ConfigFile,
   [string]$TaskName,
-  [int]$Port
+  [int]$Port,
+  [string]$DiscoveryFile
 ) {
   $metadata = [ordered]@{
     schemaVersion = 1
@@ -3671,6 +4010,9 @@ function Write-InstallMetadata(
     port = $Port
     repo = "mjason/dala"
     platform = "windows-x86_64"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($DiscoveryFile)) {
+    $metadata.discoveryFile = [IO.Path]::GetFullPath($DiscoveryFile)
   }
   $parent = Split-Path -Parent $Path
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
@@ -3705,6 +4047,10 @@ function Assert-InstallContract(
     Assert-True ($metadataPort -eq $Port) `
       "install metadata has the wrong port (actual=$metadataPort expected=$Port): $path"
     Assert-True ([string]$metadata.platform -ceq "windows-x86_64") "install.json has the wrong platform"
+    Assert-True ($metadata.PSObject.Properties.Name -contains "discoveryFile") `
+      "install.json is missing discoveryFile"
+    Assert-True (Test-SamePath ([string]$metadata.discoveryFile) $DiscoveryFile) `
+      "install.json has the wrong discoveryFile"
   }
 
   $secretsFile = Join-Path $DataDir "secrets.json"
@@ -3864,6 +4210,9 @@ $runSource = Join-Path $repoRoot "priv\windows\run-dala.ps1"
 foreach ($script in @($installer, $update, $uninstall, $updateHelperSource, $restartHelperSource, $publishHelperSource, $runSource)) {
   Assert-ScriptParses $script
 }
+Assert-MetadataFieldCasingSemantics @($installer, $update, $uninstall, $updateHelperSource, $runSource)
+Assert-CustomDiscoveryFileNameSemantics @($installer, $update, $uninstall, $updateHelperSource, $runSource)
+Assert-InstallMetadataReparseReadSemantics @($installer, $update, $uninstall, $updateHelperSource, $runSource)
 foreach ($script in @($installer, $uninstall, $updateHelperSource, $restartHelperSource)) {
   Assert-ReleaseBootCommandSemantics $script
 }
@@ -3894,10 +4243,19 @@ $discoveryDir = Join-Path $appDataRoot "Dala"
 $configDir = Join-Path $smokeRoot "shared config directory"
 $configFile = Join-Path $configDir "dala-config.jsonc"
 $unrelatedConfigFile = Join-Path $configDir "keep-me.txt"
+$scheduledAppData = Join-Path $smokeRoot "scheduled appdata"
+$scheduledDiscoveryDir = Join-Path $scheduledAppData "Dala"
+$scheduledDiscoveryFile = Join-Path $scheduledDiscoveryDir "install.json"
+$scheduledDiscoveryOriginal = "{`"decoy`":true,`"source`":`"scheduled-appdata`"}`n"
 $ambientRunnerConfig = Join-Path $smokeRoot "ambient foreign runner config.jsonc"
 $discoveryFile = Join-Path $discoveryDir "install.json"
 $taskName = "DalaReleaseSmoke-" + [guid]::NewGuid().ToString("N")
-$port = Get-FreePort
+$initialPort = [int](Get-FreePort)
+# Keep the first installation contract independent from the later port
+# migration cases.  PowerShell scripts invoked with the call operator can
+# expose variables through dynamic scopes, so a mutable `$port` is not a
+# reliable oracle for the recovery assertions below.
+$port = $initialPort
 $logFile = Join-Path $installRoot "logs\server.log"
 $runner = Join-Path $installRoot "run-dala.ps1"
 $smokeRunner = Join-Path $installRoot "smoke-runner.ps1"
@@ -3917,7 +4275,7 @@ $freshDecoyAppData = Join-Path $smokeRoot "fresh decoy appdata"
 $freshDecoyConfig = Join-Path $smokeRoot "fresh decoy config.jsonc"
 $freshDecoyTask = $taskName + "-health-decoy"
 $freshDecoyPort = Get-FreePort
-while ($freshDecoyPort -eq $port) { $freshDecoyPort = Get-FreePort }
+while ($freshDecoyPort -eq $initialPort) { $freshDecoyPort = Get-FreePort }
 $stopFailureRoot = Join-Path $smokeRoot "stop failure install"
 $stopFailureData = Join-Path $smokeRoot "stop failure data"
 $stopFailureAppData = Join-Path $smokeRoot "stop failure appdata"
@@ -3947,7 +4305,7 @@ $openConsolePidsBefore = @(
 )
 
 $environmentNames = @(
-  "APPDATA", "DALA_HOME", "DALA_DATA_DIR", "DALA_CONFIG", "DALA_SERVICE", "DALA_PORT", "DALA_REPO",
+  "APPDATA", "DALA_HOME", "DALA_DATA_DIR", "DALA_CONFIG", "DALA_DISCOVERY_FILE", "DALA_SERVICE", "DALA_PORT", "DALA_REPO",
   "SECRET_KEY_BASE", "TOKEN_SIGNING_SECRET", "DALA_SECRET_KEY_BASE", "DALA_TOKEN_SIGNING_SECRET"
 )
 $environmentNames += @(Get-SmokeReleaseEnvironmentNames)
@@ -3958,7 +4316,8 @@ foreach ($name in $environmentNames) {
 
 try {
   New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, $expandedIncomplete, `
-    $expandedMissingEpmd, $expandedStopFailure, $configDir | Out-Null
+    $expandedMissingEpmd, $expandedStopFailure, $configDir, $scheduledDiscoveryDir | Out-Null
+  [IO.File]::WriteAllText($scheduledDiscoveryFile, $scheduledDiscoveryOriginal, [Text.UTF8Encoding]::new($false))
   Assert-InstallerArtifactRollbackSemantics $installer $smokeRoot
   Assert-VerifiedTaskCommandSemantics $installer
   Assert-InstallerReleaseProcessSemantics $installer
@@ -3966,6 +4325,8 @@ try {
   Assert-UpdateReleaseProcessSemantics $updateHelperSource
   Assert-UninstallerVerifiedTaskSemantics $uninstall
   Assert-UninstallerFailClosedQuerySemantics $uninstall
+  Assert-UninstallerMissingAppDataSemantics $uninstall $smokeRoot
+  Assert-RunnerDiscoveryFallbackSemantics $runSource $smokeRoot
   Assert-RestartVerifiedTaskSemantics $restartHelperSource
   Assert-ReleaseEpmdKillSemantics $updateHelperSource
   Assert-ReleaseEpmdKillSemantics $restartHelperSource
@@ -4174,7 +4535,7 @@ try {
   $env:DALA_DATA_DIR = $dataDir
   $env:DALA_CONFIG = $configFile
   $env:DALA_SERVICE = $taskName
-  $env:DALA_PORT = [string]$port
+  $env:DALA_PORT = [string]$initialPort
   $env:DALA_REPO = "mjason/dala"
   $env:RELEASE_NODE = $releaseNode
   $env:RELEASE_COOKIE = $releaseCookie
@@ -4239,14 +4600,14 @@ try {
 
   & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
     -ExpectedVersion $oldVersion -HealthTimeoutSeconds 90
-  Wait-DalaVersion $port $oldVersion
+  Wait-DalaVersion $initialPort $oldVersion
 
   $oldDir = Join-Path $installRoot "versions\$oldTag"
   $oldBatch = Join-Path $oldDir "bin\dala.bat"
   $oldLauncher = Get-TaskLauncher $oldDir
   Assert-True $oldLauncher "Installed old release is missing dala_task_launcher.exe"
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
-  Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $port
+  Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $initialPort
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $configDir ".dala-config"))) "Installer claimed a shared config directory"
   Assert-True (Test-Path -LiteralPath $unrelatedConfigFile -PathType Leaf) "Installer modified the shared config directory"
 
@@ -4308,14 +4669,14 @@ try {
       Write-Warning "Same-version recovery server.log tail follows"
       Get-Content -LiteralPath $logFile -Tail 200 | Write-Warning
     }
-    Write-SmokeReleaseProcessSnapshot "Same-version recovery" $oldDir $smokeRoot $port
+    Write-SmokeReleaseProcessSnapshot "Same-version recovery" $oldDir $smokeRoot $initialPort
     throw
   }
   Assert-True (Test-Path -LiteralPath $discoveryFile -PathType Leaf) "Installer did not recover missing discovery metadata"
-  Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $port
+  Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $initialPort
 
   $mismatchedMetadata = $rootMetadataText | ConvertFrom-Json
-  $mismatchedMetadata.port = $port + 1
+  $mismatchedMetadata.port = $initialPort + 1
   [IO.File]::WriteAllText($discoveryFile, ($mismatchedMetadata | ConvertTo-Json -Depth 4) + "`n", [Text.UTF8Encoding]::new($false))
   $metadataMismatchRejected = $false
   try {
@@ -4329,7 +4690,7 @@ try {
   }
   Assert-True $metadataMismatchRejected "Installer accepted conflicting discovery and root metadata"
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
-  Wait-DalaVersion $port $oldVersion
+  Wait-DalaVersion $initialPort $oldVersion
 
   $port = Get-FreePort
   $updatedConfig = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
@@ -4395,6 +4756,8 @@ try {
   Assert-NoVisibleConsole ([uint32]$beam.ProcessId) $openConsolePidsBefore
 
   $wrapper = @"
+`$env:APPDATA = '$scheduledAppData'
+`$env:DALA_DISCOVERY_FILE = '$scheduledDiscoveryFile'
 `$env:RELEASE_NAME = 'ambient-release'
 `$env:RELEASE_VSN = '0.0.0-ambient'
 `$env:RELEASE_MODE = 'ambient-mode'
@@ -4436,6 +4799,11 @@ exit `$LASTEXITCODE
 "@
   [IO.File]::WriteAllText($smokeRunner, $wrapper, [Text.UTF8Encoding]::new($false))
   Set-SmokeTaskRunner $taskName $oldLauncher $smokeRunner $logFile $oldBatch $installRoot $port $oldVersion
+  $rootMetadataAfterTask = Get-Content -LiteralPath $rootMetadataFile -Raw | ConvertFrom-Json
+  Assert-True (Test-SamePath ([string]$rootMetadataAfterTask.discoveryFile) $discoveryFile) `
+    "Root metadata did not persist the canonical discovery path"
+  Assert-True ((Get-Content -LiteralPath $scheduledDiscoveryFile -Raw) -ceq $scheduledDiscoveryOriginal) `
+    "Runner touched the decoy discovery metadata under the scheduled-task APPDATA"
 
   $spawnSource = @'
 alias Dala.Terminal.{Holder, Shell}
@@ -4452,7 +4820,7 @@ secret_names = ~w(SECRET_KEY_BASE TOKEN_SIGNING_SECRET DALA_SECRET_KEY_BASE DALA
 true = Enum.all?(secret_names, &(System.get_env(&1) == nil))
 true = System.get_env("DALA_CONFIG") == config_file
 clean_names = ~w(
-  DALA_UPDATE_REPO DALA_SCHEME PHX_SCHEME DALA_POOL_SIZE POOL_SIZE
+  DALA_DISCOVERY_FILE DALA_UPDATE_REPO DALA_SCHEME PHX_SCHEME DALA_POOL_SIZE POOL_SIZE
   RELEASE_NAME RELEASE_VSN RELEASE_MODE RELEASE_NODE RELEASE_COOKIE RELEASE_TMP
   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS RELEASE_DISTRIBUTION RELEASE_BOOT_SCRIPT
   RELEASE_BOOT_SCRIPT_CLEAN RELEASE_SYS_CONFIG RELEASE_ROOT RELEASE_COMMAND RELEASE_PROG
@@ -4937,8 +5305,17 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   $foreignUpdateErl = Start-ForeignErl $expandedNew (Join-Path $expandedNew "releases\$newVersion\same-root-bait")
   $foreignUpdateErlPid = [uint32]$foreignUpdateErl.Id
   Remove-Item -LiteralPath $newDir -Recurse -Force
-  & $installer -Version $newTag -ArchivePath $archive -ChecksumPath $checksum `
-    -ExpectedVersion $newVersion -HealthTimeoutSeconds 90
+  $lifecycleAppData = $env:APPDATA
+  $lifecycleDiscoveryFile = $env:DALA_DISCOVERY_FILE
+  $env:APPDATA = $scheduledAppData
+  $env:DALA_DISCOVERY_FILE = $scheduledDiscoveryFile
+  try {
+    & $installer -Version $newTag -ArchivePath $archive -ChecksumPath $checksum `
+      -ExpectedVersion $newVersion -HealthTimeoutSeconds 90
+  } finally {
+    $env:APPDATA = $lifecycleAppData
+    $env:DALA_DISCOVERY_FILE = $lifecycleDiscoveryFile
+  }
   Wait-DalaVersion $port $newVersion
 
   $newDir = Join-Path $installRoot "versions\$newTag"
@@ -4950,11 +5327,16 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Assert-True (Get-Process -Id $holderPid -ErrorAction SilentlyContinue) "Holder PID changed during successful update"
   Assert-True (Get-Process -Id $shellPid -ErrorAction SilentlyContinue) "Shell PID changed during successful update"
   Assert-True (Get-Process -Id $foreignUpdateErlPid -ErrorAction SilentlyContinue) "Updater killed an unrelated sibling-path Erl process"
+  Assert-InstallContract $installRoot $dataDir $configFile $discoveryFile $taskName $port
+  Assert-True ((Get-Content -LiteralPath $scheduledDiscoveryFile -Raw) -ceq $scheduledDiscoveryOriginal) `
+    "Release update modified the decoy discovery metadata under the scheduled-task APPDATA"
   Stop-Process -Id $foreignUpdateErlPid -Force -ErrorAction SilentlyContinue
   $foreignUpdateErlPid = $null
 
   Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
   Set-SmokeTaskRunner $taskName $newLauncher $smokeRunner $logFile $newBatch $installRoot $port $newVersion
+  Assert-True ((Get-Content -LiteralPath $scheduledDiscoveryFile -Raw) -ceq $scheduledDiscoveryOriginal) `
+    "Runner restart modified the decoy discovery metadata under the scheduled-task APPDATA"
 
   $reattachSource = @'
 alias Dala.Terminal.Holder
@@ -5011,7 +5393,16 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
 
   $foreignUninstallErl = Start-ForeignErl $expandedNew (Join-Path $installRoot "versions\v0.0.0\same-root-bait")
   $foreignUninstallErlPid = [uint32]$foreignUninstallErl.Id
-  & $uninstall -PurgeData
+  $lifecycleAppData = $env:APPDATA
+  $lifecycleDiscoveryFile = $env:DALA_DISCOVERY_FILE
+  $env:APPDATA = $scheduledAppData
+  $env:DALA_DISCOVERY_FILE = $scheduledDiscoveryFile
+  try {
+    & $uninstall -PurgeData
+  } finally {
+    $env:APPDATA = $lifecycleAppData
+    $env:DALA_DISCOVERY_FILE = $lifecycleDiscoveryFile
+  }
   foreach ($processId in @($holderPid, $shellPid)) {
     Assert-True (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) "Purge left terminal process $processId running"
   }
@@ -5022,6 +5413,10 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
   foreach ($path in @($installRoot, $dataDir, $configFile, $discoveryFile, $discoveryDir)) {
     Assert-True (-not (Test-Path -LiteralPath $path)) "Purge left $path behind"
   }
+  Assert-True (Test-Path -LiteralPath $scheduledDiscoveryFile -PathType Leaf) `
+    "Purge removed an unrelated scheduled-task APPDATA discovery file"
+  Assert-True ((Get-Content -LiteralPath $scheduledDiscoveryFile -Raw) -ceq $scheduledDiscoveryOriginal) `
+    "Purge modified an unrelated scheduled-task APPDATA discovery file"
   Assert-True (Test-Path -LiteralPath $configDir -PathType Container) "Purge deleted the shared config directory"
   Assert-True (Test-Path -LiteralPath $unrelatedConfigFile -PathType Leaf) "Purge deleted an unrelated config-directory file"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $configDir ".dala-config"))) "Purge left a Dala marker in the shared config directory"
@@ -5276,6 +5671,8 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
     install_artifact_rollback = $precommitRollbackRejected
     installer_marker_reparse_rejected = $true
     config_port_synced_to_metadata = $true
+    canonical_discovery_path_authoritative = $true
+    ambient_discovery_decoy_preserved = $true
     uninstall_metadata_conflict_rejected = $uninstallConflictRejected
     foreign_task_rejected = $foreignTaskRejected
     elevated_task_rejected = $elevatedTaskRejected
