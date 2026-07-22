@@ -826,6 +826,7 @@ $smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("dala release smoke " + [guid
 $expandedNew = Join-Path $smokeRoot "expanded new"
 $expandedOld = Join-Path $smokeRoot "expanded old"
 $expandedDecoy = Join-Path $smokeRoot "expanded decoy"
+$expandedIncomplete = Join-Path $smokeRoot "expanded incomplete"
 $expandedStopFailure = Join-Path $smokeRoot "expanded stop failure"
 $oldArchive = Join-Path $smokeRoot "dala-old-windows-x86_64.zip"
 $oldChecksum = "$oldArchive.sha256"
@@ -910,7 +911,7 @@ foreach ($name in $environmentNames) {
 }
 
 try {
-  New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, `
+  New-Item -ItemType Directory -Force -Path $smokeRoot, $expandedNew, $expandedOld, $expandedDecoy, $expandedIncomplete, `
     $expandedStopFailure, $configDir | Out-Null
   Assert-InstallerArchiveTypeSemantics $installer $smokeRoot
   [IO.File]::WriteAllText($unrelatedConfigFile, "must survive purge`n", [Text.UTF8Encoding]::new($false))
@@ -934,7 +935,6 @@ try {
     Assert-DalaExecutableIdentity $identityScript $identityRelease $newVersion
   }
 
-  $expandedIncomplete = Join-Path $smokeRoot "expanded incomplete"
   Copy-Item -Path (Join-Path $expandedNew "*") -Destination $expandedIncomplete -Recurse -Force
   Remove-Item -LiteralPath (Join-Path $expandedIncomplete "lib\dala-$newVersion\ebin\Elixir.Dala.beam") -Force
   Compress-Archive -Path (Join-Path $expandedIncomplete "*") -DestinationPath $incompleteArchive -CompressionLevel Optimal
