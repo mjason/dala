@@ -278,14 +278,62 @@ function Get-ReleaseIdentity([string]$DalaExecutable) {
 }
 
 function Test-ReleaseBootCommand([string]$CommandLine, [string[]]$BootCandidates) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+
+  # Preserve argument boundaries while tolerating the nested quote layers
+  # that cmd.exe can leave in Win32_Process.CommandLine.
   $command = $CommandLine.Replace('/', '\')
+  $outsideQuotes = [bool[]]::new($command.Length + 1)
+  $insideQuotes = $false
+  $backslashes = 0
+  for ($index = 0; $index -lt $command.Length; $index++) {
+    $outsideQuotes[$index] = -not $insideQuotes
+    $character = $command[$index]
+    if ($character -eq '\') {
+      $backslashes++
+      continue
+    }
+    if ($character -eq '"' -and ($backslashes % 2) -eq 0) {
+      $insideQuotes = -not $insideQuotes
+    }
+    $backslashes = 0
+  }
+  $outsideQuotes[$command.Length] = -not $insideQuotes
+
+  # Erlang treats everything after -extra as user data, not emulator options.
+  $optionsEnd = $command.Length
+  foreach ($match in [regex]::Matches(
+      $command,
+      '(?:^|\s)(?<option>-extra)(?=\s|$)',
+      [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )) {
+    $optionIndex = $match.Groups["option"].Index
+    if ($outsideQuotes[$optionIndex]) {
+      $optionsEnd = $optionIndex
+      break
+    }
+  }
+
   foreach ($boot in $BootCandidates) {
     $normalizedBoot = ([string]$boot).Replace('/', '\')
-    if ([string]::IsNullOrWhiteSpace($normalizedBoot)) { continue }
+    if ([string]::IsNullOrWhiteSpace($normalizedBoot) -or $normalizedBoot.Contains('"')) { continue }
     $escapedBoot = [regex]::Escape($normalizedBoot)
-    $pattern = '(?:^|\s)--?boot(?:=|\s+)(?:"' + $escapedBoot + '"|' + $escapedBoot + ')(?=\s|$)'
-    if ([regex]::IsMatch($command, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-      return $true
+    $quotedBoot = '(?<quotes>"+)' + $escapedBoot + '\k<quotes>'
+    $bootValue = if ($normalizedBoot -match '\s') {
+      $quotedBoot
+    } else {
+      '(?:' + $quotedBoot + '|' + $escapedBoot + ')'
+    }
+    $pattern = '(?:^|\s)(?<option>--?boot)(?:=|\s+)' + $bootValue + '(?=\s|$)'
+    foreach ($match in [regex]::Matches(
+        $command,
+        $pattern,
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
+      )) {
+      $optionIndex = $match.Groups["option"].Index
+      if ($optionIndex -lt $optionsEnd -and $outsideQuotes[$optionIndex]) {
+        return $true
+      }
     }
   }
   $false

@@ -170,6 +170,70 @@ function Test-SamePath([string]$Left, [string]$Right) {
   $leftFull.Equals($rightFull, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Write-SmokeReleaseProcessSnapshot(
+  [string]$Label,
+  [string]$ReleaseDir,
+  [string]$SmokeRoot,
+  [int]$Port
+) {
+  try {
+    $startData = @(
+      (Get-Content -LiteralPath (Join-Path $ReleaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+'
+    )
+    $expectedErl = if ($startData.Count -eq 2) {
+      [IO.Path]::GetFullPath((Join-Path $ReleaseDir "erts-$($startData[0])\bin\erl.exe"))
+    } else {
+      $null
+    }
+    $expectedBoot = if ($startData.Count -eq 2) {
+      [IO.Path]::GetFullPath((Join-Path $ReleaseDir "releases\$($startData[1])\start"))
+    } else {
+      $null
+    }
+    Write-Warning "$Label expected erl.exe: $expectedErl"
+    Write-Warning "$Label expected boot: $expectedBoot"
+
+    $rows = @(
+      Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction Stop |
+        Where-Object {
+          $path = [string]$_.ExecutablePath
+          $commandLine = [string]$_.CommandLine
+          (-not [string]::IsNullOrWhiteSpace($expectedErl) -and
+            -not [string]::IsNullOrWhiteSpace($path) -and
+            (Test-SamePath $path $expectedErl)) -or
+          (-not [string]::IsNullOrWhiteSpace($commandLine) -and
+            $commandLine.IndexOf($SmokeRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        }
+    )
+    if ($rows.Count -eq 0) {
+      Write-Warning "$Label found no release-related erl.exe process"
+    }
+    foreach ($row in $rows) {
+      $snapshot = [ordered]@{
+        processId = $row.ProcessId
+        executablePath = [string]$row.ExecutablePath
+        commandLine = [string]$row.CommandLine
+      } | ConvertTo-Json -Compress
+      Write-Warning "$Label erl.exe snapshot: $snapshot"
+    }
+
+    $listeners = @(
+      Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop
+    )
+    if ($listeners.Count -eq 0) {
+      Write-Warning "$Label found no listener on port $Port"
+    }
+    foreach ($listener in $listeners) {
+      Write-Warning (
+        "$Label listener snapshot: address=$($listener.LocalAddress); " +
+        "port=$($listener.LocalPort); processId=$($listener.OwningProcess)"
+      )
+    }
+  } catch {
+    Write-Warning "$Label process snapshot failed: $($_.Exception.Message)"
+  }
+}
+
 function Assert-NoOwnedEpmdProcess([string]$EpmdPath, [string]$Label) {
   foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='epmd.exe'" -ErrorAction Stop)) {
     if ($null -eq $process -or
@@ -191,6 +255,85 @@ function Assert-ScriptParses([string]$Path) {
   if ($errors.Count -gt 0) {
     $details = @($errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }) -join "; "
     throw "PowerShell parser rejected $Path`: $details"
+  }
+}
+
+function Assert-ReleaseBootCommandSemantics([string]$ScriptPath) {
+  $tokens = $null
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "Cannot inspect invalid PowerShell script: $ScriptPath" }
+
+  $definitions = @(
+    $ast.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq "Test-ReleaseBootCommand"
+    }, $true)
+  )
+  Assert-True ($definitions.Count -eq 1) "$ScriptPath must define exactly one Test-ReleaseBootCommand function"
+
+  $module = New-Module -ScriptBlock ([ScriptBlock]::Create($definitions[0].Extent.Text))
+  try {
+    $result = & $module {
+      $boot = "C:\Dala Release\releases\1.2.3\start"
+      $compactBoot = "C:\Dala\releases\1.2.3\start"
+      $ordinary = Test-ReleaseBootCommand -CommandLine (
+        '"C:\Dala Release\erts-14\bin\erl.exe" -boot "' + $boot + '" -noshell'
+      ) -BootCandidates @($boot)
+      $doubled = Test-ReleaseBootCommand -CommandLine (
+        '""C:\Dala Release\erts-14\bin\erl.exe"" -boot ""' + $boot + '"" -noshell'
+      ) -BootCandidates @($boot)
+      $tripledEquals = Test-ReleaseBootCommand -CommandLine (
+        '"""C:\Dala Release\erts-14\bin\erl.exe""" --boot="""' + $boot + '""" -noshell'
+      ) -BootCandidates @($boot)
+      $forwardSlash = Test-ReleaseBootCommand -CommandLine (
+        'erl.exe --boot="' + $boot.Replace('\', '/') + '" -noshell'
+      ) -BootCandidates @($boot)
+      $unquotedCompact = Test-ReleaseBootCommand -CommandLine (
+        'erl.exe -boot ' + $compactBoot + ' -noshell'
+      ) -BootCandidates @($compactBoot)
+      $suffixRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe -boot ""' + $boot + '-foreign"" -noshell'
+        ) -BootCandidates @($boot))
+      $prefixedFlagRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe foreign-boot ""' + $boot + '"" -noshell'
+        ) -BootCandidates @($boot))
+      $quotedFlagRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe "ignored -boot ' + $compactBoot + '" -noshell'
+        ) -BootCandidates @($compactBoot))
+      $splitPathRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe -boot "C:\Dala" "Release\releases\1.2.3\start" -noshell'
+        ) -BootCandidates @($boot))
+      $unquotedWhitespaceRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe -boot ' + $boot + ' -noshell'
+        ) -BootCandidates @($boot))
+      $extraRejected = -not (Test-ReleaseBootCommand -CommandLine (
+          'erl.exe -noshell -extra -boot "' + $boot + '"'
+        ) -BootCandidates @($boot))
+      $emptyRejected = -not (Test-ReleaseBootCommand -CommandLine "" -BootCandidates @($boot))
+
+      [pscustomobject]@{
+        ordinary_quote_accepted = $ordinary
+        doubled_quote_accepted = $doubled
+        tripled_equals_quote_accepted = $tripledEquals
+        forward_slash_accepted = $forwardSlash
+        unquoted_compact_path_accepted = $unquotedCompact
+        boot_suffix_rejected = $suffixRejected
+        prefixed_flag_rejected = $prefixedFlagRejected
+        quoted_flag_rejected = $quotedFlagRejected
+        split_path_rejected = $splitPathRejected
+        unquoted_whitespace_rejected = $unquotedWhitespaceRejected
+        post_extra_flag_rejected = $extraRejected
+        empty_command_rejected = $emptyRejected
+      }
+    }
+
+    foreach ($property in $result.PSObject.Properties) {
+      Assert-True ([bool]$property.Value) "$ScriptPath release boot command smoke failed: $($property.Name)"
+    }
+  } finally {
+    Remove-Module $module -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -261,7 +404,12 @@ function Assert-DalaExecutableIdentity([string]$ScriptPath, [string]$ReleaseDir,
   }
 }
 
-function Write-DalaIdentityFixture([string]$SourceRelease, [string]$Destination, [string]$Version) {
+function Write-DalaIdentityFixture(
+  [string]$SourceRelease,
+  [string]$Destination,
+  [string]$Version,
+  [switch]$Runnable
+) {
   $startData = @((Get-Content -LiteralPath (Join-Path $SourceRelease "releases\start_erl.data") -Raw).Trim() -split '\s+')
   Assert-True ($startData.Count -eq 2 -and [string]$startData[1] -ceq $Version) `
     "Release fixture has malformed start_erl.data"
@@ -279,6 +427,16 @@ function Write-DalaIdentityFixture([string]$SourceRelease, [string]$Destination,
     $target = Join-Path $Destination $relative
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
     Copy-Item -LiteralPath $source -Destination $target -Force
+  }
+
+  if ($Runnable) {
+    $ertsRelative = "erts-$($startData[0])"
+    $sourceErts = Join-Path $SourceRelease $ertsRelative
+    $targetErts = Join-Path $Destination $ertsRelative
+    Assert-True (Test-Path -LiteralPath $sourceErts -PathType Container) `
+      "Release fixture is missing $ertsRelative"
+    Get-ChildItem -LiteralPath $sourceErts -Force |
+      Copy-Item -Destination $targetErts -Recurse -Force
   }
 }
 
@@ -3051,24 +3209,27 @@ function Start-ForeignErl([string]$ReleaseDir, [string]$PathBait) {
   $process
 }
 
-function Start-BootedErl([string]$ReleaseDir, [string]$Version) {
+function Start-BootedErl([string]$ReleaseDir, [string]$Version, [string]$RuntimeRoot) {
   $startData = @((Get-Content -LiteralPath (Join-Path $ReleaseDir "releases\start_erl.data") -Raw).Trim() -split '\s+')
   if ($startData.Count -ne 2 -or [string]$startData[1] -cne $Version) {
     throw "Release fixture has malformed start_erl.data: $ReleaseDir"
   }
   $erl = Join-Path $ReleaseDir "erts-$($startData[0])\bin\erl.exe"
-  $boot = Join-Path $ReleaseDir "releases\$Version\start"
+  $boot = Join-Path $ReleaseDir "releases\$Version\start_clean"
   $bootFile = "$boot.boot"
+  $runtimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
+  $releaseLib = Join-Path $runtimeRoot "lib"
   if (-not (Test-Path -LiteralPath $erl -PathType Leaf) -or
-      -not (Test-Path -LiteralPath $bootFile -PathType Leaf)) {
+      -not (Test-Path -LiteralPath $bootFile -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $releaseLib -PathType Container)) {
     throw "Release fixture is missing boot identity files: $ReleaseDir"
   }
 
-  # Keep the identity-shaped -boot token in the command line without starting
-  # the full release, whose application/config files are intentionally absent
-  # from this reduced fixture. Everything after `-extra` is user data, so the
-  # token remains visible to ownership checks without being parsed by Erlang.
-  $arguments = "-noshell -eval `"timer:sleep(600000).`" -extra -boot `"$boot`""
+  # start_clean provides a real emulator boot identity without starting Dala.
+  $arguments = (
+    "-boot `"$boot`" -boot_var ROOT `"$runtimeRoot`" " +
+    "-boot_var RELEASE_LIB `"$releaseLib`" -noshell -eval `"timer:sleep(600000).`""
+  )
   $process = Start-Process -FilePath $erl -ArgumentList $arguments -WindowStyle Hidden -PassThru
   Start-Sleep -Milliseconds 500
   if ($process.HasExited) { throw "Booted Erl reparse fixture exited early" }
@@ -3081,15 +3242,17 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSCommandPath
 $releaseDir = Join-Path $root "versions\__TAG__"
 $version = ("__TAG__").Substring(1)
-$boot = Join-Path $releaseDir "releases\$version\start"
+$boot = Join-Path $releaseDir "releases\$version\start_clean"
+$releaseLib = Join-Path $releaseDir "lib"
 $erl = @(
   Get-ChildItem -LiteralPath $releaseDir -Filter "erl.exe" -Recurse -File |
     Where-Object { $_.FullName -like "*\erts-*\bin\erl.exe" }
 )
 if ($erl.Count -ne 1) { throw "Expected one target erl.exe, found $($erl.Count)" }
-# Keep the process idle and unhealthy while exposing the same release identity
-# that the fail-closed stop helper requires before terminating erl.exe.
-& $erl[0].FullName -noshell -eval "timer:sleep(600000)." -extra -boot "$boot"
+# Keep the process idle and unhealthy while exposing a real release identity
+# that the fail-closed stop helper can validate before terminating erl.exe.
+& $erl[0].FullName -boot "$boot" -boot_var RELEASE_LIB "$releaseLib" `
+  -noshell -eval "timer:sleep(600000)."
 exit $LASTEXITCODE
 '@
   $source = $source.Replace("__TAG__", $Tag)
@@ -3448,6 +3611,9 @@ $runSource = Join-Path $repoRoot "priv\windows\run-dala.ps1"
 
 foreach ($script in @($installer, $update, $uninstall, $updateHelperSource, $restartHelperSource, $publishHelperSource, $runSource)) {
   Assert-ScriptParses $script
+}
+foreach ($script in @($installer, $uninstall, $updateHelperSource, $restartHelperSource)) {
+  Assert-ReleaseBootCommandSemantics $script
 }
 Assert-InstallerJsoncSemantics $installer
 Assert-ArchiveChecksum $archive $checksum
@@ -3891,6 +4057,7 @@ try {
       Write-Warning "Same-version recovery server.log tail follows"
       Get-Content -LiteralPath $logFile -Tail 200 | Write-Warning
     }
+    Write-SmokeReleaseProcessSnapshot "Same-version recovery" $oldDir $smokeRoot $port
     throw
   }
   Assert-True (Test-Path -LiteralPath $discoveryFile -PathType Leaf) "Installer did not recover missing discovery metadata"
@@ -4796,10 +4963,10 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
   Write-InstallMetadata (Join-Path $reparseRoot "install.json") $reparseRoot $reparseData $reparseConfig $reparseTask $port
   Write-InstallMetadata $reparseDiscovery $reparseRoot $reparseData $reparseConfig $reparseTask $port
   $reparseVictimRelease = Join-Path $reparseVictim $newTag
-  Write-DalaIdentityFixture $expandedNew $reparseVictimRelease $newVersion
+  Write-DalaIdentityFixture $expandedNew $reparseVictimRelease $newVersion -Runnable
   New-Item -ItemType Junction -Path $reparseJunction -Target $reparseVictim | Out-Null
   $reparseRelease = Join-Path $reparseJunction $newTag
-  $reparseErlProcess = Start-BootedErl $reparseRelease $newVersion
+  $reparseErlProcess = Start-BootedErl $reparseRelease $newVersion $expandedNew
   $reparseErlPid = [uint32]$reparseErlProcess.Id
   $env:APPDATA = $reparseAppData
   $env:DALA_HOME = $reparseRoot
