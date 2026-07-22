@@ -137,6 +137,36 @@ function Test-CompleteDalaRelease([string]$Path, [string]$Version) {
   }
 }
 
+function Get-ReleaseRelativeFiles([string]$Root) {
+  # Do not derive relative names by slicing FullName. Windows may return an
+  # 8.3 path for the root while Get-ChildItem returns the long form (or the
+  # reverse), especially for directories created by Erlang's ZIP extractor.
+  # Walking the tree with entry names keeps the comparison independent of the
+  # provider's path representation.
+  $files = [Collections.Generic.List[string]]::new()
+  $pending = [Collections.Generic.Stack[object]]::new()
+  $pending.Push([pscustomobject]@{ Path = $Root; Relative = "" })
+
+  while ($pending.Count -gt 0) {
+    $current = $pending.Pop()
+    foreach ($entry in @(Get-ChildItem -LiteralPath $current.Path -Force -ErrorAction Stop)) {
+      $relative = if ([string]::IsNullOrEmpty($current.Relative)) {
+        [string]$entry.Name
+      } else {
+        Join-Path $current.Relative $entry.Name
+      }
+
+      if ($entry.PSIsContainer) {
+        $pending.Push([pscustomobject]@{ Path = $entry.FullName; Relative = $relative })
+      } else {
+        $files.Add($relative.Replace([IO.Path]::AltDirectorySeparatorChar, [IO.Path]::DirectorySeparatorChar))
+      }
+    }
+  }
+
+  @($files)
+}
+
 function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string]$Version) {
   try {
     if (-not (Test-CompleteDalaRelease $Source $Version) -or
@@ -147,22 +177,8 @@ function Test-EquivalentDalaRelease([string]$Source, [string]$Candidate, [string
       return $false
     }
 
-    # Resolve both roots through the filesystem before slicing child paths.
-    # Erlang can pass an 8.3 temporary path while PowerShell reports long names
-    # from Get-ChildItem; using the raw argument length corrupts every relative
-    # path on those hosts.
-    $sourceRoot = (Get-Item -LiteralPath $Source -Force -ErrorAction Stop).FullName.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
-    $candidateRoot = (Get-Item -LiteralPath $Candidate -Force -ErrorAction Stop).FullName.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
-    $sourceFiles = @(
-      Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction Stop |
-        ForEach-Object { $_.FullName.Substring($sourceRoot.Length) } |
-        Sort-Object
-    )
-    $candidateFiles = @(
-      Get-ChildItem -LiteralPath $Candidate -Recurse -File -Force -ErrorAction Stop |
-        ForEach-Object { $_.FullName.Substring($candidateRoot.Length) } |
-        Sort-Object
-    )
+    $sourceFiles = @(Get-ReleaseRelativeFiles $Source | Sort-Object)
+    $candidateFiles = @(Get-ReleaseRelativeFiles $Candidate | Sort-Object)
 
     if ($sourceFiles.Count -ne $candidateFiles.Count) { return $false }
 
@@ -295,7 +311,9 @@ try {
   [IO.Directory]::CreateDirectory($destinationParent) | Out-Null
 
   $destinationLeaf = Split-Path -Leaf $destination
-  $rollbackPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.rollback-[0-9A-Fa-f]{32}$'
+  # Match every rollback token format, including names emitted by older
+  # publishers that used numeric/base64 or operator-provided suffixes.
+  $rollbackPattern = '^\.' + [regex]::Escape($destinationLeaf) + '\.rollback-.+$'
   $orphanBackups = @(
     Get-ChildItem -LiteralPath $destinationParent -Force -ErrorAction Stop |
       Where-Object { $_.Name -match $rollbackPattern }

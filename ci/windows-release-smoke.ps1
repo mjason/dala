@@ -653,6 +653,88 @@ function Stop-VersionDecoy($Process) {
   }
 }
 
+function Stop-SmokeProcesses([string]$Root, [object[]]$KnownProcessIds) {
+  $selfPid = [uint32]$PID
+  $owned = [Collections.Generic.HashSet[uint32]]::new()
+  foreach ($processId in @($KnownProcessIds)) {
+    if ($processId -and $processId -ne $selfPid) {
+      $owned.Add([uint32]$processId) | Out-Null
+    }
+  }
+
+  # A scheduled-task wrapper can outlive erl.exe and keep a child console or
+  # PowerShell process attached to the smoke tree. Resolve descendants from
+  # the unique root-bearing command line before terminating, so unrelated
+  # runner processes remain untouched.
+  for ($round = 0; $round -lt 20; $round++) {
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    foreach ($process in $processes) {
+      $commandLine = [string]$process.CommandLine
+      if ($commandLine -and
+          $commandLine.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+          [uint32]$process.ProcessId -ne $selfPid) {
+        $owned.Add([uint32]$process.ProcessId) | Out-Null
+      }
+    }
+
+    $changed = $true
+    while ($changed) {
+      $changed = $false
+      foreach ($process in $processes) {
+        if ($owned.Contains([uint32]$process.ParentProcessId) -and
+            [uint32]$process.ProcessId -ne $selfPid) {
+          $changed = $owned.Add([uint32]$process.ProcessId) -or $changed
+        }
+      }
+    }
+
+    $targets = @(
+      $processes |
+        Where-Object { $owned.Contains([uint32]$_.ProcessId) } |
+        Sort-Object @{ Expression = { [uint32]$_.ParentProcessId }; Descending = $true }
+    )
+    foreach ($process in $targets) {
+      Stop-Process -Id ([uint32]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+
+    $live = @(Get-Process -ErrorAction SilentlyContinue |
+      Where-Object { $owned.Contains([uint32]$_.Id) })
+    if ($live.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 100
+  }
+}
+
+function Remove-SmokeTree([string]$Path) {
+  try {
+    $attributes = [IO.File]::GetAttributes($Path)
+  } catch [IO.FileNotFoundException] {
+    return
+  } catch [IO.DirectoryNotFoundException] {
+    return
+  }
+
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    # Delete the link itself; never recurse through its target.
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+      [IO.Directory]::Delete($Path)
+    } else {
+      [IO.File]::Delete($Path)
+    }
+    return
+  }
+
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+      Remove-SmokeTree $entry.FullName
+    }
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.Directory]::Delete($Path)
+  } else {
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+    [IO.File]::Delete($Path)
+  }
+}
+
 function Wait-VersionDecoyExited($Process, [string]$Label) {
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
     if ($Process.HasExited) { return }
@@ -1485,7 +1567,7 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   $orphanPublishStaging = Join-Path $publishStagingRoot "orphan candidate"
   $orphanPublishDestination = Join-Path $publishDestinationRoot "orphan release"
   $orphanPublishBackup = Join-Path $publishDestinationRoot `
-    (".ORPHAN RELEASE.rollback-" + [guid]::NewGuid().ToString("N").ToUpperInvariant())
+    ".ORPHAN RELEASE.rollback-legacy-token"
   Write-PublishFixture $orphanPublishStaging $newVersion "orphan-candidate" $newPublishHelper
   Write-PublishFixture $orphanPublishDestination $newVersion "orphan-destination" $newPublishHelper
   Write-PublishFixture $orphanPublishBackup $newVersion "orphan-backup" $newPublishHelper
@@ -2161,25 +2243,39 @@ File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: tru
 
   $beamProcesses = @(Get-CimInstance Win32_Process -Filter "Name='erl.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -like "*$smokeRoot*" })
+  $knownProcessIds = [Collections.Generic.List[uint32]]::new()
   foreach ($process in $beamProcesses) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    $knownProcessIds.Add([uint32]$process.ProcessId)
   }
-  foreach ($processId in @($holderPid, $shellPid)) {
-    if ($processId) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+  foreach ($processId in @($holderPid, $shellPid, $foreignUpdateErlPid, $foreignUninstallErlPid)) {
+    if ($processId) { $knownProcessIds.Add([uint32]$processId) }
   }
-  foreach ($processId in @($foreignUpdateErlPid, $foreignUninstallErlPid)) {
-    if ($processId) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
-  }
+  if ($reparseErlProcess) { $knownProcessIds.Add([uint32]$reparseErlProcess.Id) }
+  Stop-SmokeProcesses $smokeRoot $knownProcessIds
 
   foreach ($name in $environmentNames) {
     [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
   }
 
-  for ($attempt = 0; $attempt -lt 50 -and (Test-Path -LiteralPath $smokeRoot); $attempt++) {
-    Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+  $cleanupError = $null
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    if (-not (Test-Path -LiteralPath $smokeRoot)) { break }
+    try {
+      Remove-SmokeTree $smokeRoot
+      $cleanupError = $null
+    } catch {
+      $cleanupError = $_.Exception.Message
+    }
     if (Test-Path -LiteralPath $smokeRoot) { Start-Sleep -Milliseconds 100 }
   }
-  if (Test-Path -LiteralPath $smokeRoot) { throw "Could not clean smoke root: $smokeRoot" }
+  if (Test-Path -LiteralPath $smokeRoot) {
+    $remaining = @(
+      Get-ChildItem -LiteralPath $smokeRoot -Force -ErrorAction SilentlyContinue |
+        Select-Object -First 20 -ExpandProperty FullName
+    )
+    $detail = if ($cleanupError) { "; last cleanup error: $cleanupError" } else { "" }
+    throw "Could not clean smoke root: $smokeRoot$detail; remaining: $($remaining -join ', ')"
+  }
 }
 
 $summary | ConvertTo-Json -Compress
