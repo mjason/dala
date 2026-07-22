@@ -17,6 +17,7 @@ const T_AUTH: u8 = 0x10;
 const T_INPUT: u8 = 0x11;
 const T_KILL: u8 = 0x13;
 const T_PROCESSES_REQ: u8 = 0x16;
+const T_QUERY_OWNER: u8 = 0x17;
 
 // WMI process creation and ConPTY teardown are host-global operations on the
 // Windows runner. Running multiple holder sessions concurrently makes the
@@ -29,7 +30,7 @@ fn holder_test_guard() -> std::sync::MutexGuard<'static, ()> {
     HOLDER_TEST_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn temp_root() -> PathBuf {
@@ -59,6 +60,20 @@ fn read_frame(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
     let mut payload = vec![0_u8; u32::from_be_bytes(header) as usize];
     stream.read_exact(&mut payload)?;
     Ok((payload[0], payload[1..].to_vec()))
+}
+
+fn enable_holder_query_owner(stream: &mut TcpStream) {
+    // Protocol 7 disables holder-side terminal-query replies until the client
+    // claims them. Wait for the output barrier acknowledgement before input.
+    write_frame(stream, T_QUERY_OWNER, &[1]);
+    loop {
+        let (kind, payload) =
+            read_frame(stream).expect("query-owner acknowledgement did not arrive");
+        if kind == T_QUERY_OWNER {
+            assert_eq!(payload.as_slice(), &[1], "holder rejected query ownership");
+            return;
+        }
+    }
 }
 
 fn wait_endpoint(path: &PathBuf) -> serde_json::Value {
@@ -248,6 +263,7 @@ fn detached_cmd_session_authenticates_and_round_trips_terminal_io() {
         .unwrap();
     write_frame(&mut stream, T_AUTH, token.as_bytes());
     assert_eq!(read_frame(&mut stream).unwrap().0, T_HELLO);
+    enable_holder_query_owner(&mut stream);
     std::thread::sleep(Duration::from_millis(500));
     assert!(
         endpoint_path.exists(),
@@ -456,6 +472,7 @@ fn installed_agent_cmd_shims_execute_inside_conpty() {
         .unwrap();
     write_frame(&mut stream, T_AUTH, token.as_bytes());
     assert_eq!(read_frame(&mut stream).unwrap().0, T_HELLO);
+    enable_holder_query_owner(&mut stream);
 
     let mut failures = Vec::new();
     for command in commands {
