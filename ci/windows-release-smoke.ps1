@@ -5574,7 +5574,9 @@ end
 
 {:ok, socket, true} = Holder.attach_or_spawn(id, [])
 hello = receive_frame.(receive_frame, socket, Holder.type_hello()) |> Jason.decode!()
-:ok = Holder.send_text_snapshot_req(socket, 200, 65_536)
+# Reattach must inspect the complete bounded scrollback: the marker can be
+# older than the default 200-line tail after lifecycle output and restarts.
+:ok = Holder.send_text_snapshot_req(socket, 0, 131_072)
 snapshot = receive_frame.(receive_frame, socket, Holder.type_text_snapshot()) |> Jason.decode!()
 true = Enum.any?(snapshot["lines"], &String.contains?(&1, marker))
 :gen_tcp.close(socket)
