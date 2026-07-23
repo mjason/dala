@@ -153,6 +153,36 @@ defmodule Dala.Updater.ArchiveTest do
     end
   end
 
+  test "rejects local UT payloads that the extractor cannot parse", %{directory: directory} do
+    archive = Path.join(directory, "invalid-local-ut.zip")
+    write_zip_with_local_ut_flags(archive, 0)
+
+    assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+  end
+
+  test "rejects central UT payloads that the extractor cannot parse", %{directory: directory} do
+    archive = Path.join(directory, "invalid-central-ut.zip")
+    write_zip_with_central_ut_flags(archive, 0)
+
+    assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+  end
+
+  test "rejects malformed ZIP ux UID/GID payloads", %{directory: directory} do
+    archive = Path.join(directory, "invalid-ux.zip")
+    write_zip_with_local_ux_uid_size(archive, 255)
+
+    assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+
+    short_version = Path.join(directory, "invalid-ux-version.zip")
+    write_zip_with_local_ux_version(short_version, 2)
+
+    assert {:error, message} = Archive.validate(short_version, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+  end
+
   test "rejects Windows duplicate ZIP names after case and separator normalization", %{
     directory: directory
   } do
@@ -294,6 +324,55 @@ defmodule Dala.Updater.ArchiveTest do
 
     # The central header has a 46-byte fixed prefix before the filename.
     File.write!(path, put_bytes(archive, central_offset + 46 + 4 + 2, <<0xFF, 0xFF>>))
+  end
+
+  defp write_zip_with_local_ut_flags(path, flags) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:extended_timestamp]}
+      ])
+
+    # Local fixed header (30) + filename (4) + UT tag/length (4).
+    File.write!(path, put_bytes(archive, 30 + 4 + 4, <<flags>>))
+  end
+
+  defp write_zip_with_central_ut_flags(path, flags) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:extended_timestamp]}
+      ])
+
+    [{central_offset, _length}] = :binary.matches(archive, @zip_central_signature)
+
+    # Central fixed header (46) + filename (4) + UT tag/length (4).
+    File.write!(path, put_bytes(archive, central_offset + 46 + 4 + 4, <<flags>>))
+  end
+
+  defp write_zip_with_local_ux_uid_size(path, uid_size) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:uid_gid]}
+      ])
+
+    # Local fixed header (30) + filename (4) + ux tag/length (4) + version (1).
+    File.write!(path, put_bytes(archive, 30 + 4 + 4 + 1, <<uid_size>>))
+  end
+
+  defp write_zip_with_local_ux_version(path, version) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:uid_gid]}
+      ])
+
+    # Make the ux payload only one byte long. Unknown versions are ignored by
+    # the extractor when well-formed, but this truncated payload is invalid.
+    archive = put_bytes(archive, 30 + 4 + 2, <<1, 0>>)
+    archive = put_bytes(archive, 30 + 4 + 4, <<version>>)
+    File.write!(path, archive)
   end
 
   defp replace_zip_names(archive, old, new) do

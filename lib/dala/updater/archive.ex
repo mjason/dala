@@ -6,6 +6,9 @@ defmodule Dala.Updater.Archive do
   @zip_eocd_signature <<0x50, 0x4B, 0x05, 0x06>>
   @zip_central_signature 0x02014B50
   @zip_local_signature 0x04034B50
+  @zip64_extra_field 0x0001
+  @zip_extended_timestamp_extra 0x5455
+  @zip_unix3_extra 0x7875
   @zip_eocd_size 22
   @zip_max_comment_size 65_535
   @zip64_16 0xFFFF
@@ -298,13 +301,67 @@ defmodule Dala.Updater.Archive do
 
   defp validate_zip_extra_fields(<<>>), do: :ok
 
-  defp validate_zip_extra_fields(<<_tag::little-16, size::little-16, rest::binary>>)
+  defp validate_zip_extra_fields(<<tag::little-16, size::little-16, rest::binary>>)
        when byte_size(rest) >= size do
-    <<_payload::binary-size(size), remaining::binary>> = rest
-    validate_zip_extra_fields(remaining)
+    <<payload::binary-size(size), remaining::binary>> = rest
+
+    with :ok <- validate_zip_extra_payload(tag, payload),
+         :ok <- validate_zip_extra_fields(remaining) do
+      :ok
+    end
   end
 
   defp validate_zip_extra_fields(_extra), do: {:error, :malformed_extra_fields}
+
+  # Erlang's extractor interprets these extensions instead of treating them
+  # as opaque bytes. Validate their payload shape before extraction so a
+  # structurally valid TLV cannot trigger a parser badmatch.
+  defp validate_zip_extra_payload(@zip_extended_timestamp_extra, <<flags, timestamps::binary>>) do
+    expected_size =
+      Enum.reduce([1, 2, 4], 0, fn mask, size ->
+        if band(flags, mask) != 0, do: size + 4, else: size
+      end)
+
+    if byte_size(timestamps) == expected_size do
+      :ok
+    else
+      {:error, :invalid_extended_timestamp}
+    end
+  end
+
+  defp validate_zip_extra_payload(@zip_extended_timestamp_extra, _payload),
+    do: {:error, :invalid_extended_timestamp}
+
+  defp validate_zip_extra_payload(@zip_unix3_extra, <<1, uid_size, rest::binary>>) do
+    case rest do
+      <<_uid::binary-size(uid_size), gid_size, _gid::binary-size(gid_size)>> ->
+        :ok
+
+      _ ->
+        {:error, :invalid_unix3}
+    end
+  end
+
+  defp validate_zip_extra_payload(@zip_unix3_extra, <<version, rest::binary>>)
+       when version != 1 and byte_size(rest) > 0,
+       do: :ok
+
+  defp validate_zip_extra_payload(@zip_unix3_extra, _payload),
+    do: {:error, :invalid_unix3}
+
+  defp validate_zip_extra_payload(@zip64_extra_field, payload) do
+    # ZIP64 values are a sequence of optional 8-byte sizes/offsets followed
+    # by an optional 4-byte disk number. Without a sentinel in the header we
+    # cannot determine which fields are present, but every valid sequence is
+    # non-empty, at most 28 bytes, and aligned to a 4-byte field boundary.
+    if byte_size(payload) in 4..28 and rem(byte_size(payload), 4) == 0 do
+      :ok
+    else
+      {:error, :invalid_zip64_extra}
+    end
+  end
+
+  defp validate_zip_extra_payload(_tag, _payload), do: :ok
 
   defp validate_zip_entry_type(entry) do
     attributes = entry.external_attributes
