@@ -5039,10 +5039,12 @@ clean_names = ~w(
   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS RELEASE_DISTRIBUTION RELEASE_BOOT_SCRIPT
   RELEASE_BOOT_SCRIPT_CLEAN RELEASE_SYS_CONFIG RELEASE_ROOT RELEASE_COMMAND RELEASE_PROG
   RELEASE_MUTABLE_DIR RELEASE_READ_ONLY ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS ERL_LIBS
-  ERL_INETRC ERL_EPMD_PORT ERL_EPMD_ADDRESS ERL_EPMD_RELAXED_COMMAND_CHECK
+  ERL_INETRC ERL_EPMD_RELAXED_COMMAND_CHECK
   ELIXIR_ERL_OPTIONS
 )
 true = Enum.all?(clean_names, &(System.get_env(&1) == nil))
+true = System.get_env("ERL_EPMD_PORT") == "4369"
+true = System.get_env("ERL_EPMD_ADDRESS") == "127.0.0.1"
 secrets = data_dir |> Path.join("secrets.json") |> File.read!() |> Jason.decode!()
 environment_values = System.get_env() |> Map.values()
 true = Enum.all?([secrets["secretKeyBase"], secrets["tokenSigningSecret"]], &(&1 not in environment_values))
