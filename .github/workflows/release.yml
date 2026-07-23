@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: server-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Build linux-x86_64 server
@@ -43,8 +47,18 @@ jobs:
             native/dala_git/target
             native/dala_holder/target
             native/dala_theme_renderer/target
-          key: linux-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
-          restore-keys: linux-mix-
+          key: server-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex', 'lib/mix/tasks/compile.dala_holder.ex') }}
+          restore-keys: server-v2-${{ runner.os }}-
+
+      - name: Repair an incomplete native build cache
+        run: |
+          APP_BUILD="_build/prod/lib/dala"
+          if [ -d "$APP_BUILD/ebin" ] && \
+             { [ ! -f "$APP_BUILD/priv/native/dala_git.so" ] || \
+               [ ! -f "$APP_BUILD/priv/native/dala_theme_renderer.so" ]; }; then
+            echo "Cached dala BEAMs are missing NIFs; forcing an app rebuild"
+            rm -rf "$APP_BUILD"
+          fi
 
       - name: Install dependencies
         run: |
@@ -59,10 +73,21 @@ jobs:
           mix assets.deploy
           mix release --overwrite
 
+      - name: Smoke-test assembled release
+        run: |
+          RELEASE_DIR="_build/prod/rel/dala"
+          test -x "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/bin/dala_holder"
+          test -s "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/native/dala_git.so"
+          test -s "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/native/dala_theme_renderer.so"
+          "$RELEASE_DIR/bin/dala" eval 'version = Application.spec(:dala, :vsn) |> to_string(); expected = System.fetch_env!("GITHUB_REF_NAME") |> String.trim_leading("v"); unless version == expected and Code.ensure_loaded?(Dala.Git) and Code.ensure_loaded?(Dala.ThemeRenderer), do: raise("release smoke test failed: version=#{version}, expected=#{expected}")'
+
       - name: Package release
         run: |
           OUT="dala-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
           tar -C _build/prod/rel/dala -czf "$OUT" .
+          tar -tzf "$OUT" > "$RUNNER_TEMP/linux-release-files.txt"
+          grep -q '/priv/native/dala_git.so$' "$RUNNER_TEMP/linux-release-files.txt"
+          grep -q '/priv/native/dala_theme_renderer.so$' "$RUNNER_TEMP/linux-release-files.txt"
           sha256sum "$OUT" > "$OUT.sha256"
           mkdir artifacts
           mv "$OUT" "$OUT.sha256" artifacts/
@@ -108,8 +133,18 @@ jobs:
             native/dala_git/target
             native/dala_holder/target
             native/dala_theme_renderer/target
-          key: macos-arm64-mix-${{ hashFiles('mix.lock', 'native/**/Cargo.lock') }}
-          restore-keys: macos-arm64-mix-
+          key: server-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex', 'lib/mix/tasks/compile.dala_holder.ex') }}
+          restore-keys: server-v2-${{ runner.os }}-
+
+      - name: Repair an incomplete native build cache
+        run: |
+          APP_BUILD="_build/prod/lib/dala"
+          if [ -d "$APP_BUILD/ebin" ] && \
+             { [ ! -f "$APP_BUILD/priv/native/dala_git.so" ] || \
+               [ ! -f "$APP_BUILD/priv/native/dala_theme_renderer.so" ]; }; then
+            echo "Cached dala BEAMs are missing NIFs; forcing an app rebuild"
+            rm -rf "$APP_BUILD"
+          fi
 
       - name: Install dependencies
         run: |
@@ -123,6 +158,14 @@ jobs:
           mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
+
+      - name: Smoke-test assembled release
+        run: |
+          RELEASE_DIR="_build/prod/rel/dala"
+          test -x "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/bin/dala_holder"
+          test -s "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/native/dala_git.so"
+          test -s "$RELEASE_DIR/lib/dala-${GITHUB_REF_NAME#v}/priv/native/dala_theme_renderer.so"
+          "$RELEASE_DIR/bin/dala" eval 'version = Application.spec(:dala, :vsn) |> to_string(); expected = System.fetch_env!("GITHUB_REF_NAME") |> String.trim_leading("v"); unless version == expected and Code.ensure_loaded?(Dala.Git) and Code.ensure_loaded?(Dala.ThemeRenderer), do: raise("release smoke test failed: version=#{version}, expected=#{expected}")'
 
       - name: Import Developer ID certificate
         env:
@@ -196,6 +239,9 @@ jobs:
         run: |
           OUT="dala-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
           tar -C _build/prod/rel/dala -czf "$OUT" .
+          tar -tzf "$OUT" > "$RUNNER_TEMP/macos-release-files.txt"
+          grep -q '/priv/native/dala_git.so$' "$RUNNER_TEMP/macos-release-files.txt"
+          grep -q '/priv/native/dala_theme_renderer.so$' "$RUNNER_TEMP/macos-release-files.txt"
           shasum -a 256 "$OUT" > "$OUT.sha256"
           mkdir artifacts
           mv "$OUT" "$OUT.sha256" artifacts/
@@ -224,8 +270,29 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Verify packaged artifacts
+        run: |
+          cd artifacts
+          sha256sum -c ./*.sha256
+          for archive in ./*.tar.gz; do
+            CONTENTS="$RUNNER_TEMP/$(basename "$archive").txt"
+            tar -tzf "$archive" > "$CONTENTS"
+            grep -q '/priv/native/dala_git.so$' "$CONTENTS"
+            grep -q '/priv/native/dala_theme_renderer.so$' "$CONTENTS"
+          done
+
+      - name: Reject duplicate publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to overwrite its assets" >&2
+            exit 1
+          fi
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           generate_release_notes: true
+          overwrite_files: false
