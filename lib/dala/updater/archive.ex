@@ -55,7 +55,7 @@ defmodule Dala.Updater.Archive do
          {:ok, central} <-
            read_exact(file, directory.offset, directory.size, "ZIP central directory"),
          {:ok, entries} <- parse_zip_entries(central, directory.entries, []),
-         :ok <- validate_zip_entries(file, archive_size, entries) do
+         :ok <- validate_zip_entries(file, archive_size, directory.offset, entries) do
       :ok
     else
       {:error, message} when is_binary(message) -> {:error, message}
@@ -123,8 +123,8 @@ defmodule Dala.Updater.Archive do
   defp parse_zip_entries(binary, remaining_count, entries) when remaining_count > 0 do
     case binary do
       <<@zip_central_signature::little-32, made_by::little-16, _needed::little-16,
-        _flags::little-16, _method::little-16, _time::little-16, _date::little-16,
-        _crc::little-32, _compressed_size::little-32, _size::little-32, name_size::little-16,
+        flags::little-16, method::little-16, _time::little-16, _date::little-16, crc32::little-32,
+        compressed_size::little-32, uncompressed_size::little-32, name_size::little-16,
         extra_size::little-16, comment_size::little-16, disk::little-16,
         _internal_attributes::little-16, external_attributes::little-32, local_offset::little-32,
         rest::binary>> ->
@@ -135,14 +135,27 @@ defmodule Dala.Updater.Archive do
           <<name::binary-size(name_size), _extra::binary-size(extra_size),
             _comment::binary-size(comment_size), remaining::binary>> = rest
 
-          entry = %{
-            external_attributes: external_attributes,
-            local_offset: local_offset,
-            name: name,
-            system: bsr(made_by, 8)
-          }
+          extra = binary_part(rest, name_size, extra_size)
 
-          parse_zip_entries(remaining, remaining_count - 1, [entry | entries])
+          case validate_zip_extra_fields(extra) do
+            :ok ->
+              entry = %{
+                external_attributes: external_attributes,
+                flags: flags,
+                method: method,
+                crc32: crc32,
+                compressed_size: compressed_size,
+                uncompressed_size: uncompressed_size,
+                local_offset: local_offset,
+                name: name,
+                system: bsr(made_by, 8)
+              }
+
+              parse_zip_entries(remaining, remaining_count - 1, [entry | entries])
+
+            {:error, _reason} ->
+              invalid_zip(:invalid_central_extra_fields)
+          end
         else
           invalid_zip(:invalid_central_entry)
         end
@@ -152,14 +165,16 @@ defmodule Dala.Updater.Archive do
     end
   end
 
-  defp validate_zip_entries(file, archive_size, entries) do
+  defp validate_zip_entries(file, archive_size, central_offset, entries) do
     Enum.reduce_while(entries, MapSet.new(), fn entry, seen ->
       result =
         with :ok <- validate_entry_path(entry.name, true),
              key = normalized_windows_entry_name(entry.name),
              false <- MapSet.member?(seen, key),
              :ok <- validate_zip_entry_type(entry),
-             {:ok, local_name} <- read_zip_local_name(file, archive_size, entry.local_offset),
+             :ok <- validate_zip_compression(entry),
+             {:ok, local_name} <-
+               read_zip_local_entry(file, archive_size, central_offset, entry),
              :ok <- validate_entry_path(local_name, true),
              true <- local_name == entry.name do
           {:ok, key}
@@ -187,22 +202,109 @@ defmodule Dala.Updater.Archive do
     |> Dala.Paths.comparison_key_for_os({:win32, :nt})
   end
 
-  defp read_zip_local_name(file, archive_size, offset) when offset + 30 <= archive_size do
+  defp validate_zip_compression(%{method: method, flags: flags}) do
+    cond do
+      band(flags, 1) != 0 -> invalid_zip(:encrypted_entry)
+      method not in [0, 8] -> invalid_zip(:unsupported_compression_method)
+      true -> :ok
+    end
+  end
+
+  defp read_zip_local_entry(file, archive_size, central_offset, entry)
+       when entry.local_offset + 30 <= archive_size do
+    offset = entry.local_offset
+
     with {:ok,
-          <<@zip_local_signature::little-32, _needed::little-16, _flags::little-16,
-            _method::little-16, _time::little-16, _date::little-16, _crc::little-32,
-            _compressed_size::little-32, _size::little-32, name_size::little-16,
+          <<@zip_local_signature::little-32, _needed::little-16, flags::little-16,
+            method::little-16, _time::little-16, _date::little-16, crc32::little-32,
+            compressed_size::little-32, uncompressed_size::little-32, name_size::little-16,
             extra_size::little-16>>} <- read_exact(file, offset, 30, "ZIP local header"),
          true <- name_size > 0 and offset + 30 + name_size + extra_size <= archive_size,
-         {:ok, name} <- read_exact(file, offset + 30, name_size, "ZIP local filename") do
+         {:ok, variable} <-
+           read_exact(
+             file,
+             offset + 30,
+             name_size + extra_size,
+             "ZIP local filename and extra fields"
+           ),
+         <<name::binary-size(name_size), extra::binary-size(extra_size)>> = variable,
+         :ok <- validate_zip_extra_fields(extra),
+         :ok <-
+           validate_local_zip_metadata(
+             entry,
+             %{
+               flags: flags,
+               method: method,
+               crc32: crc32,
+               compressed_size: compressed_size,
+               uncompressed_size: uncompressed_size
+             },
+             offset + 30 + name_size + extra_size,
+             central_offset,
+             archive_size
+           ) do
       {:ok, name}
     else
       _ -> invalid_zip(:invalid_local_entry)
     end
   end
 
-  defp read_zip_local_name(_file, _archive_size, _offset),
+  defp read_zip_local_entry(_file, _archive_size, _central_offset, _entry),
     do: invalid_zip(:invalid_local_entry)
+
+  defp validate_local_zip_metadata(entry, local, data_offset, central_offset, archive_size) do
+    descriptor_size = if band(entry.flags, 8) != 0, do: 12, else: 0
+    data_end = data_offset + entry.compressed_size + descriptor_size
+
+    cond do
+      local.flags != entry.flags ->
+        invalid_zip(:local_and_central_flags_differ)
+
+      local.method != entry.method ->
+        invalid_zip(:local_and_central_methods_differ)
+
+      band(entry.flags, 8) == 0 and
+          (local.crc32 != entry.crc32 or
+             local.compressed_size != entry.compressed_size or
+             local.uncompressed_size != entry.uncompressed_size) ->
+        invalid_zip(:local_and_central_sizes_differ)
+
+      band(entry.flags, 8) != 0 and
+          not descriptor_field_matches?(local.crc32, entry.crc32) ->
+        invalid_zip(:invalid_local_crc)
+
+      band(entry.flags, 8) != 0 and
+          not descriptor_field_matches?(local.compressed_size, entry.compressed_size) ->
+        invalid_zip(:invalid_local_compressed_size)
+
+      band(entry.flags, 8) != 0 and
+          not descriptor_field_matches?(local.uncompressed_size, entry.uncompressed_size) ->
+        invalid_zip(:invalid_local_uncompressed_size)
+
+      data_offset > central_offset or data_end > central_offset or
+          data_end > archive_size ->
+        invalid_zip(:invalid_local_data_bounds)
+
+      true ->
+        :ok
+    end
+  end
+
+  # ZIP writers using a data descriptor normally leave these local fields at
+  # zero; a few writers repeat the central values instead. Both forms are
+  # safe because Erlang's extractor uses the central values when bit 3 is set.
+  defp descriptor_field_matches?(0, _central), do: true
+  defp descriptor_field_matches?(value, central), do: value == central
+
+  defp validate_zip_extra_fields(<<>>), do: :ok
+
+  defp validate_zip_extra_fields(<<_tag::little-16, size::little-16, rest::binary>>)
+       when byte_size(rest) >= size do
+    <<_payload::binary-size(size), remaining::binary>> = rest
+    validate_zip_extra_fields(remaining)
+  end
+
+  defp validate_zip_extra_fields(_extra), do: {:error, :malformed_extra_fields}
 
   defp validate_zip_entry_type(entry) do
     attributes = entry.external_attributes

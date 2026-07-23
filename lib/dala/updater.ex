@@ -564,7 +564,7 @@ defmodule Dala.Updater do
     with :ok <- Archive.validate(archive, platform()) do
       result =
         if platform() == "windows-x86_64" do
-          :zip.extract(String.to_charlist(archive), cwd: String.to_charlist(dest))
+          extract_zip(archive, dest)
         else
           case System.cmd("tar", ["-xzf", archive, "-C", dest], stderr_to_stdout: true) do
             {_, 0} -> {:ok, []}
@@ -580,6 +580,19 @@ defmodule Dala.Updater do
           File.rm_rf(dest)
           {:error, "unpack failed: #{inspect(reason)}"}
       end
+    end
+  end
+
+  # `:zip` has historically thrown/exited for some malformed local headers
+  # instead of returning `{:error, reason}`. Keep an untrusted release archive
+  # from taking down the caller and let the normal staging cleanup run.
+  defp extract_zip(archive, dest) do
+    try do
+      :zip.extract(String.to_charlist(archive), cwd: String.to_charlist(dest))
+    rescue
+      error -> {:error, {:zip_extract_exception, Exception.message(error)}}
+    catch
+      kind, reason -> {:error, {:zip_extract_caught, kind, reason}}
     end
   end
 

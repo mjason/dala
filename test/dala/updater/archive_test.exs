@@ -109,6 +109,50 @@ defmodule Dala.Updater.ArchiveTest do
     assert message =~ "unsafe entry"
   end
 
+  test "rejects ZIP local compression metadata that disagrees with the central entry", %{
+    directory: directory
+  } do
+    cases = [
+      {"method", 8, <<99, 0>>},
+      {"flags", 6, <<8, 0>>},
+      {"compressed-size", 18, <<0xFF, 0xFF, 0xFF, 0x7F>>},
+      {"uncompressed-size", 22, <<0xFF, 0xFF, 0xFF, 0x7F>>},
+      {"crc", 14, <<0, 0, 0, 0>>}
+    ]
+
+    for {label, offset, replacement} <- cases do
+      archive = Path.join(directory, "local-metadata-#{label}.zip")
+      write_zip_with_local_field(archive, offset, replacement)
+
+      assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+      assert message =~ "invalid ZIP metadata"
+    end
+  end
+
+  test "rejects ZIP entries using unsupported or encrypted methods", %{directory: directory} do
+    unsupported = Path.join(directory, "unsupported-method.zip")
+    write_zip_with_central_field(unsupported, 10, <<99, 0>>)
+
+    assert {:error, message} = Archive.validate(unsupported, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+
+    encrypted = Path.join(directory, "encrypted.zip")
+    write_zip_with_central_field(encrypted, 8, <<1, 0>>)
+
+    assert {:error, message} = Archive.validate(encrypted, "windows-x86_64")
+    assert message =~ "invalid ZIP metadata"
+  end
+
+  test "rejects malformed ZIP extra-field TLVs", %{directory: directory} do
+    for location <- [:local, :central] do
+      archive = Path.join(directory, "malformed-extra-#{location}.zip")
+      write_zip_with_malformed_extra(archive, location)
+
+      assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+      assert message =~ "invalid ZIP metadata"
+    end
+  end
+
   test "rejects Windows duplicate ZIP names after case and separator normalization", %{
     directory: directory
   } do
@@ -214,6 +258,42 @@ defmodule Dala.Updater.ArchiveTest do
     [{central_offset, _length}] = :binary.matches(archive, @zip_central_signature)
     archive = put_bytes(archive, central_offset + 38, <<attributes::little-32>>)
     File.write!(path, archive)
+  end
+
+  defp write_zip_with_local_field(path, offset, replacement) do
+    {:ok, {_name, archive}} = :zip.create(~c"release.zip", [{~c"safe", "payload"}], [:memory])
+    File.write!(path, put_bytes(archive, offset, replacement))
+  end
+
+  defp write_zip_with_central_field(path, offset, replacement) do
+    {:ok, {_name, archive}} = :zip.create(~c"release.zip", [{~c"safe", "payload"}], [:memory])
+    [{central_offset, _length}] = :binary.matches(archive, @zip_central_signature)
+    File.write!(path, put_bytes(archive, central_offset + offset, replacement))
+  end
+
+  defp write_zip_with_malformed_extra(path, :local) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:extended_timestamp]}
+      ])
+
+    # The first local extra field starts after the fixed header and filename;
+    # replace its two-byte payload length with an impossible value.
+    File.write!(path, put_bytes(archive, 30 + 4 + 2, <<0xFF, 0xFF>>))
+  end
+
+  defp write_zip_with_malformed_extra(path, :central) do
+    {:ok, {_name, archive}} =
+      :zip.create(~c"release.zip", [{~c"safe", "payload"}], [
+        :memory,
+        {:extra, [:extended_timestamp]}
+      ])
+
+    [{central_offset, _length}] = :binary.matches(archive, @zip_central_signature)
+
+    # The central header has a 46-byte fixed prefix before the filename.
+    File.write!(path, put_bytes(archive, central_offset + 46 + 4 + 2, <<0xFF, 0xFF>>))
   end
 
   defp replace_zip_names(archive, old, new) do
