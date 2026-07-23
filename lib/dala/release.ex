@@ -544,9 +544,9 @@ defmodule Dala.Release do
   defp expand_metadata_path(path) do
     if windows?() do
       # Metadata paths have already passed the Windows absolute-path and
-      # segment checks, so lexical normalization is sufficient and preserves
-      # the caller's long/short spelling consistently across the transaction.
-      normalize_windows_path(path, path)
+      # segment checks. Keep the same lexical representation as Path.expand/1;
+      # only UNC paths need their leading backslashes preserved for Win32 APIs.
+      path |> Path.expand() |> normalize_windows_path(path)
     else
       Path.expand(path)
     end
