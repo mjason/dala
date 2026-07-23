@@ -4498,6 +4498,7 @@ $stopFailureTask = $taskName + "-stop-failure"
 $stopFailurePort = Get-FreePort
 $sessionId = "release-smoke-" + [guid]::NewGuid().ToString("N")
 $marker = "DALA_RELEASE_REATTACH_" + [guid]::NewGuid().ToString("N")
+$reattachMarker = "DALA_RELEASE_REATTACH_SWITCH_" + [guid]::NewGuid().ToString("N")
 $releaseNode = "dala_smoke_" + [guid]::NewGuid().ToString("N") + "@127.0.0.1"
 $releaseCookie = "dala_smoke_cookie_" + [guid]::NewGuid().ToString("N")
 $secretBait = "DALA_SECRET_BAIT_" + [guid]::NewGuid().ToString("N")
@@ -5403,6 +5404,44 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   Assert-TaskAction $taskName $oldLauncher $runner $logFile
   Wait-DalaVersion $port $oldVersion
 
+  # Refresh the durability marker immediately before stopping the old release.
+  # The holder is intentionally detached for most of this smoke test, so an
+  # early marker can legitimately fall outside a bounded scrollback snapshot
+  # after shell prompts and lifecycle output have accumulated.
+  $refreshMarkerSource = @'
+alias Dala.Terminal.Holder
+
+id = __SESSION_ID__
+marker = __MARKER__
+
+receive_frame = fn receive_frame, socket, expected_type ->
+  receive do
+    {:tcp, ^socket, <<^expected_type, payload::binary>>} -> payload
+    {:tcp, ^socket, _other} -> receive_frame.(receive_frame, socket, expected_type)
+  after
+    5_000 -> raise "holder frame timeout"
+  end
+end
+
+{:ok, socket, true} = Holder.attach_or_spawn(id, [])
+_hello = receive_frame.(receive_frame, socket, Holder.type_hello())
+:ok = Holder.send_input(socket, "Write-Output '#{marker}'\r")
+
+read_output = fn read_output, acc ->
+  payload = receive_frame.(receive_frame, socket, Holder.type_output())
+  output = acc <> payload
+  if String.contains?(output, marker),
+    do: output,
+    else: read_output.(read_output, output)
+end
+
+_output = read_output.(read_output, "")
+:gen_tcp.close(socket)
+'@
+  $refreshMarkerSource = $refreshMarkerSource.Replace("__SESSION_ID__", ($sessionId | ConvertTo-Json -Compress))
+  $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER__", ($reattachMarker | ConvertTo-Json -Compress))
+  Invoke-ReleaseRpc $oldBatch $refreshMarkerSource
+
   Stop-SmokeRelease $taskName $oldBatch $installRoot $port
   $targetRunnerPath = Join-Path $newDir "run-dala.ps1"
   $targetRunnerBody = Get-Content -LiteralPath $targetRunnerPath -Raw
@@ -5578,12 +5617,18 @@ hello = receive_frame.(receive_frame, socket, Holder.type_hello()) |> Jason.deco
 # older than the default 200-line tail after lifecycle output and restarts.
 :ok = Holder.send_text_snapshot_req(socket, 0, 131_072)
 snapshot = receive_frame.(receive_frame, socket, Holder.type_text_snapshot()) |> Jason.decode!()
-true = Enum.any?(snapshot["lines"], &String.contains?(&1, marker))
+marker_present = Enum.any?(snapshot["lines"], &String.contains?(&1, marker))
+unless marker_present do
+  tail = snapshot["lines"] |> Enum.reverse() |> Enum.take(5) |> Enum.reverse()
+  raise "reattach snapshot missing marker=#{marker}; mode=#{snapshot["mode"]}; " <>
+    "lines=#{length(snapshot["lines"])}; cachedLineCount=#{snapshot["cachedLineCount"]}; " <>
+    "truncated=#{snapshot["truncated"]}; tail=#{inspect(tail)}"
+end
 :gen_tcp.close(socket)
 File.write!(result_path, Jason.encode!(%{reattached: true, marker_preserved: true, shell_pid: hello["pid"]}))
 '@
   $reattachSource = $reattachSource.Replace("__SESSION_ID__", ($sessionId | ConvertTo-Json -Compress))
-  $reattachSource = $reattachSource.Replace("__MARKER__", ($marker | ConvertTo-Json -Compress))
+  $reattachSource = $reattachSource.Replace("__MARKER__", ($reattachMarker | ConvertTo-Json -Compress))
   $reattachSource = $reattachSource.Replace("__RESULT_PATH__", ($resultFile | ConvertTo-Json -Compress))
   Invoke-ReleaseRpc $newBatch $reattachSource
 
