@@ -5450,6 +5450,27 @@ _output = read_output.(read_output, "")
   $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER__", ($reattachMarker | ConvertTo-Json -Compress))
   $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER_LEFT__", ($reattachMarkerLeft | ConvertTo-Json -Compress))
   $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER_RIGHT__", ($reattachMarkerRight | ConvertTo-Json -Compress))
+  $holderSocketPath = Join-Path ([IO.Path]::GetTempPath()) "dala-pty\$sessionId.sock"
+  $holderState = [ordered]@{
+    socket = $holderSocketPath
+    socket_exists = Test-Path -LiteralPath $holderSocketPath -PathType Leaf
+    socket_text = if (Test-Path -LiteralPath $holderSocketPath -PathType Leaf) {
+      Get-Content -LiteralPath $holderSocketPath -Raw -ErrorAction SilentlyContinue
+    } else { $null }
+    exit_exists = Test-Path -LiteralPath "$holderSocketPath.exit" -PathType Leaf
+    final_exists = Test-Path -LiteralPath "$holderSocketPath.final" -PathType Leaf
+    text_final_exists = Test-Path -LiteralPath "$holderSocketPath.text" -PathType Leaf
+    error_exists = Test-Path -LiteralPath "$holderSocketPath.error" -PathType Leaf
+    holder_processes = @(
+      Get-CimInstance Win32_Process -Filter "Name='dala_holder.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$sessionId*" } |
+        Select-Object ProcessId, ParentProcessId, CommandLine
+    )
+    shell_process = Get-Process -Id $shellPid -ErrorAction SilentlyContinue | Select-Object Id, HasExited
+  }
+  if (-not $holderState.socket_exists -or $holderState.holder_processes.Count -eq 0 -or -not $holderState.shell_process) {
+    throw "Holder disappeared before refresh: $($holderState | ConvertTo-Json -Depth 5 -Compress)"
+  }
   Invoke-ReleaseRpc $oldBatch $refreshMarkerSource
 
   Stop-SmokeRelease $taskName $oldBatch $installRoot $port
