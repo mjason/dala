@@ -1308,8 +1308,11 @@ defmodule Dala.ReleaseTest do
     assert Task.await(first, 5_000) ==
              {:error, "injected shared discovery replacement failure"}
 
-    assert_receive {:shared_second_replace_started, ^root_two_metadata}, 5_000
-    assert_receive {:shared_second_replace_started, ^discovery}, 5_000
+    assert_receive {:shared_second_replace_started, root_two_destination}, 5_000
+    assert same_test_path?(root_two_destination, root_two_metadata)
+
+    assert_receive {:shared_second_replace_started, discovery_destination}, 5_000
+    assert same_test_path?(discovery_destination, discovery)
     assert Task.await(second, 5_000) == :ok
 
     root_value = root_two_metadata |> File.read!() |> Jason.decode!()

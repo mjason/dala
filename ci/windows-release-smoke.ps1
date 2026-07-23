@@ -4777,7 +4777,7 @@ try {
       & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
         -ExpectedVersion $oldVersion -HealthTimeoutSeconds 30
     } catch {
-      if ($_.Exception.Message -notmatch "metadata target is not a regular file") { throw }
+      if ($_.Exception.Message -notmatch "(?:metadata target is not|discoveryFile must be) a regular file") { throw }
       $precommitRollbackRejected = $true
     }
     Assert-True $precommitRollbackRejected "Existing installer accepted a directory metadata target"
