@@ -44,6 +44,61 @@ defmodule Dala.Updater.ArchiveTest do
     end)
   end
 
+  test "rejects Windows-special ZIP segments and accepts a directory suffix", %{
+    directory: directory
+  } do
+    invalid_paths = [
+      "safe//file",
+      "safe/./file",
+      "safe/file:stream",
+      "safe/file.",
+      "safe/file ",
+      "safe/CON.txt",
+      "safe/CON .txt",
+      "safe/CONIN$.txt",
+      "safe/CONOUT$.txt",
+      "safe/CLOCK$.json",
+      "safe/COM1.bin",
+      "safe/LPT9",
+      "safe/bad<name",
+      "safe/bad>name",
+      "safe/bad\"name",
+      "safe/bad|name",
+      "safe/bad?name",
+      "safe/bad*name",
+      "safe/bad\u0001name",
+      "safe\\"
+    ]
+
+    invalid_paths =
+      invalid_paths ++
+        for suffix <- [<<0xC2, 0xB9>>, <<0xC2, 0xB2>>, <<0xC2, 0xB3>>],
+            prefix <- ["COM", "LPT"] do
+          "safe/" <> prefix <> suffix <> ".bin"
+        end
+
+    for path <- invalid_paths do
+      archive = Path.join(directory, "invalid-#{System.unique_integer([:positive])}.zip")
+      write_zip_with_raw_name(archive, path)
+
+      assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+      assert message =~ "unsafe entry"
+    end
+
+    directory_archive = Path.join(directory, "directory-entry.zip")
+    write_zip_with_raw_name(directory_archive, "safe/")
+    assert Archive.validate(directory_archive, "windows-x86_64") == :ok
+
+    ordinary_device_like_archive = Path.join(directory, "ordinary-device-like.zip")
+
+    write_zip(ordinary_device_like_archive, [
+      {"safe/COM0.txt", "payload"},
+      {"safe/LPT0", "payload"}
+    ])
+
+    assert Archive.validate(ordinary_device_like_archive, "windows-x86_64") == :ok
+  end
+
   test "rejects ZIP local-header paths even when the central name is safe", %{
     directory: directory
   } do
@@ -52,6 +107,41 @@ defmodule Dala.Updater.ArchiveTest do
 
     assert {:error, message} = Archive.validate(archive, "windows-x86_64")
     assert message =~ "unsafe entry"
+  end
+
+  test "rejects Windows duplicate ZIP names after case and separator normalization", %{
+    directory: directory
+  } do
+    archive = Path.join(directory, "duplicate-names.zip")
+    write_zip(archive, [{"safe/file", "first"}, {"SAFE\\FILE", "second"}])
+
+    assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+    assert message =~ "duplicate Windows path"
+  end
+
+  test "uses Windows simple Unicode casing for duplicate ZIP names", %{directory: directory} do
+    collision = Path.join(directory, "unicode-collision.zip")
+    write_zip(collision, [{"safe/σ", "first"}, {"SAFE/ς", "second"}])
+
+    assert {:error, message} = Archive.validate(collision, "windows-x86_64")
+    assert message =~ "duplicate Windows path"
+
+    distinct = Path.join(directory, "unicode-distinct.zip")
+
+    write_zip(distinct, [
+      {"safe/ß", "sharp-s"},
+      {"safe/SS", "two-letters"},
+      {"safe/İ", "capital-dotted-i"},
+      {"safe/i\u0307", "i-and-combining-dot"}
+    ])
+
+    assert Archive.validate(distinct, "windows-x86_64") == :ok
+
+    extended = Path.join(directory, "unicode-extended-collision.zip")
+    write_zip(extended, [{"safe/\u1f80", "small"}, {"SAFE/\u1f88", "title"}])
+
+    assert {:error, message} = Archive.validate(extended, "windows-x86_64")
+    assert message =~ "duplicate Windows path"
   end
 
   test "rejects ZIP symlink and reparse attributes", %{directory: directory} do

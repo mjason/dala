@@ -16,9 +16,17 @@ defmodule Dala.Updater.Archive do
   @windows_device_attribute 0x40
   @windows_reparse_attribute 0x400
   @windows_device_names ~w(
-                           CON PRN AUX NUL CLOCK$ COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9
+                           CON PRN AUX NUL CONIN$ CONOUT$ CLOCK$ COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9
                            LPT1 LPT2 LPT3 LPT4 LPT5 LPT6 LPT7 LPT8 LPT9
                          )
+  @windows_reserved_superscript_names for prefix <- ~w(COM LPT),
+                                          suffix <- [
+                                            <<0xC2, 0xB9>>,
+                                            <<0xC2, 0xB2>>,
+                                            <<0xC2, 0xB3>>
+                                          ],
+                                          do: prefix <> suffix
+  @windows_forbidden_path_bytes Enum.to_list(0..31) ++ ~c"<>\"|?*"
 
   @spec validate(Path.t(), String.t()) :: :ok | {:error, String.t()}
   def validate(path, "windows-x86_64"), do: validate_zip(path)
@@ -145,24 +153,38 @@ defmodule Dala.Updater.Archive do
   end
 
   defp validate_zip_entries(file, archive_size, entries) do
-    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+    Enum.reduce_while(entries, MapSet.new(), fn entry, seen ->
       result =
         with :ok <- validate_entry_path(entry.name, true),
+             key = normalized_windows_entry_name(entry.name),
+             false <- MapSet.member?(seen, key),
              :ok <- validate_zip_entry_type(entry),
              {:ok, local_name} <- read_zip_local_name(file, archive_size, entry.local_offset),
              :ok <- validate_entry_path(local_name, true),
              true <- local_name == entry.name do
-          :ok
+          {:ok, key}
         else
+          true -> unsafe_entry(entry.name, "duplicate Windows path")
           false -> invalid_zip(:local_and_central_names_differ)
           {:error, _message} = error -> error
         end
 
       case result do
-        :ok -> {:cont, :ok}
+        {:ok, key} -> {:cont, MapSet.put(seen, key)}
         {:error, _message} = error -> {:halt, error}
       end
     end)
+    |> case do
+      %MapSet{} -> :ok
+      {:error, _message} = error -> error
+    end
+  end
+
+  defp normalized_windows_entry_name(name) do
+    name
+    |> String.replace("\\", "/")
+    |> String.trim_trailing("/")
+    |> Dala.Paths.comparison_key_for_os({:win32, :nt})
   end
 
   defp read_zip_local_name(file, archive_size, offset) when offset + 30 <= archive_size do
@@ -264,7 +286,10 @@ defmodule Dala.Updater.Archive do
       Enum.any?(segments, &(&1 == "..")) ->
         unsafe_entry(name, "parent path segments are not allowed")
 
-      windows? and Enum.any?(segments, &unsafe_windows_segment?/1) ->
+      windows? and String.ends_with?(name, "\\") ->
+        unsafe_entry(name, "Windows directory entries must use a forward-slash suffix")
+
+      windows? and invalid_windows_entry_segments?(segments) ->
         unsafe_entry(name, "Windows-special paths are not allowed")
 
       true ->
@@ -280,23 +305,41 @@ defmodule Dala.Updater.Archive do
 
   defp absolute_path?(_name), do: false
 
-  defp unsafe_windows_segment?(segment) do
-    cond do
-      segment in ["", "."] ->
-        false
+  defp invalid_windows_entry_segments?(segments) do
+    last_index = length(segments) - 1
 
-      String.contains?(segment, ":") ->
-        true
+    segments
+    |> Enum.with_index()
+    |> Enum.any?(fn {segment, index} ->
+      (segment == "" and index != last_index) or
+        segment == "." or
+        String.contains?(segment, ":") or
+        String.ends_with?(segment, [" ", "."]) or
+        Enum.any?(:binary.bin_to_list(segment), &(&1 in @windows_forbidden_path_bytes)) or
+        windows_device_segment?(segment)
+    end)
+  end
 
-      String.ends_with?(segment, [" ", "."]) ->
-        true
+  defp windows_device_segment?(segment) do
+    basename =
+      segment
+      |> String.split(".", parts: 2)
+      |> hd()
+      |> trim_windows_ignored_suffix()
+      |> String.upcase()
 
-      true ->
-        segment
-        |> String.split(".", parts: 2)
-        |> hd()
-        |> String.upcase()
-        |> then(&(&1 in @windows_device_names))
+    basename in @windows_device_names or basename in @windows_reserved_superscript_names
+  end
+
+  defp trim_windows_ignored_suffix(""), do: ""
+
+  defp trim_windows_ignored_suffix(segment) do
+    if :binary.last(segment) in [?., ?\s] do
+      segment
+      |> binary_part(0, byte_size(segment) - 1)
+      |> trim_windows_ignored_suffix()
+    else
+      segment
     end
   end
 

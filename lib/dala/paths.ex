@@ -33,7 +33,42 @@ defmodule Dala.Paths do
   @doc false
   def comparison_key_for_os(path, os_type) when is_binary(path) do
     normalized = String.replace(path, "\\", "/")
-    if match?({:win32, _}, os_type), do: String.downcase(normalized), else: normalized
+
+    if match?({:win32, _}, os_type),
+      do: simple_windows_case_key(normalized),
+      else: normalized
+  end
+
+  # Windows' ordinal-ignore-case comparison uses a one-codepoint simple case
+  # mapping. Full Unicode casing is intentionally avoided: for example, the
+  # sharp-s character and SS are distinct filenames on Windows, while Greek
+  # final sigma still collides with ordinary sigma. Some codepoints have a
+  # multi-codepoint full uppercase mapping but a one-codepoint titlecase
+  # mapping; use that titlecase value, then fold back to a simple lowercase
+  # key so existing callers retain their lowercase comparison-key format.
+  defp simple_windows_case_key(value) do
+    if String.valid?(value) do
+      for <<codepoint::utf8 <- value>>, into: <<>> do
+        mapped = :unicode_util.get_case(codepoint)
+
+        upper_or_title =
+          case mapped do
+            %{upper: value} when is_integer(value) -> value
+            %{title: value} when is_integer(value) -> value
+            _ -> codepoint
+          end
+
+        lower =
+          case :unicode_util.get_case(upper_or_title) do
+            %{lower: value} when is_integer(value) -> value
+            _ -> upper_or_title
+          end
+
+        <<lower::utf8>>
+      end
+    else
+      value
+    end
   end
 
   @doc """

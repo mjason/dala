@@ -199,7 +199,7 @@ defmodule Dala.Updater do
     expanded = Path.expand(root)
 
     if platform() == "windows-x86_64" or match?({:win32, _}, :os.type()) do
-      String.downcase(expanded)
+      Dala.Paths.comparison_key_for_os(expanded, {:win32, :nt})
     else
       expanded
     end

@@ -733,19 +733,120 @@ function Assert-CustomDiscoveryFileNameSemantics([string[]]$ScriptPaths) {
       $ast.FindAll({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-          @("Test-NoReparseAncestors", "Get-CanonicalDiscoveryFile") -contains $node.Name
+          @(
+            "Test-NormalWindowsDiscoveryPath",
+            "Test-NoReparseAncestors",
+            "Get-CanonicalDiscoveryFile"
+          ) -contains $node.Name
       }, $true) |
         Sort-Object { $_.Extent.StartOffset }
     )
     $names = @($definitions | ForEach-Object { $_.Name })
-    Assert-True ($names -contains "Test-NoReparseAncestors" -and
+    Assert-True ($names -contains "Test-NormalWindowsDiscoveryPath" -and
+      $names -contains "Test-NoReparseAncestors" -and
       $names -contains "Get-CanonicalDiscoveryFile") `
       "$scriptPath must define discovery path validation helpers"
 
     $module = New-Module -ScriptBlock ([ScriptBlock]::Create(
         ($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"
-      ))
+    ))
     try {
+      foreach ($validPath in @(
+        'C:\Dala\metadata.json',
+        'z:/Dala/custom metadata.v2.json',
+        '\\server\share\metadata.json',
+        '\\server/share/path.with.dots/metadata.json'
+      )) {
+        $accepted = & $module {
+          param([string]$Path)
+          Test-NormalWindowsDiscoveryPath $Path
+        } $validPath
+        Assert-True ([bool]$accepted) "$scriptPath rejected normal discovery path: $validPath"
+      }
+
+      $invalidPaths = @(
+        'relative\metadata.json',
+        'C:metadata.json',
+        '/Dala/metadata.json',
+        '\\?\C:\Dala\metadata.json',
+        '\\.\pipe\metadata.json',
+        '\\?/C:/Dala/metadata.json',
+        'C:\Dala\metadata.json:stream',
+        'C:\Dala\metadata.json\',
+        '\\server\share',
+        '\\server\share\',
+        'C:\Dala\.\metadata.json',
+        'C:\Dala\..\metadata.json',
+        'C:\Dala\directory.\metadata.json',
+        'C:\Dala\directory \metadata.json',
+        'C:\Dala\\metadata.json',
+        'C:\Dala\CON',
+        'C:\Dala\CON .txt',
+        'C:\Dala\prn.json',
+        'C:\Dala\AUX.metadata.json',
+        'C:\Dala\nul.txt',
+        'C:\Dala\CONIN$.json',
+        'C:\Dala\conin$.json',
+        'C:\Dala\CONOUT$.json',
+        'C:\Dala\CLOCK$.json',
+        'C:\Dala\COM1.json',
+        'C:\Dala\com9',
+        'C:\Dala\LPT1',
+        'C:\Dala\lpt9.metadata',
+        'C:\Dala\bad<name.json',
+        'C:\Dala\bad>name.json',
+        'C:\Dala\bad"name.json',
+        'C:\Dala\bad|name.json',
+        'C:\Dala\bad?name.json',
+        'C:\Dala\bad*name.json'
+      )
+      foreach ($code in @(0, 1, 31)) {
+        $invalidPaths += "C:\Dala\bad" + [char]$code + "name.json"
+      }
+      foreach ($suffix in @([char]0x00B9, [char]0x00B2, [char]0x00B3)) {
+        $invalidPaths += "C:\Dala\COM" + $suffix + ".json"
+        $invalidPaths += "C:\Dala\LPT" + $suffix + ".json"
+      }
+      foreach ($invalidPath in $invalidPaths) {
+        $accepted = & $module {
+          param([string]$Path)
+          Test-NormalWindowsDiscoveryPath $Path
+        } $invalidPath
+        Assert-True (-not [bool]$accepted) "$scriptPath accepted invalid discovery path: $invalidPath"
+      }
+
+      $thread = [Threading.Thread]::CurrentThread
+      $previousCulture = $thread.CurrentCulture
+      $previousUICulture = $thread.CurrentUICulture
+      try {
+        $turkish = [Globalization.CultureInfo]::GetCultureInfo('tr-TR')
+        $thread.CurrentCulture = $turkish
+        $thread.CurrentUICulture = $turkish
+        $accepted = & $module {
+          param([string]$Path)
+          Test-NormalWindowsDiscoveryPath $Path
+        } 'C:\Dala\conin$.json'
+        Assert-True (-not [bool]$accepted) `
+          "$scriptPath accepted CONIN$ under the Turkish culture"
+      } finally {
+        $thread.CurrentCulture = $previousCulture
+        $thread.CurrentUICulture = $previousUICulture
+      }
+
+      $canonicalRejected = $false
+      try {
+        $null = & $module {
+          Get-CanonicalDiscoveryFile 'relative\metadata.json' $null
+        }
+      } catch {
+        if ($_.Exception.Message -match "absolute Windows path") {
+          $canonicalRejected = $true
+        } else {
+          throw
+        }
+      }
+      Assert-True $canonicalRejected "$scriptPath canonicalized a path rejected by its syntax helper"
+
       $candidate = if ([IO.Path]::GetTempPath() -match '^[A-Za-z]:[\\/]') {
         Join-Path ([IO.Path]::GetTempPath()) `
           ("dala-custom-discovery-" + [guid]::NewGuid().ToString("N") + "\metadata.json")
@@ -3369,6 +3470,28 @@ function Write-ExternalAttributeArchive([string]$Path, [uint32]$Attributes) {
   }
 }
 
+function Write-NamedArchive([string]$Path, [string[]]$Names) {
+  try { Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue } catch {}
+  try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch {}
+  Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+
+  $zip = [IO.Compression.ZipFile]::Open($Path, [IO.Compression.ZipArchiveMode]::Create)
+  try {
+    foreach ($name in $Names) {
+      $entry = $zip.CreateEntry($name)
+      $stream = $entry.Open()
+      try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes("payload")
+        $stream.Write($bytes, 0, $bytes.Length)
+      } finally {
+        $stream.Dispose()
+      }
+    }
+  } finally {
+    $zip.Dispose()
+  }
+}
+
 function Assert-InstallerArchiveTypeSemantics([string]$ScriptPath, [string]$WorkDir) {
   $tokens = $null
   $errors = $null
@@ -3415,6 +3538,33 @@ function Assert-InstallerArchiveTypeSemantics([string]$ScriptPath, [string]$Work
     Write-ExternalAttributeArchive $regularArchive ([uint32]2175008768)
     & $module { param($Archive, $Destination) Assert-SafeArchive $Archive $Destination } `
       $regularArchive $destination
+
+    $unicodeCollisionArchive = Join-Path $WorkDir "unicode-case-collision.zip"
+    Write-NamedArchive $unicodeCollisionArchive @(
+      "safe/" + [char]0x03C3,
+      "SAFE/" + [char]0x03C2,
+      "safe/" + [char]0x1F80,
+      "SAFE/" + [char]0x1F88
+    )
+    $collisionRejected = $false
+    try {
+      & $module { param($Archive, $Destination) Assert-SafeArchive $Archive $Destination } `
+        $unicodeCollisionArchive $destination
+    } catch {
+      if ($_.Exception.Message -notmatch "duplicate ZIP entries") { throw }
+      $collisionRejected = $true
+    }
+    Assert-True $collisionRejected "Installer accepted Unicode case-equivalent ZIP entries"
+
+    $unicodeDistinctArchive = Join-Path $WorkDir "unicode-case-distinct.zip"
+    Write-NamedArchive $unicodeDistinctArchive @(
+      "safe/" + [char]0x00DF,
+      "safe/SS",
+      "safe/" + [char]0x0130,
+      "safe/i" + [char]0x0307
+    )
+    & $module { param($Archive, $Destination) Assert-SafeArchive $Archive $Destination } `
+      $unicodeDistinctArchive $destination
   } finally {
     Remove-Module $module -Force -ErrorAction SilentlyContinue
   }

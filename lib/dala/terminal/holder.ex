@@ -30,6 +30,7 @@ defmodule Dala.Terminal.Holder do
   @kill_timeout_ms 5_000
   @windows_hello_timeout_ms 5_000
   @stale_holder_retry_ms 1_000
+  @startup_marker_retry_ms 2_000
   @attach_timeout_ms 30_000
 
   def type_hello, do: @type_hello
@@ -51,6 +52,7 @@ defmodule Dala.Terminal.Holder do
   def exit_path(id), do: socket_path(id) <> ".exit"
   def final_path(id), do: socket_path(id) <> ".final"
   def text_final_path(id), do: socket_path(id) <> ".text"
+  def startup_error_path(id), do: socket_path(id) <> ".error"
 
   @doc "Whether a holder (a live shell) exists for this session."
   def exists?(id), do: File.exists?(socket_path(id))
@@ -116,8 +118,8 @@ defmodule Dala.Terminal.Holder do
 
         spawn_deadline = deadline_after(@attach_timeout_ms)
 
-        with :ok <- spawn_holder(id, opts),
-             {:ok, socket} <- connect_with_retry(id, spawn_deadline) do
+        with {:ok, startup_id} <- spawn_holder(id, opts),
+             {:ok, socket} <- connect_with_retry(id, spawn_deadline, startup_id) do
           {:ok, socket, false}
         end
 
@@ -198,11 +200,13 @@ defmodule Dala.Terminal.Holder do
   defp spawn_holder(id, opts) do
     binary = binary_path()
     token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    startup_id = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
 
     config =
       Jason.encode!(%{
         socket: socket_path(id),
         token: token,
+        startup_id: startup_id,
         shell: Keyword.fetch!(opts, :shell),
         args: Keyword.get(opts, :args, []),
         cwd: Keyword.get(opts, :cwd, ""),
@@ -218,7 +222,7 @@ defmodule Dala.Terminal.Holder do
     # The holder daemonizes (its foreground parent exits immediately), so this
     # returns as soon as the socket is being set up.
     case System.cmd(binary, [config], stderr_to_stdout: true) do
-      {_out, 0} -> :ok
+      {_out, 0} -> {:ok, startup_id}
       {out, code} -> {:error, {:holder_spawn_failed, code, String.trim(out)}}
     end
   end
@@ -257,20 +261,40 @@ defmodule Dala.Terminal.Holder do
     end
   end
 
-  defp connect_with_retry(id, deadline) do
+  defp connect_with_retry(id, deadline, startup_id) do
     case connect(id, deadline) do
       {:ok, socket} ->
+        _ = clear_startup_error(id, startup_id)
         {:ok, socket}
 
       {:error, reason} = error
       when reason in [:enoent, :econnrefused, :closed, :timeout, :invalid_hello] ->
-        remaining = remaining_timeout(deadline)
+        case take_startup_error(id, startup_id) do
+          {:error, message} ->
+            # A lock/bind marker can come from a racing launch while its
+            # holder is still completing HELLO. Give that endpoint a short,
+            # bounded chance to become attachable before reporting our own
+            # startup failure; fatal PTY/shell errors still fail quickly.
+            retry_deadline =
+              min(deadline, deadline_after(@startup_marker_retry_ms))
 
-        if remaining == 0 do
-          error
-        else
-          Process.sleep(min(@connect_delay_ms, remaining))
-          connect_with_retry(id, deadline)
+            case connect_existing(id, retry_deadline) do
+              {:ok, socket} ->
+                {:ok, socket}
+
+              _ ->
+                {:error, {:holder_start_failed, message}}
+            end
+
+          :none ->
+            remaining = remaining_timeout(deadline)
+
+            if remaining == 0 do
+              error
+            else
+              Process.sleep(min(@connect_delay_ms, remaining))
+              connect_with_retry(id, deadline, startup_id)
+            end
         end
 
       result ->
@@ -283,6 +307,39 @@ defmodule Dala.Terminal.Holder do
     _ = File.rm(exit_path(id))
     _ = File.rm(final_path(id))
     _ = File.rm(text_final_path(id))
+    _ = File.rm(startup_error_path(id))
+  end
+
+  defp take_startup_error(id, expected_id) do
+    path = startup_error_path(id)
+
+    case File.read(path) do
+      {:ok, message} ->
+        case String.split(message, "\n", parts: 2) do
+          [^expected_id, detail] ->
+            _ = File.rm(path)
+            {:error, String.trim(detail)}
+
+          _ ->
+            :none
+        end
+
+      {:error, _reason} ->
+        :none
+    end
+  end
+
+  defp clear_startup_error(id, expected_id) do
+    case File.read(startup_error_path(id)) do
+      {:ok, message} when is_binary(message) ->
+        case String.split(message, "\n", parts: 2) do
+          [^expected_id, _detail] -> File.rm(startup_error_path(id))
+          _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   defp binary_path do

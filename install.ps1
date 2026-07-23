@@ -437,11 +437,50 @@ function Get-MetadataField($Metadata, [string]$Name) {
   [pscustomobject]@{ Present = $true; Value = [string]$property.Value }
 }
 
-function Get-CanonicalDiscoveryFile([string]$Path, [string]$RootMetadataPath) {
+function Test-NormalWindowsDiscoveryPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path) -or
-      $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or
-      $Path -match '^\\\\[.?]\\' -or
+      $Path -match '^\\\\[.?][\\/]' -or
+      $Path -match '[\\/]$' -or
       ($Path.Length -gt 2 -and $Path.Substring(2).Contains(":"))) {
+    return $false
+  }
+
+  $rootComponents = @()
+  $pathComponents = @()
+  if ($Path -match '^[A-Za-z]:[\\/](.*)$') {
+    $pathComponents = @($Matches[1] -split '[\\/]')
+  } elseif ($Path -match '^\\\\([^\\/]+)[\\/]([^\\/]+)[\\/](.+)$') {
+    $rootComponents = @($Matches[1], $Matches[2])
+    $pathComponents = @($Matches[3] -split '[\\/]')
+  } else {
+    return $false
+  }
+
+  foreach ($component in $rootComponents) {
+    if ([string]::IsNullOrEmpty($component) -or
+        $component -ceq "." -or $component -ceq ".." -or
+        $component -match '[. ]$' -or
+        $component -match '[\x00-\x1F<>"|?*]') {
+      return $false
+    }
+  }
+  foreach ($component in $pathComponents) {
+    if ([string]::IsNullOrEmpty($component) -or
+        $component -ceq "." -or $component -ceq ".." -or
+        $component -match '[. ]$' -or
+        $component -match '[\x00-\x1F<>"|?*]') {
+      return $false
+    }
+    $basename = (($component -split '\.', 2)[0]).TrimEnd([char[]]" .").ToUpperInvariant()
+    if ($basename -cmatch '^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$') {
+      return $false
+    }
+  }
+  $true
+}
+
+function Get-CanonicalDiscoveryFile([string]$Path, [string]$RootMetadataPath) {
+  if (-not (Test-NormalWindowsDiscoveryPath $Path)) {
     throw "Dala discoveryFile must be an absolute Windows path: $Path"
   }
 
@@ -975,31 +1014,36 @@ function Assert-SafeArchive([string]$Archive, [string]$DestinationRoot) {
   try {
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     foreach ($entry in $zip.Entries) {
-      $name = ([string]$entry.FullName).Replace('/', '\')
-      if ([string]::IsNullOrWhiteSpace($name) -or $name.IndexOf([char]0) -ge 0) {
+      $rawName = [string]$entry.FullName
+      $directorySuffix = $rawName.EndsWith('/')
+      $name = $rawName.Replace('/', '\')
+      if ([string]::IsNullOrWhiteSpace($name) -or
+          $name -match '[\x00-\x1F]') {
         throw "Release archive contains an invalid ZIP entry"
       }
       if ($name.StartsWith('\') -or $name -match '^[A-Za-z]:' -or $name.Contains(':')) {
         throw "Release archive contains an absolute ZIP entry: $($entry.FullName)"
       }
       $segments = @($name -split '\\')
-      if ($segments.Count -gt 0 -and $segments[-1] -ceq '') {
+      if ($directorySuffix -and $segments.Count -gt 0 -and $segments[-1] -ceq '') {
         $segments = @($segments[0..($segments.Count - 2)])
       }
       foreach ($segment in $segments) {
-        if ([string]::IsNullOrWhiteSpace($segment) -or $segment.TrimEnd([char[]]' .') -cne $segment) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or
+            $segment -match '[\x00-\x1F<>"|?*]' -or
+            $segment.TrimEnd([char[]]' .') -cne $segment) {
           throw "Release archive contains an invalid Windows path segment: $($entry.FullName)"
         }
         if ($segment -ceq '..' -or $segment -ceq '.') {
           throw "Release archive contains a traversal ZIP entry: $($entry.FullName)"
         }
-        $device = ($segment -split '\.', 2)[0]
-        if ($device -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+        $device = (($segment -split '\.', 2)[0]).TrimEnd([char[]]' .').ToUpperInvariant()
+        if ($device -cmatch '^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$') {
           throw "Release archive contains a Windows device path segment: $($entry.FullName)"
         }
       }
 
-      $normalizedName = $name.TrimEnd('\').ToLowerInvariant()
+      $normalizedName = $name.TrimEnd('\').ToUpperInvariant()
       if ($seen.ContainsKey($normalizedName)) {
         throw "Release archive contains duplicate ZIP entries: $($entry.FullName)"
       }

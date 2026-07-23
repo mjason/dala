@@ -46,6 +46,8 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::exit;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -66,6 +68,9 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use serde::{Deserialize, Serialize};
 
 use crate::screen::{Screen, REPAINT_HISTORY_BUDGET};
+
+#[cfg(windows)]
+static NEXT_LAUNCH_CONFIG_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Hard bounds on PTY/emulator dimensions, mirroring the server's clamp.
 /// The emulator allocates rows×cols cells on resize — a stray 65535×65535
@@ -146,6 +151,8 @@ struct Config {
     socket: String,
     #[serde(default)]
     token: String,
+    #[serde(default)]
+    startup_id: String,
     shell: String,
     #[serde(default)]
     args: Vec<String>,
@@ -707,17 +714,21 @@ fn run_holder(arg: &str) {
         let _ = std::fs::create_dir_all(dir);
     }
     let _session_lock = acquire_session_lock(&socket_path).unwrap_or_else(|e| {
-        eprintln!("dala_holder: lock {}: {e}", socket_path.display());
-        exit(3);
+        startup_failure(
+            &socket_path,
+            &config.startup_id,
+            &format!("lock {}: {e}", socket_path.display()),
+        )
     });
     // A live holder for this session means we must not double-spawn; a stale
     // socket is the spawner's job to clear before launching us.
     let listener = match bind_local(&socket_path, &config.token) {
         Ok(l) => l,
-        Err(e) => {
-            eprintln!("dala_holder: bind {}: {e}", socket_path.display());
-            exit(3);
-        }
+        Err(e) => startup_failure(
+            &socket_path,
+            &config.startup_id,
+            &format!("bind {}: {e}", socket_path.display()),
+        ),
     };
 
     daemonize(&socket_path);
@@ -730,7 +741,7 @@ fn run_holder(arg: &str) {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .unwrap_or_else(|e| fatal(&socket_path, &format!("openpty: {e}")));
+        .unwrap_or_else(|e| fatal(&socket_path, &config.startup_id, &format!("openpty: {e}")));
 
     let mut cmd = CommandBuilder::new(&config.shell);
     cmd.args(&config.args);
@@ -744,23 +755,32 @@ fn run_holder(arg: &str) {
         cmd.env_remove(key);
     }
 
-    let mut child = pair
-        .slave
-        .spawn_command(cmd)
-        .unwrap_or_else(|e| fatal(&socket_path, &format!("spawn {}: {e}", config.shell)));
+    let mut child = pair.slave.spawn_command(cmd).unwrap_or_else(|e| {
+        fatal(
+            &socket_path,
+            &config.startup_id,
+            &format!("spawn {}: {e}", config.shell),
+        )
+    });
     drop(pair.slave);
 
     let shell_pid = child.process_id().unwrap_or(0);
     let killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>> =
         Arc::new(Mutex::new(child.clone_killer()));
-    let mut pty_reader = pair
-        .master
-        .try_clone_reader()
-        .unwrap_or_else(|e| fatal(&socket_path, &format!("clone reader: {e}")));
-    let pty_writer = pair
-        .master
-        .take_writer()
-        .unwrap_or_else(|e| fatal(&socket_path, &format!("take writer: {e}")));
+    let mut pty_reader = pair.master.try_clone_reader().unwrap_or_else(|e| {
+        fatal(
+            &socket_path,
+            &config.startup_id,
+            &format!("clone reader: {e}"),
+        )
+    });
+    let pty_writer = pair.master.take_writer().unwrap_or_else(|e| {
+        fatal(
+            &socket_path,
+            &config.startup_id,
+            &format!("take writer: {e}"),
+        )
+    });
     let pty_writer = Arc::new(Mutex::new(Some(pty_writer)));
     // Kept for resize; unix PTY masters are fd wrappers, access is serialized.
     let master: Arc<Mutex<Option<SendMaster>>> =
@@ -1586,13 +1606,41 @@ fn text_final_path(socket_path: &std::path::Path) -> PathBuf {
     PathBuf::from(p)
 }
 
+fn startup_error_path(socket_path: &std::path::Path) -> PathBuf {
+    let mut p = socket_path.as_os_str().to_owned();
+    p.push(".error");
+    PathBuf::from(p)
+}
+
+fn write_startup_error(socket_path: &std::path::Path, startup_id: &str, msg: &str) {
+    // Keep the marker scoped to the launch attempt. The BEAM ignores markers
+    // from older attempts and removes a matching marker after a successful
+    // connection.
+    let marker = format!("{startup_id}\n{msg}");
+    let _ = std::fs::write(startup_error_path(socket_path), marker);
+}
+
+fn startup_failure(socket_path: &std::path::Path, startup_id: &str, msg: &str) -> ! {
+    // A lock or bind failure can refer to another live holder. Report the
+    // failure without removing its endpoint; the caller will either attach to
+    // that holder or consume this attempt's marker and retry safely.
+    write_startup_error(socket_path, startup_id, msg);
+    eprintln!("dala_holder: {msg}");
+    exit(3);
+}
+
 fn exit_path(socket_path: &std::path::Path) -> PathBuf {
     let mut p = socket_path.as_os_str().to_owned();
     p.push(".exit");
     PathBuf::from(p)
 }
 
-fn fatal(socket_path: &std::path::Path, msg: &str) -> ! {
+fn fatal(socket_path: &std::path::Path, startup_id: &str, msg: &str) -> ! {
+    // Windows launches the real holder through WMI, so the broker can report
+    // success even when PTY/shell initialization fails in the detached child.
+    // Leave a marker for the BEAM to distinguish that failure from a slow,
+    // healthy startup and avoid waiting the full attach deadline.
+    write_startup_error(socket_path, startup_id, msg);
     eprintln!("dala_holder: {msg}");
     let _ = std::fs::remove_file(socket_path);
     exit(1);
@@ -1684,9 +1732,7 @@ fn spawn_windows_child(config: &str) -> ! {
         exit(1);
     });
 
-    let mut config_path = socket_path.as_os_str().to_owned();
-    config_path.push(".launch.json");
-    let config_path = PathBuf::from(config_path);
+    let config_path = launch_config_path(&socket_path);
     let launch_config = serde_json::to_vec(&parsed).unwrap_or_else(|error| {
         eprintln!("dala_holder: serialize launch config: {error}");
         exit(1);
@@ -1735,6 +1781,17 @@ fn spawn_windows_child(config: &str) -> ! {
             exit(1);
         }
     }
+}
+
+#[cfg(windows)]
+// WMI starts the detached holder asynchronously. A deterministic config path
+// lets two concurrent launches overwrite one another's shell/token before
+// either child reads it. Keep each broker's handoff file unique instead.
+fn launch_config_path(socket_path: &std::path::Path) -> PathBuf {
+    let serial = NEXT_LAUNCH_CONFIG_ID.fetch_add(1, Ordering::Relaxed);
+    let mut path = socket_path.as_os_str().to_owned();
+    path.push(format!(".launch-{}-{}.json", std::process::id(), serial));
+    PathBuf::from(path)
 }
 
 #[cfg(windows)]
@@ -3076,6 +3133,18 @@ mod config_tests {
     fn missing_required_field_is_err() {
         let json = r#"{"socket":"/tmp/h.sock","rows":24,"cols":80}"#;
         assert!(serde_json::from_str::<Config>(json).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_windows_launches_get_distinct_config_paths() {
+        let socket = std::path::Path::new(r"C:\Temp\session.sock");
+        let first = launch_config_path(socket);
+        let second = launch_config_path(socket);
+
+        assert_ne!(first, second);
+        assert!(first.to_string_lossy().contains(".launch-"));
+        assert!(second.to_string_lossy().contains(".launch-"));
     }
 }
 

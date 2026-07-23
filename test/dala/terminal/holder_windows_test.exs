@@ -84,13 +84,13 @@ defmodule Dala.Terminal.HolderWindowsTest do
         Process.sleep(10_000)
       end)
 
-    assert_receive {:authenticated, <<0x10, ^token::binary>>}, 1_000
-
     started_at = System.monotonic_time(:millisecond)
-    assert {:error, :timeout} = Holder.kill(id, 100)
+    kill_task = Task.async(fn -> Holder.kill(id, 500) end)
+    assert_receive {:authenticated, <<0x10, ^token::binary>>}, 2_000
+    assert {:error, :timeout} = Task.await(kill_task, 2_000)
     elapsed = System.monotonic_time(:millisecond) - started_at
 
-    assert elapsed < 1_000
+    assert elapsed < 2_000
 
     Task.shutdown(stalled_holder, :brutal_kill)
   end
@@ -98,6 +98,9 @@ defmodule Dala.Terminal.HolderWindowsTest do
   test "stale endpoint cleanup does not wait for the spawn timeout" do
     id = Ash.UUID.generate()
     File.mkdir_p!(Holder.dir())
+
+    shell = Dala.TestPlatform.shell()
+    shell_options = Shell.spawn_options(shell)
 
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, packet: 4, active: false, ip: {127, 0, 0, 1}])
@@ -117,21 +120,22 @@ defmodule Dala.Terminal.HolderWindowsTest do
       File.rm(Holder.exit_path(id))
       File.rm(Holder.final_path(id))
       File.rm(Holder.text_final_path(id))
+      File.rm(Holder.startup_error_path(id))
     end)
 
     task =
       Task.async(fn ->
         Holder.attach_or_spawn(id,
-          shell: Path.join(System.tmp_dir!(), "dala-missing-shell.exe"),
-          args: [],
+          shell: shell,
+          args: shell_options[:args],
           cwd: System.tmp_dir!(),
-          env: [],
-          env_remove: []
+          env: shell_options[:env],
+          env_remove: Keyword.get(shell_options, :env_remove, [])
         )
       end)
 
     result =
-      case Task.yield(task, 2_500) do
+      case Task.yield(task, 10_000) do
         {:ok, value} ->
           value
 

@@ -14,6 +14,15 @@ defmodule Dala.Release do
 
   @app :dala
   @discovery_metadata_key "discoveryFile"
+  @windows_reserved_path_basenames ~w(CON PRN AUX NUL CONIN$ CONOUT$ CLOCK$ COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9 LPT1 LPT2 LPT3 LPT4 LPT5 LPT6 LPT7 LPT8 LPT9)
+  @windows_reserved_superscript_basenames for prefix <- ~w(COM LPT),
+                                              suffix <- [
+                                                <<0xC2, 0xB9>>,
+                                                <<0xC2, 0xB2>>,
+                                                <<0xC2, 0xB3>>
+                                              ],
+                                              do: prefix <> suffix
+  @windows_forbidden_path_bytes Enum.to_list(0..31) ++ ~c"<>\"|?*"
 
   def migrate do
     load_app()
@@ -32,7 +41,7 @@ defmodule Dala.Release do
   @doc false
   def sync_install_metadata(root_metadata_path, discovery_path, runtime, opts \\ []) do
     root_metadata_path = canonical_root_metadata_path!(root_metadata_path)
-    discovery_path = discovery_path |> Path.expand() |> normalize_windows_unc_path(discovery_path)
+    discovery_path = canonical_discovery_file!(discovery_path, root_metadata_path)
 
     with_metadata_pair_lock([root_metadata_path, discovery_path], fn ->
       sync_install_metadata_locked(root_metadata_path, discovery_path, runtime, opts)
@@ -195,7 +204,15 @@ defmodule Dala.Release do
       raise "Dala root install metadata path is empty or invalid"
     end
 
-    expanded = path |> Path.expand() |> normalize_windows_unc_path(path)
+    unless Path.type(path) == :absolute do
+      raise "Dala root install metadata path must be absolute"
+    end
+
+    if windows?() and invalid_windows_metadata_path?(path) do
+      raise "Dala root install metadata path must be a normal Windows path"
+    end
+
+    expanded = expand_metadata_path(path)
 
     if String.downcase(Path.basename(expanded)) != "install.json" do
       raise "Dala root metadata must name install.json"
@@ -245,11 +262,11 @@ defmodule Dala.Release do
       raise "Dala discoveryFile must be an absolute path"
     end
 
-    if windows?() and invalid_windows_discovery_path?(path) do
+    if windows?() and invalid_windows_metadata_path?(path) do
       raise "Dala discoveryFile must be a normal Windows path"
     end
 
-    expanded = path |> Path.expand() |> normalize_windows_unc_path(path)
+    expanded = expand_metadata_path(path)
 
     ensure_no_symlink_ancestors!(expanded)
 
@@ -424,19 +441,81 @@ defmodule Dala.Release do
   defp same_path?(_, _), do: false
 
   defp metadata_path_key(path) do
-    expanded = Path.expand(path)
+    expanded =
+      if windows?() and is_binary(path) and normal_windows_discovery_root?(path) do
+        expand_metadata_path(path)
+      else
+        Path.expand(path)
+      end
 
     if match?({:win32, _}, :os.type()) do
-      String.downcase(expanded)
+      Dala.Paths.comparison_key_for_os(expanded, {:win32, :nt})
     else
       expanded
     end
   end
 
-  defp invalid_windows_discovery_path?(path) do
-    not normal_windows_discovery_root?(path) or
+  defp invalid_windows_metadata_path?(path) do
+    not String.valid?(path) or
+      not normal_windows_discovery_root?(path) or
       String.starts_with?(path, ["\\\\?\\", "\\\\.\\"]) or
-      (byte_size(path) > 2 and String.contains?(binary_part(path, 2, byte_size(path) - 2), ":"))
+      String.ends_with?(path, ["\\", "/"]) or
+      (byte_size(path) > 2 and String.contains?(binary_part(path, 2, byte_size(path) - 2), ":")) or
+      invalid_windows_metadata_segments?(path)
+  end
+
+  defp invalid_windows_metadata_segments?(<<drive, ?:, separator, rest::binary>>)
+       when (drive in ?A..?Z or drive in ?a..?z) and separator in [?\\, ?/] do
+    rest |> windows_path_segments() |> Enum.any?(&invalid_windows_metadata_segment?/1)
+  end
+
+  defp invalid_windows_metadata_segments?(<<?\\, ?\\, rest::binary>>) do
+    case windows_path_segments(rest) do
+      [server, share, _file | _rest] = segments ->
+        invalid_windows_path_segment?(server) or
+          invalid_windows_path_segment?(share) or
+          segments |> Enum.drop(2) |> Enum.any?(&invalid_windows_metadata_segment?/1)
+
+      _incomplete_unc ->
+        true
+    end
+  end
+
+  defp invalid_windows_metadata_segments?(_path), do: true
+
+  defp windows_path_segments(path) do
+    path |> String.replace("\\", "/") |> String.split("/", trim: false)
+  end
+
+  defp invalid_windows_metadata_segment?(segment) do
+    basename =
+      segment
+      |> String.split(".", parts: 2)
+      |> hd()
+      |> trim_windows_ignored_suffix()
+      |> String.upcase()
+
+    invalid_windows_path_segment?(segment) or
+      basename in @windows_reserved_path_basenames or
+      basename in @windows_reserved_superscript_basenames
+  end
+
+  defp invalid_windows_path_segment?(segment) do
+    segment == "" or
+      String.ends_with?(segment, [".", " "]) or
+      Enum.any?(:binary.bin_to_list(segment), &(&1 in @windows_forbidden_path_bytes))
+  end
+
+  defp trim_windows_ignored_suffix(""), do: ""
+
+  defp trim_windows_ignored_suffix(segment) do
+    if :binary.last(segment) in [?., ?\s] do
+      segment
+      |> binary_part(0, byte_size(segment) - 1)
+      |> trim_windows_ignored_suffix()
+    else
+      segment
+    end
   end
 
   defp normal_windows_discovery_root?(<<drive, ?:, separator, _::binary>>)
@@ -450,11 +529,26 @@ defmodule Dala.Release do
   defp normal_windows_discovery_root?(<<?\\, ?\\, _::binary>>), do: true
   defp normal_windows_discovery_root?(_path), do: false
 
-  defp normalize_windows_unc_path(expanded, original) do
+  # `Path.expand/1` uses forward slashes for Windows drive paths. Preserve
+  # backslashes for UNC paths because the Windows APIs treat their leading
+  # double separator specially; ordinary drive paths remain in the canonical
+  # form returned by `Path.expand/1`.
+  defp normalize_windows_path(expanded, original) do
     if windows?() and is_binary(original) and String.starts_with?(original, "\\\\") do
       String.replace(expanded, "/", "\\")
     else
       expanded
+    end
+  end
+
+  defp expand_metadata_path(path) do
+    if windows?() do
+      # Metadata paths have already passed the Windows absolute-path and
+      # segment checks, so lexical normalization is sufficient and preserves
+      # the caller's long/short spelling consistently across the transaction.
+      normalize_windows_path(path, path)
+    else
+      Path.expand(path)
     end
   end
 
@@ -602,26 +696,45 @@ defmodule Dala.Release do
   end
 
   defp restore_metadata_target(
-         %{path: path, original: {:regular, _body}, recovery: {:windows_backup, backup}},
+         %{
+           path: path,
+           original: {:regular, body},
+           recovery: {:windows_backup, backup}
+         } = entry,
          replace_fun,
          cleanup_fun
        ) do
-    fresh = metadata_temp_path(path, "rollback")
+    verification =
+      case File.lstat(backup) do
+        {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(body) ->
+          case File.read(backup) do
+            {:ok, ^body} -> :verified
+            {:ok, _other_body} -> :mismatch
+            {:error, reason} -> {:read_error, reason}
+          end
 
-    try do
-      # Never make the only durable old-byte backup the source of a replace:
-      # File.Replace can consume its source before reporting failure.
-      File.cp!(backup, fresh)
-      ensure_safe_metadata_target!(path)
-      recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
-      cleanup_metadata_recovery(recovery, cleanup_fun)
-      cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun)
-      File.rm(fresh)
-      :ok
-    rescue
-      error ->
-        retained = if File.exists?(fresh), do: fresh, else: nil
-        {:error, {path, {:known_backup_restore, backup, retained, error}}}
+        {:ok, %File.Stat{type: :regular, size: size}} ->
+          {:size_mismatch, size}
+
+        {:ok, %File.Stat{type: type}} ->
+          {:invalid_type, type}
+
+        {:error, reason} ->
+          {:stat_error, reason}
+      end
+
+    case verification do
+      :verified ->
+        restore_from_known_backup(path, body, backup, replace_fun, cleanup_fun)
+
+      _ ->
+        Logger.warning(
+          "Dala metadata recovery backup #{backup} does not match the original snapshot; " <>
+            "restoring from the snapshot and leaving the backup for inspection " <>
+            "(verification: #{inspect(verification)})"
+        )
+
+        restore_metadata_target(%{entry | recovery: :unknown}, replace_fun, cleanup_fun)
     end
   end
 
@@ -664,6 +777,38 @@ defmodule Dala.Release do
     end
   end
 
+  defp restore_from_known_backup(path, body, backup, replace_fun, cleanup_fun) do
+    fresh = metadata_temp_path(path, "rollback")
+
+    try do
+      # Stage the verified snapshot bytes instead of the backup path itself:
+      # File.Replace can consume its source before reporting failure, while the
+      # durable backup must remain available until the restore has committed.
+      File.write!(fresh, body)
+      ensure_safe_metadata_target!(path)
+      recovery = replace_fun.(fresh, path, :rollback) |> normalize_recovery!()
+      cleanup_metadata_recovery(recovery, cleanup_fun)
+      cleanup_metadata_recovery({:windows_backup, backup}, cleanup_fun)
+      File.rm(fresh)
+      :ok
+    rescue
+      error ->
+        retained = retained_snapshot_source(fresh, body)
+        {:error, {path, {:known_backup_restore, backup, retained, error}}}
+    end
+  end
+
+  defp retained_snapshot_source(path, body) do
+    case File.read(path) do
+      {:ok, ^body} ->
+        path
+
+      _ ->
+        _ = File.rm(path)
+        nil
+    end
+  end
+
   defp retain_snapshot_recovery(path, body, fresh) do
     # Always give operators a stable, explicitly named recovery artifact when
     # a restore may have consumed its source. If that copy cannot be written,
@@ -675,10 +820,7 @@ defmodule Dala.Release do
         retained
 
       {:error, _reason} ->
-        case File.read(fresh) do
-          {:ok, ^body} -> fresh
-          _ -> nil
-        end
+        retained_snapshot_source(fresh, body)
     end
   end
 

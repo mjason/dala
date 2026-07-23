@@ -256,11 +256,50 @@ function Get-MetadataField($Metadata, [string]$Name) {
   [pscustomobject]@{ Present = $true; Value = [string]$property.Value }
 }
 
-function Get-CanonicalDiscoveryFile([string]$Path) {
+function Test-NormalWindowsDiscoveryPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path) -or
-      $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or
-      $Path -match '^\\\\[.?]\\' -or
+      $Path -match '^\\\\[.?][\\/]' -or
+      $Path -match '[\\/]$' -or
       ($Path.Length -gt 2 -and $Path.Substring(2).Contains(":"))) {
+    return $false
+  }
+
+  $rootComponents = @()
+  $pathComponents = @()
+  if ($Path -match '^[A-Za-z]:[\\/](.*)$') {
+    $pathComponents = @($Matches[1] -split '[\\/]')
+  } elseif ($Path -match '^\\\\([^\\/]+)[\\/]([^\\/]+)[\\/](.+)$') {
+    $rootComponents = @($Matches[1], $Matches[2])
+    $pathComponents = @($Matches[3] -split '[\\/]')
+  } else {
+    return $false
+  }
+
+  foreach ($component in $rootComponents) {
+    if ([string]::IsNullOrEmpty($component) -or
+        $component -ceq "." -or $component -ceq ".." -or
+        $component -match '[. ]$' -or
+        $component -match '[\x00-\x1F<>"|?*]') {
+      return $false
+    }
+  }
+  foreach ($component in $pathComponents) {
+    if ([string]::IsNullOrEmpty($component) -or
+        $component -ceq "." -or $component -ceq ".." -or
+        $component -match '[. ]$' -or
+        $component -match '[\x00-\x1F<>"|?*]') {
+      return $false
+    }
+    $basename = (($component -split '\.', 2)[0]).TrimEnd([char[]]" .").ToUpperInvariant()
+    if ($basename -cmatch '^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$') {
+      return $false
+    }
+  }
+  $true
+}
+
+function Get-CanonicalDiscoveryFile([string]$Path) {
+  if (-not (Test-NormalWindowsDiscoveryPath $Path)) {
     throw "Dala discoveryFile must be an absolute Windows path: $Path"
   }
   try {

@@ -23,6 +23,73 @@ defmodule Dala.ReleaseTest do
     end
   end
 
+  defp same_test_path?(left, right) do
+    test_path_key(left) == test_path_key(right) or
+      (match?({:win32, _}, :os.type()) and same_windows_parent_identity?(left, right))
+  end
+
+  defp test_path_key(path) do
+    expanded =
+      if match?({:win32, _}, :os.type()) and is_binary(path) and
+           windows_absolute_literal?(path) do
+        path
+      else
+        Path.expand(path)
+      end
+
+    if match?({:win32, _}, :os.type()) do
+      expanded |> String.replace("\\", "/") |> String.downcase()
+    else
+      expanded
+    end
+  end
+
+  defp windows_absolute_literal?(<<drive, ?:, separator, _rest::binary>>)
+       when drive in ?A..?Z and separator in [?\\, ?/],
+       do: true
+
+  defp windows_absolute_literal?(<<drive, ?:, separator, _rest::binary>>)
+       when drive in ?a..?z and separator in [?\\, ?/],
+       do: true
+
+  defp windows_absolute_literal?(<<?\\, ?\\, _rest::binary>>), do: true
+  defp windows_absolute_literal?(_path), do: false
+
+  # Windows may hand a callback an 8.3 spelling for an existing parent while
+  # the fixture was built with its long spelling. A temporary marker written
+  # through one spelling and read through the other proves directory identity
+  # without relying on the zeroed inode fields returned by OTP on Windows.
+  defp same_windows_parent_identity?(left, right) when is_binary(left) and is_binary(right) do
+    left_parent = Path.dirname(left)
+    right_parent = Path.dirname(right)
+
+    same_basename? = String.downcase(Path.basename(left)) == String.downcase(Path.basename(right))
+
+    if not same_basename? do
+      false
+    else
+      marker_name =
+        ".dala-path-probe-#{Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)}"
+
+      marker_path = Path.join(left_parent, marker_name)
+      marker_body = :crypto.strong_rand_bytes(32)
+
+      case File.write(marker_path, marker_body, [:binary, :exclusive]) do
+        :ok ->
+          try do
+            File.read(Path.join(right_parent, marker_name)) == {:ok, marker_body}
+          after
+            _ = File.rm(marker_path)
+          end
+
+        {:error, _reason} ->
+          false
+      end
+    end
+  end
+
+  defp same_windows_parent_identity?(_, _), do: false
+
   test "sync_install_metadata makes root and discovery reflect the runtime config" do
     base =
       Path.join(System.tmp_dir!(), "dala-release-metadata-#{System.unique_integer([:positive])}")
@@ -101,6 +168,60 @@ defmodule Dala.ReleaseTest do
     refute File.exists?(discovery)
   end
 
+  test "sync_install_metadata rejects a relative discovery path before writing metadata" do
+    token = System.unique_integer([:positive])
+    base = Path.join(System.tmp_dir!(), "dala-release-relative-discovery-#{token}")
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    relative_discovery = Path.join("dala-relative-discovery-#{token}", "install.json")
+    expanded_discovery = Path.expand(relative_discovery)
+    original = Jason.encode!(%{"root" => root})
+
+    File.mkdir_p!(root)
+    File.write!(root_metadata, original)
+
+    on_exit(fn ->
+      File.rm_rf(base)
+      File.rm_rf(Path.dirname(expanded_discovery))
+    end)
+
+    assert_raise RuntimeError, ~r/discoveryFile must be an absolute path/, fn ->
+      Dala.Release.sync_install_metadata(root_metadata, relative_discovery, %{
+        root: root,
+        data_dir: Path.join(base, "data"),
+        config_file: Path.join(base, "config.jsonc"),
+        task_name: "Dala",
+        port: 4400,
+        repo: "mjason/dala"
+      })
+    end
+
+    assert File.read!(root_metadata) == original
+    refute File.exists?(expanded_discovery)
+  end
+
+  test "sync_install_metadata rejects a relative root metadata path before writing discovery" do
+    token = System.unique_integer([:positive])
+    base = Path.join(System.tmp_dir!(), "dala-release-relative-root-#{token}")
+    relative_root_metadata = Path.join("dala-relative-root-#{token}", "install.json")
+    discovery = Path.join(base, "discovery.json")
+
+    on_exit(fn -> File.rm_rf(base) end)
+
+    assert_raise RuntimeError, ~r/root install metadata path must be absolute/, fn ->
+      Dala.Release.sync_install_metadata(relative_root_metadata, discovery, %{
+        root: Path.dirname(Path.expand(relative_root_metadata)),
+        data_dir: Path.join(base, "data"),
+        config_file: Path.join(base, "config.jsonc"),
+        task_name: "Dala",
+        port: 4400,
+        repo: "mjason/dala"
+      })
+    end
+
+    refute File.exists?(discovery)
+  end
+
   test "sync_install_metadata rejects a root metadata directory before creating discovery" do
     base =
       Path.join(
@@ -126,6 +247,45 @@ defmodule Dala.ReleaseTest do
     end
 
     refute File.exists?(discovery)
+  end
+
+  test "sync_install_metadata rejects unsafe Windows root metadata paths" do
+    if match?({:win32, _}, :os.type()) do
+      base = System.tmp_dir!()
+      discovery = Path.join(base, "dala-safe-discovery.json")
+
+      for root_metadata <- [
+            "//server/share/install.json",
+            "//./pipe/install.json",
+            "\\\\?\\C:\\Dala\\install.json",
+            "\\\\.\\pipe\\install.json",
+            "C:\\Dala:stream\\install.json",
+            "C:\\Dala.\\install.json",
+            "C:\\Dala \\install.json",
+            "C:\\Dala\\..\\install.json",
+            "C:\\Dala\\CON.txt\\install.json",
+            "C:\\Dala\\CON .txt\\install.json",
+            "C:\\Dala\\CONIN$\\install.json",
+            "C:\\Dala\\CONOUT$\\install.json",
+            "C:\\Dala\\bad?name\\install.json",
+            "C:\\Dala\\\\install.json",
+            "\\\\server.\\share\\install.json",
+            "\\\\server\\share.\\install.json"
+          ] do
+        assert_raise RuntimeError, ~r/normal Windows path/, fn ->
+          Dala.Release.sync_install_metadata(root_metadata, discovery, %{
+            root: "C:\\Dala",
+            data_dir: "C:\\Dala\\data",
+            config_file: "C:\\Dala\\config.jsonc",
+            task_name: "Dala",
+            port: 4400,
+            repo: "mjason/dala"
+          })
+        end
+      end
+
+      refute File.exists?(discovery)
+    end
   end
 
   test "resolve_discovery_file prefers persisted metadata over bootstrap environment" do
@@ -202,8 +362,30 @@ defmodule Dala.ReleaseTest do
             "//./pipe/install.json",
             "\\\\?\\C:\\Dala\\install.json",
             "\\\\.\\pipe\\install.json",
-            "C:\\Dala:stream\\install.json"
+            "C:\\Dala:stream\\install.json",
+            "C:\\Dala\\metadata.json.",
+            "C:\\Dala\\metadata.json ",
+            "C:\\Dala\\..\\metadata.json",
+            "C:\\Dala\\NUL",
+            "C:\\Dala\\CON.txt",
+            "C:\\Dala\\CON .txt",
+            "C:\\Dala\\CONIN$",
+            "C:\\Dala\\CONOUT$",
+            "C:\\Dala\\bad?name.json",
+            "C:\\Dala\\\\metadata.json",
+            "\\\\server.\\share\\metadata.json",
+            "\\\\server\\share.\\metadata.json"
           ] do
+        assert_raise RuntimeError, ~r/normal Windows path/, fn ->
+          Dala.Release.resolve_discovery_file(
+            %{"root" => root, "discoveryFile" => invalid_path},
+            root_metadata_path: root_metadata
+          )
+        end
+      end
+
+      for suffix <- [<<0xC2, 0xB9>>, <<0xC2, 0xB2>>, <<0xC2, 0xB3>>],
+          invalid_path <- ["C:\\Dala\\COM" <> suffix <> ".json", "C:\\Dala\\LPT" <> suffix] do
         assert_raise RuntimeError, ~r/normal Windows path/, fn ->
           Dala.Release.resolve_discovery_file(
             %{"root" => root, "discoveryFile" => invalid_path},
@@ -499,7 +681,7 @@ defmodule Dala.ReleaseTest do
     replace = fn source, destination, phase ->
       record.({phase, source, destination})
 
-      if phase == :rollback and destination == root_metadata do
+      if phase == :rollback and same_test_path?(destination, root_metadata) do
         record.({
           :known_backup_copy,
           source,
@@ -509,14 +691,14 @@ defmodule Dala.ReleaseTest do
       end
 
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           backup = root_metadata <> ".backup-injected"
           File.cp!(destination, backup)
           File.rm!(destination)
           File.rename!(source, destination)
           {:windows_backup, backup}
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           raise "injected second metadata replacement failure"
 
         phase == :rollback ->
@@ -556,7 +738,10 @@ defmodule Dala.ReleaseTest do
 
     assert Enum.any?(recorded, fn
              {:known_backup_copy, source, true, ^root_original} ->
-               String.starts_with?(source, root_metadata <> ".rollback-")
+               String.starts_with?(
+                 test_path_key(source),
+                 test_path_key(root_metadata <> ".rollback-")
+               )
 
              _ ->
                false
@@ -566,6 +751,68 @@ defmodule Dala.ReleaseTest do
     assert metadata_temporaries(root_metadata, ".rollback-") == []
     assert metadata_temporaries(discovery, ".new-") == []
     assert metadata_temporaries(discovery, ".rollback-") == []
+  end
+
+  test "metadata rollback does not trust a corrupt known backup" do
+    base =
+      Path.join(
+        System.tmp_dir!(),
+        "dala-release-corrupt-backup-#{System.unique_integer([:positive])}"
+      )
+
+    root = Path.join(base, "root")
+    root_metadata = Path.join(root, "install.json")
+    discovery = Path.join(base, "discovery.json")
+    backup = root_metadata <> ".backup-injected"
+    root_original = Jason.encode!(%{"root" => root, "copy" => "root-original"})
+    discovery_original = Jason.encode!(%{"root" => root, "copy" => "discovery-original"})
+    File.mkdir_p!(root)
+    File.write!(root_metadata, root_original)
+    File.write!(discovery, discovery_original)
+    on_exit(fn -> File.rm_rf(base) end)
+
+    parent = self()
+
+    replace = fn source, destination, phase ->
+      cond do
+        phase == :commit and same_test_path?(destination, root_metadata) ->
+          File.write!(backup, String.duplicate("X", byte_size(root_original)))
+          File.rm!(destination)
+          File.rename!(source, destination)
+          {:windows_backup, backup}
+
+        phase == :commit and same_test_path?(destination, discovery) ->
+          raise "injected second metadata replacement failure"
+
+        phase == :rollback ->
+          send(parent, {:rollback_source, destination, File.read!(source)})
+          File.rm(destination)
+          File.rename!(source, destination)
+          :none
+      end
+    end
+
+    assert_raise RuntimeError, "injected second metadata replacement failure", fn ->
+      Dala.Release.sync_install_metadata(
+        root_metadata,
+        discovery,
+        %{
+          root: root,
+          data_dir: Path.join(base, "data"),
+          config_file: Path.join(base, "config.jsonc"),
+          task_name: "Dala",
+          port: 4400,
+          repo: "mjason/dala"
+        },
+        replace_fun: replace
+      )
+    end
+
+    assert_receive {:rollback_source, root_destination, ^root_original}
+    assert same_test_path?(root_destination, root_metadata)
+    assert File.read!(root_metadata) == root_original
+    assert File.read!(discovery) == discovery_original
+    assert File.read!(backup) == String.duplicate("X", byte_size(root_original))
   end
 
   test "ambiguous rollback keeps the original known backup when its copy is consumed" do
@@ -587,22 +834,22 @@ defmodule Dala.ReleaseTest do
 
     replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.cp!(destination, backup)
           File.rm!(destination)
           File.rename!(source, destination)
           {:windows_backup, backup}
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           raise "injected second metadata replacement failure"
 
-        phase == :rollback and destination == discovery ->
+        phase == :rollback and same_test_path?(destination, discovery) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
 
-        phase == :rollback and destination == root_metadata ->
-          refute source == backup
+        phase == :rollback and same_test_path?(destination, root_metadata) ->
+          refute same_test_path?(source, backup)
           assert File.read!(source) == root_original
           File.rm!(source)
           raise "injected rollback failure after consuming source"
@@ -629,6 +876,7 @@ defmodule Dala.ReleaseTest do
 
     assert Exception.message(error) =~ "rollback failed"
     assert Exception.message(error) =~ backup
+    refute Exception.message(error) =~ ".rollback-"
     assert File.read!(backup) == root_original
   end
 
@@ -651,7 +899,7 @@ defmodule Dala.ReleaseTest do
 
     replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.cp!(destination, backup)
           File.rm!(destination)
           File.rename!(source, destination)
@@ -660,7 +908,7 @@ defmodule Dala.ReleaseTest do
             message: "injected ambiguous committed replacement",
             recovery: {:ambiguous_windows_backup, backup}
 
-        phase == :rollback and destination == root_metadata ->
+        phase == :rollback and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
@@ -710,12 +958,12 @@ defmodule Dala.ReleaseTest do
 
     replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           File.cp!(destination, discovery_backup)
           File.rm!(destination)
           File.rename!(source, destination)
@@ -724,11 +972,11 @@ defmodule Dala.ReleaseTest do
             message: "injected failed replacement with a durable backup",
             recovery: {:windows_backup, discovery_backup}
 
-        phase == :rollback and destination == discovery ->
+        phase == :rollback and same_test_path?(destination, discovery) ->
           File.rm!(source)
           raise "injected discovery rollback failure"
 
-        phase == :rollback and destination == root_metadata ->
+        phase == :rollback and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
@@ -853,7 +1101,7 @@ defmodule Dala.ReleaseTest do
 
     first_replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           send(parent, {:first_root_committed, self()})
@@ -862,7 +1110,7 @@ defmodule Dala.ReleaseTest do
             {^release_first, :fail_discovery} -> :none
           end
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           raise "injected first discovery replacement failure"
 
         phase == :rollback ->
@@ -974,7 +1222,7 @@ defmodule Dala.ReleaseTest do
 
     first_replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_one_metadata ->
+        phase == :commit and same_test_path?(destination, root_one_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           send(parent, {:shared_first_root_committed, self()})
@@ -983,7 +1231,7 @@ defmodule Dala.ReleaseTest do
             {^release_first, :continue} -> :none
           end
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           raise "injected shared discovery replacement failure"
 
         phase == :rollback ->
@@ -1179,16 +1427,16 @@ defmodule Dala.ReleaseTest do
 
     replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           File.mkdir!(destination)
           raise "injected unsafe absent-target replacement failure"
 
-        phase == :rollback and destination == root_metadata ->
+        phase == :rollback and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           send(parent, :root_metadata_rolled_back)
@@ -1241,20 +1489,20 @@ defmodule Dala.ReleaseTest do
 
     replace = fn source, destination, phase ->
       cond do
-        phase == :commit and destination == root_metadata ->
+        phase == :commit and same_test_path?(destination, root_metadata) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
 
-        phase == :commit and destination == discovery ->
+        phase == :commit and same_test_path?(destination, discovery) ->
           raise "injected second metadata replacement failure"
 
-        phase == :rollback and destination == discovery ->
+        phase == :rollback and same_test_path?(destination, discovery) ->
           File.rm!(destination)
           File.rename!(source, destination)
           :none
 
-        phase == :rollback and destination == root_metadata ->
+        phase == :rollback and same_test_path?(destination, root_metadata) ->
           File.rm!(source)
           raise "injected snapshot rollback failure after consuming source"
       end

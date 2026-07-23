@@ -54,6 +54,17 @@ defmodule Dala.PathsTest do
                "c:/work/project"
     end
 
+    test "uses Windows simple Unicode casing without full-case expansions" do
+      assert Paths.comparison_key_for_os("safe/\u03c3", {:win32, :nt}) ==
+               Paths.comparison_key_for_os("SAFE/\u03c2", {:win32, :nt})
+
+      assert Paths.comparison_key_for_os("safe/\u1f80", {:win32, :nt}) ==
+               Paths.comparison_key_for_os("SAFE/\u1f88", {:win32, :nt})
+
+      refute Paths.comparison_key_for_os("safe/\u00df", {:win32, :nt}) ==
+               Paths.comparison_key_for_os("SAFE/SS", {:win32, :nt})
+    end
+
     test "preserves case on Unix" do
       assert Paths.comparison_key_for_os("/Work/Project", {:unix, :linux}) == "/Work/Project"
     end
