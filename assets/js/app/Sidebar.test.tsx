@@ -5,6 +5,11 @@ import Sidebar from "./Sidebar";
 import type { Session } from "./Sidebar";
 import { I18nProvider } from "./i18n";
 
+// Sidebar tests cover list interactions; the footer's network-backed update
+// checker has its own suite and must not leave a Phoenix reconnect timer
+// running after jsdom tears down this test's window.
+vi.mock("./UpdateCheck", () => ({ default: () => null }));
+
 const sessions: Session[] = [
   {
     id: "s1",
