@@ -4772,15 +4772,15 @@ try {
   Remove-Item -LiteralPath $configFile, $discoveryFile -Force
   New-Item -ItemType Directory -Path $discoveryFile | Out-Null
   try {
-    $precommitRollbackRejected = $false
-    try {
-      & $installer -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
-        -ExpectedVersion $oldVersion -HealthTimeoutSeconds 30
-    } catch {
-      if ($_.Exception.Message -notmatch "(?:metadata target is not|discoveryFile must be) a regular file") { throw }
-      $precommitRollbackRejected = $true
-    }
-    Assert-True $precommitRollbackRejected "Existing installer accepted a directory metadata target"
+    # Keep this expected failure inside a child PowerShell so its nonzero exit
+    # and rendered error can be asserted without terminating the smoke test.
+    $precommitOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer `
+      -Version $oldTag -ArchivePath $oldArchive -ChecksumPath $oldChecksum `
+      -ExpectedVersion $oldVersion -HealthTimeoutSeconds 30 2>&1 | Out-String
+    $precommitStatus = $LASTEXITCODE
+    Assert-True ($precommitStatus -ne 0 -and
+      $precommitOutput -match "(?:metadata target is not|discoveryFile must be) a regular file") `
+      "Existing installer accepted a directory metadata target: $precommitOutput"
     Assert-True (-not (Test-Path -LiteralPath $configFile)) `
       "Existing install failure left the config created by this attempt"
     Assert-True (-not (Test-Path -LiteralPath $configMarker)) `
