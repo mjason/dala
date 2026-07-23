@@ -143,6 +143,19 @@ defmodule Dala.Updater.ArchiveTest do
     assert message =~ "invalid ZIP metadata"
   end
 
+  test "rejects ZIP64 entry size sentinels", %{directory: directory} do
+    for {label, central_offset, local_offset} <- [
+          {"compressed", 20, 18},
+          {"uncompressed", 24, 22}
+        ] do
+      archive = Path.join(directory, "zip64-#{label}.zip")
+      write_zip_with_central_and_local_field(archive, central_offset, local_offset)
+
+      assert {:error, message} = Archive.validate(archive, "windows-x86_64")
+      assert message =~ "invalid ZIP metadata"
+    end
+  end
+
   test "rejects malformed ZIP extra-field TLVs", %{directory: directory} do
     for location <- [:local, :central] do
       archive = Path.join(directory, "malformed-extra-#{location}.zip")
@@ -299,6 +312,15 @@ defmodule Dala.Updater.ArchiveTest do
     {:ok, {_name, archive}} = :zip.create(~c"release.zip", [{~c"safe", "payload"}], [:memory])
     [{central_offset, _length}] = :binary.matches(archive, @zip_central_signature)
     File.write!(path, put_bytes(archive, central_offset + offset, replacement))
+  end
+
+  defp write_zip_with_central_and_local_field(path, central_offset, local_offset) do
+    {:ok, {_name, archive}} = :zip.create(~c"release.zip", [{~c"safe", "payload"}], [:memory])
+    [{central_start, _length}] = :binary.matches(archive, @zip_central_signature)
+    sentinel = <<0xFF, 0xFF, 0xFF, 0xFF>>
+    archive = put_bytes(archive, central_start + central_offset, sentinel)
+    archive = put_bytes(archive, local_offset, sentinel)
+    File.write!(path, archive)
   end
 
   defp write_zip_with_malformed_extra(path, :local) do

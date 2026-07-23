@@ -134,7 +134,8 @@ defmodule Dala.Updater.Archive do
         variable_size = name_size + extra_size + comment_size
 
         if byte_size(rest) >= variable_size and name_size > 0 and disk == 0 and
-             local_offset != @zip64_32 do
+             local_offset != @zip64_32 and compressed_size != @zip64_32 and
+             uncompressed_size != @zip64_32 do
           <<name::binary-size(name_size), _extra::binary-size(extra_size),
             _comment::binary-size(comment_size), remaining::binary>> = rest
 
