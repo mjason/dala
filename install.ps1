@@ -1010,9 +1010,9 @@ function Assert-CompleteDalaRelease([string]$Path, [string]$Version, [string]$La
 function Assert-SafeArchive([string]$Archive, [string]$DestinationRoot) {
   try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch {}
   $zip = $null
-  # Match the filesystem's ordinal, case-insensitive semantics instead of
-  # relying on invariant upper-casing, which misses some Unicode equivalents.
-  $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  # Keep archive keys one-to-one. Whole-string upper-casing can expand
+  # characters such as U+00DF to "SS" and collapse distinct Windows paths.
+  $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   try {
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     foreach ($entry in $zip.Entries) {
@@ -1045,7 +1045,14 @@ function Assert-SafeArchive([string]$Archive, [string]$DestinationRoot) {
         }
       }
 
-      $normalizedName = $name.TrimEnd('\')
+      # Apply invariant case mappings per UTF-16 code unit so equivalent
+      # Unicode forms collide without multi-character case expansion.
+      $normalizedNameSource = $name.TrimEnd('\')
+      $normalizedNameBuilder = [Text.StringBuilder]::new($normalizedNameSource.Length)
+      foreach ($character in $normalizedNameSource.ToCharArray()) {
+        [void]$normalizedNameBuilder.Append([char]::ToUpperInvariant($character))
+      }
+      $normalizedName = $normalizedNameBuilder.ToString()
       if ($seen.Contains($normalizedName)) {
         throw "Release archive contains duplicate ZIP entries: $($entry.FullName)"
       }
