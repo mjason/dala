@@ -12,6 +12,36 @@ describe("terminal warm pool", () => {
     expect(terminalWarmLimit({ coarsePointer: true, deviceMemory: 16 })).toBe(3);
   });
 
+  it("caps full-size terminal canvases on high-DPR and very large displays", () => {
+    expect(
+      terminalWarmLimit({
+        coarsePointer: false,
+        deviceMemory: 8,
+        devicePixelRatio: 2,
+        viewportWidth: 1440,
+        viewportHeight: 900,
+      }),
+    ).toBe(4);
+    expect(
+      terminalWarmLimit({
+        coarsePointer: false,
+        deviceMemory: 8,
+        devicePixelRatio: 2,
+        viewportWidth: 1920,
+        viewportHeight: 1080,
+      }),
+    ).toBe(2);
+    expect(
+      terminalWarmLimit({
+        coarsePointer: false,
+        deviceMemory: 4,
+        devicePixelRatio: 2,
+        viewportWidth: 1440,
+        viewportHeight: 900,
+      }),
+    ).toBe(2);
+  });
+
   it("touches the active session without evicting until the limit is full", () => {
     expect(touchTerminalPool(["a", "b"], "c", 4)).toEqual(["c", "a", "b"]);
     expect(touchTerminalPool(["c", "a", "b"], "a", 4)).toEqual(["a", "c", "b"]);

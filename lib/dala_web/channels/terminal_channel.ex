@@ -80,6 +80,12 @@ defmodule DalaWeb.TerminalChannel do
             _other -> nil
           end
 
+        visible =
+          case payload do
+            %{"visible" => false} -> false
+            _other -> true
+          end
+
         # The reply tells this client who holds the size — the live owner
         # and the remembered owner device — plus its own client_id so it can
         # recognize itself in `size_owner` broadcasts. A session that is not
@@ -96,7 +102,9 @@ defmodule DalaWeb.TerminalChannel do
           |> assign(:session_id, session.id)
           |> assign(:client_id, client_id)
           |> assign(:device_id, device_id)
-          |> assign(:visible, true)
+          |> assign(:visible, visible)
+          |> assign(:hidden_dirty, false)
+          |> assign(:hidden_seq, nil)
           |> assign(:initial_repaint_timed_out, false)
           |> assign(:fc, %{
             enabled: false,
@@ -211,17 +219,32 @@ defmodule DalaWeb.TerminalChannel do
     # would let the browser uncover and send input before the repair arrives.
     fc = socket.assigns.fc
 
-    if repaint_pending?(fc, socket) do
-      {:noreply, socket}
-    else
-      fc = clear_repaint(fc, reset?: true, bytes: byte_size(data))
+    cond do
+      repaint_pending?(fc, socket) ->
+        {:noreply, socket}
 
-      {:noreply,
-       socket
-       |> push_replay(data, seq, true, history_loaded)
-       |> assign(:fc, fc)
-       |> assign(:repaint_requested, false)
-       |> assign(:initial_repaint_timed_out, false)}
+      not socket.assigns.visible ->
+        # A size takeover invalidated this hidden emulator, but sending the
+        # all-client snapshot would spend browser/GPU work on an invisible
+        # terminal. Mark it stale; the reveal path requests a newer viewport.
+        {:noreply,
+         socket
+         |> assign(:fc, clear_repaint(fc, reset?: true))
+         |> assign(:repaint_requested, false)
+         |> assign(:initial_repaint_timed_out, false)
+         |> mark_hidden(seq)}
+
+      true ->
+        fc = clear_repaint(fc, reset?: true, bytes: byte_size(data))
+
+        {:noreply,
+         socket
+         |> push_replay(data, seq, true, history_loaded)
+         |> assign(:fc, fc)
+         |> assign(:repaint_requested, false)
+         |> assign(:initial_repaint_timed_out, false)
+         |> settle_hidden_through(seq)
+         |> maybe_request_hidden_catchup()}
     end
   end
 
@@ -336,14 +359,21 @@ defmodule DalaWeb.TerminalChannel do
            socket
            |> assign(:fc, fc)
            |> assign(:repaint_requested, false)
-           |> assign(:initial_repaint_timed_out, false)}
+           |> assign(:initial_repaint_timed_out, false)
+           |> settle_hidden_through(seq)
+           |> maybe_request_hidden_catchup()}
 
         socket.assigns[:replayed] ->
           {:noreply, socket}
 
         true ->
           socket = push_replay(socket, data, seq, false, history_loaded)
-          {:noreply, assign(socket, :repaint_requested, false)}
+
+          {:noreply,
+           socket
+           |> assign(:repaint_requested, false)
+           |> settle_hidden_through(seq)
+           |> maybe_request_hidden_catchup()}
       end
     end
   end
@@ -352,8 +382,15 @@ defmodule DalaWeb.TerminalChannel do
   def handle_out("output", %{data: encoded} = payload, socket) do
     fc = socket.assigns.fc
     size = decoded_size(encoded)
+    seq = Map.get(payload, :seq) || Map.get(payload, "seq")
 
     cond do
+      not socket.assigns.visible ->
+        # The holder already maintains the authoritative emulator. Shipping
+        # incremental bytes to an invisible browser only pays base64, socket
+        # and xterm costs; one viewport snapshot catches it up on reveal.
+        {:noreply, mark_hidden(socket, seq)}
+
       # A catch-up/flow snapshot is the authoritative screen baseline. Drop
       # every incremental frame until it arrives, including legacy clients
       # that have not enabled byte acknowledgements.
@@ -511,7 +548,17 @@ defmodule DalaWeb.TerminalChannel do
       visible
     )
 
-    {:noreply, assign(socket, :visible, visible)}
+    catch_up? = visible and socket.assigns[:hidden_dirty] == true
+    socket = assign(socket, :visible, visible)
+
+    socket =
+      if visible do
+        maybe_request_hidden_catchup(socket)
+      else
+        socket
+      end
+
+    {:reply, {:ok, %{catch_up: catch_up?}}, socket}
   end
 
   def handle_in("ack", %{"bytes" => bytes} = payload, socket) when is_integer(bytes) do
@@ -599,7 +646,8 @@ defmodule DalaWeb.TerminalChannel do
     fc = socket.assigns.fc
     drained = fc.sent - fc.acked <= @low_water
 
-    if fc.skipping and not repaint_pending?(fc, socket) and (drained or opts[:force]) do
+    if socket.assigns.visible and fc.skipping and not repaint_pending?(fc, socket) and
+         (drained or opts[:force]) do
       # Flow recovery is always a viewport repaint. Scrollback remains lazy
       # and can be fetched later through `load_history`.
       request_repaint_once(socket, :screen)
@@ -625,6 +673,43 @@ defmodule DalaWeb.TerminalChannel do
 
       true ->
         start_repaint(socket, history, opts)
+    end
+  end
+
+  defp mark_hidden(socket, seq) do
+    hidden_seq = socket.assigns[:hidden_seq]
+
+    hidden_seq =
+      cond do
+        is_integer(seq) and is_integer(hidden_seq) -> max(seq, hidden_seq)
+        is_integer(seq) -> seq
+        true -> hidden_seq
+      end
+
+    socket
+    |> assign(:hidden_dirty, true)
+    |> assign(:hidden_seq, hidden_seq)
+  end
+
+  defp settle_hidden_through(socket, seq) when is_integer(seq) do
+    case socket.assigns[:hidden_seq] do
+      hidden_seq when is_integer(hidden_seq) and hidden_seq <= seq ->
+        socket
+        |> assign(:hidden_dirty, false)
+        |> assign(:hidden_seq, nil)
+
+      _other ->
+        socket
+    end
+  end
+
+  defp settle_hidden_through(socket, _seq), do: socket
+
+  defp maybe_request_hidden_catchup(socket) do
+    if socket.assigns.visible and socket.assigns[:hidden_dirty] do
+      request_repaint_once(socket, :screen, skip?: true)
+    else
+      socket
     end
   end
 

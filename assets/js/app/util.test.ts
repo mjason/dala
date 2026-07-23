@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { base64ToBytes, humanBytes, sessionRef, shortPath, timeAgo } from "./util";
 
 describe("base64ToBytes", () => {
@@ -11,6 +11,23 @@ describe("base64ToBytes", () => {
     const bytes = new Uint8Array([0, 1, 27, 91, 255]);
     const b64 = btoa(String.fromCharCode(...bytes));
     expect(Array.from(base64ToBytes(b64))).toEqual(Array.from(bytes));
+  });
+
+  it("uses the native decoder when the browser provides it", () => {
+    const original = Object.getOwnPropertyDescriptor(Uint8Array, "fromBase64");
+    const native = vi.fn(() => new Uint8Array([7, 8, 9]));
+    Object.defineProperty(Uint8Array, "fromBase64", {
+      configurable: true,
+      value: native,
+    });
+
+    try {
+      expect(Array.from(base64ToBytes("ignored"))).toEqual([7, 8, 9]);
+      expect(native).toHaveBeenCalledWith("ignored");
+    } finally {
+      if (original) Object.defineProperty(Uint8Array, "fromBase64", original);
+      else delete (Uint8Array as typeof Uint8Array & { fromBase64?: unknown }).fromBase64;
+    }
   });
 });
 

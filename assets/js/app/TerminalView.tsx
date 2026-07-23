@@ -6,7 +6,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import type { IClipboardProvider, ClipboardSelectionType } from "@xterm/addon-clipboard";
-import { SearchAddon } from "@xterm/addon-search";
+import type { SearchAddon } from "@xterm/addon-search";
 import { getSocket } from "./socket";
 import {
   onTerminalChannelMessages,
@@ -193,8 +193,11 @@ export default function TerminalView({
   // useless here — this box drives the addon and highlights matches instead.
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const ensureSearchRef = useRef<() => Promise<SearchAddon | null>>(() => Promise.resolve(null));
   const findInputRef = useRef<HTMLInputElement>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const findOpenRef = useRef(findOpen);
+  findOpenRef.current = findOpen;
   const [findQuery, setFindQuery] = useState("");
   const findQueryRef = useRef(findQuery);
   findQueryRef.current = findQuery;
@@ -208,6 +211,11 @@ export default function TerminalView({
   openFindRef.current = () => {
     loadHistoryRef.current("find");
     setFindOpen(true);
+    void ensureSearchRef.current().then((addon) => {
+      if (addon && findOpenRef.current && findQueryRef.current) {
+        runFind(1, findQueryRef.current, true);
+      }
+    });
     requestAnimationFrame(() => findInputRef.current?.select());
   };
   const runFind = (dir: 1 | -1, query: string, incremental = false) => {
@@ -253,11 +261,13 @@ export default function TerminalView({
 
     let disposed = false;
     let cleanup: (() => void) | undefined;
+    let viewerVisible = visibleRef.current && document.visibilityState === "visible";
 
     const prefs = loadPrefs();
 
     void loadTerminalFonts(prefs.fontSize).then(() => {
       if (disposed) return;
+      viewerVisible = visibleRef.current && document.visibilityState === "visible";
 
       const term = new Terminal({
         theme: currentTerminalTheme(),
@@ -265,7 +275,7 @@ export default function TerminalView({
         fontSize: prefs.fontSize,
         lineHeight: prefs.lineHeight,
         letterSpacing: 0,
-        cursorBlink: prefs.cursorBlink,
+        cursorBlink: viewerVisible && prefs.cursorBlink,
         cursorStyle: prefs.cursorStyle,
         smoothScrollDuration: prefs.smoothScroll ? SMOOTH_SCROLL_MS : 0,
         scrollSensitivity: prefs.scrollSensitivity,
@@ -305,10 +315,32 @@ export default function TerminalView({
       // usual culprit when scrolling feels sluggish.
       const publishRenderer = () => {
         rendererStats.kind = webgl ? "webgl" : "dom";
-        document.documentElement.dataset.termRenderer = rendererStats.kind;
+        container.dataset.terminalRenderer = rendererStats.kind;
+        // The settings diagnostic describes the terminal the user can see.
+        // Hidden pooled views must not overwrite it while changing renderer.
+        if (viewerVisible) {
+          document.documentElement.dataset.termRenderer = rendererStats.kind;
+        }
+      };
+      const disableWebgl = () => {
+        window.clearTimeout(webglRetryTimer);
+        webglRetryTimer = undefined;
+        webglGeneration += 1;
+        canvasObserver?.disconnect();
+        canvasObserver = undefined;
+        const addon = webgl;
+        webgl = undefined;
+        if (addon) {
+          try {
+            addon.dispose();
+          } catch {
+            // Terminal disposal will release anything the addon still owns.
+          }
+        }
+        publishRenderer();
       };
       const enableWebgl = (retryOnLoss: boolean) => {
-        if (disposed) return;
+        if (disposed || !viewerVisible || webgl) return;
         const generation = ++webglGeneration;
         try {
           const addon = new WebglAddon();
@@ -321,13 +353,9 @@ export default function TerminalView({
               // once more — the GPU process is usually back within seconds.
               rendererStats.contextLosses += 1;
               rendererStats.lastContextLossAt = window.performance.now();
-              webglGeneration += 1;
-              canvasObserver?.disconnect();
-              addon.dispose();
-              webgl = undefined;
-              publishRenderer();
+              disableWebgl();
               term.refresh(0, term.rows - 1);
-              if (retryOnLoss) {
+              if (retryOnLoss && viewerVisible) {
                 webglRetryTimer = window.setTimeout(() => enableWebgl(false), 3_000);
               }
             });
@@ -346,15 +374,36 @@ export default function TerminalView({
         }
         publishRenderer();
       };
-      enableWebgl(true);
+      if (viewerVisible) enableWebgl(true);
+      else publishRenderer();
 
-      const searchAddon = new SearchAddon();
-      term.loadAddon(searchAddon);
-      searchRef.current = searchAddon;
       termRef.current = term;
-      const searchResultsSub = searchAddon.onDidChangeResults((r) => {
-        setFindCount({ index: r.resultIndex, count: r.resultCount });
-      });
+      let searchAddon: SearchAddon | undefined;
+      let searchResultsSub: { dispose(): void } | undefined;
+      let searchLoading: Promise<SearchAddon | null> | undefined;
+      const ensureSearch = (): Promise<SearchAddon | null> => {
+        if (searchAddon) return Promise.resolve(searchAddon);
+        if (searchLoading) return searchLoading;
+
+        searchLoading = import("@xterm/addon-search")
+          .then(({ SearchAddon: SearchAddonClass }) => {
+            if (disposed) return null;
+            const addon = new SearchAddonClass();
+            term.loadAddon(addon);
+            searchAddon = addon;
+            searchRef.current = addon;
+            searchResultsSub = addon.onDidChangeResults((r) => {
+              setFindCount({ index: r.resultIndex, count: r.resultCount });
+            });
+            return addon;
+          })
+          .catch(() => {
+            searchLoading = undefined;
+            return null;
+          });
+        return searchLoading;
+      };
+      ensureSearchRef.current = ensureSearch;
 
       fit.fit();
       term.focus();
@@ -424,7 +473,7 @@ export default function TerminalView({
         term.options.fontSize = next.fontSize;
         term.options.lineHeight = next.lineHeight;
         term.options.cursorStyle = next.cursorStyle;
-        term.options.cursorBlink = next.cursorBlink;
+        term.options.cursorBlink = viewerVisible && next.cursorBlink;
         // If a scroll restore is mid-flight it has forced smoothScrollDuration
         // to 0 and writes savedSmooth back when it finishes — update THAT, or
         // its cleanup would silently revert this preference change.
@@ -615,11 +664,11 @@ export default function TerminalView({
       // carry the stable device id the size ownership sticks to.
       const phxChannel = getSocket().channel(`terminal:${sessionId}`, {
         device_id: deviceId,
+        visible: viewerVisible,
       });
       const channel = phxChannel as unknown as TerminalChannel;
       const lazyHistory = createLazyHistory();
       const hiddenOutput = createHiddenOutputBuffer(HIDDEN_OUTPUT_LIMIT);
-      let viewerVisible = visibleRef.current && document.visibilityState === "visible";
 
       const requestHistory = (intent: HistoryIntent) => {
         if (!lazyHistory.request(intent)) return false;
@@ -648,23 +697,31 @@ export default function TerminalView({
         firstBatchAt: number | null;
         completedAt: number | null;
       };
+      type VisibilityTrace = {
+        visible: boolean;
+        startedAt: number;
+        catchUp: boolean | null;
+      };
       const flowStats: {
         acked: number;
         resets: number;
         renderer: typeof rendererStats;
         replay: ReplayTrace | null;
         replayHistory: ReplayTrace[];
+        visibilityHistory: VisibilityTrace[];
       } = {
         acked: 0,
         resets: 0,
         renderer: rendererStats,
         replay: null,
         replayHistory: [],
+        visibilityHistory: [],
       };
       // Keep trace ownership aligned with the wire replay, not merely with
       // the latest UI request. A new replay can start while xterm is still
       // parsing the tail of an older multi-batch replay.
       let wireReplayTrace: ReplayTrace | null = null;
+      let visibilityCatchupPending = false;
       flowStatsRef.current = flowStats;
       const debugWindow = window as unknown as Record<string, unknown>;
       if (debugHandle) {
@@ -672,6 +729,10 @@ export default function TerminalView({
           (debugWindow.__dalaTerms as Record<string, unknown> | undefined) ??
           (debugWindow.__dalaTerms = {} as Record<string, unknown>);
         debugTerms[sessionId] = term;
+        const debugFlows =
+          (debugWindow.__dalaFlows as Record<string, unknown> | undefined) ??
+          (debugWindow.__dalaFlows = {} as Record<string, unknown>);
+        debugFlows[sessionId] = flowStats;
       }
       function beginReplay(trigger: ReplayTrigger) {
         const presentation = replayPresentation(trigger, hasRenderedFrameRef.current);
@@ -764,11 +825,42 @@ export default function TerminalView({
         });
       };
 
+      const startVisibilityCatchup = () => {
+        if (visibilityCatchupPending) return;
+        visibilityCatchupPending = true;
+        gate.waitForReplay();
+        beginReplay("catch-up");
+      };
+
       visibilityActionRef.current = (nextVisible) => {
         if (viewerVisible === nextVisible) return;
         viewerVisible = nextVisible;
-        phxChannel.push("visibility", { visible: nextVisible });
-        if (!nextVisible) return;
+        const visibilityTrace: VisibilityTrace = {
+          visible: nextVisible,
+          startedAt: window.performance.now(),
+          catchUp: null,
+        };
+        flowStats.visibilityHistory.push(visibilityTrace);
+        if (flowStats.visibilityHistory.length > 16) flowStats.visibilityHistory.shift();
+        if (!nextVisible) {
+          phxChannel.push("visibility", { visible: false }).receive("ok", () => {
+            visibilityTrace.catchUp = false;
+          });
+          term.options.cursorBlink = false;
+          disableWebgl();
+          return;
+        }
+        term.options.cursorBlink = livePrefs.cursorBlink;
+        enableWebgl(true);
+        // A hidden view can still have the old viewport dimensions. Send its
+        // refit before visibility so the server's automatic catch-up snapshot
+        // is synthesized at the new PTY width.
+        relayoutRef.current?.(true);
+        const visibilityPush = phxChannel.push("visibility", { visible: true });
+        visibilityPush.receive("ok", (response: { catch_up?: boolean }) => {
+          visibilityTrace.catchUp = response.catch_up === true;
+          if (response.catch_up) startVisibilityCatchup();
+        });
         if (debugHandle) {
           debugWindow.__dalaFlow = flowStats;
         }
@@ -778,8 +870,7 @@ export default function TerminalView({
           // already in flight. Hold deltas until its first replay batch; the
           // snapshot supersedes them, so parsing them into the old emulator
           // would create a transient frame and waste renderer work.
-          gate.waitForReplay();
-          beginReplay("catch-up");
+          startVisibilityCatchup();
           phxChannel.push("catch_up", {});
           return;
         }
@@ -869,6 +960,7 @@ export default function TerminalView({
               hasRenderedFrameRef.current = true;
               if (replayTrace) {
                 replayTrace.completedAt = window.performance.now();
+                if (replayTrace.trigger === "catch-up") visibilityCatchupPending = false;
               }
               setReplaying(false);
               // An unmarked reset after this point is a flow repaint; leave
@@ -1139,6 +1231,13 @@ export default function TerminalView({
       // Timer/observer entry point that respects the current size role.
       const relayout = (force = false) => {
         if (disposed) return;
+        // Hidden pooled terminals keep their emulator/channel warm, but their
+        // PTYs stay at the last visible size. Refit once on reveal instead of
+        // multiplying every window resize across the entire MRU pool.
+        if (!viewerVisible) {
+          lastLayoutBox = "";
+          return;
+        }
         const layoutBox = currentLayoutBox();
         if (!force && layoutBox === lastLayoutBox) return;
         lastLayoutBox = layoutBox;
@@ -1599,7 +1698,6 @@ export default function TerminalView({
       const onVisibilityChange = () => {
         const pageVisible = document.visibilityState === "visible";
         visibilityActionRef.current(visibleRef.current && pageVisible);
-        if (pageVisible) relayout(true);
       };
       window.addEventListener("resize", onWindowResize);
       document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1618,6 +1716,9 @@ export default function TerminalView({
         if (flowStatsRef.current === flowStats) flowStatsRef.current = null;
         if (w.__dalaTerms && typeof w.__dalaTerms === "object") {
           delete (w.__dalaTerms as Record<string, unknown>)[sessionId];
+        }
+        if (w.__dalaFlows && typeof w.__dalaFlows === "object") {
+          delete (w.__dalaFlows as Record<string, unknown>)[sessionId];
         }
         claimSizeRef.current = null;
         setSizeFollower(false);
@@ -1648,7 +1749,8 @@ export default function TerminalView({
         inputDisposable.dispose();
         typeahead.dispose();
         ackCounter.dispose();
-        searchResultsSub.dispose();
+        ensureSearchRef.current = () => Promise.resolve(null);
+        searchResultsSub?.dispose();
         searchRef.current = null;
         termRef.current = null;
         unsubscribeTerminalChannel(channel, refs);
@@ -1678,7 +1780,6 @@ export default function TerminalView({
         (window as unknown as Record<string, unknown>).__dalaFlow = flowStatsRef.current;
       }
     }
-    relayoutRef.current?.(true);
     termRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);

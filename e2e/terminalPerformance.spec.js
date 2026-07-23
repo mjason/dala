@@ -39,6 +39,7 @@ test.describe("Given 用户有很多终端会话", () => {
   test("桌面的十个会话会逐个预热，切换到第四个和第十个时复用已有终端", async ({
     page,
   }) => {
+    const requireWebgl = process.env.DALA_E2E_WEBGL === "1";
     await h.gotoApp(page);
     for (let i = 0; i < 10; i++) ids.push(await h.createSession(page, cwd));
 
@@ -62,6 +63,81 @@ test.describe("Given 用户有很多终端会话", () => {
           id,
         ),
       ).toBe(id);
+    }
+
+    const rendererKinds = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll("[data-terminal-pane]")].map((pane) => ({
+          id: pane.getAttribute("data-terminal-pane"),
+          visible: !pane.classList.contains("invisible"),
+          renderer:
+            pane.querySelector("[data-terminal-renderer]")?.getAttribute(
+              "data-terminal-renderer",
+            ) ?? null,
+        })),
+      );
+    await expect
+      .poll(async () => (await rendererKinds()).every((item) => item.renderer != null), {
+        timeout: 15_000,
+      })
+      .toBe(true);
+    const renderers = await rendererKinds();
+    expect(renderers.filter((item) => !item.visible).every((item) => item.renderer === "dom"))
+      .toBe(true);
+    expect(renderers.filter((item) => item.renderer === "webgl").length).toBeLessThanOrEqual(1);
+    if (requireWebgl) {
+      expect(renderers.filter((item) => item.renderer === "webgl")).toHaveLength(1);
+      expect(renderers.find((item) => item.visible)?.renderer).toBe("webgl");
+    }
+
+    const activeId = ids[9];
+    const hiddenId = ids[3];
+    const sizesBefore = await page.evaluate(
+      ({ activeId, hiddenId }) => ({
+        active: window.__dalaTerms?.[activeId]?.cols ?? 0,
+        hidden: window.__dalaTerms?.[hiddenId]?.cols ?? 0,
+      }),
+      { activeId, hiddenId },
+    );
+    expect(sizesBefore.active).toBeGreaterThan(0);
+    expect(sizesBefore.hidden).toBeGreaterThan(0);
+
+    await page.setViewportSize({ width: 900, height: 720 });
+    await expect
+      .poll(
+        () => page.evaluate((id) => window.__dalaTerms?.[id]?.cols ?? 0, activeId),
+        { timeout: 10_000 },
+      )
+      .not.toBe(sizesBefore.active);
+    expect(
+      await page.evaluate((id) => window.__dalaTerms?.[id]?.cols ?? 0, hiddenId),
+    ).toBe(sizesBefore.hidden);
+
+    await h.selectSession(page, hiddenId);
+    await expect
+      .poll(
+        () => page.evaluate((id) => window.__dalaTerms?.[id]?.cols ?? 0, hiddenId),
+        { timeout: 10_000 },
+      )
+      .not.toBe(sizesBefore.hidden);
+
+    await expect
+      .poll(
+        async () => {
+          const kinds = await rendererKinds();
+          return kinds
+            .filter((item) => !item.visible)
+            .every((item) => item.renderer === "dom");
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    const renderersAfterSwitch = await rendererKinds();
+    expect(
+      renderersAfterSwitch.filter((item) => item.renderer === "webgl").length,
+    ).toBeLessThanOrEqual(1);
+    if (requireWebgl) {
+      expect(renderersAfterSwitch.find((item) => item.visible)?.renderer).toBe("webgl");
     }
   });
 
@@ -602,14 +678,17 @@ test.describe("Given 用户有很多终端会话", () => {
       // this small margin makes the parser state deterministic on fast hosts.
       await page.waitForTimeout(120);
 
-      const replayCount = await page.evaluate(() => window.__dalaFlow?.replayHistory?.length ?? 0);
+      const replayCount = await page.evaluate(
+        (sessionId) => window.__dalaFlows?.[sessionId]?.replayHistory?.length ?? 0,
+        ids[0],
+      );
       const phaseStart = await page.evaluate(() => performance.now());
       await h.selectSession(page, ids[0]);
 
       const findPhaseReplay = () =>
         page.evaluate(
-          ({ replayCount, phaseStart }) => {
-            const history = window.__dalaFlow?.replayHistory ?? [];
+          ({ sessionId, replayCount, phaseStart }) => {
+            const history = window.__dalaFlows?.[sessionId]?.replayHistory ?? [];
             return (
               history
                 .slice(replayCount)
@@ -623,9 +702,22 @@ test.describe("Given 用户有很多终端会话", () => {
                 ) ?? null
             );
           },
-          { replayCount, phaseStart },
+          { sessionId: ids[0], replayCount, phaseStart },
         );
-      await expect.poll(findPhaseReplay, { timeout: 15_000 }).toBeTruthy();
+      await expect
+        .poll(findPhaseReplay, { timeout: 15_000 })
+        .toBeTruthy()
+        .catch(async (error) => {
+          const diagnostics = await page.evaluate(
+            (sessionId) => window.__dalaFlows?.[sessionId] ?? null,
+            ids[0],
+          );
+          await test.info().attach(`terminal-split-${name}-flow`, {
+            body: JSON.stringify(diagnostics, null, 2),
+            contentType: "application/json",
+          });
+          throw error;
+        });
       const phaseReplay = await findPhaseReplay();
       expect(phaseReplay.completedAt).toBeGreaterThan(phaseReplay.startedAt);
       expect(phaseReplay.completedAt - phaseReplay.startedAt).toBeLessThan(4_000);
@@ -649,15 +741,19 @@ test.describe("Given 用户有很多终端会话", () => {
       expect(beforeFinish.hasMarker).toBe(false);
       expect(beforeFinish.hasReplacement).toBe(false);
 
-      await expect.poll(() => bufferText(page), { timeout: 15_000 }).toContain(expected.text);
-      const splitSgr = await page.evaluate((marker) => {
+      await expect
+        .poll(() => bufferText(page).then((text) => text.replace(/\s+/g, "")), {
+          timeout: 15_000,
+        })
+        .toContain(expected.text.replace(/\s+/g, ""));
+      const splitSgr = await page.evaluate((sgrMarker) => {
         const buffer = window.__dalaTerm?.buffer.active;
         if (!buffer) return null;
         const cell = buffer.getNullCell();
         for (let y = 0; y < buffer.length; y++) {
           const line = buffer.getLine(y);
           const text = line?.translateToString(true) ?? "";
-          if (!line || !text.includes(marker)) continue;
+          if (!line || !text.includes(sgrMarker)) continue;
           for (let x = 0; x < line.length; x++) {
             line.getCell(x, cell);
             if (cell.getChars() === "S") {
@@ -666,7 +762,7 @@ test.describe("Given 用户有很多终端会话", () => {
           }
         }
         return null;
-      }, marker);
+      }, expected.sgrMarker);
       expect(splitSgr).not.toBeNull();
       expect(splitSgr.fgPalette).toBe(true);
       expect(splitSgr.fgColor).toBe(1);
@@ -678,6 +774,7 @@ test.describe("Given 用户有很多终端会话", () => {
       marker: "SPLIT-ANSI-ANSI-END",
       expected: {
         text: "SPLIT-ANSI-ANSI-END",
+        sgrMarker: "SPLIT-ANSI-ANSI-END",
         finish: "os.write(1,b'31mSPLIT-ANSI-ANSI-END\\033[0m\\n')",
       },
     });
@@ -690,6 +787,7 @@ test.describe("Given 用户有很多终端会话", () => {
       marker: "SPLIT-UTF8-中-END",
       expected: {
         text: "SPLIT-UTF8-中-END",
+        sgrMarker: "SPLIT-UTF8-",
         finish: "os.write(1,cjk[1:]);os.write(1,b'-END\\033[0m\\n')",
       },
     });

@@ -44,6 +44,14 @@ type Toast = { id: number; message: string };
 // `pointer-coarse:` so desktop stays pixel-identical.
 const touchToolbarBtn = "pointer-coarse:min-h-10 pointer-coarse:px-3 pointer-coarse:text-sm";
 
+function terminalViewport() {
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    dpr: window.devicePixelRatio,
+  };
+}
+
 export default function App() {
   const { t } = useI18n();
   const [navOpen, setNavOpen] = useState(false);
@@ -100,6 +108,22 @@ export default function App() {
   // Touch UI: phones get an overflow toolbar menu, a terminal key bar and a
   // tappable composer hint instead of shortcut chips.
   const coarsePointer = useCoarsePointer();
+  const [termViewport, setTermViewport] = useState(terminalViewport);
+  useEffect(() => {
+    let frame: number | undefined;
+    const update = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        setTermViewport(terminalViewport());
+      });
+    };
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
+  }, []);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   // Desktop ⋯ group for the rarely-used terminal plumbing (detach viewers,
   // refit, reset) — keeps the toolbar focused on the daily verbs.
@@ -544,11 +568,14 @@ export default function App() {
   // low-memory devices retain conservative caps. Cold sessions are mounted
   // one at a time during idle periods so startup remains interactive.
   // (visibility:hidden) — switching back skips the teardown/rebuild/repaint
-  // cycle entirely and shows the live screen instantly. Hidden views keep
-  // real layout dimensions, so resizes/streams stay correct while parked.
+  // cycle entirely. Hidden views keep their emulator/channel state but defer
+  // renderer, resize and output work until a viewport catch-up on reveal.
   const termPoolLimit = terminalWarmLimit({
     coarsePointer,
     deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+    devicePixelRatio: termViewport.dpr,
+    viewportWidth: termViewport.width,
+    viewportHeight: termViewport.height,
   });
   const [termPool, setTermPool] = useState<string[]>(() => {
     try {

@@ -16,10 +16,10 @@ defmodule DalaWeb.TerminalChannelTest do
     session
   end
 
-  defp join!(session_id) do
+  defp join!(session_id, payload \\ %{}) do
     DalaWeb.UserSocket
     |> socket(nil, %{})
-    |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}")
+    |> subscribe_and_join(DalaWeb.TerminalChannel, "terminal:#{session_id}", payload)
   end
 
   # The client reports its viewport after joining; only then is the repaint
@@ -235,12 +235,74 @@ defmodule DalaWeb.TerminalChannelTest do
     eventually(fn -> MapSet.size(:sys.get_state(Server.whereis(id)).visible_clients) == 1 end)
   end
 
+  test "hidden viewers skip incremental output and catch up once on reveal" do
+    session = create_session!()
+    id = to_string(session.id)
+    assert {:ok, _reply, socket} = join!(id, %{"visible" => false})
+    attach!(socket)
+    collect_replay()
+
+    hidden = Phoenix.Channel.Server.socket(socket.channel_pid)
+    refute hidden.assigns.visible
+    sent_before = hidden.assigns.fc.sent
+
+    Server.input(id, "echo HIDDEN-SERVER-DROP\r")
+
+    eventually(fn ->
+      Phoenix.Channel.Server.socket(socket.channel_pid).assigns.hidden_dirty
+    end)
+
+    refute_push "output", %{}, 100
+    hidden = Phoenix.Channel.Server.socket(socket.channel_pid)
+    assert hidden.assigns.fc.sent == sent_before
+
+    push(socket, "visibility", %{"visible" => true})
+
+    assert_push "replay",
+                %{reset: true, historyLoaded: false, done: done},
+                5_000
+
+    drain_replay_tail(done)
+
+    eventually(fn ->
+      channel = Phoenix.Channel.Server.socket(socket.channel_pid)
+      channel.assigns.visible and not channel.assigns.hidden_dirty
+    end)
+
+    Server.input(id, "echo VISIBLE-STREAM-RESUMED\r")
+    assert_push "output", %{}, 2_000
+
+    push(socket, "visibility", %{"visible" => false})
+    Server.input(id, "echo HIDDEN-SECOND-CYCLE\r")
+
+    eventually(fn ->
+      Phoenix.Channel.Server.socket(socket.channel_pid).assigns.hidden_dirty
+    end)
+
+    refute_push "output", %{}, 100
+    push(socket, "visibility", %{"visible" => true})
+    assert_push "replay", %{reset: true, done: done}, 5_000
+    drain_replay_tail(done)
+
+    eventually(fn ->
+      channel = Phoenix.Channel.Server.socket(socket.channel_pid)
+      channel.assigns.visible and not channel.assigns.hidden_dirty
+    end)
+  end
+
   defp collect_replay(acc \\ "", history \\ nil) do
     assert_push "replay", %{data: data, done: done, historyLoaded: loaded}, 5_000
     acc = acc <> Base.decode64!(data)
     history = if history == nil, do: loaded, else: history
     assert loaded == history
     if done, do: {acc, history}, else: collect_replay(acc, history)
+  end
+
+  defp drain_replay_tail(true), do: :ok
+
+  defp drain_replay_tail(false) do
+    assert_push "replay", %{done: done}, 5_000
+    drain_replay_tail(done)
   end
 
   defp eventually(fun, attempts \\ 50)

@@ -1,4 +1,11 @@
 export function base64ToBytes(b64: string): Uint8Array {
+  const ByteArray = (
+    Uint8Array as typeof Uint8Array & {
+      fromBase64?: (value: string) => Uint8Array;
+    }
+  );
+  if (ByteArray.fromBase64) return ByteArray.fromBase64(b64);
+
   const raw = atob(b64);
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
