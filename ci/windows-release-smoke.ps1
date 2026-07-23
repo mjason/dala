@@ -173,6 +173,10 @@ function Assert-SmokeLifecycleCommandSemantics([string]$ScriptPath) {
     "$ScriptPath does not pin release RPC to the executable directory"
   Assert-True ($rpcBody -match "/d /s /c") `
     "$ScriptPath does not disable cmd autorun and preserve batch quoting"
+  Assert-True ($rpcBody -match 'EnvironmentVariables\["ERL_EPMD_PORT"\]\s*=\s*"4369"') `
+    "$ScriptPath does not pin the RPC EPMD port"
+  Assert-True ($rpcBody -match 'EnvironmentVariables\["ERL_EPMD_ADDRESS"\]\s*=\s*"127\.0\.0\.1"') `
+    "$ScriptPath does not pin the RPC EPMD address"
   Assert-True ($rpcBody -match "Base\.decode64\(~S\{") `
     "$ScriptPath does not keep the RPC payload free of cmd quote expansion"
   Assert-True ($rpcBody -notmatch "Base\.decode64!") `
@@ -4302,6 +4306,11 @@ function Invoke-ReleaseRpc([string]$Executable, [string]$Source) {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    # Erlang treats an explicitly empty ERL_EPMD_PORT as a literal port value
+    # and crashes while parsing it.  Keep the RPC VM on the same local default
+    # daemon as the installed release, regardless of runner-level environment.
+    $startInfo.EnvironmentVariables["ERL_EPMD_PORT"] = "4369"
+    $startInfo.EnvironmentVariables["ERL_EPMD_ADDRESS"] = "127.0.0.1"
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
