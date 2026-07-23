@@ -165,8 +165,18 @@ function Assert-SmokeLifecycleCommandSemantics([string]$ScriptPath) {
   $stopBody = @($definitions | Where-Object { $_.Name -ceq "Stop-SmokeRelease" })[0].Extent.Text
   Assert-True ($rpcBody -match "Invoke-SmokeReleaseWithCleanEnvironment") `
     "$ScriptPath does not isolate release RPC environment"
-  Assert-True ($rpcBody -match "LASTEXITCODE") `
+  Assert-True ($rpcBody -match "ExitCode") `
     "$ScriptPath does not verify release RPC exit status"
+  Assert-True ($rpcBody -match "ProcessStartInfo") `
+    "$ScriptPath does not launch release RPC through an explicit process"
+  Assert-True ($rpcBody -match "WorkingDirectory") `
+    "$ScriptPath does not pin release RPC to the executable directory"
+  Assert-True ($rpcBody -match "/d /s /c") `
+    "$ScriptPath does not disable cmd autorun and preserve batch quoting"
+  Assert-True ($rpcBody -match "Base\.decode64\(~S\{") `
+    "$ScriptPath does not keep the RPC payload free of cmd quote expansion"
+  Assert-True ($rpcBody -notmatch "Base\.decode64!") `
+    "$ScriptPath puts a delayed-expansion bang in the RPC payload"
   Assert-True ($stopBody -match "Get-SmokeRestartHelper") `
     "$ScriptPath does not resolve the installed restart helper"
   Assert-True ($stopBody -match "StopOnly") `
@@ -4262,17 +4272,61 @@ function Set-SmokeTaskRunner(
 
 function Invoke-ReleaseRpc([string]$Executable, [string]$Source) {
   $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Source))
-  $expression = "Code.eval_string(Base.decode64!(`"$encoded`"))"
+  # Base64 excludes braces.  The uppercase sigil keeps the cmd argument free
+  # of nested quotes, while avoiding `!` (delayed expansion is enabled by the
+  # generated launcher) and preserving the exact source bytes.
+  $expression = "Code.eval_string(elem(Base.decode64(~S{$encoded}), 1))"
   $results = @(Invoke-SmokeReleaseWithCleanEnvironment {
-    $output = & $Executable rpc $expression 2>&1 | Out-String
+    $resolvedExecutable = [IO.Path]::GetFullPath($Executable)
+    if (-not (Test-Path -LiteralPath $resolvedExecutable -PathType Leaf)) {
+      throw "Release RPC executable is missing: $resolvedExecutable"
+    }
+
+    # PowerShell's native .bat adapter has different cmd quoting and working
+    # directory semantics.  After a release switch that can make the generated
+    # launcher resolve its relative boot path against the wrong tree. Mirror
+    # run-dala.ps1 and invoke cmd explicitly with /d /s /c and the executable
+    # directory as the working directory.
+    $commandLine = '""' + $resolvedExecutable + '" rpc "' + $expression + '"'
+    # /s /c needs a second closing quote around the complete batch command.
+    $commandLine += '"'
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = if ($env:ComSpec) {
+      $env:ComSpec
+    } else {
+      Join-Path $env:SystemRoot "System32\cmd.exe"
+    }
+    $startInfo.Arguments = "/d /s /c $commandLine"
+    $startInfo.WorkingDirectory = Split-Path -Parent $resolvedExecutable
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+      if (-not $process.Start()) { throw "cmd.exe could not be started" }
+      $stdout = $process.StandardOutput.ReadToEndAsync()
+      $stderr = $process.StandardError.ReadToEndAsync()
+      $process.WaitForExit()
+      $output = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
+      $status = [int]$process.ExitCode
+    } finally {
+      $process.Dispose()
+    }
     [pscustomobject]@{
-      status = [int]$LASTEXITCODE
+      status = $status
       output = $output
+      executable = $resolvedExecutable
+      working_directory = $startInfo.WorkingDirectory
     }
   })
   Assert-True ($results.Count -eq 1) "Release RPC returned an unexpected result count: $($results.Count)"
   $result = $results[0]
-  if ([int]$result.status -ne 0) { throw "Release RPC failed with exit status $($result.status): $([string]$result.output)" }
+  if ([int]$result.status -ne 0) {
+    throw "Release RPC failed with exit status $($result.status) ($($result.executable), cwd=$($result.working_directory)): $([string]$result.output)"
+  }
 }
 
 function Start-DetachedUpdateHelper(
