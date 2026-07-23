@@ -5032,7 +5032,10 @@ token_bait = __TOKEN_BAIT__
 config_file = __CONFIG_FILE__
 
 secret_names = ~w(SECRET_KEY_BASE TOKEN_SIGNING_SECRET DALA_SECRET_KEY_BASE DALA_TOKEN_SIGNING_SECRET)
-true = Enum.all?(secret_names, &(System.get_env(&1) == nil))
+unless Enum.all?(secret_names, &(System.get_env(&1) == nil)) do
+  present = Enum.filter(secret_names, &(System.get_env(&1) != nil))
+  raise "spawn RPC inherited secret environment variables: #{inspect(present)}"
+end
 true = System.get_env("DALA_CONFIG") == config_file
 clean_names = ~w(
   DALA_DISCOVERY_FILE DALA_UPDATE_REPO DALA_SCHEME PHX_SCHEME DALA_POOL_SIZE POOL_SIZE
@@ -5607,7 +5610,10 @@ id = __SESSION_ID__
 marker = __MARKER__
 result_path = __RESULT_PATH__
 secret_names = ~w(SECRET_KEY_BASE TOKEN_SIGNING_SECRET DALA_SECRET_KEY_BASE DALA_TOKEN_SIGNING_SECRET)
-true = Enum.all?(secret_names, &(System.get_env(&1) == nil))
+unless Enum.all?(secret_names, &(System.get_env(&1) == nil)) do
+  present = Enum.filter(secret_names, &(System.get_env(&1) != nil))
+  raise "reattach RPC inherited secret environment variables: #{inspect(present)}"
+end
 
 receive_frame = fn receive_frame, socket, expected_type ->
   receive do
@@ -5618,11 +5624,19 @@ receive_frame = fn receive_frame, socket, expected_type ->
   end
 end
 
-{:ok, socket, true} = Holder.attach_or_spawn(id, [])
+socket =
+  case Holder.attach_or_spawn(id, []) do
+    {:ok, socket, true} -> socket
+    other -> raise "reattach holder attach failed: #{inspect(other)}"
+  end
 hello = receive_frame.(receive_frame, socket, Holder.type_hello()) |> Jason.decode!()
-# Reattach must inspect the complete bounded scrollback: the marker can be
-# older than the default 200-line tail after lifecycle output and restarts.
-:ok = Holder.send_text_snapshot_req(socket, 0, 131_072)
+# Reattach inspects the holder's bounded scrollback rather than only its
+# viewport. The marker was written immediately before the release switch;
+# request all retained logical lines within the protocol's 128 KiB byte cap.
+case Holder.send_text_snapshot_req(socket, 0, 131_072) do
+  :ok -> :ok
+  other -> raise "reattach snapshot request failed: #{inspect(other)}"
+end
 snapshot = receive_frame.(receive_frame, socket, Holder.type_text_snapshot()) |> Jason.decode!()
 marker_present = Enum.any?(snapshot["lines"], &String.contains?(&1, marker))
 unless marker_present do
