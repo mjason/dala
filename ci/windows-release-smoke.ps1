@@ -5408,11 +5408,16 @@ File.write!(result_path, Jason.encode!(%{spawned: true, env_clean: true, shell_p
   # The holder is intentionally detached for most of this smoke test, so an
   # early marker can legitimately fall outside a bounded scrollback snapshot
   # after shell prompts and lifecycle output have accumulated.
+  $reattachMarkerSplit = [int]($reattachMarker.Length / 2)
+  $reattachMarkerLeft = $reattachMarker.Substring(0, $reattachMarkerSplit)
+  $reattachMarkerRight = $reattachMarker.Substring($reattachMarkerSplit)
   $refreshMarkerSource = @'
 alias Dala.Terminal.Holder
 
 id = __SESSION_ID__
 marker = __MARKER__
+marker_left = __MARKER_LEFT__
+marker_right = __MARKER_RIGHT__
 
 receive_frame = fn receive_frame, socket, expected_type ->
   receive do
@@ -5425,7 +5430,7 @@ end
 
 {:ok, socket, true} = Holder.attach_or_spawn(id, [])
 _hello = receive_frame.(receive_frame, socket, Holder.type_hello())
-:ok = Holder.send_input(socket, "Write-Output '#{marker}'\r")
+:ok = Holder.send_input(socket, "Write-Output ('#{marker_left}' + '#{marker_right}')\r")
 
 read_output = fn read_output, acc ->
   payload = receive_frame.(receive_frame, socket, Holder.type_output())
@@ -5440,6 +5445,8 @@ _output = read_output.(read_output, "")
 '@
   $refreshMarkerSource = $refreshMarkerSource.Replace("__SESSION_ID__", ($sessionId | ConvertTo-Json -Compress))
   $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER__", ($reattachMarker | ConvertTo-Json -Compress))
+  $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER_LEFT__", ($reattachMarkerLeft | ConvertTo-Json -Compress))
+  $refreshMarkerSource = $refreshMarkerSource.Replace("__MARKER_RIGHT__", ($reattachMarkerRight | ConvertTo-Json -Compress))
   Invoke-ReleaseRpc $oldBatch $refreshMarkerSource
 
   Stop-SmokeRelease $taskName $oldBatch $installRoot $port
