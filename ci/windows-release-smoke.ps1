@@ -3541,10 +3541,10 @@ function Assert-InstallerArchiveTypeSemantics([string]$ScriptPath, [string]$Work
 
     $unicodeCollisionArchive = Join-Path $WorkDir "unicode-case-collision.zip"
     Write-NamedArchive $unicodeCollisionArchive @(
-      "safe/" + [char]0x03C3,
-      "SAFE/" + [char]0x03C2,
-      "safe/" + [char]0x1F80,
-      "SAFE/" + [char]0x1F88
+      ("safe/" + [char]0x03C3),
+      ("SAFE/" + [char]0x03C2),
+      ("safe/" + [char]0x1F80),
+      ("SAFE/" + [char]0x1F88)
     )
     $collisionRejected = $false
     try {
@@ -3558,10 +3558,10 @@ function Assert-InstallerArchiveTypeSemantics([string]$ScriptPath, [string]$Work
 
     $unicodeDistinctArchive = Join-Path $WorkDir "unicode-case-distinct.zip"
     Write-NamedArchive $unicodeDistinctArchive @(
-      "safe/" + [char]0x00DF,
+      ("safe/" + [char]0x00DF),
       "safe/SS",
-      "safe/" + [char]0x0130,
-      "safe/i" + [char]0x0307
+      ("safe/" + [char]0x0130),
+      ("safe/i" + [char]0x0307)
     )
     & $module { param($Archive, $Destination) Assert-SafeArchive $Archive $Destination } `
       $unicodeDistinctArchive $destination
