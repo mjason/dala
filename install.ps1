@@ -1010,7 +1010,9 @@ function Assert-CompleteDalaRelease([string]$Path, [string]$Version, [string]$La
 function Assert-SafeArchive([string]$Archive, [string]$DestinationRoot) {
   try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch {}
   $zip = $null
-  $seen = @{}
+  # Match the filesystem's ordinal, case-insensitive semantics instead of
+  # relying on invariant upper-casing, which misses some Unicode equivalents.
+  $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   try {
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     foreach ($entry in $zip.Entries) {
@@ -1043,11 +1045,11 @@ function Assert-SafeArchive([string]$Archive, [string]$DestinationRoot) {
         }
       }
 
-      $normalizedName = $name.TrimEnd('\').ToUpperInvariant()
-      if ($seen.ContainsKey($normalizedName)) {
+      $normalizedName = $name.TrimEnd('\')
+      if ($seen.Contains($normalizedName)) {
         throw "Release archive contains duplicate ZIP entries: $($entry.FullName)"
       }
-      $seen[$normalizedName] = $true
+      [void]$seen.Add($normalizedName)
 
       $external = [BitConverter]::ToUInt32(
         [BitConverter]::GetBytes([int32]$entry.ExternalAttributes), 0
