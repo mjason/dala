@@ -5431,6 +5431,17 @@ receive_frame = fn receive_frame, socket, expected_type ->
   end
 end
 
+probe =
+  case Holder.connect(id) do
+    {:ok, probe_socket} ->
+      :gen_tcp.close(probe_socket)
+      :ok
+
+    {:error, reason} ->
+      endpoint = File.read(Holder.socket_path(id))
+      raise "holder connect probe failed: #{inspect(reason)} endpoint=#{inspect(endpoint)}"
+  end
+
 {:ok, socket, true} = Holder.attach_or_spawn(id, [])
 _hello = receive_frame.(receive_frame, socket, Holder.type_hello())
 :ok = Holder.send_input(socket, "Write-Output ('#{marker_left}' + '#{marker_right}')\r")
