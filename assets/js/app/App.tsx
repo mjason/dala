@@ -322,6 +322,14 @@ export default function App() {
     // you type lands in the wrong shell.
   };
 
+  // Desktop client only (⌘1..9 / Ctrl+1..9 menu accelerators): jump to the
+  // Nth tab of the active session.
+  const switchTabRef = useRef((_index: number) => {});
+  switchTabRef.current = (index) => {
+    const tab = tabs[index - 1];
+    if (tab) setActiveId(tab.id);
+  };
+
   const toggleComposerRef = useRef(() => {});
   const quickShellRef = useRef(() => {});
   quickShellRef.current = () => void createAttachedShell();
@@ -628,6 +636,7 @@ export default function App() {
   useGlobalShortcuts({
     termActions,
     quickShellRef,
+    switchTabRef,
     toggleComposerRef,
     voiceShortcutRef,
     toggleSidebar,

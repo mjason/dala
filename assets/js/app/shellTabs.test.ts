@@ -4,6 +4,7 @@ import {
   attachedCount,
   rootIdOf,
   rootSessions,
+  tabActionIndex,
   tabAfterClose,
   tabsFor,
 } from "./shellTabs";
@@ -86,6 +87,18 @@ describe("sessionTabs", () => {
 
     it("has nothing to offer when nothing is left", () => {
       expect(tabAfterClose(all, "other", undefined)).toBeUndefined();
+    });
+  });
+
+  describe("desktop-client menu actions", () => {
+    it("reads the tab index out of a switch-tab action", () => {
+      expect(tabActionIndex("switch-tab-1")).toBe(1);
+      expect(tabActionIndex("switch-tab-9")).toBe(9);
+    });
+
+    it("ignores every other menu action", () => {
+      const others = ["composer", "voice", "quick-shell", "switch-tab-0", "switch-tab-10", ""];
+      for (const action of others) expect(tabActionIndex(action)).toBeNull();
     });
   });
 });

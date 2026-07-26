@@ -551,6 +551,21 @@ function rebuildMenu() {
           accelerator: menuShortcuts.voice,
           click: () => sendMenuAction("voice"),
         },
+        {
+          // Tab switching is high-frequency (server switching is not), so it
+          // gets the shortcut every terminal user already knows: ⌘1..9 like
+          // iTerm2 on macOS, Ctrl+1..9 elsewhere. These live ONLY here: in a
+          // browser tab those combos belong to the browser's own tabs and
+          // never reach the page, while an Electron window has no such
+          // conflict. Not rebindable via Settings → Shortcuts (they are not
+          // in menuShortcuts), because the web app cannot own them.
+          label: t("switchTab"),
+          submenu: Array.from({ length: 9 }, (_unused, index) => ({
+            label: String(index + 1),
+            accelerator: `CmdOrCtrl+${index + 1}`,
+            click: () => sendMenuAction(`switch-tab-${index + 1}`),
+          })),
+        },
         { type: "separator" },
         // Role items keep Electron's behavior/accelerators but need explicit
         // labels — without one they render in English regardless of locale.

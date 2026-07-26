@@ -65,3 +65,15 @@ export function tabAfterClose(
   if (parentId && sessions.some((s) => s.id === parentId && s.id !== closedId)) return parentId;
   return mruFallback;
 }
+
+/**
+ * The 1-based tab index a desktop-client menu action asks for, or null.
+ *
+ * These arrive as `dala:menu` events (⌘1..9 / Ctrl+1..9 accelerators in the
+ * Electron menu) rather than keydowns: inside a browser tab those combos are
+ * the browser's own and never reach the page.
+ */
+export function tabActionIndex(action: string): number | null {
+  const match = /^switch-tab-([1-9])$/.exec(action);
+  return match ? Number(match[1]) : null;
+}

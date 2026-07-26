@@ -9,6 +9,7 @@ import {
   onBindingsChange,
 } from "../keybindings";
 import { hasOpenWindows, inTextInput } from "../shortcuts";
+import { tabActionIndex } from "../shellTabs";
 
 /**
  * Plain Ctrl+letter combos typed inside the terminal defer to readline
@@ -43,6 +44,8 @@ export function renameBlocked(e: Pick<KeyboardEvent, "target">): boolean {
 export function useGlobalShortcuts(opts: {
   termActions: RefObject<TerminalActions | null>;
   quickShellRef: RefObject<() => void>;
+  /** Desktop-client menu only: jump to the Nth tab of the active session. */
+  switchTabRef: RefObject<(index: number) => void>;
   toggleComposerRef: RefObject<() => void>;
   voiceShortcutRef: RefObject<() => void>;
   toggleSidebar: () => void;
@@ -58,6 +61,7 @@ export function useGlobalShortcuts(opts: {
   const {
     termActions,
     quickShellRef,
+    switchTabRef,
     toggleComposerRef,
     voiceShortcutRef,
     toggleSidebar,
@@ -184,6 +188,8 @@ export function useGlobalShortcuts(opts: {
       if (action === "composer") toggleComposerRef.current();
       if (action === "quick-shell") quickShellRef.current();
       if (action === "voice") voiceShortcutRef.current();
+      const tabIndex = tabActionIndex(String(action ?? ""));
+      if (tabIndex) switchTabRef.current(tabIndex);
     };
     // Clicking a native client notification jumps to the session it came from.
     const handleNotifyClick = (event: Event) => {
