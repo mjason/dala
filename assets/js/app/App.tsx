@@ -20,6 +20,7 @@ import {
   rootIdOf,
   rootSessions,
   tabsFor,
+  warmPreference,
 } from "./shellTabs";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
@@ -562,7 +563,7 @@ export default function App() {
   }, [termPool]);
   useEffect(() => {
     if (!connected || termPool.length >= termPoolLimit) return;
-    const preferred = ordered.map((session) => session.id);
+    const preferred = warmPreference(ordered, activeRootId);
     const warm = () => {
       setTermPool((prev) => {
         const candidate = nextWarmSession(prev, preferred, termPoolLimit);
@@ -581,7 +582,7 @@ export default function App() {
 
     const id = globalThis.setTimeout(warm, 250);
     return () => globalThis.clearTimeout(id);
-  }, [connected, ordered, termPool, termPoolLimit]);
+  }, [connected, ordered, activeRootId, termPool, termPoolLimit]);
 
   // Leader-menu executor: every which-key leaf lands here.
   const runLeaderAction = (action: string) => {

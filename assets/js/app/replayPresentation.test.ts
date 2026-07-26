@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  joinHistoryBatches,
   replayBatchPlan,
   replayCoverTransition,
   replayPresentation,
@@ -93,4 +94,40 @@ describe("replay presentation", () => {
       expect(shouldDiscardHiddenOutput(trigger, reset, empty)).toBe(expected);
     },
   );
+
+  describe("history loads", () => {
+    it("keeps the frame the user is reading", () => {
+      expect(replayPresentation("history", true)).toBe("preserve");
+    });
+
+    it("still covers a cold attach — there is no frame to keep", () => {
+      expect(replayPresentation("history", false)).toBe("cover");
+    });
+
+    it("planned as one completed batch, it needs no cover", () => {
+      const snapshot = new TextEncoder().encode("\u001bcscrollback");
+      expect(replayBatchPlan("preserve", true, true, snapshot)).toEqual({
+        presentation: "preserve",
+        resetBeforeWrite: false,
+      });
+    });
+  });
+
+  describe("joinHistoryBatches", () => {
+    const bytes = (...values: number[]) => new Uint8Array(values);
+
+    it("concatenates the held batches with the final one", () => {
+      expect(joinHistoryBatches([bytes(1, 2), bytes(3)], bytes(4, 5))).toEqual(bytes(1, 2, 3, 4, 5));
+    });
+
+    it("returns the single batch untouched", () => {
+      const only = bytes(7, 8);
+      expect(joinHistoryBatches([], only)).toBe(only);
+    });
+
+    it("drops an empty final payload (the holder-unavailable sentinel)", () => {
+      expect(joinHistoryBatches([bytes(1)], "")).toEqual(bytes(1));
+      expect(joinHistoryBatches([], "")).toBe("");
+    });
+  });
 });

@@ -41,6 +41,7 @@ import { createLazyHistory, type HistoryIntent } from "./lazyHistory";
 import { recoverOwnedWebglContext } from "./rendererLifecycle";
 import {
   replayBatchPlan,
+  joinHistoryBatches,
   replayCoverTransition,
   replayPresentation,
   shouldDiscardHiddenOutput,
@@ -670,12 +671,20 @@ export default function TerminalView({
       const lazyHistory = createLazyHistory();
       const hiddenOutput = createHiddenOutputBuffer(HIDDEN_OUTPUT_LIMIT);
 
+      // Batches of a history snapshot, held back so the buffer is replaced in
+      // one write. Without this the terminal showed the top of the scrollback,
+      // then jumped — which is why the load used to sit behind an opaque cover
+      // for as long as the whole 512 KiB snapshot took to arrive and parse.
+      let historyBatches: Uint8Array[] | null = null;
+      let historyResetPending = false;
+
       const requestHistory = (intent: HistoryIntent) => {
         if (!lazyHistory.request(intent)) return false;
-        // History loading is an explicit repaint: cover the terminal while
-        // the larger scrollback snapshot replaces its buffer.
+        // The snapshot is a superset of the visible screen, so the old frame
+        // stays up while it travels (see replayPresentation).
         gate.waitForReplay();
-        beginReplay("reset");
+        historyBatches = [];
+        beginReplay("history");
         phxChannel.push("load_history", {});
         return true;
       };
@@ -918,10 +927,13 @@ export default function TerminalView({
               );
               if (replayPresentationRef.current === "cover") setReplaying(true);
             }
+            // Buffered history is one write from the user's point of view, so
+            // it is planned as a single completed batch: `!done` must not
+            // force a cover over a frame that is never partially replaced.
             const plan = replayBatchPlan(
               replayPresentationRef.current,
               reset,
-              payload.done,
+              payload.done || historyBatches !== null,
               data,
             );
             replayPresentationRef.current = plan.presentation;
@@ -936,7 +948,10 @@ export default function TerminalView({
             // A holder snapshot starts with in-band RIS. Let xterm process it
             // in write order so a warm frame is not synchronously cleared one
             // macrotask before the replacement bytes are parsed.
-            if (plan.resetBeforeWrite) term.reset();
+            // Buffering defers the reset to the single write below; resetting
+            // now would blank the very frame this path exists to preserve.
+            if (plan.resetBeforeWrite && historyBatches === null) term.reset();
+            if (plan.resetBeforeWrite && historyBatches !== null) historyResetPending = true;
           }
 
           if (firstBatch) wireReplayTrace = flowStats.replay;
@@ -950,13 +965,34 @@ export default function TerminalView({
             payload.data === "",
           );
           if (release) wireReplayTrace = null;
+
+          // Hold every history batch until the last one, then replace the
+          // buffer in a single write: no intermediate scroll state is ever
+          // shown, which is what let the cover go away.
+          if (historyBatches !== null && !release) {
+            if (data !== "") historyBatches.push(data as Uint8Array);
+            return;
+          }
+
+          const payloadData =
+            historyBatches !== null ? joinHistoryBatches(historyBatches, data) : data;
+
+          if (historyBatches !== null) {
+            historyBatches = null;
+            if (historyResetPending) {
+              historyResetPending = false;
+              term.reset();
+            }
+          }
+
           if (release) {
-            writeCounted(data, () => {
+            writeCounted(payloadData, () => {
               // xterm parses writes asynchronously. A newer replay can start
               // after this batch is queued but before this callback runs; in
               // that case only its byte acknowledgement is still relevant.
               if (!gate.replayParsed(generation)) return;
               term.scrollToBottom();
+              // (a scroll intent below moves the viewport back up)
               hasRenderedFrameRef.current = true;
               if (replayTrace) {
                 replayTrace.completedAt = window.performance.now();
@@ -991,7 +1027,7 @@ export default function TerminalView({
             // Replay scrolling is settled only by the current generation's
             // final callback. An older batch may finish parsing after a newer
             // replay starts and must have no scroll side effects.
-            writeCounted(data, undefined, false);
+            writeCounted(payloadData, undefined, false);
           }
         },
         output: (payload) => {

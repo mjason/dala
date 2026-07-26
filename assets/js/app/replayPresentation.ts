@@ -5,7 +5,7 @@
  * the user-facing cover. Keeping a warm frame avoids a black flash while a
  * screen-only catch-up is travelling through the channel and xterm parser.
  */
-export type ReplayTrigger = "initial" | "catch-up" | "flow" | "reset";
+export type ReplayTrigger = "initial" | "catch-up" | "flow" | "reset" | "history";
 export type ReplayPresentation = "cover" | "preserve";
 export type ReplayBatchPlan = {
   presentation: ReplayPresentation;
@@ -17,7 +17,14 @@ export function replayPresentation(
   hasRenderedFrame: boolean,
 ): ReplayPresentation {
   if (!hasRenderedFrame) return "cover";
-  return trigger === "catch-up" || trigger === "flow" ? "preserve" : "cover";
+  // "history" is a superset of what is already on screen — the same viewport
+  // with scrollback above it — and its batches are buffered into one write
+  // (see TerminalView), so there is no partial state to hide. Covering it
+  // blacked the terminal out for as long as a 512 KiB snapshot took to fetch
+  // and parse, which is what "scrolling up goes black for seconds" was.
+  return trigger === "catch-up" || trigger === "flow" || trigger === "history"
+    ? "preserve"
+    : "cover";
 }
 
 /** Cover activation is atomic; only revealing the settled frame may fade. */
@@ -67,4 +74,27 @@ export function shouldDiscardHiddenOutput(
   emptyPayload: boolean,
 ): boolean {
   return trigger === "catch-up" && !reset && emptyPayload;
+}
+
+/**
+ * Concatenate the held history batches with the final one. Empty payloads
+ * (the holder-unavailable sentinel) contribute nothing.
+ */
+export function joinHistoryBatches(
+  batches: readonly Uint8Array[],
+  last: Uint8Array | string,
+): Uint8Array | string {
+  const tail = typeof last === "string" ? null : last;
+  const parts = tail && tail.byteLength > 0 ? [...batches, tail] : [...batches];
+  if (parts.length === 0) return typeof last === "string" ? last : new Uint8Array(0);
+  if (parts.length === 1) return parts[0];
+
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return joined;
 }

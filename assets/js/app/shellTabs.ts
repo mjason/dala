@@ -77,3 +77,20 @@ export function tabActionIndex(action: string): number | null {
   const match = /^switch-tab-([1-9])$/.exec(action);
   return match ? Number(match[1]) : null;
 }
+
+/**
+ * What the background warm-up should keep alive, highest priority first.
+ *
+ * Switching sessions is rare; switching tabs inside the one you are in is
+ * constant — so the active session's tabs come first, then the other sidebar
+ * sessions. Other sessions' tabs are deliberately absent: each warm terminal
+ * costs a pair of full-size canvases, and warming tabs nobody is looking at
+ * spends that budget where it can never be felt.
+ */
+export function warmPreference(ordered: Session[], activeRootId: string | null): string[] {
+  const activeTabs = activeRootId
+    ? ordered.filter((s) => s.parentId === activeRootId).map((s) => s.id)
+    : [];
+  const roots = ordered.filter((s) => !s.parentId).map((s) => s.id);
+  return [...activeTabs, ...roots];
+}

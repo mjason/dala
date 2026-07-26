@@ -7,6 +7,7 @@ import {
   tabActionIndex,
   tabAfterClose,
   tabsFor,
+  warmPreference,
 } from "./shellTabs";
 
 function session(id: string, over: Partial<Session> = {}): Session {
@@ -99,6 +100,21 @@ describe("sessionTabs", () => {
     it("ignores every other menu action", () => {
       const others = ["composer", "voice", "quick-shell", "switch-tab-0", "switch-tab-10", ""];
       for (const action of others) expect(tabActionIndex(action)).toBeNull();
+    });
+  });
+
+  describe("what the background warm-up keeps alive", () => {
+    it("puts the active session's tabs first — those are the frequent switches", () => {
+      expect(warmPreference(all, "root")).toEqual(["first", "second", "root", "other"]);
+    });
+
+    it("never warms another session's tabs: each costs a pair of canvases", () => {
+      const elsewhere = session("elsewhere", { parentId: "other" });
+      expect(warmPreference([...all, elsewhere], "root")).not.toContain("elsewhere");
+    });
+
+    it("falls back to the sidebar sessions when nothing is active", () => {
+      expect(warmPreference(all, null)).toEqual(["root", "other"]);
     });
   });
 });
