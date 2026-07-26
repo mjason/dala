@@ -26,7 +26,6 @@ vi.mock("./settings/McpSection", () => ({ default: () => <div id="mcp-section" /
 vi.mock("../ash_rpc", () => ({
   closeSession: vi.fn(),
   deleteSession: vi.fn(),
-  kickViewers: vi.fn(),
   renameSession: vi.fn(),
   restartSession: vi.fn(),
   setScrollbackLimit: vi.fn(),

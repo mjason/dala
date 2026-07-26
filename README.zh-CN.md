@@ -80,7 +80,7 @@ cd clients/desktop && npm install && npm run build
 
 侧栏列出你的所有 shell，`+` 新建。每个 shell 都在服务端独立的 holder 进程里运行：
 关标签页、刷新、重启 dala、升级版本都不会杀死 shell。只有 shell 进程自己退出时
-才会出现重启浮层。会话设置（改名、滚动缓存大小、结束/重启、删除）在 `settings` 按钮里；如果 zellij/tmux 被别处遗忘的窗口压小（右边和底部空一圈），设置里的「断开其他查看端」可一键把其他客户端踢掉。
+才会出现重启浮层。会话设置（改名、滚动缓存大小、结束/重启、删除）在 `settings` 按钮里。
 
 ### 快捷键
 
@@ -147,9 +147,8 @@ dala 讲 Warp 的开源 cli-agent 协议（OSC 777）。给 agent 装上对应
 - **Composer 自动开合**：agent 干活/完成时自动展开输入条备稿（不抢
   焦点），等待授权时自动收起（授权要在终端里按键）
 
-Codex 无需插件（原生 OSC 9 通知即可触发完成提醒）。注意 zellij/tmux
-不透传内层 OSC，插件事件在多路复用器里收不到。已运行的旧会话需重启
-其 shell 才启用（holder 随发版更新，但存量进程仍是旧的）。
+Codex 无需插件（原生 OSC 9 通知即可触发完成提醒）。已运行的旧会话需
+重启其 shell 才启用（holder 随发版更新，但存量进程仍是旧的）。
 
 **小技巧——Claude Code 变宽之后**：终端宽度变化后（比如手机接管了会话
 尺寸），Claude Code 的对话记录仍按旧宽度硬换行（上游问题
@@ -157,16 +156,11 @@ Codex 无需插件（原生 OSC 9 通知即可触发完成提醒）。注意 zel
 连按两次 **Ctrl+O** 即可让记录按当前宽度重新渲染，无需重启——退出后也
 可用 `claude --continue` 重进。
 
-### 目录跟随与 zellij/tmux
+### 目录跟随
 
-文件抽屉跟随终端的当前目录，**zellij/tmux 内部无需任何配置**：dala
-检测到会话里跑着多路复用器后，直接向它查询**聚焦 pane** 的目录
-（zellij 走 `dump-layout`，tmux 走 `pane_current_path`），切 pane、
-切 tab 都会跟。注意 zellij/tmux 并不向外透传 pane 里的 OSC 7，所以
-shell 钩子帮不了这个场景。
-
-不用多路复用器时靠顶层 shell 轮询（2s）即可；想要 `cd` 即时生效，
-可选配 **OSC 7** 上报，在 `~/.zshrc` 加：
+文件抽屉跟随终端的当前目录。默认靠 shell 轮询（2s）；想要 `cd` 即时
+生效，可选配 **OSC 7** 上报（一旦上报就完全取代轮询），在 `~/.zshrc`
+加：
 
 ```zsh
 _osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }

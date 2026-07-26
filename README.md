@@ -90,9 +90,7 @@ The sidebar lists your shells. `+` creates one; each runs on the server inside i
 own holder process, so closing the tab, refreshing, restarting dala or upgrading
 it never kills a shell. A session that *exited* (the process itself ended) shows
 an overlay with a restart button. Per-session settings (rename, scrollback cache
-size, kill/restart, delete) are behind the `settings` button; if zellij/tmux
-gets shrunk by a forgotten window elsewhere (blank stripes on the right and
-bottom), "Detach other viewers" in settings kicks the other clients.
+size, kill/restart, delete) are behind the `settings` button.
 
 ### Keyboard shortcuts
 
@@ -164,8 +162,8 @@ With that in place:
   stealing focus), closes when an approval wants raw terminal keys
 
 Codex needs no plugin (its native OSC 9 notifications work). Note that
-zellij/tmux do not forward inner OSC, and sessions started before an
-upgrade need their shell restarted (holders outlive releases).
+sessions started before an upgrade need their shell restarted (holders
+outlive releases).
 
 **Tip — Claude Code after a width change**: when the terminal width changes
 (e.g. a phone takes over the session's size), Claude Code keeps its
@@ -174,18 +172,11 @@ transcript hard-wrapped at the old width (upstream:
 Press **Ctrl+O twice** to re-render the transcript at the current width
 in-session — or `claude --continue` after exiting.
 
-### Directory following & zellij/tmux
+### Directory following
 
-The file drawer follows the terminal's working directory. Inside
-zellij/tmux this works **with zero configuration**: when dala detects a
-multiplexer client in the session it asks the multiplexer itself for the
-*focused pane's* directory (zellij via `dump-layout`, tmux via
-`pane_current_path`) — switching panes and tabs follows too. Note that
-multiplexers do *not* forward OSC 7 from their panes, so shell hooks cannot
-cover this case.
-
-Without a multiplexer, the top-level shell is polled (2s); for instant
-`cd` updates you can optionally add the standard **OSC 7** report.
+The file drawer follows the terminal's working directory. The shell is polled
+(2s) by default; for instant `cd` updates you can optionally add the standard
+**OSC 7** report, which takes over from polling entirely.
 For zsh (`~/.zshrc`):
 
 ```zsh

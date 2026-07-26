@@ -15,7 +15,7 @@ export type KeyGuideGroup = {
 
 /**
  * Key tricks that belong to the apps running INSIDE the terminal (claude
- * code, zellij, opencode, …) — dala's own rebindable shortcuts live in
+ * code, opencode, …) — dala's own rebindable shortcuts live in
  * keybindings.ts. Rendered in Settings → Shortcuts below the dala list;
  * add a row here and a matching description key in i18n/locales.ts.
  */
@@ -25,13 +25,6 @@ export const KEY_GUIDE: KeyGuideGroup[] = [
     rows: [
       { keys: ["Ctrl+O", "Ctrl+O"], descKey: "keyGuideClaudeReflow" },
       { keys: ["Shift+Tab"], descKey: "keyGuideClaudePermissions" },
-    ],
-  },
-  {
-    app: "zellij",
-    rows: [
-      { keys: ["Ctrl+G"], descKey: "keyGuideZellijLock" },
-      { keys: ["Ctrl+S"], descKey: "keyGuideZellijScroll" },
     ],
   },
   {

@@ -251,34 +251,6 @@ defmodule Dala.Terminal.SessionTest do
     eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
   end
 
-  test "cwd follows the focused pane inside zellij" do
-    if System.find_executable("zellij") do
-      session = create_session!()
-      mux = "dala-test-mux-#{System.unique_integer([:positive])}"
-
-      on_exit(fn ->
-        System.cmd("zellij", ["kill-session", mux], stderr_to_stdout: true)
-        System.cmd("zellij", ["delete-session", mux, "--force"], stderr_to_stdout: true)
-      end)
-
-      Server.set_visibility(session.id, self(), "session-test", true)
-      Server.input(session.id, "zellij attach --create #{mux}\r")
-      Process.sleep(500)
-      Dala.Terminal.ProcessSnapshot.refresh()
-
-      # zellij takes a moment to come up; keep issuing cd until the poll
-      # (2s cadence) reports the inner pane's directory.
-      eventually(
-        fn ->
-          Server.input(session.id, "cd /tmp\r")
-          Process.sleep(400)
-          Dala.Terminal.get_session!(session.id).cwd == "/tmp"
-        end,
-        50
-      )
-    end
-  end
-
   test "OSC 777 agent events reach the sessions topic" do
     session = create_session!()
     Phoenix.PubSub.subscribe(Dala.PubSub, "sessions")
@@ -299,13 +271,6 @@ defmodule Dala.Terminal.SessionTest do
 
     Server.input(session.id, "sleep 5\r")
     eventually(fn -> match?({:ok, %{cmdline: "sleep 5"}}, Server.foreground_app(session.id)) end)
-  end
-
-  test "kick_viewers on a plain shell reports no multiplexer" do
-    session = create_session!()
-    eventually(fn -> match?({:error, _}, Dala.Terminal.Server.kick_viewers(session.id)) end)
-    assert {:error, message} = Dala.Terminal.Server.kick_viewers(session.id)
-    assert message =~ ~r/no zellij|not running/
   end
 
   test "ephemeral session destroys itself when the shell exits" do

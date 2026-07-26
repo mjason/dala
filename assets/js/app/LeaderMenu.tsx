@@ -73,7 +73,6 @@ export const LEADER_TREE: LeaderNode[] = [
         action: "resetTerminal",
         bindingId: "resetTerminal",
       },
-      { key: "k", labelKey: "kickViewersAction", action: "kickViewers" },
     ],
   },
   {

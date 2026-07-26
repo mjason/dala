@@ -17,7 +17,6 @@ defmodule Dala.Terminal do
       rpc_action :set_scrollback_limit, :set_scrollback_limit
       rpc_action :agent_commands, :agent_commands
       rpc_action :foreground_app, :foreground_app
-      rpc_action :kick_viewers, :kick_viewers
       rpc_action :close_session, :close
       rpc_action :restart_session, :restart
       rpc_action :delete_session, :destroy
@@ -72,7 +71,6 @@ defmodule Dala.Terminal do
       define :reorder_session, action: :reorder, args: [{:optional, :before_id}]
       define :agent_commands, action: :agent_commands, args: [:id]
       define :foreground_app, action: :foreground_app, args: [:id]
-      define :kick_viewers, action: :kick_viewers, args: [:id]
       define :mark_running, action: :mark_running
       define :mark_exited, action: :mark_exited
       define :update_cwd, action: :update_cwd

@@ -20,6 +20,11 @@ defmodule Dala.Terminal.Server do
 
   @cwd_poll_visible_ms 2_000
   @cwd_poll_hidden_ms 30_000
+  # A cwd poll this slow means its `/proc` read is starving — a saturated CPU,
+  # or a filesystem that is not answering. Polling at the same cadence then only
+  # adds to the contention.
+  @cwd_poll_slow_ms 500
+  @cwd_poll_backoff 4
   @force_stop_ms 5_000
   # Hard bounds on the PTY size, applied at the single choke point every
   # resize funnels through (apply_size/4). The channel clamps its inputs too,
@@ -32,8 +37,18 @@ defmodule Dala.Terminal.Server do
   @min_cols 2
   @max_cols 1000
   # Output micro-batching window: chunks landing within it after the first
-  # are coalesced into one broadcast (see buffer_output/2).
+  # are coalesced into one broadcast (see buffer_output/2). It ADAPTS — the
+  # floor keeps keystroke echo immediate, and a shell that keeps the window full
+  # (build logs, TUI redraw storms) widens it toward the ceiling, where one
+  # broadcast replaces several: every one of them costs a payload map, a PubSub
+  # fan-out, and per client a JSON encode plus a compressed websocket frame.
+  # The ceiling stays inside a single render frame, so nothing is felt.
   @out_batch_ms 5
+  @out_batch_max_ms 20
+  # Silence this long means the storm is over: the next window opens tight
+  # again. Without it a widened window would outlive the burst that earned it,
+  # and the first redraw after a keystroke would sit in a batch it does not need.
+  @out_idle_ms 100
   # MCP wraps this text in JSON and then in an MCP text content string, so a
   # 64 KiB UTF-8 payload keeps the final wire response bounded after escaping.
   @snapshot_max_bytes 64 * 1024
@@ -42,7 +57,18 @@ defmodule Dala.Terminal.Server do
   @max_pending_repaints 64
   @max_pending_text_snapshots 64
   @wait_timeout_max_ms 25_000
+  # The holder drops a client whose socket write blocks for two seconds, so a
+  # CPU-starved server gets detached with its shell still perfectly alive.
+  # Reattaching is the right answer, but a holder that keeps kicking us must
+  # not livelock this process — bound consecutive reattaches, and forget the
+  # count once a connection has proven itself stable.
+  @max_reconnects 5
+  @reconnect_reset_ms 10_000
   @waiters_per_session 8
+  # Retained window for substring waits. It holds RAW terminal bytes, so a
+  # TUI-heavy stream carries less matchable text in it than a plain log does —
+  # the alternative, filtering every chunk of every session up front, cost more
+  # than the entire rest of the output path.
   @match_buffer_bytes 128 * 1024
 
   # When the shell dies, whatever modes its programs had enabled (mouse
@@ -167,24 +193,11 @@ defmodule Dala.Terminal.Server do
   @doc """
   The CLI agent (claude/opencode/codex/gemini/copilot) running in the
   foreground of this session, "shell" at a plain prompt, or "unknown".
-  Sees through zellij/tmux via the focused pane's command.
   """
   def foreground_app(id) do
     case whereis(id) do
       nil -> {:error, "session is not running"}
       pid -> GenServer.call(pid, :foreground_app, 5_000)
-    end
-  end
-
-  @doc """
-  Detach other zellij/tmux clients of the multiplexer session this shell is
-  attached to (they cap its size to the smallest window). See
-  `Dala.Terminal.Viewers`.
-  """
-  def kick_viewers(id) do
-    case whereis(id) do
-      nil -> {:error, "session is not running"}
-      pid -> GenServer.call(pid, :kick_viewers, 10_000)
     end
   end
 
@@ -334,6 +347,46 @@ defmodule Dala.Terminal.Server do
     :ok
   end
 
+  ## Pacing policies
+  #
+  # Pure, and public so they can be exercised without a live session.
+
+  @doc "The tight output batch window used while a session is interactive."
+  def out_window_floor, do: @out_batch_ms
+
+  @doc "The widest output batch window, still inside one render frame."
+  def out_window_ceiling, do: @out_batch_max_ms
+
+  @doc """
+  The next output batch window. `coalesced?` reports whether the window that
+  just closed had actually buffered anything behind its first chunk: while it
+  keeps doing so the shell is flooding, so widen; the moment one closes empty
+  the session is interactive again and the floor is restored.
+  """
+  def next_out_window(_current, false), do: @out_batch_ms
+
+  def next_out_window(current, true), do: min(current * 2, @out_batch_max_ms)
+
+  @doc """
+  The window to open for a chunk arriving `gap_ms` after the last one. A gap
+  long enough to count as silence retires whatever width the previous burst
+  earned, so interactive output is never batched on the strength of a storm
+  that has already ended.
+  """
+  def out_window_after_gap(_current, gap_ms) when gap_ms >= @out_idle_ms, do: @out_batch_ms
+
+  def out_window_after_gap(current, _gap_ms), do: current
+
+  @doc """
+  The delay before the next cwd poll, given how long the one that just finished
+  took. A slow poll backs the cadence off proportionally, never past the
+  background cadence a hidden session already uses.
+  """
+  def next_cwd_poll_interval(base_interval, duration_ms) when duration_ms >= @cwd_poll_slow_ms,
+    do: min(base_interval * @cwd_poll_backoff, @cwd_poll_hidden_ms)
+
+  def next_cwd_poll_interval(base_interval, _duration_ms), do: base_interval
+
   ## Server
 
   @impl true
@@ -388,7 +441,11 @@ defmodule Dala.Terminal.Server do
           recent_agent_events: [],
           # Bounded raw chunks cover the read -> wait registration race for
           # substring matching without rebuilding the emulator on each chunk.
+          # RAW, not filtered: the plain text a substring wait compares against
+          # is derived on demand (see plain_text_for_waiters/2).
           recent_output: [],
+          # Only meaningful while a substring waiter is registered; the filter
+          # is not run — and thus not carried — outside those stretches.
           match_filter_state: :text,
           input_jobs: :queue.new(),
           input_active: nil,
@@ -410,25 +467,25 @@ defmodule Dala.Terminal.Server do
           # attaches/resizes (which adopts the session).
           size_owner_device: session.size_owner_device,
           # Once the stream reports cwd via OSC 7, /proc polling stops: the
-          # top-level shell's cwd is stale inside zellij/tmux.
+          # shell itself is the better source.
           osc7_cwd?: false,
-          # While a mux is active its top-level OSC 7 is only a candidate.
-          # Retain it so a poll that observes mux exit can apply it at once.
-          osc7_cwd_candidate: nil,
-          # zellij/tmux client detected under the shell — cwd then comes
-          # from the multiplexer itself (focused pane), not OSC 7 or /proc.
-          mux: nil,
-          # A failed mux CLI query is not proof that the mux exited. Keep OSC
-          # 7 as a candidate until the next process-discovery pass confirms it.
-          mux_recheck?: false,
           # Output micro-batching: the first chunk after idle is emitted
           # immediately (keystroke echo pays no extra latency); chunks that
           # land within the 5ms window after it — TUI redraw storms — are
           # coalesced into one broadcast.
           out_buf: [],
           out_timer: nil,
+          out_window: @out_batch_ms,
+          out_last_at: System.monotonic_time(:millisecond),
           size: {24, 80},
-          reattached?: reattached?
+          reattached?: reattached?,
+          # Reattach bookkeeping (see handle_holder_detach/1): when the current
+          # connection was established, how many times we have reconnected
+          # without a stable stretch in between, and whether the next HELLO
+          # owes every client a repair snapshot.
+          connected_at: System.monotonic_time(:millisecond),
+          reconnects: 0,
+          reattach_repair?: false
         }
 
         {:ok, state, {:continue, :post_init}}
@@ -503,25 +560,10 @@ defmodule Dala.Terminal.Server do
 
   @impl true
   def handle_call(:foreground_app, _from, state) do
-    cmdline =
-      case state.mux do
-        nil ->
-          Dala.Terminal.Viewers.foreground_cmdline(state.shell_pid)
-
-        mux ->
-          case Dala.Terminal.MuxCwd.focused_command(mux) do
-            {:ok, command} -> command
-            :error -> nil
-          end
-      end
+    cmdline = Dala.Terminal.Foreground.cmdline(state.shell_pid)
 
     {:reply,
      {:ok, %{app: Dala.Terminal.AgentEvent.classify_app(cmdline), cmdline: cmdline || ""}}, state}
-  end
-
-  @impl true
-  def handle_call(:kick_viewers, _from, state) do
-    {:reply, Dala.Terminal.Viewers.kick_others(state.shell_pid), state}
   end
 
   @impl true
@@ -697,20 +739,45 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
-    # The holder vanished without an EXIT frame (crash, or it kicked us for a
-    # newer client). Its exit file has the status when the shell died.
-    exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
+    _ = :gen_tcp.close(socket)
+    handle_holder_detach(%{state | socket: nil})
   end
 
   def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state) do
-    exit_with_status(Holder.take_exit_status(state.id), %{state | socket: nil})
+    _ = :gen_tcp.close(socket)
+    handle_holder_detach(%{state | socket: nil})
+  end
+
+  # The delivery window closed after its bounded burst. Re-open it immediately:
+  # the backlog belongs in the holder's bounded ring, but only while this
+  # socket keeps asking for more.
+  def handle_info({:tcp_passive, socket}, %{socket: socket} = state) do
+    _ = Holder.rearm(socket)
+    {:noreply, state}
+  end
+
+  # A superseded connection. Reattaching makes the holder hang up the socket we
+  # left behind, so its trailing frames and close notice arrive AFTER the live
+  # one is in place; neither may disturb it.
+  def handle_info({:tcp, _stale_socket, _payload}, state), do: {:noreply, state}
+
+  def handle_info({:tcp_passive, _stale_socket}, state), do: {:noreply, state}
+
+  def handle_info({:tcp_closed, stale_socket}, state) do
+    _ = :gen_tcp.close(stale_socket)
+    {:noreply, state}
+  end
+
+  def handle_info({:tcp_error, stale_socket, _reason}, state) do
+    _ = :gen_tcp.close(stale_socket)
+    {:noreply, state}
   end
 
   # CWD poll workers are monitored separately from channel and waiter
   # monitors. This clause must precede the generic DOWN handlers below.
   def handle_info(
         {:DOWN, monitor, :process, pid, reason},
-        %{cwd_poll_task: %{monitor: monitor, pid: pid}} = state
+        %{cwd_poll_task: %{monitor: monitor, pid: pid, started_at: started_at}} = state
       ) do
     # A worker that exits before returning a result (for example, an
     # exception in process discovery) must not stop the terminal server.
@@ -718,7 +785,7 @@ defmodule Dala.Terminal.Server do
       do: Logger.debug("cwd poll task exited for #{state.id}: #{inspect(reason)}")
 
     state = %{state | cwd_poll_task: nil}
-    {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
+    {:noreply, schedule_cwd_poll(state, cwd_poll_delay(state, started_at))}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
@@ -772,7 +839,15 @@ defmodule Dala.Terminal.Server do
   end
 
   def handle_info(:flush_output, state) do
-    {:noreply, flush_buffer(%{state | out_timer: nil})}
+    coalesced? = state.out_buf != []
+    state = flush_buffer(%{state | out_timer: nil})
+
+    {:noreply,
+     %{
+       state
+       | out_window: next_out_window(state.out_window, coalesced?),
+         out_last_at: System.monotonic_time(:millisecond)
+     }}
   end
 
   def handle_info({:wait_timeout, ref}, state) do
@@ -801,100 +876,53 @@ defmodule Dala.Terminal.Server do
   def handle_info({:poll_cwd, _stale_ref}, state), do: {:noreply, state}
 
   # A worker sends its result before the monitor DOWN signal. The ref guard is
-  # important: a canceled/old query must never overwrite a newer mux detection
-  # result (or a cwd reported by OSC 7 in the meantime).
+  # important: a canceled/old query must never overwrite a cwd reported by
+  # OSC 7 in the meantime.
   def handle_info(
-        {task_ref,
-         {:cwd_poll_result, %{status: status, mux: mux, cwd: cwd, osc7_cwd?: queried_osc7?}}},
-        %{cwd_poll_task: %{ref: task_ref, monitor: monitor}} = state
+        {task_ref, {:cwd_poll_result, %{cwd: cwd}}},
+        %{cwd_poll_task: %{ref: task_ref, monitor: monitor, started_at: started_at}} = state
       ) do
     Process.demonitor(monitor, [:flush])
+    delay = cwd_poll_delay(state, started_at)
+    state = Map.put(state, :cwd_poll_task, nil)
 
-    state =
-      state
-      |> Map.put(:cwd_poll_task, nil)
-      |> Map.put(:mux, mux)
-      |> Map.put(:mux_recheck?, status == :mux_query_failed)
+    # A shell that reports OSC 7 is authoritative about its own cwd; the poll
+    # only covers shells that do not (and its answer is stale for those that
+    # started reporting while the query was in flight).
+    state = if cwd && not state.osc7_cwd?, do: apply_cwd(state, cwd), else: state
 
-    # A mux result remains authoritative because panes do not forward OSC 7.
-    # Only process discovery can confirm that the mux disappeared; a CLI
-    # timeout/query failure merely forces discovery again on the next tick.
-    state =
-      cond do
-        status == :mux && mux != nil && cwd ->
-          apply_cwd(state, cwd)
-
-        status == :confirmed_no_mux &&
-            is_binary(Map.get(state, :osc7_cwd_candidate)) ->
-          apply_cwd(state, state.osc7_cwd_candidate)
-
-        status == :confirmed_no_mux && cwd &&
-            not (state.osc7_cwd? && not queried_osc7?) ->
-          apply_cwd(state, cwd)
-
-        true ->
-          state
-      end
-
-    {:noreply, schedule_cwd_poll(state, cwd_poll_interval(state))}
+    {:noreply, schedule_cwd_poll(state, delay)}
   end
 
   def handle_info({task_ref, {:cwd_poll_result, _stale_result}}, state)
       when is_reference(task_ref),
       do: {:noreply, state}
 
-  # zellij/tmux never forward their panes' OSC 7 and their shells live under
-  # a detached server invisible to /proc — while a multiplexer client runs in
-  # this session, ask the multiplexer itself for the focused pane's cwd.
-  # Detection reads the shared short-lived process snapshot while no mux is
-  # known, so all sessions amortize one `ps` scan; a failing mux query falls
-  # back to detection on the next tick.
-  # Start at most one query at a time. A query captures only the small set of
-  # values it needs; never hand the mutable GenServer state to the task.
+  # Reading another process's cwd goes through the filesystem, which can block
+  # on a wedged mount — keep it off this GenServer so attach, resize and
+  # size_info stay responsive. At most one query runs at a time, and it captures
+  # only the values it needs: never hand the mutable state to the worker.
   defp start_cwd_poll(state) do
     if is_nil(Map.get(state, :cwd_poll_task)) do
-      query = %{shell_pid: state.shell_pid, mux: state.mux, osc7_cwd?: state.osc7_cwd?}
+      shell_pid = state.shell_pid
+      skip? = state.osc7_cwd?
       owner = self()
       task_ref = make_ref()
 
       {pid, monitor} =
         spawn_monitor(fn ->
-          send(owner, {task_ref, {:cwd_poll_result, poll_cwd_once(query)}})
+          cwd = if skip?, do: nil, else: current_cwd(shell_pid)
+          send(owner, {task_ref, {:cwd_poll_result, %{cwd: cwd}}})
         end)
 
-      Map.put(state, :cwd_poll_task, %{pid: pid, ref: task_ref, monitor: monitor})
+      Map.put(state, :cwd_poll_task, %{
+        pid: pid,
+        ref: task_ref,
+        monitor: monitor,
+        started_at: System.monotonic_time(:millisecond)
+      })
     else
       state
-    end
-  end
-
-  # Runs entirely in the task process. The returned map is deliberately
-  # detached from the server state so a late result can be rejected by ref.
-  defp poll_cwd_once(%{mux: nil, shell_pid: shell_pid, osc7_cwd?: osc7_cwd?}) do
-    case Dala.Terminal.Viewers.find_mux(shell_pid) do
-      nil ->
-        %{
-          status: :confirmed_no_mux,
-          mux: nil,
-          cwd: if(osc7_cwd?, do: nil, else: current_cwd(shell_pid)),
-          osc7_cwd?: osc7_cwd?
-        }
-
-      mux ->
-        case Dala.Terminal.MuxCwd.cwd(mux) do
-          {:ok, cwd} ->
-            %{status: :mux, mux: mux, cwd: cwd, osc7_cwd?: osc7_cwd?}
-
-          :error ->
-            %{status: :mux_query_failed, mux: nil, cwd: nil, osc7_cwd?: osc7_cwd?}
-        end
-    end
-  end
-
-  defp poll_cwd_once(%{mux: mux, osc7_cwd?: osc7_cwd?}) do
-    case Dala.Terminal.MuxCwd.cwd(mux) do
-      {:ok, cwd} -> %{status: :mux, mux: mux, cwd: cwd, osc7_cwd?: osc7_cwd?}
-      :error -> %{status: :mux_query_failed, mux: nil, cwd: nil, osc7_cwd?: osc7_cwd?}
     end
   end
 
@@ -935,17 +963,9 @@ defmodule Dala.Terminal.Server do
         {:noreply, buffer_output(state, payload)}
 
       frame_type == Holder.type_cwd() ->
-        # OSC 7 from the stream. While a multiplexer runs, only its own
-        # top-level shell can reach us (panes are not forwarded), so its
-        # report is only a candidate. If an in-flight query discovers that the
-        # mux exited, the result handler promotes this value immediately.
-        state = Map.merge(state, %{osc7_cwd?: true, osc7_cwd_candidate: payload})
-
-        if state.mux || Map.get(state, :mux_recheck?, false) do
-          {:noreply, state}
-        else
-          {:noreply, apply_cwd(state, payload)}
-        end
+        # OSC 7 from the stream: the shell tells us where it is, which retires
+        # /proc polling for this session.
+        {:noreply, apply_cwd(%{state | osc7_cwd?: true}, payload)}
 
       frame_type == Holder.type_agent() ->
         {:noreply, broadcast_agent_event(state, payload)}
@@ -1027,10 +1047,19 @@ defmodule Dala.Terminal.Server do
         # matches the size this server last applied.
         {rows, cols} = state.size
 
-        {:noreply,
-         apply_size(%{state | shell_pid: shell_pid, holder_proto: holder_proto}, rows, cols,
-           force: true
-         )}
+        state =
+          apply_size(%{state | shell_pid: shell_pid, holder_proto: holder_proto}, rows, cols,
+            force: true
+          )
+
+        # A reattach after an unexpected detach: the holder cleared its transit
+        # queue, so the bytes it dropped in between exist only in its emulator.
+        # Now that the resize is ahead of it on the FIFO, repair every client.
+        if state.reattach_repair? do
+          {:noreply, request_repaint_all(%{state | reattach_repair?: false})}
+        else
+          {:noreply, state}
+        end
 
       frame_type == Holder.type_exit() ->
         <<status::32>> = payload
@@ -1039,6 +1068,91 @@ defmodule Dala.Terminal.Server do
       true ->
         {:noreply, state}
     end
+  end
+
+  # The connection to the holder is gone. That is NOT proof the shell died: the
+  # holder hangs up on a client whose write blocks for two seconds, which is
+  # what a saturated machine does to this process — and it also kicks us when a
+  # newer client connects. The exit-status file is the only authoritative death
+  # certificate; while the holder is still listening, reattach to it instead of
+  # burying a live shell as "exited" (which leaves the UI with a dead terminal
+  # and a no-op kill button until the session is rejoined).
+  defp handle_holder_detach(state) do
+    case Holder.take_exit_status(state.id) do
+      status when is_integer(status) -> exit_with_status(status, state)
+      nil -> reattach_or_exit(state)
+    end
+  end
+
+  defp reattach_or_exit(state) do
+    now = System.monotonic_time(:millisecond)
+
+    reconnects =
+      if now - state.connected_at >= @reconnect_reset_ms, do: 0, else: state.reconnects
+
+    cond do
+      not Holder.exists?(state.id) ->
+        exit_with_status(nil, state)
+
+      reconnects >= @max_reconnects ->
+        Logger.warning(
+          "holder for #{state.id} hung up #{reconnects} times in a row; marking exited"
+        )
+
+        exit_with_status(nil, state)
+
+      true ->
+        case Holder.connect(state.id) do
+          {:ok, socket} ->
+            Logger.info("reattached to the holder for #{state.id} after an unexpected detach")
+
+            state =
+              %{
+                state
+                | socket: socket,
+                  connected_at: now,
+                  reconnects: reconnects + 1,
+                  # The repair waits for HELLO so the holder applies this
+                  # server's size before rendering the snapshot.
+                  reattach_repair?: true
+              }
+              |> flush_now()
+              |> settle_pending_holder_requests()
+
+            {:noreply, state}
+
+          {:error, _reason} ->
+            exit_with_status(nil, state)
+        end
+    end
+  end
+
+  # Requests queued against the connection that just died. The holder answers
+  # over the socket's FIFO, so those slots can never be filled — settle every
+  # requester with the same sentinel used for an unreachable holder rather than
+  # leaving channels covered and MCP callers blocked until they time out.
+  defp settle_pending_holder_requests(state) do
+    Enum.each(:queue.to_list(state.pending_repaints), fn
+      {:all_clients, _history_budget} ->
+        :ok
+
+      {client, _history_budget, request_ref} ->
+        send_repaint(client, "", state.seq, false, request_ref)
+
+      {client, _history_budget} ->
+        send_repaint(client, "", state.seq, false, nil)
+    end)
+
+    Enum.each(:queue.to_list(state.pending_text_snapshots), fn {:caller, from} ->
+      GenServer.reply(from, {:error, "terminal holder reconnected, retry the snapshot"})
+    end)
+
+    %{
+      state
+      | pending_repaints: :queue.new(),
+        pending_text_snapshots: :queue.new(),
+        deferred_all_client_repaint: false
+    }
   end
 
   defp exit_with_status(status, state) do
@@ -1102,6 +1216,13 @@ defmodule Dala.Terminal.Server do
     if MapSet.size(state.visible_clients) > 0,
       do: @cwd_poll_visible_ms,
       else: @cwd_poll_hidden_ms
+  end
+
+  # The cadence this session wants, backed off by what the poll that just
+  # finished actually cost.
+  defp cwd_poll_delay(state, started_at) do
+    duration = System.monotonic_time(:millisecond) - started_at
+    next_cwd_poll_interval(cwd_poll_interval(state), duration)
   end
 
   defp schedule_cwd_poll(state, delay) do
@@ -1284,8 +1405,10 @@ defmodule Dala.Terminal.Server do
     if state.out_timer do
       %{state | out_buf: [data | state.out_buf]}
     else
-      timer = Process.send_after(self(), :flush_output, @out_batch_ms)
-      %{emit(state, data) | out_timer: timer}
+      now = System.monotonic_time(:millisecond)
+      window = out_window_after_gap(state.out_window, now - state.out_last_at)
+      timer = Process.send_after(self(), :flush_output, window)
+      %{emit(state, data) | out_timer: timer, out_window: window, out_last_at: now}
     end
   end
 
@@ -1303,7 +1426,7 @@ defmodule Dala.Terminal.Server do
 
   defp emit(state, data) do
     seq = state.seq + 1
-    {plain, match_filter_state} = Dala.Terminal.AnsiText.filter(data, state.match_filter_state)
+    {plain, match_filter_state} = plain_text_for_waiters(state, data)
 
     DalaWeb.Endpoint.broadcast("terminal:" <> state.id, "output", %{
       data: Base.encode64(data),
@@ -1314,10 +1437,34 @@ defmodule Dala.Terminal.Server do
       state
       | seq: seq,
         last_output_seq: seq,
-        recent_output: retain_recent_output(state.recent_output, seq, plain),
+        recent_output: retain_recent_output(state.recent_output, seq, data),
         match_filter_state: match_filter_state
     }
     |> wake_output_waiters(plain)
+  end
+
+  # Plain text is needed ONLY to feed MCP substring waits. Extracting it from
+  # every chunk cost more than the rest of the output path combined (base64,
+  # JSON and websocket compression together), all of it inside this process —
+  # the one that also has to answer keystrokes, resize and repaint. So it is
+  # spent only while a substring waiter is actually registered; `recent_output`
+  # retains the RAW bytes and is filtered on demand when a wait arrives.
+  #
+  # The filter state is not carried across a stretch with no waiter (there was
+  # nothing to carry it through), so a sequence straddling the moment a waiter
+  # registers may contribute a few of its parameter bytes to that waiter's
+  # match text. Substring waits tolerate that; paying for every byte of every
+  # session to close it does not pay for itself.
+  defp plain_text_for_waiters(state, data) do
+    if match_waiters?(state) do
+      Dala.Terminal.AnsiText.filter(data, state.match_filter_state)
+    else
+      {nil, :text}
+    end
+  end
+
+  defp match_waiters?(state) do
+    Enum.any?(state.waiters, fn {_ref, waiter} -> is_binary(waiter.match) end)
   end
 
   defp start_next_input_job(%{input_active: active} = state) when not is_nil(active), do: state
@@ -1371,7 +1518,8 @@ defmodule Dala.Terminal.Server do
           after_seq: after_seq,
           events: events,
           match: match,
-          match_buffer: recent_output_since(state, after_seq),
+          match_buffer:
+            if(is_binary(match), do: recent_plain_output_since(state, after_seq), else: ""),
           timer: Process.send_after(self(), {:wait_timeout, ref}, timeout),
           monitor: Process.monitor(caller)
         }
@@ -1462,6 +1610,18 @@ defmodule Dala.Terminal.Server do
     take_recent_output(rest, remaining - byte_size(kept), [{seq, kept} | acc])
   end
 
+  # The retained window holds raw terminal bytes; a substring wait compares
+  # against plain text, so the filter runs here — once per wait call instead of
+  # once per output chunk.
+  defp recent_plain_output_since(state, after_seq) do
+    {plain, _state} =
+      state
+      |> recent_output_since(after_seq)
+      |> Dala.Terminal.AnsiText.filter()
+
+    plain
+  end
+
   defp recent_output_since(state, after_seq) do
     state.recent_output
     |> Enum.filter(fn {seq, _data} -> seq > after_seq end)
@@ -1470,7 +1630,7 @@ defmodule Dala.Terminal.Server do
   end
 
   defp recent_output_matches?(state, after_seq, match) do
-    :binary.match(recent_output_since(state, after_seq), match) != :nomatch
+    :binary.match(recent_plain_output_since(state, after_seq), match) != :nomatch
   end
 
   defp tail_bytes(data, limit) when byte_size(data) <= limit, do: data

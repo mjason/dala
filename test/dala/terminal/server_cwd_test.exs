@@ -1,4 +1,10 @@
 defmodule Dala.Terminal.ServerCwdTest do
+  @moduledoc """
+  cwd tracking. A shell that reports OSC 7 is authoritative about where it is;
+  the poll only covers shells that do not, and it runs in a throwaway worker so
+  a filesystem stall can never reach the session's synchronous calls.
+  """
+
   use Dala.DataCase, async: false
 
   alias Dala.Terminal.{Holder, Server}
@@ -20,11 +26,11 @@ defmodule Dala.Terminal.ServerCwdTest do
     session
   end
 
-  defp fake_bin(dir, name, script) do
-    path = Path.join(dir, name)
-    File.write!(path, "#!/bin/sh\n" <> script)
-    File.chmod!(path, 0o755)
-    path
+  defp tmp_dir(prefix) do
+    dir = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
   end
 
   defp tcp_pair do
@@ -47,41 +53,46 @@ defmodule Dala.Terminal.ServerCwdTest do
     end
   end
 
-  test "a slow mux cwd query does not block attach or size_info" do
-    dir = Path.join(System.tmp_dir!(), "dala-server-cwd-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    old_path = System.get_env("PATH")
+  # A worker that never answers — what a /proc read against a wedged mount
+  # looks like from this server's point of view.
+  defp stall_cwd_worker(pid) do
+    owner = self()
 
-    fake_bin(dir, "zellij", "sleep 2\nprintf 'layout { cwd \"/tmp\" }\\n'\n")
-    System.put_env("PATH", dir <> ":" <> old_path)
+    :sys.replace_state(pid, fn state ->
+      worker = spawn(fn -> receive do: (:never -> :ok) end)
+      monitor = Process.monitor(worker)
+      send(owner, {:worker, worker})
 
-    on_exit(fn ->
-      System.put_env("PATH", old_path)
-      File.rm_rf!(dir)
+      %{
+        state
+        | cwd_poll_task: %{
+            pid: worker,
+            ref: make_ref(),
+            monitor: monitor,
+            started_at: System.monotonic_time(:millisecond)
+          }
+      }
     end)
 
+    receive do
+      {:worker, worker} -> worker
+    after
+      1_000 -> flunk("worker was never injected")
+    end
+  end
+
+  test "a stalled cwd worker does not block attach or size_info" do
     session = create_session!()
     pid = Server.whereis(session.id)
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
-    # Force the poller down the mux path; the fake executable intentionally
-    # takes longer than a user-facing synchronous call should ever wait.
-    :sys.replace_state(pid, fn state -> %{state | mux: {:zellij, "slow"}} end)
-    %{cwd_poll_timer: {poll_ref, _timer}} = :sys.get_state(pid)
-    send(pid, {:poll_cwd, poll_ref})
-    eventually(fn -> not is_nil(:sys.get_state(pid).cwd_poll_task) end)
-
-    # A late result from a canceled worker must not mutate the live query.
+    worker = stall_cwd_worker(pid)
     task_ref = :sys.get_state(pid).cwd_poll_task.ref
 
-    send(pid, {
-      make_ref(),
-      {:cwd_poll_result, %{status: :mux, mux: {:zellij, "stale"}, cwd: "/tmp", osc7_cwd?: false}}
-    })
-
+    # A late result from a canceled/older query must never settle the live one.
+    send(pid, {make_ref(), {:cwd_poll_result, %{cwd: "/tmp"}}})
     Process.sleep(20)
     assert :sys.get_state(pid).cwd_poll_task.ref == task_ref
-    refute :sys.get_state(pid).mux == {:zellij, "stale"}
 
     started = System.monotonic_time(:millisecond)
     assert %{rows: 24, cols: 80} = Server.size_info(session.id)
@@ -90,37 +101,29 @@ defmodule Dala.Terminal.ServerCwdTest do
 
     assert elapsed < 500, "synchronous terminal calls took #{elapsed}ms"
 
-    # The shell can leave the mux while this slow query is in flight. Its OSC
-    # 7 report arrives while state.mux still points at zellij; retain it, then
-    # promote it as soon as the query reports that the mux disappeared.
-    candidate =
-      Path.join(
-        System.tmp_dir!(),
-        "dala-server-cwd-candidate-#{System.unique_integer([:positive])}"
-      )
+    Process.exit(worker, :kill)
+  end
 
-    File.mkdir_p!(candidate)
-    on_exit(fn -> File.rm_rf!(candidate) end)
+  test "an OSC 7 report owns the cwd and retires /proc polling" do
+    reported = tmp_dir("dala-server-cwd-osc7")
+    session = create_session!()
+    pid = Server.whereis(session.id)
+    eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
-    state = :sys.get_state(pid)
-    worker_pid = state.cwd_poll_task.pid
-    socket = state.socket
-    send(pid, {:tcp, socket, <<Holder.type_cwd(), candidate::binary>>})
-
-    eventually(fn -> :sys.get_state(pid).osc7_cwd_candidate == candidate end)
-    refute :sys.get_state(pid).cwd == candidate
-
-    send(pid, {
-      task_ref,
-      {:cwd_poll_result, %{status: :confirmed_no_mux, mux: nil, cwd: nil, osc7_cwd?: false}}
-    })
+    socket = :sys.get_state(pid).socket
+    send(pid, {:tcp, socket, <<Holder.type_cwd()>> <> reported})
 
     eventually(fn ->
       state = :sys.get_state(pid)
-      state.mux == nil and state.cwd == candidate
+      state.cwd == reported and state.osc7_cwd?
     end)
 
-    Process.exit(worker_pid, :kill)
+    # The next poll must not walk this back to the shell process's own cwd.
+    %{cwd_poll_timer: {poll_ref, _timer}} = :sys.get_state(pid)
+    send(pid, {:poll_cwd, poll_ref})
+
+    eventually(fn -> is_nil(:sys.get_state(pid).cwd_poll_task) end)
+    assert :sys.get_state(pid).cwd == reported
   end
 
   test "visibility changes keep a fast visible cadence and back off when hidden" do
@@ -156,95 +159,20 @@ defmodule Dala.Terminal.ServerCwdTest do
     assert is_integer(remaining) and remaining >= 20_000
   end
 
-  test "a transient mux query failure does not promote an old OSC 7 candidate" do
-    dir =
-      Path.join(System.tmp_dir!(), "dala-server-cwd-fail-#{System.unique_integer([:positive])}")
-
-    candidate = Path.join(dir, "candidate")
-    File.mkdir_p!(candidate)
-    old_path = System.get_env("PATH")
-
-    fake_bin(dir, "zellij", "exit 1\n")
-    System.put_env("PATH", dir <> ":" <> old_path)
-
-    on_exit(fn ->
-      System.put_env("PATH", old_path)
-      File.rm_rf!(dir)
-    end)
-
-    session = create_session!()
-    pid = Server.whereis(session.id)
-    eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
-
-    initial_cwd = :sys.get_state(pid).cwd
-    :sys.replace_state(pid, fn state -> %{state | mux: {:zellij, "transient"}} end)
-
-    state = :sys.get_state(pid)
-    send(pid, {:tcp, state.socket, <<Holder.type_cwd(), candidate::binary>>})
-    eventually(fn -> :sys.get_state(pid).osc7_cwd_candidate == candidate end)
-    assert :sys.get_state(pid).cwd == initial_cwd
-
-    %{cwd_poll_timer: {poll_ref, _timer}} = :sys.get_state(pid)
-    send(pid, {:poll_cwd, poll_ref})
-
-    eventually(fn ->
-      state = :sys.get_state(pid)
-      is_nil(state.cwd_poll_task) and is_nil(state.mux)
-    end)
-
-    # zellij returned an error, which is not proof that the shell left it.
-    assert :sys.get_state(pid).cwd == initial_cwd
-
-    latest_candidate = Path.join(dir, "latest-candidate")
-    File.mkdir_p!(latest_candidate)
-    state = :sys.get_state(pid)
-    send(pid, {:tcp, state.socket, <<Holder.type_cwd(), latest_candidate::binary>>})
-
-    eventually(fn -> :sys.get_state(pid).osc7_cwd_candidate == latest_candidate end)
-
-    # Discovery has not yet confirmed mux exit. A fresh OSC 7 report updates
-    # the candidate, but cannot become authoritative during this uncertainty.
-    assert :sys.get_state(pid).cwd == initial_cwd
-
-    # The following mux discovery pass can confirm that no mux client remains;
-    # only that result may promote the top-level shell's OSC 7 candidate.
-    %{cwd_poll_timer: {confirm_ref, _timer}} = :sys.get_state(pid)
-    send(pid, {:poll_cwd, confirm_ref})
-    eventually(fn -> :sys.get_state(pid).cwd == latest_candidate end)
-  end
-
   test "a cwd poll starts when upgrading state without the cwd_poll_task key" do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "dala-server-cwd-upgrade-#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
-    old_path = System.get_env("PATH")
-
-    fake_bin(dir, "zellij", "sleep 2\nexit 1\n")
-    System.put_env("PATH", dir <> ":" <> old_path)
-
-    on_exit(fn ->
-      System.put_env("PATH", old_path)
-      File.rm_rf!(dir)
-    end)
-
     session = create_session!()
     pid = Server.whereis(session.id)
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
-    :sys.replace_state(pid, fn state ->
-      state
-      |> Map.delete(:cwd_poll_task)
-      |> Map.put(:mux, {:zellij, "slow-upgrade"})
-    end)
+    :sys.replace_state(pid, fn state -> Map.delete(state, :cwd_poll_task) end)
 
     %{cwd_poll_timer: {poll_ref, _timer}} = :sys.get_state(pid)
     send(pid, {:poll_cwd, poll_ref})
 
-    eventually(fn -> is_map(Map.get(:sys.get_state(pid), :cwd_poll_task)) end)
+    # The poll path has to tolerate a state map from an older release and put
+    # the key back rather than crash the session.
+    eventually(fn -> Map.has_key?(:sys.get_state(pid), :cwd_poll_task) end)
+    assert Process.alive?(pid)
   end
 
   test "terminate cleans up a copied old state without the cwd_poll_task key" do
@@ -268,29 +196,13 @@ defmodule Dala.Terminal.ServerCwdTest do
   end
 
   test "stopping a session terminates an in-flight cwd worker" do
-    dir =
-      Path.join(System.tmp_dir!(), "dala-server-cwd-stop-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(dir)
-    old_path = System.get_env("PATH")
-    fake_bin(dir, "zellij", "sleep 2\nprintf 'layout { cwd \"/tmp\" }\\n'\n")
-    System.put_env("PATH", dir <> ":" <> old_path)
-
-    on_exit(fn ->
-      System.put_env("PATH", old_path)
-      File.rm_rf!(dir)
-    end)
-
     session = create_session!()
     pid = Server.whereis(session.id)
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
-    :sys.replace_state(pid, fn state -> %{state | mux: {:zellij, "slow"}} end)
-    %{cwd_poll_timer: {poll_ref, _timer}} = :sys.get_state(pid)
-    send(pid, {:poll_cwd, poll_ref})
-    eventually(fn -> not is_nil(:sys.get_state(pid).cwd_poll_task) end)
 
-    worker_pid = :sys.get_state(pid).cwd_poll_task.pid
+    worker = stall_cwd_worker(pid)
+
     Server.shutdown_and_wait(session.id)
-    refute Process.alive?(worker_pid)
+    refute Process.alive?(worker)
   end
 end

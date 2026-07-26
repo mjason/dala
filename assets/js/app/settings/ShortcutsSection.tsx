@@ -85,7 +85,7 @@ export default function ShortcutsSection() {
       </button>
 
       {/* Reference-only guide for keys owned by the TUI apps themselves
-          (claude code, zellij, …) — nothing here is rebindable, the data
+          (claude code, opencode, …) — nothing here is rebindable, the data
           lives in keyGuide.ts. */}
       <div id="key-guide" className="space-y-3 border-t border-line pt-4">
         <div className="space-y-1">

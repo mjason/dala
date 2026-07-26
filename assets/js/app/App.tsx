@@ -3,7 +3,6 @@ import {
   createSession,
   deleteSession,
   foregroundApp,
-  kickViewers,
   setSpeechSettings,
   speechSettings,
 } from "../ash_rpc";
@@ -455,39 +454,14 @@ export default function App() {
       fields: ["app", "cmdline"],
     });
     if (appResult.ok) detected = appResult.data.app;
-    // Live sniffing can miss mid-task (a spawned tool owns the tty, a mux
-    // pane reports its own command) — the OSC-777-recorded agent backs it up.
+    // Live sniffing can miss mid-task (a spawned tool owns the tty) — the
+    // OSC-777-recorded agent backs it up.
     const app = resolveApp(detected, composerApps[active.id] ?? null);
 
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     for (const step of planDelivery(app, text, submit)) {
       termActions.current?.sendText(step.text, step.submit, step.strategy);
       if (step.waitAfterMs) await wait(step.waitAfterMs);
-    }
-  };
-
-  // Kick other zellij/tmux viewers capping this terminal's size, then
-  // reassert our own size.
-  const kickOtherViewers = async () => {
-    if (!active) return;
-    const result = await call<{
-      multiplexer: string;
-      kicked: number;
-      error: string | null;
-    }>(kickViewers, {
-      input: { id: active.id },
-      fields: ["multiplexer", "session", "kicked", "error"],
-    });
-    if (result.ok) {
-      const data = result.data;
-      if (data.error) {
-        toast(data.error);
-      } else {
-        toast(t("kickedViewers", { count: data.kicked, mux: data.multiplexer }));
-        termActions.current?.refit();
-      }
-    } else {
-      toast(result.error || t("somethingWentWrong"));
     }
   };
 
@@ -649,9 +623,6 @@ export default function App() {
         break;
       case "resetTerminal":
         termActions.current?.reset();
-        break;
-      case "kickViewers":
-        void kickOtherViewers();
         break;
       case "drawer":
         toggleDrawer();
@@ -944,9 +915,6 @@ export default function App() {
                       id="toolbar-tools"
                       className="absolute right-0 top-full z-40 mt-1.5 flex w-56 flex-col rounded-lg border border-line bg-bg1 py-1 shadow-2xl shadow-black/50"
                     >
-                      {toolsItem("kick-viewers-header-button", t("kickViewersAction"), t("kickViewersHint"), null, () =>
-                        void kickOtherViewers(),
-                      )}
                       {toolsItem("terminal-refit-button", t("refitWidth"), t("refitDesc"), modShiftCombo("f"), () =>
                         termActions.current?.refit(true),
                       )}
@@ -1000,9 +968,6 @@ export default function App() {
                       )}
                       {overflowItem("overflow-quick-open", t("quickOpenTitle"), () =>
                         setQuickOpen(true),
-                      )}
-                      {overflowItem("overflow-kick-viewers", t("kickViewers"), () =>
-                        void kickOtherViewers(),
                       )}
                       {overflowItem("overflow-refit", t("refitWidth"), () =>
                         termActions.current?.refit(true),

@@ -23,6 +23,14 @@ defmodule Dala.Terminal.Holder do
 
   @connect_attempts 40
   @connect_delay_ms 25
+  # Bounded delivery window. `active: true` let the socket driver pour every
+  # frame a flooding shell produces into the terminal server's mailbox, so a
+  # keystroke could land behind megabytes of backlog. With a window, the
+  # backlog stays where it belongs: the holder's bounded ring, which drops old
+  # bytes and lets clients be repaired from its emulator. The server re-arms on
+  # `{:tcp_passive, socket}` (see `rearm/1`); forgetting to would leave the
+  # session permanently silent after the first burst.
+  @active_frames 16
 
   def type_hello, do: @type_hello
   def type_output, do: @type_output
@@ -117,12 +125,18 @@ defmodule Dala.Terminal.Holder do
       :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
         :binary,
         packet: 4,
-        active: true
+        active: @active_frames
       ])
     else
       {:error, :enoent}
     end
   end
+
+  @doc "Frames the socket delivers before the owner must re-arm it."
+  def active_frames, do: @active_frames
+
+  @doc "Re-opens the delivery window after a `{:tcp_passive, socket}` notice."
+  def rearm(socket), do: :inet.setopts(socket, active: @active_frames)
 
   def send_input(socket, data), do: :gen_tcp.send(socket, <<@type_input, data::binary>>)
 

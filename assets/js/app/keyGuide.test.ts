@@ -3,9 +3,9 @@ import { KEY_GUIDE } from "./keyGuide";
 import { en } from "./i18n/locales";
 
 describe("KEY_GUIDE", () => {
-  it("covers the claude code, zellij and opencode groups", () => {
+  it("covers the claude code and opencode groups", () => {
     expect(KEY_GUIDE.map((group) => group.app)).toEqual(
-      expect.arrayContaining(["claude code", "zellij", "opencode"]),
+      expect.arrayContaining(["claude code", "opencode"]),
     );
   });
 
