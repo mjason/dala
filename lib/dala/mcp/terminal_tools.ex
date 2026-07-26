@@ -463,7 +463,9 @@ defmodule Dala.Mcp.TerminalTools do
         "description" =>
           "Any Ctrl+letter, for example CTRL_C (interrupt), CTRL_O (zellij detach prefix, " <>
             "claude transcript reflow), CTRL_B (tmux prefix) or CTRL_U (clear the input line). " <>
-            "CTRL_S is XOFF and pauses terminal output until CTRL_Q."
+            "CTRL_S is XOFF and pauses terminal output until CTRL_Q. The Ctrl chords that are " <>
+            "not letters are named instead: CTRL_SPACE, CTRL_BACKSLASH (quit), " <>
+            "CTRL_RIGHT_BRACKET, CTRL_CARET, CTRL_UNDERSCORE."
       },
       %{
         "type" => "string",
@@ -475,8 +477,11 @@ defmodule Dala.Mcp.TerminalTools do
       },
       %{
         "type" => "string",
-        "pattern" => "^CHAR:[!-~]$",
-        "description" => "A literal printable ASCII key, for example CHAR:y, CHAR:a or CHAR:1."
+        "pattern" => "^CHAR:[^\\u0000-\\u001f\\u007f]{1,8}$",
+        "description" =>
+          "One literal character, any script: CHAR:y, CHAR:1, CHAR:好, CHAR:é or CHAR:👍. " <>
+            "Exactly one character (an emoji with modifiers counts as one); control keys have " <>
+            "their own names above."
       }
     ]
   end

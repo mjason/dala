@@ -206,6 +206,38 @@ defmodule Dala.Mcp.TerminalToolsTest do
            end)
   end
 
+  test "a non-ASCII key and a non-letter Ctrl chord reach the PTY", %{session: session} do
+    result_path =
+      Path.join(System.tmp_dir!(), "dala-utf8-key-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(result_path) end)
+
+    # Read until Enter, not a byte/character count: bash's `read -N` counts
+    # characters, so a UTF-8 key would make a byte count wait forever.
+    Server.input(
+      session.id,
+      "IFS= read -rs keys; printf '%s' \"$keys\" | od -An -tx1 > #{result_path}\r"
+    )
+
+    assert eventually(fn ->
+             match?({:ok, _}, TerminalTools.call("read_terminal", %{"session" => session.id}))
+           end)
+
+    assert {:ok, sent} =
+             TerminalTools.call("send_terminal_keys", %{
+               "session" => session.id,
+               "keys" => ["CHAR:好", "CTRL_UNDERSCORE", "ENTER"]
+             })
+
+    assert sent.keyCount == 3
+
+    assert eventually(fn ->
+             File.exists?(result_path) and
+               File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() ==
+                 "e5 a5 bd 1f"
+           end)
+  end
+
   test "terminal schemas explain TUI style fields and printable shortcut keys" do
     tools = TerminalTools.tools(%{read: true, control: true})
     read = Enum.find(tools, &(&1["name"] == "read_terminal"))
@@ -231,7 +263,12 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert control["pattern"] == "^CTRL_[A-Z]$"
     assert control["description"] =~ "CTRL_O"
     refute Enum.any?(named["enum"], &Regex.match?(~r/^CTRL_[A-Z]$/, &1))
-    assert character["pattern"] == "^CHAR:[!-~]$"
+    assert character["pattern"] == "^CHAR:[^\\u0000-\\u001f\\u007f]{1,8}$"
+    assert character["description"] =~ "any script"
+    # The non-letter Ctrl chords are named, so an agent can find them.
+    for key <- ~w(CTRL_SPACE CTRL_BACKSLASH CTRL_UNDERSCORE) do
+      assert key in named["enum"], "#{key} is not advertised"
+    end
   end
 
   test "duplicate names are rejected as ambiguous selectors", %{session: session} do

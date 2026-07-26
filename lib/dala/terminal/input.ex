@@ -22,7 +22,16 @@ defmodule Dala.Terminal.Input do
     # Alt as one write, never ESC-then-key in two frames: TUIs tell the two
     # apart by timing, and a gap would read as "pressed Escape, then Enter".
     "ALT_ENTER" => "\e\r",
-    "SHIFT_TAB" => "\e[Z"
+    "SHIFT_TAB" => "\e[Z",
+    # The C0 controls that are not Ctrl+letter. Named rather than matched by
+    # pattern: there are only these few, and "\\" and "^" inside a JSON Schema
+    # regex are awkward to write and worse to guess. Ctrl+[ and Ctrl+? are
+    # deliberately absent — they are ESC and BACKSPACE, already above.
+    "CTRL_SPACE" => <<0>>,
+    "CTRL_BACKSLASH" => <<28>>,
+    "CTRL_RIGHT_BRACKET" => <<29>>,
+    "CTRL_CARET" => <<30>>,
+    "CTRL_UNDERSCORE" => <<31>>
   }
   # xterm modifier encoding: 2 = Shift, 3 = Alt, 5 = Ctrl. These are how panes
   # and words are navigated (zellij Alt+arrows, readline Ctrl+arrows).
@@ -115,8 +124,20 @@ defmodule Dala.Terminal.Input do
   defp key_sequence("HOME", true), do: {:ok, "\eOH"}
   defp key_sequence("END", true), do: {:ok, "\eOF"}
 
-  defp key_sequence(<<"CHAR:", byte>>, _application_cursor?) when byte in ?!..?~,
-    do: {:ok, <<byte>>}
+  # One key, any script: a TUI hotkey may be 好, é or 👍. Exactly one grapheme
+  # (an emoji with modifiers counts as one) and no control characters — those
+  # have names of their own, and letting them in here would be a second, silent
+  # way to send them.
+  defp key_sequence(<<"CHAR:", rest::binary>>, _application_cursor?) when rest != "" do
+    with true <- byte_size(rest) <= 16,
+         [_single] <- String.graphemes(rest),
+         true <- printable_key?(rest) do
+      {:ok, rest}
+    else
+      _not_one_printable_character ->
+        {:error, "CHAR: takes exactly one non-control character, got #{inspect(rest)}"}
+    end
+  end
 
   # Ctrl+letter is the letter with its top three bits cleared: Ctrl+A is 1,
   # Ctrl+C is 3 (SIGINT), Ctrl+Z is 26.
@@ -131,6 +152,11 @@ defmodule Dala.Terminal.Input do
       {:ok, sequence} -> {:ok, sequence}
       :error -> {:error, "unsupported terminal key: #{inspect(key)}"}
     end
+  end
+
+  defp printable_key?(text) do
+    String.valid?(text) and
+      not String.match?(text, ~r/[\x00-\x1f\x7f]/)
   end
 
   defp build_message(app, text, attachments, submit) do

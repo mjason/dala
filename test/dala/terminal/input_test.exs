@@ -50,13 +50,21 @@ defmodule Dala.Terminal.InputTest do
     assert message =~ "unsupported terminal key"
   end
 
-  test "encodes explicit printable ASCII shortcuts as raw key bytes" do
+  test "encodes explicit literal shortcuts as raw key bytes" do
     assert {:ok, [{"y", 15}, {"A", 15}, {"1", 15}, {"\r", 0}]} =
              Input.key_frames(["CHAR:y", "CHAR:A", "CHAR:1", "ENTER"])
 
-    for invalid <- ["y", "CHAR:", "CHAR:yy", "CHAR: ", "CHAR:中", "CHAR:\e"] do
+    # A bare key name is not a literal, and CHAR: needs something after it.
+    for invalid <- ["y", "CHAR:"] do
       assert {:error, message} = Input.key_frames([invalid])
       assert message =~ "unsupported terminal key"
+    end
+
+    # Still refused, now with a message that says what the rule is. (CHAR:中
+    # and CHAR:" " are accepted these days — see the CHAR: describe block.)
+    for invalid <- ["CHAR:yy", "CHAR:\e"] do
+      assert {:error, message} = Input.key_frames([invalid])
+      assert message =~ "exactly one non-control character"
     end
   end
 
@@ -142,6 +150,47 @@ defmodule Dala.Terminal.InputTest do
 
       assert {:error, _} = Input.key_frames(["MEH"])
       assert {:error, _} = Input.key_frames(["ALT:"])
+    end
+  end
+
+  describe "the Ctrl chords that are not letters" do
+    test "each maps to its C0 byte" do
+      assert {:ok, [{<<0>>, 0}]} = Input.key_frames(["CTRL_SPACE"])
+      assert {:ok, [{<<28>>, 0}]} = Input.key_frames(["CTRL_BACKSLASH"])
+      assert {:ok, [{<<29>>, 0}]} = Input.key_frames(["CTRL_RIGHT_BRACKET"])
+      assert {:ok, [{<<30>>, 0}]} = Input.key_frames(["CTRL_CARET"])
+      assert {:ok, [{<<31>>, 0}]} = Input.key_frames(["CTRL_UNDERSCORE"])
+    end
+
+    test "Ctrl+[ and Ctrl+? are not duplicated: they are ESC and BACKSPACE" do
+      assert {:ok, [{"\e", 0}]} = Input.key_frames(["ESC"])
+      assert {:ok, [{<<127>>, 0}]} = Input.key_frames(["BACKSPACE"])
+      refute "CTRL_LEFT_BRACKET" in Input.supported_keys()
+      refute "CTRL_QUESTION" in Input.supported_keys()
+    end
+  end
+
+  describe "CHAR: takes one character of any script" do
+    test "ASCII keeps working" do
+      assert {:ok, [{"y", 0}]} = Input.key_frames(["CHAR:y"])
+      assert {:ok, [{"1", 0}]} = Input.key_frames(["CHAR:1"])
+      assert {:ok, [{"~", 0}]} = Input.key_frames(["CHAR:~"])
+    end
+
+    test "non-ASCII single keys reach the PTY as their UTF-8 bytes" do
+      assert {:ok, [{"好", 0}]} = Input.key_frames(["CHAR:好"])
+      assert {:ok, [{"é", 0}]} = Input.key_frames(["CHAR:é"])
+      # One grapheme, several code points: an emoji with a skin-tone modifier.
+      assert {:ok, [{"👍🏽", 0}]} = Input.key_frames(["CHAR:👍🏽"])
+    end
+
+    test "more than one character, or a control character, is refused" do
+      assert {:error, message} = Input.key_frames(["CHAR:ab"])
+      assert message =~ "exactly one"
+      assert {:error, _} = Input.key_frames(["CHAR:你好"])
+      assert {:error, _} = Input.key_frames(["CHAR:\n"])
+      assert {:error, _} = Input.key_frames(["CHAR:\e"])
+      assert {:error, _} = Input.key_frames(["CHAR:"])
     end
   end
 end
