@@ -177,4 +177,65 @@ test.describe("Given 一个会话需要额外的 shell", () => {
     await expect(page.locator("[data-attached-count]")).toHaveCount(0);
     await expect(h.sessionEntry(page, keep)).toBeVisible();
   });
+
+  test("切换 tab 不重建终端：实例复用、期间不出现遮罩", async ({ page }) => {
+    await h.gotoApp(page);
+    const id = await h.createSession(page, cwd);
+    ids.push(id);
+    await h.selectSession(page, id);
+    await waitTerminalReady(page);
+    await addShellTab(page);
+    await addShellTab(page);
+
+    const tabSessionIds = await tabs(page).evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-session-tab")),
+    );
+
+    // 只盖本用例这几个 tab 的印记：池子里可能还留着前面用例的终端，它们被
+    // 清理时印记消失，会造成假失败。
+    await page.evaluate((sessionIds) => {
+      let seq = 0;
+      window.__probes = {};
+      for (const sid of sessionIds) {
+        const term = (window.__dalaTerms ?? {})[sid];
+        if (!term) continue;
+        term.__probe = `p${(seq += 1)}`;
+        window.__probes[sid] = term.__probe;
+      }
+      window.__covers = [];
+      for (const pane of document.querySelectorAll("[data-terminal-pane]")) {
+        const paneId = pane.getAttribute("data-terminal-pane");
+        if (!paneId || !sessionIds.includes(paneId)) continue;
+        const node = pane.querySelector("[data-replay-state]");
+        if (!node) continue;
+        new MutationObserver(() => {
+          if (node.getAttribute("data-replay-state") === "cover") {
+            window.__covers.push(paneId);
+          }
+        }).observe(node, { attributes: true, attributeFilter: ["data-replay-state"] });
+      }
+    }, tabSessionIds);
+
+    for (const index of [0, 1, 2, 0, 2]) {
+      await tabs(page).nth(index).click();
+      await expect(activeTab(page)).toHaveAttribute(
+        "data-session-tab",
+        (await tabs(page).nth(index).getAttribute("data-session-tab")) ?? "",
+      );
+      await page.waitForTimeout(250);
+    }
+
+    // 印记还在 = 还是同一批 xterm 实例。重建过的话 __dalaTerms 里换了新对象，
+    // 印记就没了 —— 那意味着 channel 重连 + 冷启动重绘，也就是卡顿与闪屏的来源。
+    const survived = await page.evaluate(() =>
+      Object.entries(window.__probes).map(([sid, probe]) => ({
+        sid,
+        same: window.__dalaTerms?.[sid]?.__probe === probe,
+      })),
+    );
+    expect(survived.length).toBeGreaterThanOrEqual(3);
+    expect(survived.filter((entry) => !entry.same)).toEqual([]);
+
+    expect(await page.evaluate(() => window.__covers)).toEqual([]);
+  });
 });

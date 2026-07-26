@@ -53,10 +53,16 @@ function sessionEntry(page, id) {
   return page.locator(`#session-list div.group:has(button[data-delete-session="${id}"])`);
 }
 
-/** Make a session the active one by clicking its sidebar entry. */
+/**
+ * Make a session the active one by clicking its sidebar entry.
+ *
+ * Waits for THAT session's terminal, not for `.xterm` first(): pooled panes are
+ * siblings rendered in session order, so the first one in the DOM is often a
+ * hidden pane belonging to another session.
+ */
 async function selectSession(page, id) {
   await sessionEntry(page, id).click();
-  await expect(page.locator(".xterm").first()).toBeVisible();
+  await expect(page.locator(`[data-terminal-pane="${id}"] .xterm`)).toBeVisible();
 }
 
 /** Open the settings modal for the active session (header button). */

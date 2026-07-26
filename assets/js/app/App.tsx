@@ -561,6 +561,16 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("dala:terminal-pool", JSON.stringify(termPool));
   }, [termPool]);
+  // Membership from the pool (plus whatever is active right now), order from
+  // the session list — stable across switches.
+  const paneIds = React.useMemo(
+    () =>
+      ordered
+        .filter((s) => termPool.includes(s.id) || s.id === activeId)
+        .map((s) => s.id),
+    [ordered, termPool, activeId],
+  );
+
   useEffect(() => {
     if (!connected || termPool.length >= termPoolLimit) return;
     const preferred = warmPreference(ordered, activeRootId);
@@ -959,7 +969,13 @@ export default function App() {
             />
 
             <div className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
-              {(termPool.includes(active.id) ? termPool : [active.id, ...termPool]).map((id) => {
+              {/* Rendered in the SESSION order, not the MRU pool's order. The
+                  pool decides which terminals stay alive; using its order here
+                  reshuffled these children on every switch, and React tore the
+                  moved ones down and rebuilt them — a fresh xterm, a channel
+                  rejoin and a cold-attach repaint for every pooled terminal,
+                  on every single switch. */}
+              {paneIds.map((id) => {
                 const session = sessions.find((s) => s.id === id);
                 if (!session) return null;
                 const isActive = id === active.id;
