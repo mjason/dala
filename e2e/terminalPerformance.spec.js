@@ -173,6 +173,8 @@ test.describe("Given 用户有很多终端会话", () => {
     await expect.poll(() => bufferText(page), { timeout: 10_000 }).toContain("CURRENT-SCREEN");
     expect(await bufferText(page)).not.toContain("HISTORY-1800");
 
+    // Records every activation of the replay cover, so the assertion below can
+    // prove there was none (a poll would miss a cover that flashes).
     await page.evaluate((sessionId) => {
       const pane = document.querySelector(`[data-terminal-pane="${sessionId}"]`);
       const root = pane?.querySelector("[data-replay-state]");
@@ -200,18 +202,14 @@ test.describe("Given 用户有很多终端会话", () => {
     await page.locator(`[data-terminal-pane="${ids[0]}"] .xterm`).dispatchEvent("wheel", {
       deltaY: -120,
     });
-    await expect
-      .poll(() => page.evaluate(() => window.__dalaCoverActivation?.length ?? 0), {
-        timeout: 5_000,
-      })
-      .toBeGreaterThanOrEqual(2);
-    const coverActivation = await page.evaluate(() => window.__dalaCoverActivation);
-    expect(coverActivation.slice(0, 2)).toEqual([
-      { phase: "mutation", opacity: 1, transitionProperty: "none" },
-      { phase: "first-raf", opacity: 1, transitionProperty: "none" },
-    ]);
     await expect.poll(() => bufferText(page), { timeout: 10_000 }).toContain("HISTORY-1800");
     expect(await bufferText(page)).not.toContain("OLDEST-HISTORY");
+
+    // The snapshot arrives in several batches but is written in one go, so the
+    // frame the user is reading is never replaced part-way and never has to be
+    // hidden. Covering it here used to black the terminal out for as long as
+    // the whole 512 KiB snapshot took to fetch and parse.
+    expect(await page.evaluate(() => window.__dalaCoverActivation)).toEqual([]);
   });
 
   test("高 DPR 连续重排后仍完整渲染彩色中英文内容", async ({ page }) => {
