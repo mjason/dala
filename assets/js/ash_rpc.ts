@@ -3096,6 +3096,7 @@ export async function validateCloseSession(
 export type CreateSessionInput = {
   scrollbackLimit?: number;
   ephemeral?: boolean;
+  parentId?: UUID | null;
   name?: string | null;
   shell?: string | null;
   cwd?: string | null;

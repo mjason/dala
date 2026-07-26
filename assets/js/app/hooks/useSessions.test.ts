@@ -17,6 +17,7 @@ const session = (id: string, name = id, updatedAt = "2026-01-01T00:00:00.000000Z
     exitCode: null,
     scrollbackLimit: 10_000,
     ephemeral: false,
+  parentId: null,
     insertedAt: "2026-01-01T00:00:00.000000Z",
     updatedAt,
   }) as Session;

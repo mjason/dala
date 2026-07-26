@@ -1110,8 +1110,14 @@ defmodule Dala.Terminal.Server do
           :ok ->
             :ok
 
+          # A parent being deleted closes its attached shells while their own
+          # shells are exiting, so both paths race for the same row. Whoever
+          # loses finds it already gone, which is the desired end state.
+          {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Changes.StaleRecord{} | _]}} ->
+            :ok
+
           {:error, error} ->
-            Logger.warning("could not destroy quick shell #{session.id}: #{inspect(error)}")
+            Logger.warning("could not destroy session #{session.id}: #{inspect(error)}")
         end
       end)
     else

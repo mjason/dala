@@ -30,6 +30,8 @@ type Props = {
   onSetGroup: (ids: string[], group: string | null) => void;
   /** Persist a drag: move `id` before `beforeId` (null = to the end). */
   onReorder: (id: string, beforeId: string | null) => void;
+  /** Attached shell count per session id — the ⌗N badge. */
+  attachedCounts?: Record<string, number>;
   /** Move a whole block of sessions (a group) before `beforeId`, in order. */
   onReorderMany: (ids: string[], beforeId: string | null) => void;
   /** Session whose row is currently being renamed in place (⌥⌘R / double-click). */
@@ -58,6 +60,7 @@ export default function Sidebar({
   onDeleteMany,
   onSetGroup,
   onReorder,
+  attachedCounts,
   onReorderMany,
   renamingId,
   onRenameStart,
@@ -813,8 +816,17 @@ export default function Sidebar({
                     {s.name}
                   </div>
                 )}
-                <div className="truncate font-mono text-xs text-fg-muted/80">
-                  {shortPath(s.cwd, 28)}
+                <div className="flex items-center gap-1.5 truncate font-mono text-xs text-fg-muted/80">
+                  <span className="truncate">{shortPath(s.cwd, 28)}</span>
+                  {(attachedCounts?.[s.id] ?? 0) > 0 && (
+                    <span
+                      data-attached-count={s.id}
+                      title={t("attachedShells", { count: attachedCounts?.[s.id] ?? 0 })}
+                      className="shrink-0 rounded border border-line px-1 text-[10px] leading-4 text-fg-muted/70"
+                    >
+                      ⌗{attachedCounts?.[s.id] ?? 0}
+                    </span>
+                  )}
                 </div>
               </div>
               <button

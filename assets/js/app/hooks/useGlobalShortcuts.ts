@@ -42,8 +42,6 @@ export function renameBlocked(e: Pick<KeyboardEvent, "target">): boolean {
  */
 export function useGlobalShortcuts(opts: {
   termActions: RefObject<TerminalActions | null>;
-  qsActions: RefObject<TerminalActions | null>;
-  qsRef: RefObject<{ open: boolean }>;
   quickShellRef: RefObject<() => void>;
   toggleComposerRef: RefObject<() => void>;
   voiceShortcutRef: RefObject<() => void>;
@@ -59,8 +57,6 @@ export function useGlobalShortcuts(opts: {
 }) {
   const {
     termActions,
-    qsActions,
-    qsRef,
     quickShellRef,
     toggleComposerRef,
     voiceShortcutRef,
@@ -113,7 +109,7 @@ export function useGlobalShortcuts(opts: {
       },
       focusTerminal: (e) => {
         e.preventDefault();
-        (qsRef.current.open ? qsActions : termActions).current?.focus();
+        termActions.current?.focus();
       },
       drawer: (e) => {
         e.preventDefault();

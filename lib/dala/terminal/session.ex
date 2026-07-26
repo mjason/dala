@@ -32,7 +32,7 @@ defmodule Dala.Terminal.Session do
     end
 
     create :create do
-      accept [:scrollback_limit, :ephemeral]
+      accept [:scrollback_limit, :ephemeral, :parent_id]
 
       # Optional; SetDefaults falls back to $SHELL, $HOME and a cwd-based name.
       argument :name, :string
@@ -86,6 +86,7 @@ defmodule Dala.Terminal.Session do
     destroy :destroy do
       primary? true
       require_atomic? false
+      change Dala.Terminal.Session.Changes.CloseAttachedShells
       change Dala.Terminal.Session.Changes.CleanupSession
     end
 
@@ -422,12 +423,27 @@ defmodule Dala.Terminal.Session do
 
     attribute :ephemeral, :boolean do
       description """
-      Quick shells: the session destroys itself (instead of lingering as
-      exited) when its shell exits, so `exit`/Ctrl+D closes it for good.
+      The session destroys itself (instead of lingering as exited) when its
+      shell exits, so `exit`/Ctrl+D closes it for good. Set on every attached
+      shell: closing a tab should close it, not leave a dead one behind.
       """
 
       default false
       allow_nil? false
+      public? true
+    end
+
+    attribute :parent_id, :uuid do
+      description """
+      The session this shell is attached to, or nil for a session of its own.
+
+      Attached shells are the tabs next to a session's main shell (the tmux
+      model): a full session in every other respect — own PTY, own holder,
+      survives a dala restart — but it lives inside its parent's view instead
+      of the sidebar, and goes away with it. Nesting is flattened to one
+      level (see Changes.SetDefaults).
+      """
+
       public? true
     end
 

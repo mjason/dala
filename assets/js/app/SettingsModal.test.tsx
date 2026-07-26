@@ -42,6 +42,7 @@ const session = {
   exitCode: null,
   scrollbackLimit: 10_000,
   ephemeral: false,
+  parentId: null,
   position: 0,
   group: null,
   insertedAt: "2026-01-01T00:00:00Z",

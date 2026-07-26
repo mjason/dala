@@ -14,7 +14,13 @@ import Sidebar, { Session } from "./Sidebar";
 import TerminalView, { type TerminalActions } from "./TerminalView";
 import TouchKeyBar, { useCoarsePointer } from "./TouchKeyBar";
 import { applyCtrl, nextLatch, sequenceFor, type BarKey } from "./touchKeys";
-import QuickShellPanel from "./QuickShellPanel";
+import SessionTabs from "./SessionTabs";
+import {
+  attachedCount,
+  rootIdOf,
+  rootSessions,
+  tabsFor,
+} from "./shellTabs";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
 import GitPanel from "./GitPanel";
@@ -200,18 +206,6 @@ export default function App() {
     );
   }, []);
 
-  // The quick shells live in one overlay panel (not the sidebar): ephemeral
-  // sessions as tabs, toggled open/closed, maximizable.
-  const [qsIds, setQsIds] = useState<string[]>([]);
-  const [qsActiveId, setQsActiveId] = useState<string | null>(null);
-  const [qsOpen, setQsOpen] = useState(false);
-  const [qsMax, setQsMax] = useState(false);
-  const qsActions = useRef<TerminalActions | null>(null);
-  const qsRef = useRef({ ids: [] as string[], activeId: null as string | null, open: false });
-  qsRef.current = { ids: qsIds, activeId: qsActiveId, open: qsOpen };
-
-  const focusQuickShell = () => window.setTimeout(() => qsActions.current?.focus(), 150);
-
   const agentEventRef = useRef<(p: AgentEventPayload) => void>(() => {});
 
   const {
@@ -235,27 +229,9 @@ export default function App() {
   } = useSessions({
     toast,
     onAgentEvent: (payload) => agentEventRef.current(payload),
-    onSessionDeleted: (id) => {
-      // A quick shell destroyed itself (exit/Ctrl+D): drop its tab, and
-      // the whole panel when it was the last one.
-      if (qsRef.current.ids.includes(id)) {
-        const rest = qsRef.current.ids.filter((x) => x !== id);
-        setQsIds(rest);
-        if (rest.length === 0) {
-          setQsOpen(false);
-          setQsMax(false);
-          setQsActiveId(null);
-          termActions.current?.focus();
-        } else if (qsRef.current.activeId === id) {
-          setQsActiveId(rest[rest.length - 1]);
-          if (qsRef.current.open) focusQuickShell();
-        }
-      }
-    },
   });
 
-  const { sidebarW, setSidebarW, qsW, setQsW, drawerW, setDrawerW, gitW, setGitW } =
-    usePanelLayout();
+  const { sidebarW, setSidebarW, drawerW, setDrawerW, gitW, setGitW } = usePanelLayout();
 
   const { notifyAgentEvent } = useNotifications({
     activeIdRef,
@@ -264,10 +240,21 @@ export default function App() {
     onJump: setActiveId,
   });
 
-  const qsSessions = qsIds
-    .map((id) => sessions.find((s) => s.id === id))
-    .filter((s): s is Session => Boolean(s));
-  const qsSession = qsSessions.find((s) => s.id === qsActiveId) ?? qsSessions[0] ?? null;
+  // The sidebar lists sessions; attached shells live in their parent's tab
+  // strip. "Active session" stays one id either way, so everything hung off it
+  // (terminal pool, composer, git panel, drawer) needs no notion of tabs.
+  const roots = rootSessions(ordered);
+  const activeRootId = rootIdOf(sessions, activeId);
+  const tabs = tabsFor(sessions, activeRootId);
+
+  const attachedCounts = React.useMemo(
+    () =>
+      Object.fromEntries(roots.map((s) => [s.id, attachedCount(sessions, s.id)])) as Record<
+        string,
+        number
+      >,
+    [roots, sessions],
+  );
 
   // Switching sessions: an open composer is where typing continues — put the
   // focus there (cursor at the end), not in the shell the terminal grabs on
@@ -275,6 +262,13 @@ export default function App() {
   useEffect(() => {
     if (active && composerOpen[active.id]) {
       setComposerFocusNonce((n) => n + 1);
+    } else if (active) {
+      // Otherwise the terminal you just switched to takes the keyboard. A
+      // pooled pane was mounted while hidden (its own mount focus went
+      // nowhere) and a brand-new tab registers its actions only after this
+      // commit — so focus once the ref points at the visible terminal.
+      const id = window.setTimeout(() => termActions.current?.focus(), 0);
+      return () => window.clearTimeout(id);
     }
     // A latched Ctrl aims at THIS session's terminal — never carry it over.
     setCtrlLatch(false);
@@ -304,52 +298,33 @@ export default function App() {
     if (session) setNavOpen(false);
   };
 
-  // Quick shells (Ctrl+Shift+` or the header button): ephemeral terminals
-  // in an overlay panel, opened in the active session's directory — for
-  // vim/git while the main shell is busy. The toggle hides the panel but
-  // keeps the shells; `exit`/Ctrl+D inside one destroys that session, which
-  // drops its tab via the session_deleted broadcast.
-  const createQuickShell = async (cwd?: string) => {
-    // Quick shells are stamped to this device too: they open right here,
-    // so no other device should ever win their first-attach adoption.
+  // A new tab in the active session: its own PTY and holder, so `rails s`
+  // keeps running there while the main shell is busy. Stamped to this device
+  // (it opens right here, so no other device should win first-attach
+  // adoption) and started in the parent's directory.
+  const createAttachedShell = async () => {
+    const parentId = activeRootId;
+    if (!parentId) return;
+
     const result = await call<Session>(createSession, {
-      input: { cwd: cwd || undefined, ephemeral: true, deviceId: getDeviceId() },
+      input: { parentId, deviceId: getDeviceId() },
       fields: [...SESSION_FIELDS],
     });
     if (!result.ok) {
       toast(result.error || t("couldNotCreateTerminal"));
       return;
     }
-    const session = result.data;
-    upsertSession(session);
-    setQsIds((ids) => (ids.includes(session.id) ? ids : [...ids, session.id]));
-    setQsActiveId(session.id);
-    setQsOpen(true);
-    focusQuickShell();
+    upsertSession(result.data);
+    setActiveId(result.data.id);
+    // No focus() here: the new tab's TerminalView takes focus when it mounts.
+    // Reaching for termActions on a timer grabs whichever terminal is still
+    // registered — the one you just switched away from — and the first thing
+    // you type lands in the wrong shell.
   };
 
-  // Closing the panel (Esc, ✕, or the toggle) destroys every quick shell:
-  // they are scratch paper, not workspaces — reopening starts fresh.
-  const closeQuickShell = () => {
-    const ids = qsRef.current.ids;
-    setQsIds([]);
-    setQsActiveId(null);
-    setQsOpen(false);
-    setQsMax(false);
-    setSessions((list) => list.filter((s) => !ids.includes(s.id)));
-    termActions.current?.focus();
-    for (const id of ids) {
-      void call<unknown>(deleteSession, { identity: id });
-    }
-  };
-
-  const toggleQuickShell = async () => {
-    if (qsRef.current.open) closeQuickShell();
-    else await createQuickShell(active?.cwd);
-  };
   const toggleComposerRef = useRef(() => {});
   const quickShellRef = useRef(() => {});
-  quickShellRef.current = () => void toggleQuickShell();
+  quickShellRef.current = () => void createAttachedShell();
 
   const handleRestart = async (id: string) => {
     const ok = await restartMainSession(id);
@@ -616,7 +591,7 @@ export default function App() {
         if (activeIdRef.current) setSettingsFor(activeIdRef.current);
         break;
       case "focusTerminal":
-        (qsRef.current.open ? qsActions : termActions).current?.focus();
+        termActions.current?.focus();
         break;
       case "refit":
         termActions.current?.refit(true);
@@ -652,8 +627,6 @@ export default function App() {
 
   useGlobalShortcuts({
     termActions,
-    qsActions,
-    qsRef,
     quickShellRef,
     toggleComposerRef,
     voiceShortcutRef,
@@ -743,8 +716,9 @@ export default function App() {
         } ${sidebarHidden ? "md:hidden" : "md:static md:z-auto md:translate-x-0"}`}
       >
         <Sidebar
-          sessions={ordered}
-          activeId={active?.id ?? null}
+          sessions={roots}
+          activeId={activeRootId}
+          attachedCounts={attachedCounts}
           connected={connected}
           creating={creating}
           agentStatus={agentStatus}
@@ -807,11 +781,7 @@ export default function App() {
                 <button
                   id="quick-shell-button"
                   onClick={() => quickShellRef.current()}
-                  className={`shrink-0 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${touchToolbarBtn} ${
-                    qsOpen
-                      ? "border-mint/50 text-mint"
-                      : "border-line text-fg-muted hover:border-mint/60 hover:text-mint"
-                  }`}
+                  className={`shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint ${touchToolbarBtn}`}
                 >
                   ⚡&gt;_
                 </button>
@@ -984,6 +954,14 @@ export default function App() {
               </div>
             </header>
 
+            <SessionTabs
+              tabs={tabs}
+              activeId={active.id}
+              onSelect={setActiveId}
+              onAdd={() => void createAttachedShell()}
+              onClose={(id) => void handleDelete(id)}
+            />
+
             <div className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
               {(termPool.includes(active.id) ? termPool : [active.id, ...termPool]).map((id) => {
                 const session = sessions.find((s) => s.id === id);
@@ -1121,26 +1099,6 @@ export default function App() {
           width={gitW}
           onResize={(x) => setGitW(clampWidth(window.innerWidth - x, 280, 800))}
           onResetWidth={() => setGitW(PANEL_W.git)}
-        />
-      )}
-
-      {qsOpen && qsSession && (
-        <QuickShellPanel
-          sessions={qsSessions}
-          active={qsSession}
-          onSelect={(id) => {
-            setQsActiveId(id);
-            focusQuickShell();
-          }}
-          onAdd={() => void createQuickShell(qsSession.cwd || active?.cwd)}
-          maximized={qsMax}
-          onToggleMax={() => setQsMax((v) => !v)}
-          onClose={closeQuickShell}
-          width={qsW}
-          onResize={(x) => setQsW(clampWidth(window.innerWidth - x, 380, window.innerWidth - 160))}
-          onResetWidth={() => setQsW(PANEL_W.qs)}
-          actionsRef={qsActions}
-          onError={toast}
         />
       )}
 

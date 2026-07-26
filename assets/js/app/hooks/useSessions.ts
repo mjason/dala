@@ -20,6 +20,7 @@ import {
 import type { AgentEventPayload } from "../../ash_types";
 import { getSocket } from "../socket";
 import type { Session } from "../Sidebar";
+import { tabAfterClose } from "../shellTabs";
 import { useI18n } from "../i18n";
 
 export const SESSION_FIELDS = [
@@ -31,6 +32,7 @@ export const SESSION_FIELDS = [
   "exitCode",
   "scrollbackLimit",
   "ephemeral",
+  "parentId",
   "group",
   "position",
   "insertedAt",
@@ -127,12 +129,12 @@ export function pickPreviousSession(
 /**
  * Session list state + CRUD: the lobby channel subscription (created /
  * updated / deleted broadcasts), the initial list fetch, the active-session
- * trail and its localStorage persistence, plus quick-shell orphan cleanup.
+ * trail and its localStorage persistence.
  */
 export function useSessions(opts: {
   toast: (message: string) => void;
-  /** Extra handling when a session_deleted broadcast arrives (quick-shell tabs). */
-  onSessionDeleted: (id: string) => void;
+  /** Extra handling when a session_deleted broadcast arrives. */
+  onSessionDeleted?: (id: string) => void;
   /** OSC 777 agent plugin events forwarded from the lobby channel. */
   onAgentEvent: (payload: AgentEventPayload) => void;
 }) {
@@ -171,17 +173,6 @@ export function useSessions(opts: {
   const callbacksRef = useRef(opts);
   callbacksRef.current = opts;
 
-  // Quick shells are disposable — any ephemeral session surviving a reload
-  // is a leftover, so clean it up once the first session list arrives.
-  const qsCleanedRef = useRef(false);
-  useEffect(() => {
-    if (qsCleanedRef.current || sessions.length === 0) return;
-    qsCleanedRef.current = true;
-    for (const orphan of sessions.filter((s) => s.ephemeral)) {
-      void call<unknown>(deleteSession, { identity: orphan.id });
-    }
-  }, [sessions]);
-
   // Socket status + sessions lobby channel.
   useEffect(() => {
     const socket = getSocket();
@@ -198,14 +189,16 @@ export function useSessions(opts: {
       session_deleted: ({ id }) => {
         deletedSessionIdsRef.current.add(id);
         setSessions((list) => list.filter((s) => s.id !== id));
-        callbacksRef.current.onSessionDeleted(id);
+        callbacksRef.current.onSessionDeleted?.(id);
         // The active session was deleted: return to the most recently
         // visited one that still exists.
         if (id === activeIdRef.current) {
-          const previous = pickPreviousSession(
-            historyRef.current,
-            id,
+          // Closing a tab returns to its parent; anything else falls back to
+          // the most recently visited session that still exists.
+          const previous = tabAfterClose(
             sessionsRef.current,
+            id,
+            pickPreviousSession(historyRef.current, id, sessionsRef.current),
           );
           if (previous) setActiveId(previous);
         }
@@ -251,13 +244,11 @@ export function useSessions(opts: {
     };
   }, [toast, upsertSession, t]);
 
-  // Quick shells (ephemeral) live in their overlay panel, not the sidebar
-  // or the active-session rotation. Sort by the server-persisted position
-  // (insertedAt on ties) so all devices agree on the sidebar order.
-  const ordered = useMemo(
-    () => [...sessions].filter((s) => !s.ephemeral).sort(byPosition),
-    [sessions],
-  );
+  // Every session you can be looking at, attached shells included: they are
+  // tabs of their parent, so they take part in the active rotation. The
+  // sidebar renders only the roots (see shellTabs.rootSessions). Sorted by the
+  // server-persisted position (insertedAt on ties) so all devices agree.
+  const ordered = useMemo(() => [...sessions].sort(byPosition), [sessions]);
   const active = ordered.find((s) => s.id === activeId) ?? ordered[0] ?? null;
 
   useEffect(() => {

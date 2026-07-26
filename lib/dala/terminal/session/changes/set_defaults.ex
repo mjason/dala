@@ -4,18 +4,74 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
 
   @impl true
   def change(changeset, _opts, _context) do
+    parent = parent_session(changeset)
+
     shell =
       argument_or_nil(changeset, :shell) ||
         System.get_env("SHELL") ||
         "/bin/bash"
 
-    cwd = argument_or_nil(changeset, :cwd) || System.user_home() || "/"
-    name = argument_or_nil(changeset, :name) || default_name(cwd)
+    cwd =
+      argument_or_nil(changeset, :cwd) || (parent && parent.cwd) || System.user_home() || "/"
+
+    name =
+      argument_or_nil(changeset, :name) ||
+        if(parent, do: attached_shell_name(parent), else: default_name(cwd))
 
     changeset
     |> Ash.Changeset.force_change_attribute(:shell, shell)
     |> Ash.Changeset.force_change_attribute(:cwd, cwd)
     |> Ash.Changeset.force_change_attribute(:name, name)
+    |> then(fn changeset ->
+      # Tabs of tabs would have nowhere to render: attach to the root instead.
+      if parent,
+        do: Ash.Changeset.force_change_attribute(changeset, :parent_id, parent.id),
+        else: changeset
+    end)
+    |> then(fn changeset ->
+      # A tab that exits should close, not linger as a dead one.
+      if parent,
+        do: Ash.Changeset.force_change_attribute(changeset, :ephemeral, true),
+        else: changeset
+    end)
+  end
+
+  defp parent_session(changeset) do
+    case Ash.Changeset.get_attribute(changeset, :parent_id) do
+      nil ->
+        nil
+
+      parent_id ->
+        case Dala.Terminal.get_session(parent_id) do
+          {:ok, %{parent_id: nil} = parent} -> parent
+          {:ok, %{parent_id: root_id}} -> parent_session_by_id(root_id)
+          {:error, _error} -> nil
+        end
+    end
+  end
+
+  defp parent_session_by_id(id) do
+    case Dala.Terminal.get_session(id) do
+      {:ok, root} -> root
+      {:error, _error} -> nil
+    end
+  end
+
+  # Tabs are told apart by name, so "shell", "shell 2", "shell 3"… per parent.
+  defp attached_shell_name(parent) do
+    taken =
+      parent.id
+      |> Dala.Terminal.Session.Changes.CloseAttachedShells.attached_shells()
+      |> Enum.map(& &1.name)
+      |> MapSet.new()
+
+    if MapSet.member?(taken, "shell") do
+      Stream.iterate(2, &(&1 + 1))
+      |> Enum.find(fn suffix -> not MapSet.member?(taken, "shell #{suffix}") end)
+      |> then(&"shell #{&1}")
+    else
+      "shell"
+    end
   end
 
   defp argument_or_nil(changeset, name) do
