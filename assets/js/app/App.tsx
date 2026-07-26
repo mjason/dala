@@ -124,8 +124,8 @@ export default function App() {
     };
   }, []);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
-  // Desktop ⋯ group for the rarely-used terminal plumbing (detach viewers,
-  // refit, reset) — keeps the toolbar focused on the daily verbs.
+  // Desktop ⋯ group for the rarely-used terminal plumbing (refit, reset) —
+  // keeps the toolbar focused on the daily verbs.
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   // Sticky Ctrl from the touch key bar: latched until the next key — a bar
   // key or a single soft-keyboard character — goes out with Ctrl applied.

@@ -7,36 +7,7 @@ defmodule Dala.Terminal.ServerOutputPathTest do
   waiting — while still matching exactly as before once a waiter exists.
   """
 
-  use Dala.DataCase, async: false
-
-  alias Dala.Terminal.{Holder, Server}
-
-  @moduletag :terminal
-
-  defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      id = to_string(session.id)
-      File.rm(Holder.exit_path(id))
-      File.rm(Holder.final_path(id))
-      File.rm(Holder.text_final_path(id))
-      File.rm(Holder.socket_path(id) <> ".log")
-    end)
-
-    session
-  end
-
-  defp eventually(fun, attempts \\ 150) do
-    if fun.() do
-      :ok
-    else
-      if attempts == 0, do: flunk("condition never became true")
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
-    end
-  end
+  use Dala.TerminalCase, async: false
 
   # Frames as the holder would deliver them, so batching, seq bookkeeping and
   # retention all run exactly as in production.
@@ -51,20 +22,15 @@ defmodule Dala.Terminal.ServerOutputPathTest do
     _ = :sys.get_state(pid)
   end
 
-  defp retained(pid) do
-    :sys.get_state(pid).recent_output
-    |> Enum.map_join(fn {_seq, data} -> data end)
-  end
-
   test "output is retained raw, so no chunk pays for plain-text extraction" do
     session = create_session!()
     pid = Server.whereis(session.id)
 
     feed(pid, ["\e[31mred\e[0m plain-tail"])
 
-    eventually(fn -> retained(pid) =~ "plain-tail" end)
+    eventually(fn -> retained_output(pid) =~ "plain-tail" end)
 
-    buffer = retained(pid)
+    buffer = retained_output(pid)
 
     assert String.contains?(buffer, "\e[31m"),
            "recent_output must keep the raw bytes; filtering every chunk is the hot-path cost " <>

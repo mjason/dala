@@ -16,15 +16,10 @@ defmodule Dala.Terminal.Server do
 
   require Logger
 
-  alias Dala.Terminal.Holder
+  alias Dala.Terminal.{Holder, Pacing}
 
   @cwd_poll_visible_ms 2_000
   @cwd_poll_hidden_ms 30_000
-  # A cwd poll this slow means its `/proc` read is starving — a saturated CPU,
-  # or a filesystem that is not answering. Polling at the same cadence then only
-  # adds to the contention.
-  @cwd_poll_slow_ms 500
-  @cwd_poll_backoff 4
   @force_stop_ms 5_000
   # Hard bounds on the PTY size, applied at the single choke point every
   # resize funnels through (apply_size/4). The channel clamps its inputs too,
@@ -36,19 +31,6 @@ defmodule Dala.Terminal.Server do
   @max_rows 500
   @min_cols 2
   @max_cols 1000
-  # Output micro-batching window: chunks landing within it after the first
-  # are coalesced into one broadcast (see buffer_output/2). It ADAPTS — the
-  # floor keeps keystroke echo immediate, and a shell that keeps the window full
-  # (build logs, TUI redraw storms) widens it toward the ceiling, where one
-  # broadcast replaces several: every one of them costs a payload map, a PubSub
-  # fan-out, and per client a JSON encode plus a compressed websocket frame.
-  # The ceiling stays inside a single render frame, so nothing is felt.
-  @out_batch_ms 5
-  @out_batch_max_ms 20
-  # Silence this long means the storm is over: the next window opens tight
-  # again. Without it a widened window would outlive the burst that earned it,
-  # and the first redraw after a keystroke would sit in a batch it does not need.
-  @out_idle_ms 100
   # MCP wraps this text in JSON and then in an MCP text content string, so a
   # 64 KiB UTF-8 payload keeps the final wire response bounded after escaping.
   @snapshot_max_bytes 64 * 1024
@@ -347,46 +329,6 @@ defmodule Dala.Terminal.Server do
     :ok
   end
 
-  ## Pacing policies
-  #
-  # Pure, and public so they can be exercised without a live session.
-
-  @doc "The tight output batch window used while a session is interactive."
-  def out_window_floor, do: @out_batch_ms
-
-  @doc "The widest output batch window, still inside one render frame."
-  def out_window_ceiling, do: @out_batch_max_ms
-
-  @doc """
-  The next output batch window. `coalesced?` reports whether the window that
-  just closed had actually buffered anything behind its first chunk: while it
-  keeps doing so the shell is flooding, so widen; the moment one closes empty
-  the session is interactive again and the floor is restored.
-  """
-  def next_out_window(_current, false), do: @out_batch_ms
-
-  def next_out_window(current, true), do: min(current * 2, @out_batch_max_ms)
-
-  @doc """
-  The window to open for a chunk arriving `gap_ms` after the last one. A gap
-  long enough to count as silence retires whatever width the previous burst
-  earned, so interactive output is never batched on the strength of a storm
-  that has already ended.
-  """
-  def out_window_after_gap(_current, gap_ms) when gap_ms >= @out_idle_ms, do: @out_batch_ms
-
-  def out_window_after_gap(current, _gap_ms), do: current
-
-  @doc """
-  The delay before the next cwd poll, given how long the one that just finished
-  took. A slow poll backs the cadence off proportionally, never past the
-  background cadence a hidden session already uses.
-  """
-  def next_cwd_poll_interval(base_interval, duration_ms) when duration_ms >= @cwd_poll_slow_ms,
-    do: min(base_interval * @cwd_poll_backoff, @cwd_poll_hidden_ms)
-
-  def next_cwd_poll_interval(base_interval, _duration_ms), do: base_interval
-
   ## Server
 
   @impl true
@@ -411,7 +353,7 @@ defmodule Dala.Terminal.Server do
     ]
 
     case Holder.attach_or_spawn(id, opts) do
-      {:ok, socket, reattached?} ->
+      {:ok, socket, _reattached?} ->
         initial_seq = System.system_time(:millisecond)
 
         state = %{
@@ -444,6 +386,9 @@ defmodule Dala.Terminal.Server do
           # RAW, not filtered: the plain text a substring wait compares against
           # is derived on demand (see plain_text_for_waiters/2).
           recent_output: [],
+          # Bytes held in recent_output, so retention never has to measure the
+          # list to know when a trim is due.
+          recent_output_bytes: 0,
           # Only meaningful while a substring waiter is registered; the filter
           # is not run — and thus not carried — outside those stretches.
           match_filter_state: :text,
@@ -455,9 +400,9 @@ defmodule Dala.Terminal.Server do
           # stay attached but use the much slower background cadence.
           visible_clients: MapSet.new(),
           cwd_poll_timer: nil,
-          # CWD discovery may invoke a multiplexer CLI with a hard 1.5s
-          # timeout. Keep that work out of this GenServer so synchronous
-          # calls (attach, resize and size_info) remain responsive.
+          # A /proc read can block on a wedged mount, so it stays off this
+          # process (see start_cwd_poll/1) — synchronous calls (attach, resize,
+          # size_info) must never queue behind the filesystem.
           cwd_poll_task: nil,
           # The LIVE size owner as {pid, client_ref}, or nil. Only the
           # owner's resize reaches the PTY.
@@ -475,10 +420,9 @@ defmodule Dala.Terminal.Server do
           # coalesced into one broadcast.
           out_buf: [],
           out_timer: nil,
-          out_window: @out_batch_ms,
+          out_window: Pacing.out_window_floor(),
           out_last_at: System.monotonic_time(:millisecond),
           size: {24, 80},
-          reattached?: reattached?,
           # Reattach bookkeeping (see handle_holder_detach/1): when the current
           # connection was established, how many times we have reconnected
           # without a stable stretch in between, and whether the next HELLO
@@ -541,15 +485,21 @@ defmodule Dala.Terminal.Server do
       state.last_output_seq > after_seq and MapSet.member?(events, "output") and is_nil(match) ->
         {:reply, {:ok, %{reason: "output", seq: state.seq}}, state}
 
-      is_binary(match) and MapSet.member?(events, "output") and
-          recent_output_matches?(state, after_seq, match) ->
-        {:reply, {:ok, %{reason: "match", seq: state.seq, match: match}}, state}
-
       map_size(state.waiters) >= @waiters_per_session ->
         {:reply, {:error, "too many terminal waiters for this session"}, state}
 
       true ->
-        register_waiter(state, from, after_seq, timeout, events, match)
+        # One pass over the retained window answers both questions: did the
+        # needle already arrive, and what context does a fresh waiter start
+        # from. Filtering it twice cost ~0.2-0.9ms per wait.
+        history = if is_binary(match), do: recent_plain_output_since(state, after_seq), else: ""
+
+        if is_binary(match) and MapSet.member?(events, "output") and
+             :binary.match(history, match) != :nomatch do
+          {:reply, {:ok, %{reason: "match", seq: state.seq, match: match}}, state}
+        else
+          register_waiter(state, from, after_seq, timeout, events, match, history)
+        end
     end
   end
 
@@ -738,15 +688,9 @@ defmodule Dala.Terminal.Server do
     handle_frame(frame_type, payload, state)
   end
 
-  def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
-    _ = :gen_tcp.close(socket)
-    handle_holder_detach(%{state | socket: nil})
-  end
+  def handle_info({:tcp_closed, socket}, state), do: holder_socket_lost(socket, state)
 
-  def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state) do
-    _ = :gen_tcp.close(socket)
-    handle_holder_detach(%{state | socket: nil})
-  end
+  def handle_info({:tcp_error, socket, _reason}, state), do: holder_socket_lost(socket, state)
 
   # The delivery window closed after its bounded burst. Re-open it immediately:
   # the backlog belongs in the holder's bounded ring, but only while this
@@ -757,21 +701,11 @@ defmodule Dala.Terminal.Server do
   end
 
   # A superseded connection. Reattaching makes the holder hang up the socket we
-  # left behind, so its trailing frames and close notice arrive AFTER the live
+  # left behind, so its trailing frames and passive notice arrive AFTER the live
   # one is in place; neither may disturb it.
   def handle_info({:tcp, _stale_socket, _payload}, state), do: {:noreply, state}
 
   def handle_info({:tcp_passive, _stale_socket}, state), do: {:noreply, state}
-
-  def handle_info({:tcp_closed, stale_socket}, state) do
-    _ = :gen_tcp.close(stale_socket)
-    {:noreply, state}
-  end
-
-  def handle_info({:tcp_error, stale_socket, _reason}, state) do
-    _ = :gen_tcp.close(stale_socket)
-    {:noreply, state}
-  end
 
   # CWD poll workers are monitored separately from channel and waiter
   # monitors. This clause must precede the generic DOWN handlers below.
@@ -841,13 +775,7 @@ defmodule Dala.Terminal.Server do
   def handle_info(:flush_output, state) do
     coalesced? = state.out_buf != []
     state = flush_buffer(%{state | out_timer: nil})
-
-    {:noreply,
-     %{
-       state
-       | out_window: next_out_window(state.out_window, coalesced?),
-         out_last_at: System.monotonic_time(:millisecond)
-     }}
+    {:noreply, %{state | out_window: Pacing.next_out_window(state.out_window, coalesced?)}}
   end
 
   def handle_info({:wait_timeout, ref}, state) do
@@ -879,7 +807,7 @@ defmodule Dala.Terminal.Server do
   # important: a canceled/old query must never overwrite a cwd reported by
   # OSC 7 in the meantime.
   def handle_info(
-        {task_ref, {:cwd_poll_result, %{cwd: cwd}}},
+        {task_ref, {:cwd_poll_result, cwd}},
         %{cwd_poll_task: %{ref: task_ref, monitor: monitor, started_at: started_at}} = state
       ) do
     Process.demonitor(monitor, [:flush])
@@ -902,17 +830,20 @@ defmodule Dala.Terminal.Server do
   # on a wedged mount — keep it off this GenServer so attach, resize and
   # size_info stay responsive. At most one query runs at a time, and it captures
   # only the values it needs: never hand the mutable state to the worker.
+  # A shell that reports OSC 7 has retired the poll for good: rescheduling only
+  # happens off a poll result, so returning here ends the loop instead of
+  # spawning a worker every two seconds to compute nil.
+  defp start_cwd_poll(%{osc7_cwd?: true} = state), do: state
+
   defp start_cwd_poll(state) do
     if is_nil(Map.get(state, :cwd_poll_task)) do
       shell_pid = state.shell_pid
-      skip? = state.osc7_cwd?
       owner = self()
       task_ref = make_ref()
 
       {pid, monitor} =
         spawn_monitor(fn ->
-          cwd = if skip?, do: nil, else: current_cwd(shell_pid)
-          send(owner, {task_ref, {:cwd_poll_result, %{cwd: cwd}}})
+          send(owner, {task_ref, {:cwd_poll_result, current_cwd(shell_pid)}})
         end)
 
       Map.put(state, :cwd_poll_task, %{
@@ -1077,6 +1008,14 @@ defmodule Dala.Terminal.Server do
   # certificate; while the holder is still listening, reattach to it instead of
   # burying a live shell as "exited" (which leaves the UI with a dead terminal
   # and a no-op kill button until the session is rejoined).
+  defp holder_socket_lost(socket, state) do
+    _ = :gen_tcp.close(socket)
+
+    if socket == state.socket,
+      do: handle_holder_detach(%{state | socket: nil}),
+      else: {:noreply, state}
+  end
+
   defp handle_holder_detach(state) do
     case Holder.take_exit_status(state.id) do
       status when is_integer(status) -> exit_with_status(status, state)
@@ -1090,40 +1029,37 @@ defmodule Dala.Terminal.Server do
     reconnects =
       if now - state.connected_at >= @reconnect_reset_ms, do: 0, else: state.reconnects
 
-    cond do
-      not Holder.exists?(state.id) ->
-        exit_with_status(nil, state)
+    if reconnects >= @max_reconnects do
+      Logger.warning(
+        "holder for #{state.id} hung up #{reconnects} times in a row; marking exited"
+      )
 
-      reconnects >= @max_reconnects ->
-        Logger.warning(
-          "holder for #{state.id} hung up #{reconnects} times in a row; marking exited"
-        )
+      exit_with_status(nil, state)
+    else
+      # connect/1 answers "is the holder still listening?" on its own: no socket
+      # file means {:error, :enoent}, which is the give-up path either way.
+      case Holder.connect(state.id) do
+        {:ok, socket} ->
+          Logger.info("reattached to the holder for #{state.id} after an unexpected detach")
 
-        exit_with_status(nil, state)
+          state =
+            %{
+              state
+              | socket: socket,
+                connected_at: now,
+                reconnects: reconnects + 1,
+                # The repair waits for HELLO so the holder applies this
+                # server's size before rendering the snapshot.
+                reattach_repair?: true
+            }
+            |> flush_now()
+            |> settle_pending_holder_requests()
 
-      true ->
-        case Holder.connect(state.id) do
-          {:ok, socket} ->
-            Logger.info("reattached to the holder for #{state.id} after an unexpected detach")
+          {:noreply, state}
 
-            state =
-              %{
-                state
-                | socket: socket,
-                  connected_at: now,
-                  reconnects: reconnects + 1,
-                  # The repair waits for HELLO so the holder applies this
-                  # server's size before rendering the snapshot.
-                  reattach_repair?: true
-              }
-              |> flush_now()
-              |> settle_pending_holder_requests()
-
-            {:noreply, state}
-
-          {:error, _reason} ->
-            exit_with_status(nil, state)
-        end
+        {:error, _reason} ->
+          exit_with_status(nil, state)
+      end
     end
   end
 
@@ -1139,12 +1075,13 @@ defmodule Dala.Terminal.Server do
       {client, _history_budget, request_ref} ->
         send_repaint(client, "", state.seq, false, request_ref)
 
+      # Pre-ref queue entry (hot code upgrade), same as in the repaint handler.
       {client, _history_budget} ->
         send_repaint(client, "", state.seq, false, nil)
     end)
 
     Enum.each(:queue.to_list(state.pending_text_snapshots), fn {:caller, from} ->
-      GenServer.reply(from, {:error, "terminal holder reconnected, retry the snapshot"})
+      GenServer.reply(from, {:error, "terminal holder is unavailable"})
     end)
 
     %{
@@ -1222,7 +1159,7 @@ defmodule Dala.Terminal.Server do
   # finished actually cost.
   defp cwd_poll_delay(state, started_at) do
     duration = System.monotonic_time(:millisecond) - started_at
-    next_cwd_poll_interval(cwd_poll_interval(state), duration)
+    Pacing.next_cwd_poll_interval(cwd_poll_interval(state), duration)
   end
 
   defp schedule_cwd_poll(state, delay) do
@@ -1405,10 +1342,10 @@ defmodule Dala.Terminal.Server do
     if state.out_timer do
       %{state | out_buf: [data | state.out_buf]}
     else
-      now = System.monotonic_time(:millisecond)
-      window = out_window_after_gap(state.out_window, now - state.out_last_at)
+      gap = System.monotonic_time(:millisecond) - state.out_last_at
+      window = Pacing.out_window_after_gap(state.out_window, gap)
       timer = Process.send_after(self(), :flush_output, window)
-      %{emit(state, data) | out_timer: timer, out_window: window, out_last_at: now}
+      %{emit(state, data) | out_timer: timer, out_window: window}
     end
   end
 
@@ -1437,9 +1374,12 @@ defmodule Dala.Terminal.Server do
       state
       | seq: seq,
         last_output_seq: seq,
-        recent_output: retain_recent_output(state.recent_output, seq, data),
-        match_filter_state: match_filter_state
+        match_filter_state: match_filter_state,
+        # Every path that emits goes through here, so this is the one place the
+        # idle gap can be measured from.
+        out_last_at: System.monotonic_time(:millisecond)
     }
+    |> retain_recent_output(seq, data)
     |> wake_output_waiters(plain)
   end
 
@@ -1459,7 +1399,7 @@ defmodule Dala.Terminal.Server do
     if match_waiters?(state) do
       Dala.Terminal.AnsiText.filter(data, state.match_filter_state)
     else
-      {nil, :text}
+      {"", :text}
     end
   end
 
@@ -1507,7 +1447,7 @@ defmodule Dala.Terminal.Server do
     end
   end
 
-  defp register_waiter(state, from, after_seq, timeout, events, match) do
+  defp register_waiter(state, from, after_seq, timeout, events, match, history) do
     case Dala.Terminal.WaiterLimiter.acquire(self()) do
       :ok ->
         ref = make_ref()
@@ -1518,8 +1458,7 @@ defmodule Dala.Terminal.Server do
           after_seq: after_seq,
           events: events,
           match: match,
-          match_buffer:
-            if(is_binary(match), do: recent_plain_output_since(state, after_seq), else: ""),
+          match_buffer: match_context(history, match),
           timer: Process.send_after(self(), {:wait_timeout, ref}, timeout),
           monitor: Process.monitor(caller)
         }
@@ -1540,10 +1479,10 @@ defmodule Dala.Terminal.Server do
             Map.put(kept, ref, waiter)
 
           is_binary(waiter.match) ->
-            buffer = tail_bytes(waiter.match_buffer <> data, @match_buffer_bytes)
+            buffer = waiter.match_buffer <> data
 
             if :binary.match(buffer, waiter.match) == :nomatch do
-              Map.put(kept, ref, %{waiter | match_buffer: buffer})
+              Map.put(kept, ref, %{waiter | match_buffer: match_context(buffer, waiter.match)})
             else
               reply_waiter(
                 waiter,
@@ -1596,10 +1535,20 @@ defmodule Dala.Terminal.Server do
     end)
   end
 
-  defp retain_recent_output(recent, seq, data) do
-    [{seq, data} | recent]
-    |> take_recent_output(@match_buffer_bytes, [])
-    |> Enum.reverse()
+  # Newest-first, so retaining is a cons. Trimming walks the whole window, so it
+  # runs only once the window has grown to twice its bound rather than on every
+  # chunk: a shell dribbling 64-byte writes keeps thousands of entries alive, and
+  # rebuilding that list per chunk cost ~21us of the session process every time.
+  defp retain_recent_output(state, seq, data) do
+    recent = [{seq, data} | state.recent_output]
+    bytes = state.recent_output_bytes + byte_size(data)
+
+    if bytes > 2 * @match_buffer_bytes do
+      kept = take_recent_output(recent, @match_buffer_bytes, [])
+      %{state | recent_output: Enum.reverse(kept), recent_output_bytes: retained_bytes(kept)}
+    else
+      %{state | recent_output: recent, recent_output_bytes: bytes}
+    end
   end
 
   defp take_recent_output(_entries, remaining, acc) when remaining <= 0, do: acc
@@ -1608,6 +1557,10 @@ defmodule Dala.Terminal.Server do
   defp take_recent_output([{seq, data} | rest], remaining, acc) do
     kept = tail_bytes(data, remaining)
     take_recent_output(rest, remaining - byte_size(kept), [{seq, kept} | acc])
+  end
+
+  defp retained_bytes(entries) do
+    Enum.reduce(entries, 0, fn {_seq, data}, total -> total + byte_size(data) end)
   end
 
   # The retained window holds raw terminal bytes; a substring wait compares
@@ -1629,9 +1582,12 @@ defmodule Dala.Terminal.Server do
     |> Enum.map_join(fn {_seq, data} -> data end)
   end
 
-  defp recent_output_matches?(state, after_seq, match) do
-    :binary.match(recent_plain_output_since(state, after_seq), match) != :nomatch
-  end
+  # Everything a waiter still needs from what it has already seen: a needle can
+  # only straddle a chunk boundary by up to its own length minus one byte. The
+  # history before registration was already searched, so carrying the whole
+  # 128 KiB window forward would copy it on every chunk for nothing.
+  defp match_context(_buffer, nil), do: ""
+  defp match_context(buffer, match), do: tail_bytes(buffer, max(byte_size(match) - 1, 0))
 
   defp tail_bytes(data, limit) when byte_size(data) <= limit, do: data
   defp tail_bytes(data, limit), do: binary_part(data, byte_size(data) - limit, limit)

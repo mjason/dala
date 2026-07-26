@@ -7,36 +7,7 @@ defmodule Dala.Terminal.ServerReconnectTest do
   of being buried as "exited" with a live shell behind it.
   """
 
-  use Dala.DataCase, async: false
-
-  alias Dala.Terminal.{Holder, Server}
-
-  @moduletag :terminal
-
-  defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      id = to_string(session.id)
-      File.rm(Holder.exit_path(id))
-      File.rm(Holder.final_path(id))
-      File.rm(Holder.text_final_path(id))
-      File.rm(Holder.socket_path(id) <> ".log")
-    end)
-
-    session
-  end
-
-  defp eventually(fun, attempts \\ 200) do
-    if fun.() do
-      :ok
-    else
-      if attempts == 0, do: flunk("condition never became true")
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
-    end
-  end
+  use Dala.TerminalCase, async: false
 
   defp status(session), do: Dala.Terminal.get_session!(session.id).status
 

@@ -87,7 +87,7 @@ export type TerminalActions = {
    * it takes ownership so the PTY reflows to our grid — an explicit claim
    * from another device's ownership, a silent resize from a sibling
    * window's (soft follower). Programmatic refits (composer open/close,
-   * restart, kick) must leave ownership alone. */
+   * restart) must leave ownership alone. */
   refit: (takeover?: boolean) => void;
   focus: () => void;
   /** Deliver text composed in the native input bar using the given

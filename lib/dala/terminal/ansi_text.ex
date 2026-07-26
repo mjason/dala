@@ -1,6 +1,8 @@
 defmodule Dala.Terminal.AnsiText do
   @moduledoc false
 
+  @on_load :__prime_pattern__
+
   @type state :: :text | :escape | :csi | :osc | :osc_escape | :string | :string_escape
 
   # Every byte that cannot appear in plain text: ESC, which opens a sequence,
@@ -101,16 +103,13 @@ defmodule Dala.Terminal.AnsiText do
 
   # Compiling the alternation on every chunk would give back what the scan
   # saves, and a compiled pattern is a reference, so it cannot live in a module
-  # attribute.
-  defp strippable_pattern do
-    case :persistent_term.get({__MODULE__, :strippable}, nil) do
-      nil ->
-        pattern = :binary.compile_pattern(@strippable)
-        :persistent_term.put({__MODULE__, :strippable}, pattern)
-        pattern
-
-      pattern ->
-        pattern
-    end
+  # attribute. Priming it at load time keeps the hot path a bare lookup and puts
+  # the one-off global literal scan at startup rather than mid-session.
+  @doc false
+  def __prime_pattern__ do
+    :persistent_term.put({__MODULE__, :strippable}, :binary.compile_pattern(@strippable))
+    :ok
   end
+
+  defp strippable_pattern, do: :persistent_term.get({__MODULE__, :strippable})
 end

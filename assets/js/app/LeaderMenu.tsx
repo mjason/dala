@@ -62,7 +62,7 @@ export const LEADER_TREE: LeaderNode[] = [
     ],
   },
   {
-    // Window/rendering concerns: PTY size, repaint, competing viewers.
+    // Window/rendering concerns: PTY size and repaint.
     key: "r",
     labelKey: "leaderRender",
     children: [

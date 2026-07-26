@@ -5,26 +5,7 @@ defmodule Dala.Terminal.ServerCwdTest do
   a filesystem stall can never reach the session's synchronous calls.
   """
 
-  use Dala.DataCase, async: false
-
-  alias Dala.Terminal.{Holder, Server}
-
-  @moduletag :terminal
-
-  defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      id = to_string(session.id)
-      File.rm(Holder.exit_path(id))
-      File.rm(Holder.final_path(id))
-      File.rm(Holder.text_final_path(id))
-      File.rm(Holder.socket_path(id) <> ".log")
-    end)
-
-    session
-  end
+  use Dala.TerminalCase, async: false
 
   defp tmp_dir(prefix) do
     dir = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
@@ -41,16 +22,6 @@ defmodule Dala.Terminal.ServerCwdTest do
     {:ok, peer} = :gen_tcp.accept(listener)
     :ok = :gen_tcp.close(listener)
     {client, peer}
-  end
-
-  defp eventually(fun, attempts \\ 100) do
-    if fun.() do
-      :ok
-    else
-      if attempts == 0, do: flunk("condition never became true")
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
-    end
   end
 
   # A worker that never answers — what a /proc read against a wedged mount

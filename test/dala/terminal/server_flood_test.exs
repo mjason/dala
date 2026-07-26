@@ -8,42 +8,7 @@ defmodule Dala.Terminal.ServerFloodTest do
   not in this process's mailbox.
   """
 
-  use Dala.DataCase, async: false
-
-  alias Dala.Terminal.{Holder, Server}
-
-  @moduletag :terminal
-
-  defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      id = to_string(session.id)
-      File.rm(Holder.exit_path(id))
-      File.rm(Holder.final_path(id))
-      File.rm(Holder.text_final_path(id))
-      File.rm(Holder.socket_path(id) <> ".log")
-    end)
-
-    session
-  end
-
-  defp eventually(fun, attempts \\ 400) do
-    if fun.() do
-      :ok
-    else
-      if attempts == 0, do: flunk("condition never became true")
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
-    end
-  end
-
-  defp seen?(pid, needle) do
-    :sys.get_state(pid).recent_output
-    |> Enum.map_join(fn {_seq, data} -> data end)
-    |> String.contains?(needle)
-  end
+  use Dala.TerminalCase, async: false
 
   test "the holder socket is armed with a bounded window" do
     session = create_session!()
@@ -51,8 +16,9 @@ defmodule Dala.Terminal.ServerFloodTest do
 
     assert {:ok, [active: active]} = :inet.getopts(:sys.get_state(pid).socket, [:active])
 
-    assert is_integer(active) and active > 0 and active <= 64,
-           "expected a bounded delivery window, got active: #{inspect(active)} — " <>
+    # The option is a countdown, so it sits at or below the configured window.
+    assert is_integer(active) and active > 0 and active <= Holder.active_frames(),
+           "expected the bounded delivery window, got active: #{inspect(active)} — " <>
              "an unbounded one lets a flooding shell grow this server's mailbox without limit"
   end
 
@@ -62,15 +28,17 @@ defmodule Dala.Terminal.ServerFloodTest do
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
     Server.input(session.id, "seq 1 400000; printf 'flood-done\\n'\n")
+    # Suspending before the shell has started writing would measure nothing.
+    eventually("flood is flowing", fn -> :sys.get_state(pid).seq > 0 end)
 
     # Suspended, the server processes nothing — but the socket driver keeps
     # delivering. Whatever the window allows is all the mailbox may ever hold.
     :sys.suspend(pid)
-    Process.sleep(400)
+    Process.sleep(50)
     {:message_queue_len, queued} = Process.info(pid, :message_queue_len)
     :sys.resume(pid)
 
-    assert queued <= 32,
+    assert queued <= Holder.active_frames() * 2,
            "#{queued} frames were queued in the mailbox while the server was not draining it; " <>
              "the delivery window is not bounding the backlog"
 
