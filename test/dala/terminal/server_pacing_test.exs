@@ -78,9 +78,19 @@ defmodule Dala.Terminal.ServerPacingTest do
 
       eventually("flood finishes", fn -> seen?(pid, "pacing-done") end)
 
+      # A fixed sleep is not silence: on a slow machine the flood is still
+      # draining, and a window that legitimately stays wide would read as a
+      # failure. Wait for the stream to actually stop — no new seq, no open
+      # batch window — for longer than the idle threshold.
+      eventually("output goes quiet", fn ->
+        before = :sys.get_state(pid).seq
+        Process.sleep(150)
+        state = :sys.get_state(pid)
+        state.seq == before and is_nil(state.out_timer)
+      end)
+
       # Silence retires the width: the next chunk to arrive after it opens an
       # interactive window again, whatever the storm had escalated to.
-      Process.sleep(250)
       socket = :sys.get_state(pid).socket
       send(pid, {:tcp, socket, <<Holder.type_output()>> <> "quiet-again"})
 
