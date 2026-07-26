@@ -783,20 +783,6 @@ export default function App() {
                 {shortPath(active.cwd, 60)}
               </span>
               <Tooltip
-                label={t("quickShellTitle")}
-                description={t("quickShellDesc")}
-                keys="Ctrl+Shift+`"
-                className="max-sm:hidden"
-              >
-                <button
-                  id="quick-shell-button"
-                  onClick={() => quickShellRef.current()}
-                  className={`shrink-0 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-fg-muted transition-colors hover:border-mint/60 hover:text-mint ${touchToolbarBtn}`}
-                >
-                  ⚡&gt;_
-                </button>
-              </Tooltip>
-              <Tooltip
                 label={t("inputBarTitle")}
                 description={t("inputBarHint")}
                 keys={modShiftCombo("k")}
