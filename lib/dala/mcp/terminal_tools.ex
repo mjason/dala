@@ -456,7 +456,15 @@ defmodule Dala.Mcp.TerminalTools do
 
   defp key_variants do
     [
-      %{"type" => "string", "enum" => Dala.Terminal.Input.supported_keys()},
+      %{"type" => "string", "enum" => Dala.Terminal.Input.named_keys()},
+      %{
+        "type" => "string",
+        "pattern" => "^CTRL_[A-Z]$",
+        "description" =>
+          "Any Ctrl+letter, for example CTRL_C (interrupt), CTRL_O (zellij detach prefix, " <>
+            "claude transcript reflow), CTRL_B (tmux prefix) or CTRL_U (clear the input line). " <>
+            "CTRL_S is XOFF and pauses terminal output until CTRL_Q."
+      },
       %{
         "type" => "string",
         "pattern" => "^CHAR:[!-~]$",

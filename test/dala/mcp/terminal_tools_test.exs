@@ -175,6 +175,37 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert tool["inputSchema"]["properties"]["content_base64"]["maxLength"] >= 89_478_488
   end
 
+  test "Ctrl+letter prefixes reach the PTY: the zellij detach chord", %{session: session} do
+    result_path =
+      Path.join(System.tmp_dir!(), "dala-ctrl-key-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(result_path) end)
+
+    # Read the two raw bytes the chord should produce and dump them as hex.
+    Server.input(
+      session.id,
+      "IFS= read -rsN 2 chord; printf '%s' \"$chord\" | od -An -tx1 > #{result_path}\r"
+    )
+
+    assert eventually(fn ->
+             match?({:ok, _}, TerminalTools.call("read_terminal", %{"session" => session.id}))
+           end)
+
+    # This is the call that used to fail with "unsupported terminal key: CTRL_O".
+    assert {:ok, sent} =
+             TerminalTools.call("send_terminal_keys", %{
+               "session" => session.id,
+               "keys" => ["CTRL_O", "CHAR:d"]
+             })
+
+    assert sent.keyCount == 2
+    assert eventually(fn -> File.exists?(result_path) end)
+
+    assert eventually(fn ->
+             File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() == "0f 64"
+           end)
+  end
+
   test "terminal schemas explain TUI style fields and printable shortcut keys" do
     tools = TerminalTools.tools(%{read: true, control: true})
     read = Enum.find(tools, &(&1["name"] == "read_terminal"))
@@ -184,8 +215,13 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert read["description"] =~ "inputModes"
     assert keys["description"] =~ "CHAR:y"
 
-    [named, character] = keys["inputSchema"]["properties"]["keys"]["items"]["oneOf"]
+    [named, control, character] = keys["inputSchema"]["properties"]["keys"]["items"]["oneOf"]
     assert "DOWN" in named["enum"]
+    # The Ctrl+letter range is matched by pattern, not enumerated: an agent
+    # needs zellij's CTRL_O and tmux's CTRL_B as much as CTRL_C.
+    assert control["pattern"] == "^CTRL_[A-Z]$"
+    assert control["description"] =~ "CTRL_O"
+    refute Enum.any?(named["enum"], &String.starts_with?(&1, "CTRL_"))
     assert character["pattern"] == "^CHAR:[!-~]$"
   end
 

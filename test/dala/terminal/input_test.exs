@@ -59,4 +59,38 @@ defmodule Dala.Terminal.InputTest do
       assert message =~ "unsupported terminal key"
     end
   end
+
+  describe "Ctrl+letter keys" do
+    test "every letter maps to its control byte" do
+      assert {:ok, [{<<1>>, 0}]} = Input.key_frames(["CTRL_A"])
+      assert {:ok, [{<<15>>, 0}]} = Input.key_frames(["CTRL_O"])
+      assert {:ok, [{<<26>>, 0}]} = Input.key_frames(["CTRL_Z"])
+    end
+
+    test "the prefix chords real programs are driven by go through" do
+      # zellij detach: Ctrl+O then d. This used to fail on the first key.
+      assert {:ok, [{<<15>>, 15}, {"d", 0}]} = Input.key_frames(["CTRL_O", "CHAR:d"])
+      # tmux prefix + c (new window), screen prefix + d (detach).
+      assert {:ok, [{<<2>>, 15}, {"c", 0}]} = Input.key_frames(["CTRL_B", "CHAR:c"])
+      assert {:ok, [{<<1>>, 15}, {"d", 0}]} = Input.key_frames(["CTRL_A", "CHAR:d"])
+    end
+
+    test "lowercase and non-letters are still refused" do
+      assert {:error, message} = Input.key_frames(["CTRL_o"])
+      assert message =~ "unsupported terminal key"
+      assert {:error, _} = Input.key_frames(["CTRL_1"])
+      assert {:error, _} = Input.key_frames(["CTRL_"])
+    end
+
+    test "the advertised key list covers the whole range" do
+      keys = Input.supported_keys()
+
+      assert "CTRL_A" in keys
+      assert "CTRL_O" in keys
+      assert "CTRL_Z" in keys
+      assert length(Enum.filter(keys, &String.starts_with?(&1, "CTRL_"))) == 26
+      # named_keys is what a schema enumerates; the range is matched by pattern.
+      refute Enum.any?(Input.named_keys(), &String.starts_with?(&1, "CTRL_"))
+    end
+  end
 end

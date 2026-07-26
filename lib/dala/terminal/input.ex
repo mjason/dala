@@ -12,15 +12,22 @@ defmodule Dala.Terminal.Input do
     "HOME" => "\e[H",
     "END" => "\e[F",
     "PAGE_UP" => "\e[5~",
-    "PAGE_DOWN" => "\e[6~",
-    "CTRL_C" => <<3>>,
-    "CTRL_D" => <<4>>,
-    "CTRL_Z" => <<26>>
+    "PAGE_DOWN" => "\e[6~"
   }
   @cursor_keys ~w(UP DOWN LEFT RIGHT)
-  @supported_keys ~w(ENTER ESC TAB BACKTAB SPACE UP DOWN LEFT RIGHT HOME END PAGE_UP PAGE_DOWN CTRL_C CTRL_D CTRL_Z)
+  @named_keys ~w(ENTER ESC TAB BACKTAB SPACE UP DOWN LEFT RIGHT HOME END PAGE_UP PAGE_DOWN)
+  # Every Ctrl+letter, not a hand-picked few: the prefix keys real programs are
+  # driven by are all in here (zellij Ctrl+O/Ctrl+G, tmux Ctrl+B, screen
+  # Ctrl+A, readline Ctrl+U/K/W/R, claude's Ctrl+O reflow). A short allowlist
+  # bought no safety either — the same tool already types arbitrary text and
+  # presses Enter, which is strictly more powerful than any control byte.
+  @ctrl_keys for letter <- ?A..?Z, do: "CTRL_" <> <<letter>>
+  @supported_keys @named_keys ++ @ctrl_keys
 
   def supported_keys, do: @supported_keys
+
+  @doc "The named keys, without the CTRL_A..CTRL_Z range (schemas match those by pattern)."
+  def named_keys, do: @named_keys
 
   @doc "Build serialized PTY frames as `{bytes, delay_after_ms}` tuples."
   def frames(app, text, attachments, submit, key \\ nil, opts \\ []) do
@@ -75,6 +82,11 @@ defmodule Dala.Terminal.Input do
 
   defp key_sequence(<<"CHAR:", byte>>, _application_cursor?) when byte in ?!..?~,
     do: {:ok, <<byte>>}
+
+  # Ctrl+letter is the letter with its top three bits cleared: Ctrl+A is 1,
+  # Ctrl+C is 3 (SIGINT), Ctrl+Z is 26.
+  defp key_sequence(<<"CTRL_", letter>>, _application_cursor?) when letter in ?A..?Z,
+    do: {:ok, <<letter - ?A + 1>>}
 
   defp key_sequence(key, _application_cursor?) do
     case Map.fetch(@key_sequences, key) do
