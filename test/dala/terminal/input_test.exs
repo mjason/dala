@@ -88,9 +88,60 @@ defmodule Dala.Terminal.InputTest do
       assert "CTRL_A" in keys
       assert "CTRL_O" in keys
       assert "CTRL_Z" in keys
-      assert length(Enum.filter(keys, &String.starts_with?(&1, "CTRL_"))) == 26
-      # named_keys is what a schema enumerates; the range is matched by pattern.
-      refute Enum.any?(Input.named_keys(), &String.starts_with?(&1, "CTRL_"))
+      # 26 letters; CTRL_UP/DOWN/LEFT/RIGHT are the modified arrows, not letters.
+      assert length(Enum.filter(keys, &Regex.match?(~r/^CTRL_[A-Z]$/, &1))) == 26
+      # named_keys is what a schema enumerates; the letter range is matched by
+      # pattern instead. The modified arrows (CTRL_UP…) are named, not letters.
+      refute Enum.any?(Input.named_keys(), &Regex.match?(~r/^CTRL_[A-Z]$/, &1))
+      assert "CTRL_UP" in Input.named_keys()
+    end
+  end
+
+  describe "the rest of a real keyboard" do
+    test "editing keys terminals actually send" do
+      # Backspace is DEL (127), not BS — Ctrl+H covers BS for those who want it.
+      assert {:ok, [{<<127>>, 0}]} = Input.key_frames(["BACKSPACE"])
+      assert {:ok, [{<<8>>, 0}]} = Input.key_frames(["CTRL_H"])
+      assert {:ok, [{"\e[3~", 0}]} = Input.key_frames(["DELETE"])
+      assert {:ok, [{"\e[2~", 0}]} = Input.key_frames(["INSERT"])
+    end
+
+    test "function keys: SS3 for F1-F4, CSI above" do
+      assert {:ok, [{"\eOP", 0}]} = Input.key_frames(["F1"])
+      assert {:ok, [{"\eOS", 0}]} = Input.key_frames(["F4"])
+      assert {:ok, [{"\e[15~", 0}]} = Input.key_frames(["F5"])
+      assert {:ok, [{"\e[24~", 0}]} = Input.key_frames(["F12"])
+      assert {:error, _} = Input.key_frames(["F13"])
+    end
+
+    test "modified arrows carry the xterm modifier code" do
+      assert {:ok, [{"\e[1;2A", 0}]} = Input.key_frames(["SHIFT_UP"])
+      assert {:ok, [{"\e[1;3D", 0}]} = Input.key_frames(["ALT_LEFT"])
+      assert {:ok, [{"\e[1;5C", 0}]} = Input.key_frames(["CTRL_RIGHT"])
+    end
+
+    test "Alt is one write, so a TUI cannot read it as Escape then a key" do
+      assert {:ok, [{<<0x1B, ?b>>, 0}]} = Input.key_frames(["ALT:b"])
+      assert {:ok, [{<<0x1B, ?B>>, 0}]} = Input.key_frames(["ALT:B"])
+      assert {:ok, [{"\e\r", 0}]} = Input.key_frames(["ALT_ENTER"])
+
+      # The two-frame spelling is what used to be the only option; it is still
+      # accepted but carries a gap, which is exactly the ambiguity ALT: avoids.
+      assert {:ok, [{"\e", 15}, {"b", 0}]} = Input.key_frames(["ESC", "CHAR:b"])
+    end
+
+    test "plain arrows still follow application-cursor mode" do
+      assert {:ok, [{"\e[A", 0}]} = Input.key_frames(["UP"])
+      assert {:ok, [{"\eOA", 0}]} = Input.key_frames(["UP"], application_cursor: true)
+    end
+
+    test "everything advertised resolves, and nothing else does" do
+      for key <- Input.supported_keys() do
+        assert {:ok, _} = Input.key_frames([key]), "advertised key #{key} does not resolve"
+      end
+
+      assert {:error, _} = Input.key_frames(["MEH"])
+      assert {:error, _} = Input.key_frames(["ALT:"])
     end
   end
 end

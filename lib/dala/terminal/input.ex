@@ -9,13 +9,48 @@ defmodule Dala.Terminal.Input do
     "TAB" => "\t",
     "BACKTAB" => "\e[Z",
     "SPACE" => " ",
+    # DEL, not BS: that is what terminals send for the Backspace key, and what
+    # readline and every TUI editor expects. Ctrl+H (BS) stays available as
+    # CTRL_H for the programs that want it instead.
+    "BACKSPACE" => <<127>>,
+    "DELETE" => "\e[3~",
+    "INSERT" => "\e[2~",
     "HOME" => "\e[H",
     "END" => "\e[F",
     "PAGE_UP" => "\e[5~",
-    "PAGE_DOWN" => "\e[6~"
+    "PAGE_DOWN" => "\e[6~",
+    # Alt as one write, never ESC-then-key in two frames: TUIs tell the two
+    # apart by timing, and a gap would read as "pressed Escape, then Enter".
+    "ALT_ENTER" => "\e\r",
+    "SHIFT_TAB" => "\e[Z"
+  }
+  # xterm modifier encoding: 2 = Shift, 3 = Alt, 5 = Ctrl. These are how panes
+  # and words are navigated (zellij Alt+arrows, readline Ctrl+arrows).
+  @arrow_finals %{"UP" => "A", "DOWN" => "B", "RIGHT" => "C", "LEFT" => "D"}
+  @arrow_modifiers %{"SHIFT" => 2, "ALT" => 3, "CTRL" => 5}
+  @modified_arrows for {modifier, code} <- @arrow_modifiers,
+                       {arrow, final} <- @arrow_finals,
+                       into: %{},
+                       do: {"#{modifier}_#{arrow}", "\e[1;#{code}#{final}"}
+  # F1-F4 are SS3 (what xterm sends); F5 up are CSI with the usual gaps.
+  @function_keys %{
+    "F1" => "\eOP",
+    "F2" => "\eOQ",
+    "F3" => "\eOR",
+    "F4" => "\eOS",
+    "F5" => "\e[15~",
+    "F6" => "\e[17~",
+    "F7" => "\e[18~",
+    "F8" => "\e[19~",
+    "F9" => "\e[20~",
+    "F10" => "\e[21~",
+    "F11" => "\e[23~",
+    "F12" => "\e[24~"
   }
   @cursor_keys ~w(UP DOWN LEFT RIGHT)
-  @named_keys ~w(ENTER ESC TAB BACKTAB SPACE UP DOWN LEFT RIGHT HOME END PAGE_UP PAGE_DOWN)
+  @named_keys (Map.keys(@key_sequences) ++
+                 Map.keys(@modified_arrows) ++ Map.keys(@function_keys) ++ @cursor_keys)
+              |> Enum.sort()
   # Every Ctrl+letter, not a hand-picked few: the prefix keys real programs are
   # driven by are all in here (zellij Ctrl+O/Ctrl+G, tmux Ctrl+B, screen
   # Ctrl+A, readline Ctrl+U/K/W/R, claude's Ctrl+O reflow). A short allowlist
@@ -88,8 +123,11 @@ defmodule Dala.Terminal.Input do
   defp key_sequence(<<"CTRL_", letter>>, _application_cursor?) when letter in ?A..?Z,
     do: {:ok, <<letter - ?A + 1>>}
 
+  defp key_sequence(<<"ALT:", byte>>, _application_cursor?) when byte in ?!..?~,
+    do: {:ok, <<0x1B, byte>>}
+
   defp key_sequence(key, _application_cursor?) do
-    case Map.fetch(@key_sequences, key) do
+    case Map.fetch(Map.merge(@key_sequences, Map.merge(@modified_arrows, @function_keys)), key) do
       {:ok, sequence} -> {:ok, sequence}
       :error -> {:error, "unsupported terminal key: #{inspect(key)}"}
     end

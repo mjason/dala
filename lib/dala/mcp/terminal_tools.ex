@@ -467,6 +467,14 @@ defmodule Dala.Mcp.TerminalTools do
       },
       %{
         "type" => "string",
+        "pattern" => "^ALT:[!-~]$",
+        "description" =>
+          "Alt/Meta plus a printable key, sent as one write so a TUI reads it as Alt and not " <>
+            "as Escape followed by that key: ALT:b and ALT:f move by word in readline, " <>
+            "ALT:h/ALT:j/ALT:k/ALT:l switch zellij panes."
+      },
+      %{
+        "type" => "string",
         "pattern" => "^CHAR:[!-~]$",
         "description" => "A literal printable ASCII key, for example CHAR:y, CHAR:a or CHAR:1."
       }

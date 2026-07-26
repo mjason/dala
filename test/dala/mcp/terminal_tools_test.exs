@@ -215,13 +215,22 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert read["description"] =~ "inputModes"
     assert keys["description"] =~ "CHAR:y"
 
-    [named, control, character] = keys["inputSchema"]["properties"]["keys"]["items"]["oneOf"]
+    [named, control, alt, character] =
+      keys["inputSchema"]["properties"]["keys"]["items"]["oneOf"]
+
     assert "DOWN" in named["enum"]
+    # The keys a TUI actually needs beyond letters and arrows.
+    for key <- ~w(BACKSPACE DELETE F1 F12 ALT_ENTER SHIFT_UP CTRL_RIGHT ALT_LEFT) do
+      assert key in named["enum"], "#{key} is not advertised"
+    end
+
+    assert alt["pattern"] == "^ALT:[!-~]$"
+    assert alt["description"] =~ "one write"
     # The Ctrl+letter range is matched by pattern, not enumerated: an agent
     # needs zellij's CTRL_O and tmux's CTRL_B as much as CTRL_C.
     assert control["pattern"] == "^CTRL_[A-Z]$"
     assert control["description"] =~ "CTRL_O"
-    refute Enum.any?(named["enum"], &String.starts_with?(&1, "CTRL_"))
+    refute Enum.any?(named["enum"], &Regex.match?(~r/^CTRL_[A-Z]$/, &1))
     assert character["pattern"] == "^CHAR:[!-~]$"
   end
 
