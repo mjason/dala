@@ -30,27 +30,61 @@ describe("createStreamGate", () => {
     expect(gate.acceptInput()).toBe(true);
 
     const replay = gate.replayBatch(5, true);
+    gate.parseStarted();
     expect(gate.acceptInput()).toBe(false);
 
+    gate.parseFinished();
     gate.replayParsed(replay.generation);
     expect(gate.acceptInput()).toBe(true);
   });
 
-  it("blocks input again during a reconnect replay", () => {
+  it("keeps input flowing while a replay is only in flight", () => {
     const gate = createStreamGate();
     const initial = gate.replayBatch(5, true);
+    gate.parseStarted();
+    gate.parseFinished();
     gate.replayParsed(initial.generation);
 
+    // Requesting a snapshot (rejoin, tab reveal, flow repaint) produces no
+    // emulator output at all until its bytes land — everything typed in that
+    // window is the USER, and on a slow link the window is a whole
+    // round-trip. Swallowing it there lost real keystrokes.
     gate.joined();
-    // Rejoining is itself the replay barrier. User input can arrive before
-    // Phoenix delivers the first replay batch and must not reach the PTY in
-    // that gap.
-    expect(gate.acceptInput()).toBe(false);
+    expect(gate.acceptInput()).toBe(true);
+    gate.waitForReplay();
+    expect(gate.acceptInput()).toBe(true);
+  });
+
+  it("re-blocks input for every batch of a multi-batch replay", () => {
+    const gate = createStreamGate();
+    gate.joined();
+
     gate.replayBatch(9, false);
+    gate.parseStarted();
     expect(gate.acceptInput()).toBe(false);
+    gate.parseFinished();
+    expect(gate.acceptInput()).toBe(true);
+
     const replay = gate.replayBatch(12, true);
+    gate.parseStarted();
+    expect(gate.acceptInput()).toBe(false);
+    gate.parseFinished();
     gate.replayParsed(replay.generation);
     expect(gate.acceptInput()).toBe(true);
+  });
+
+  it("stays blocked until the last overlapping parse finishes", () => {
+    const gate = createStreamGate();
+    gate.parseStarted();
+    gate.parseStarted();
+    gate.parseFinished();
+    expect(gate.acceptInput()).toBe(false);
+    gate.parseFinished();
+    expect(gate.acceptInput()).toBe(true);
+    // Never goes negative on a stray extra callback.
+    gate.parseFinished();
+    gate.parseStarted();
+    expect(gate.acceptInput()).toBe(false);
   });
 
   it("drops live output already covered by the replay snapshot", () => {
@@ -73,7 +107,8 @@ describe("createStreamGate", () => {
     gate.waitForReplay();
     expect(gate.isReplayPending()).toBe(true);
     expect(gate.acceptOutput(11)).toBe(false);
-    expect(gate.acceptInput()).toBe(false);
+    // Output is held back (the snapshot supersedes it) but typing is not.
+    expect(gate.acceptInput()).toBe(true);
 
     // A timeout fallback has no reset bit: release the wait without clearing
     // the settled frame, then resume the stream at the fallback watermark.
@@ -124,13 +159,11 @@ describe("createStreamGate", () => {
     let settlements = 0;
     if (gate.replayParsed(oldReplay.generation)) settlements++;
     expect(settlements).toBe(0);
-    expect(gate.acceptInput()).toBe(false);
 
     gate.joined();
     const currentReplay = gate.replayBatch(30, true, true);
     if (gate.replayParsed(currentReplay.generation)) settlements++;
     expect(settlements).toBe(1);
-    expect(gate.acceptInput()).toBe(true);
   });
 
   it("keeps late batches on the superseded replay generation", () => {
@@ -147,7 +180,6 @@ describe("createStreamGate", () => {
     expect(oldFinal.generation).toBe(oldFirst.generation);
     expect(oldFinal.firstBatch).toBe(false);
     expect(gate.replayParsed(oldFinal.generation)).toBe(false);
-    expect(gate.acceptInput()).toBe(false);
 
     gate.joined();
     const current = gate.replayBatch(30, true, true);
@@ -200,7 +232,9 @@ describe("flow-control skip repaint", () => {
     expect(flow.reset).toBe(true);
     expect(flow.release).toBe(true);
     // auto-responses to replayed escape sequences must not reach the PTY
+    gate.parseStarted();
     expect(gate.acceptInput()).toBe(false);
+    gate.parseFinished();
     gate.replayParsed(flow.generation);
     expect(gate.acceptInput()).toBe(true);
 

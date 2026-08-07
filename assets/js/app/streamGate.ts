@@ -8,10 +8,16 @@
  *    slate (terminal reset).
  * 2. Live `output` chunks overlapping the replay snapshot are deduplicated
  *    by `seq`.
- * 3. While replayed bytes are being parsed, anything the terminal emits is
+ * 3. While replayed bytes are being PARSED, anything the terminal emits is
  *    an auto-response to historical escape sequences (vim's device probes,
  *    color queries, …) and must NOT be forwarded to the PTY — the shell
  *    would receive it as typed input.
+ *
+ * Invariant 3 is scoped to the parse, not to the request: a snapshot that
+ * has been asked for but is still travelling produces no emulator output at
+ * all, so keystrokes typed in that window are the user's. Gating them there
+ * threw away one full round-trip of typing on every tab switch — the worse
+ * the link, the more characters vanished.
  */
 export type StreamGate = {
   /** The channel (re)joined: the next replay batch starts a fresh repaint. */
@@ -43,6 +49,14 @@ export type StreamGate = {
   acceptOutput(seq: number): boolean;
   /** True while a requested replay has not delivered its first batch. */
   isReplayPending(): boolean;
+  /**
+   * A replay batch's bytes were handed to xterm. Until the matching
+   * `parseFinished()`, everything the emulator emits is an auto-response to
+   * them (invariant 3).
+   */
+  parseStarted(): void;
+  /** That batch finished parsing (xterm's write callback). */
+  parseFinished(): void;
   /** Should terminal-emitted data be forwarded to the PTY as input? */
   acceptInput(): boolean;
 };
@@ -53,7 +67,10 @@ export function createStreamGate(): StreamGate {
   // catch-up waits for the same barrier but preserves the frame when the
   // timeout fallback is an empty non-reset replay.
   let resetFirstReplay = true;
-  let replaying = false;
+  // Depth, not a flag: batches of one snapshot are handed to xterm back to
+  // back, and a nested/overlapping parse must not reopen the input path
+  // early.
+  let parsing = 0;
   let lastSeq = -1;
   let generation = 0;
   // Phoenix delivers a multi-batch replay as separate message events. A new
@@ -72,7 +89,6 @@ export function createStreamGate(): StreamGate {
       wireReplayGeneration = null;
       awaitingReplay = true;
       resetFirstReplay = true;
-      replaying = true;
     },
 
     waitForReplay() {
@@ -84,7 +100,6 @@ export function createStreamGate(): StreamGate {
         resetFirstReplay = false;
       }
       awaitingReplay = true;
-      replaying = true;
     },
 
     replayBatch(seq, done, wireReset = false) {
@@ -112,7 +127,6 @@ export function createStreamGate(): StreamGate {
         } else if (seq > lastSeq) {
           lastSeq = seq;
         }
-        replaying = true;
       } else if (seq > lastSeq) {
         lastSeq = seq;
       }
@@ -122,9 +136,7 @@ export function createStreamGate(): StreamGate {
     },
 
     replayParsed(parsedGeneration) {
-      if (parsedGeneration !== generation) return false;
-      replaying = false;
-      return true;
+      return parsedGeneration === generation;
     },
 
     acceptOutput(seq) {
@@ -141,8 +153,16 @@ export function createStreamGate(): StreamGate {
       return awaitingReplay;
     },
 
+    parseStarted() {
+      parsing++;
+    },
+
+    parseFinished() {
+      if (parsing > 0) parsing--;
+    },
+
     acceptInput() {
-      return !replaying;
+      return parsing === 0;
     },
   };
 }

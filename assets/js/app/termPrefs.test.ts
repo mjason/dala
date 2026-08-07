@@ -90,6 +90,27 @@ describe("termPrefs", () => {
     });
   });
 
+  describe("local echo migration", () => {
+    // The setting was a boolean defaulting to OFF. A stored `false` is
+    // therefore "never touched it", not a decision — and "auto" is inert on
+    // a fast link, so nobody who wanted it off loses anything.
+    it("maps a stored boolean onto the tri-state mode", () => {
+      localStorage.setItem("dala:term-prefs", JSON.stringify({ localEcho: false }));
+      expect(loadPrefs().localEcho).toBe("auto");
+
+      localStorage.setItem("dala:term-prefs", JSON.stringify({ localEcho: true }));
+      expect(loadPrefs().localEcho).toBe("on");
+    });
+
+    it("keeps an explicit mode and falls back on garbage", () => {
+      localStorage.setItem("dala:term-prefs", JSON.stringify({ localEcho: "off" }));
+      expect(loadPrefs().localEcho).toBe("off");
+
+      localStorage.setItem("dala:term-prefs", JSON.stringify({ localEcho: "sometimes" }));
+      expect(loadPrefs().localEcho).toBe(DEFAULT_PREFS.localEcho);
+    });
+  });
+
   it("builds the font stack with the bundled font as fallback", () => {
     expect(fontStack(DEFAULT_PREFS)).toBe('"JetBrainsMono NFM", monospace');
     expect(fontStack({ ...DEFAULT_PREFS, fontFamily: "Fira Code, monospace" })).toBe(

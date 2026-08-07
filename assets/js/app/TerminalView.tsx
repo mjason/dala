@@ -38,7 +38,7 @@ import { sizeRole, type SizeRole } from "./sizeRole";
 import { useI18n } from "./i18n";
 import { createHiddenOutputBuffer } from "./hiddenOutputBuffer";
 import { createLazyHistory, type HistoryIntent } from "./lazyHistory";
-import { recoverOwnedWebglContext } from "./rendererLifecycle";
+import { createWarmRendererPool, recoverOwnedWebglContext } from "./rendererLifecycle";
 import {
   replayBatchPlan,
   joinHistoryBatches,
@@ -130,6 +130,13 @@ type Props = {
 // takeover tip per session per page load is plenty — repeated takeovers
 // must not keep nagging.
 const reflowTipSeen = new Set<string>();
+
+// Shared across every mounted terminal: hiding one hands its renderer to the
+// pool instead of destroying it, so flipping back is free (see
+// rendererLifecycle). Views are keyed by mount, not by session id — a session
+// can be on screen in more than one view.
+const warmRenderers = createWarmRendererPool();
+let terminalViewSeq = 0;
 
 // How long the width-change tip stays up (visible countdown, then gone).
 const REFLOW_TIP_SECONDS = 5;
@@ -262,6 +269,7 @@ export default function TerminalView({
 
     let disposed = false;
     let cleanup: (() => void) | undefined;
+    const viewKey = `view-${++terminalViewSeq}`;
     let viewerVisible = visibleRef.current && document.visibilityState === "visible";
 
     const prefs = loadPrefs();
@@ -341,7 +349,13 @@ export default function TerminalView({
         publishRenderer();
       };
       const enableWebgl = (retryOnLoss: boolean) => {
-        if (disposed || !viewerVisible || webgl) return;
+        if (disposed || !viewerVisible) return;
+        if (webgl) {
+          // Kept warm while hidden: nothing to build, but this terminal owns
+          // the renderer diagnostic again now that it is on screen.
+          publishRenderer();
+          return;
+        }
         const generation = ++webglGeneration;
         try {
           const addon = new WebglAddon();
@@ -714,6 +728,8 @@ export default function TerminalView({
       const flowStats: {
         acked: number;
         resets: number;
+        /** Measured keystroke → echo delay; drives "auto" local echo. */
+        echoMs: number | null;
         renderer: typeof rendererStats;
         replay: ReplayTrace | null;
         replayHistory: ReplayTrace[];
@@ -721,6 +737,7 @@ export default function TerminalView({
       } = {
         acked: 0,
         resets: 0,
+        echoMs: null,
         renderer: rendererStats,
         replay: null,
         replayHistory: [],
@@ -856,10 +873,14 @@ export default function TerminalView({
             visibilityTrace.catchUp = false;
           });
           term.options.cursorBlink = false;
-          disableWebgl();
+          // Keep the renderer if the pool has room — the tab you just left is
+          // the one you are most likely to come back to.
+          if (!warmRenderers.retain(viewKey, disableWebgl)) disableWebgl();
           return;
         }
         term.options.cursorBlink = livePrefs.cursorBlink;
+        warmRenderers.forget(viewKey);
+        // A no-op when the renderer was kept warm, which is the whole point.
         enableWebgl(true);
         // A hidden view can still have the old viewport dimensions. Send its
         // refit before visibility so the server's automatic catch-up snapshot
@@ -985,8 +1006,13 @@ export default function TerminalView({
             }
           }
 
+          // Replayed bytes are the ONE window where terminal-emitted data is
+          // an auto-response rather than a keystroke — bracket the parse so
+          // the input gate closes for exactly that long (see streamGate).
+          gate.parseStarted();
           if (release) {
             writeCounted(payloadData, () => {
+              gate.parseFinished();
               // xterm parses writes asynchronously. A newer replay can start
               // after this batch is queued but before this callback runs; in
               // that case only its byte acknowledgement is still relevant.
@@ -1027,7 +1053,7 @@ export default function TerminalView({
             // Replay scrolling is settled only by the current generation's
             // final callback. An older batch may finish parsing after a newer
             // replay starts and must have no scroll side effects.
-            writeCounted(payloadData, undefined, false);
+            writeCounted(payloadData, () => gate.parseFinished(), false);
           }
         },
         output: (payload) => {
@@ -1046,7 +1072,11 @@ export default function TerminalView({
             ackCounter.consumed(buffered.droppedBytes, term.buffer.active.type === "alternate");
             return;
           }
-          writeCounted(typeahead.reconcile(data));
+          const reconciled = typeahead.reconcile(data);
+          // Surfaced in the appearance diagnostics / e2e: what "auto" local
+          // echo is deciding on.
+          flowStats.echoMs = typeahead.echoDelayMs();
+          writeCounted(reconciled);
         },
         cwd: (payload) => {
           cwdChangeRef.current?.(payload.cwd);
@@ -1429,16 +1459,21 @@ export default function TerminalView({
         term.focus();
       };
       const sendText = (text: string, submit: boolean, strategy?: SendStrategy) => {
+        // Deliberately NOT gated on the replay parse: composer text is
+        // user-authored by construction and can never be an emulator
+        // auto-response, so dropping it there only loses what the user typed.
         // Empty text with submit=true is a bare "press Enter" (the composer
         // submits separately after pasting attachments).
-        if (!gate.acceptInput() || (!text && !submit)) return;
+        if (!text && !submit) return;
         const mode = resolveSendMode(strategy, term.modes.bracketedPasteMode);
         sendComposedText(text, submit, mode, (data) =>
           phxChannel.push("input", { data }),
         );
       };
       const sendKey = (data: string) => {
-        if (!gate.acceptInput() || !data) return;
+        // Same as sendText: the touch key bar is a user action, not an
+        // emulator reply — never swallow it behind a replay.
+        if (!data) return;
         phxChannel.push("input", { data });
       };
       localActionsRef.current = { reset, refit, focus: () => term.focus(), sendText, sendKey };
@@ -1739,6 +1774,7 @@ export default function TerminalView({
       document.addEventListener("visibilitychange", onVisibilityChange);
 
       cleanup = () => {
+        warmRenderers.forget(viewKey);
         if (actionsRef && actionsRef.current === localActionsRef.current) actionsRef.current = null;
         localActionsRef.current = null;
         relayoutRef.current = null;

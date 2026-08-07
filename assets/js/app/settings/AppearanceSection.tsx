@@ -14,6 +14,8 @@ import {
   savePrefs,
 } from "../termPrefs";
 import type { CursorStyle, TermPrefs } from "../termPrefs";
+import type { LocalEchoMode } from "../typeahead";
+import Segmented from "./Segmented";
 import {
   applyTheme,
   cacheCustomTheme,
@@ -124,6 +126,12 @@ export default function AppearanceSection({
     { value: "underline", label: t("cursorUnderline") },
   ];
 
+  const localEchoModes: { value: LocalEchoMode; label: string }[] = [
+    { value: "off", label: t("localEchoOff") },
+    { value: "auto", label: t("localEchoAuto") },
+    { value: "on", label: t("localEchoOn") },
+  ];
+
   const themeColor = (theme: ThemeSummary, key: TokenKey) =>
     theme.tokens[key] ?? baseTokenValue(theme.base, key);
 
@@ -169,29 +177,14 @@ export default function AppearanceSection({
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        <FieldLabel>{t("themeLabel")}</FieldLabel>
-        <div
-          id="theme-setting-control"
-          className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5"
-        >
-          {themeOptions.map(({ value, label }) => (
-            <button
-              key={value}
-              data-theme-setting={value}
-              aria-pressed={choice.setting === value}
-              onClick={() => chooseTheme(value)}
-              className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
-                choice.setting === value
-                  ? "bg-bg0 font-medium text-mint shadow-sm"
-                  : "text-fg-muted hover:text-fg"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <Segmented
+        id="theme-setting-control"
+        label={t("themeLabel")}
+        options={themeOptions}
+        value={choice.setting}
+        dataAttr="data-theme-setting"
+        onChange={chooseTheme}
+      />
 
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
@@ -410,25 +403,24 @@ export default function AppearanceSection({
         <span className="block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>
       </label>
 
-      <div className="space-y-1.5">
-        <FieldLabel>{t("cursorStyleLabel")}</FieldLabel>
-        <div className="grid grid-cols-3 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5">
-          {cursorStyles.map(({ value, label }) => (
-            <button
-              key={value}
-              data-cursor-style={value}
-              onClick={() => apply({ cursorStyle: value })}
-              className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
-                prefs.cursorStyle === value
-                  ? "bg-bg0 font-medium text-mint shadow-sm"
-                  : "text-fg-muted hover:text-fg"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <Segmented
+        id="cursor-style-control"
+        label={t("cursorStyleLabel")}
+        options={cursorStyles}
+        value={prefs.cursorStyle}
+        dataAttr="data-cursor-style"
+        onChange={(cursorStyle) => apply({ cursorStyle })}
+      />
+
+      <Segmented
+        id="local-echo-control"
+        label={t("localEcho")}
+        hint={t("localEchoHint")}
+        options={localEchoModes}
+        value={prefs.localEcho}
+        dataAttr="data-local-echo"
+        onChange={(localEcho) => apply({ localEcho })}
+      />
 
       <div className="divide-y divide-line/70 rounded-lg border border-line/70">
         <ToggleRow
@@ -448,12 +440,6 @@ export default function AppearanceSection({
           label={t("smoothScroll")}
           checked={prefs.smoothScroll}
           onChange={(v) => apply({ smoothScroll: v })}
-        />
-        <ToggleRow
-          id="local-echo-checkbox"
-          label={t("localEcho")}
-          checked={prefs.localEcho}
-          onChange={(v) => apply({ localEcho: v })}
         />
       </div>
 

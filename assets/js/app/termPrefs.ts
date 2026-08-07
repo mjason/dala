@@ -4,6 +4,7 @@
  * window event — they are viewer preferences, not session state.
  */
 import { createStore } from "./store";
+import type { LocalEchoMode } from "./typeahead";
 
 export type CursorStyle = "bar" | "block" | "underline";
 
@@ -21,8 +22,9 @@ export type TermPrefs = {
   /** Selecting text copies it immediately (canvas text has no native copy). */
   copyOnSelect: boolean;
   /** mosh-style typeahead: printable keys render immediately, the server
-   * echo is reconciled when it arrives — hides the network round-trip. */
-  localEcho: boolean;
+   * echo is reconciled when it arrives — hides the network round-trip.
+   * "auto" measures the echo delay and predicts only on a slow link. */
+  localEcho: LocalEchoMode;
 };
 
 export const DEFAULT_PREFS: TermPrefs = {
@@ -34,7 +36,7 @@ export const DEFAULT_PREFS: TermPrefs = {
   smoothScroll: true,
   scrollSensitivity: 2,
   copyOnSelect: true,
-  localEcho: false,
+  localEcho: "auto",
 };
 
 /** Default terminal font size on coarse-pointer (touch-first) devices:
@@ -99,8 +101,21 @@ function normalize(raw: Partial<TermPrefs>): TermPrefs {
     ),
     copyOnSelect:
       typeof raw.copyOnSelect === "boolean" ? raw.copyOnSelect : DEFAULT_PREFS.copyOnSelect,
-    localEcho: typeof raw.localEcho === "boolean" ? raw.localEcho : DEFAULT_PREFS.localEcho,
+    localEcho: localEchoMode(raw.localEcho),
   };
+}
+
+/**
+ * The setting used to be a boolean that defaulted to OFF, so a stored
+ * `false` is almost always "never touched it" rather than a decision — those
+ * migrate to "auto", which is inert on a fast link and only predicts once
+ * the echo delay is actually visible. An explicit `true` becomes "on".
+ */
+function localEchoMode(raw: unknown): LocalEchoMode {
+  if (raw === "off" || raw === "auto" || raw === "on") return raw;
+  if (raw === true) return "on";
+  if (raw === false) return "auto";
+  return DEFAULT_PREFS.localEcho;
 }
 
 const store = createStore<TermPrefs>(KEY, DEFAULT_PREFS, normalize, { event: EVENT });
