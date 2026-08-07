@@ -13,6 +13,7 @@ defmodule DalaWeb.TerminalChannel do
   use Phoenix.Channel
   use AshTypescript.TypedChannel
 
+  alias Dala.Terminal.FlowWindow
   alias Dala.Terminal.Holder
 
   # Output flow control (per client): once the client starts acking parsed
@@ -23,7 +24,10 @@ defmodule DalaWeb.TerminalChannel do
   # get the full stream, exactly as before.
   intercept ["output", "exit"]
 
-  # Alt screen (TUIs — no scrollback to lose): skip aggressively.
+  # Alt screen (TUIs — no scrollback to lose): skip aggressively. Both marks
+  # are a BASE: the effective one adds the client's measured bandwidth-delay
+  # product, because the bytes merely in flight on a slow link are not a
+  # backlog (see Dala.Terminal.FlowWindow).
   @high_water_alt 128 * 1024
   # Normal buffer: skipping costs scrollback lines, so only cap pathological
   # floods.
@@ -123,7 +127,8 @@ defmodule DalaWeb.TerminalChannel do
             repaint_timer: nil,
             repaint_retry_timer: nil,
             repaint_timed_out: false,
-            repaint_fallback_sent: false
+            repaint_fallback_sent: false,
+            window: FlowWindow.new()
           })
 
         {:ok,
@@ -402,7 +407,7 @@ defmodule DalaWeb.TerminalChannel do
         # The first browser ack enables flow control and may cover output sent
         # before that ack. Charge these bytes now so activation cannot begin
         # with acked > sent and a negative backlog.
-        {:noreply, assign(socket, :fc, %{fc | sent: fc.sent + size})}
+        {:noreply, assign(socket, :fc, charge(fc, size))}
 
       fc.sent - fc.acked + size > high_water(fc) ->
         Process.send_after(self(), :flow_repaint_deadline, @flow_deadline_ms)
@@ -410,7 +415,7 @@ defmodule DalaWeb.TerminalChannel do
 
       true ->
         push(socket, "output", payload)
-        {:noreply, assign(socket, :fc, %{fc | sent: fc.sent + size})}
+        {:noreply, assign(socket, :fc, charge(fc, size))}
     end
   end
 
@@ -572,7 +577,8 @@ defmodule DalaWeb.TerminalChannel do
       fc
       | enabled: true,
         acked: acked,
-        alt: payload["alt"] == true
+        alt: payload["alt"] == true,
+        window: FlowWindow.acked(fc.window, acked, now_ms())
     }
 
     {:noreply, maybe_flow_repaint(assign(socket, :fc, fc))}
@@ -623,8 +629,19 @@ defmodule DalaWeb.TerminalChannel do
     end
   end
 
-  defp high_water(%{alt: true}), do: @high_water_alt
-  defp high_water(_fc), do: @high_water_normal
+  # Bytes went out: move the ledger and drop a timestamped marker the next
+  # acknowledgement can measure the round-trip against.
+  defp charge(fc, size) do
+    sent = fc.sent + size
+    %{fc | sent: sent, window: FlowWindow.sent(fc.window, sent, now_ms())}
+  end
+
+  defp high_water(fc), do: FlowWindow.high_water(fc.window, base_high_water(fc))
+
+  defp base_high_water(%{alt: true}), do: @high_water_alt
+  defp base_high_water(_fc), do: @high_water_normal
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   # Base64 payload → decoded byte count, without decoding.
   defp decoded_size(encoded) do
