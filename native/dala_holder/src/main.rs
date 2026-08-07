@@ -50,7 +50,7 @@ use std::time::Duration;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 
-use crate::screen::{Screen, REPAINT_HISTORY_BUDGET};
+use crate::screen::{FrameTracker, Screen, REPAINT_HISTORY_BUDGET};
 
 /// Hard bounds on PTY/emulator dimensions, mirroring the server's clamp.
 /// The emulator allocates rows×cols cells on resize — a stray 65535×65535
@@ -98,6 +98,11 @@ const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 // many attached clients, but bound work queued by a malformed/raw peer. New
 // requests are rejected at the limit so holder replies stay FIFO-aligned with
 // the BEAM's pending-request queue.
+/// Frame interval in render mode. zellij debounces its renders on the same
+/// 10ms, which caps a runaway TUI at 100 screenfuls a second no matter how
+/// fast it writes.
+const RENDER_TICK: Duration = Duration::from_millis(10);
+
 const MAX_PENDING_REPAINTS: usize = 64;
 // TEXT_SNAPSHOT has no request id on the wire. Never evict or silently reject
 // an individual request: doing so would make every later response satisfy the
@@ -128,10 +133,19 @@ struct Config {
     cols: u16,
     #[serde(default = "default_history_lines")]
     history_lines: usize,
+    /// Deliver the alternate screen as diffed frames (zellij's model) instead
+    /// of forwarding raw PTY bytes. Off falls all the way back to the byte
+    /// stream, which is what every dala before this shipped.
+    #[serde(default = "default_render_mode")]
+    render_mode: bool,
 }
 
 fn default_history_lines() -> usize {
     10_000
+}
+
+fn default_render_mode() -> bool {
+    true
 }
 
 #[derive(Default)]
@@ -454,6 +468,16 @@ struct Shared {
     agent_reports: VecDeque<Vec<u8>>,
     /// Carry-over so OSC sequences split across reads are still found.
     osc_tail: Vec<u8>,
+    /// Render mode: what the client has been shown, so the next frame can
+    /// carry only the difference.
+    frame: FrameTracker,
+    /// The emulator changed since the last frame went out.
+    frame_dirty: bool,
+    /// True while the client is being driven by `alt_frame` rather than by
+    /// the raw byte stream. The handover in both directions happens in the
+    /// PTY reader, which is the only place that sees the alternate-screen
+    /// transition and the client flag under one lock.
+    render_alt: bool,
 }
 
 struct State {
@@ -584,6 +608,9 @@ fn main() {
             cwd_report: None,
             agent_reports: VecDeque::new(),
             osc_tail: Vec::new(),
+            frame: FrameTracker::default(),
+            frame_dirty: false,
+            render_alt: false,
         }),
         cond: Condvar::new(),
     });
@@ -592,6 +619,7 @@ fn main() {
     {
         let state = Arc::clone(&state);
         let pty_writer = Arc::clone(&pty_writer);
+        let render_mode = config.render_mode;
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut parser_safe_output = ParserSafeOutput::default();
@@ -638,8 +666,42 @@ fn main() {
                             let attached = shared.client.is_some();
                             // The emulator is the durable history; the ring only
                             // carries live bytes to the attached client.
+                            //
+                            // Render mode owns the alternate screen: instead of
+                            // the program's bytes, the client gets a diffed
+                            // frame on the render tick. This is the one place
+                            // that sees the 1049 transition and the client flag
+                            // under a single lock, so both handovers live here.
                             if attached {
-                                shared.transit.push_bounded(&complete, RING_MAX);
+                                let render_alt = render_mode && shared.screen.alt_screen();
+                                if render_alt {
+                                    if !shared.render_alt {
+                                        // Entering: this chunk still holds the
+                                        // shell's last normal-buffer output
+                                        // ahead of the 1049h, so stream it —
+                                        // dropping it would punch a hole in the
+                                        // client's scrollback. The first frame
+                                        // is full and idempotently re-enters
+                                        // and repaints the alternate screen.
+                                        shared.transit.push_bounded(&complete, RING_MAX);
+                                        shared.render_alt = true;
+                                        shared.frame.reset();
+                                    }
+                                    shared.frame_dirty = true;
+                                } else if shared.render_alt {
+                                    // Leaving: the resync frame already carries
+                                    // the normal viewport as it stands after
+                                    // this whole chunk, so streaming the chunk
+                                    // as well would replay the alternate
+                                    // screen's teardown on top of it.
+                                    shared.render_alt = false;
+                                    shared.frame_dirty = false;
+                                    shared.frame.reset();
+                                    let resync = shared.screen.normal_resync_frame();
+                                    shared.transit.push_bounded(&resync, RING_MAX);
+                                } else {
+                                    shared.transit.push_bounded(&complete, RING_MAX);
+                                }
                             }
                             state.cond.notify_all();
                             if attached { Vec::new() } else { replies }
@@ -664,6 +726,37 @@ fn main() {
             let mut shared = state.shared.lock().unwrap();
             shared.exit_status = Some(status);
             state.cond.notify_all();
+        });
+    }
+
+    // Render tick: the alternate screen's only producer while render mode
+    // drives it. Everything downstream is unchanged — a frame is just ANSI
+    // bytes in the same ring the raw stream uses.
+    if config.render_mode {
+        let state = Arc::clone(&state);
+        thread::spawn(move || loop {
+            thread::sleep(RENDER_TICK);
+            let mut guard = state.shared.lock().unwrap();
+            if guard.exit_status.is_some() {
+                break;
+            }
+            // `frame_dirty` stays set while a repaint holds the barrier, so
+            // the change is not lost — it goes out on the tick after it.
+            if !guard.render_alt
+                || !guard.frame_dirty
+                || guard.client.is_none()
+                || guard.repaint_frozen
+            {
+                continue;
+            }
+            guard.frame_dirty = false;
+            // Split borrow: the tracker and the emulator are disjoint fields.
+            let shared = &mut *guard;
+            let frame = shared.screen.alt_frame(&mut shared.frame);
+            if !frame.is_empty() {
+                shared.transit.push_bounded(&frame, RING_MAX);
+                state.cond.notify_all();
+            }
         });
     }
 
@@ -732,6 +825,10 @@ fn main() {
                         let repaint = shared
                             .screen
                             .repaint_with_history(soft, pending.history_budget);
+                        // A repaint replaces the client's screen by a path
+                        // the tracker knows nothing about; its stored rows are
+                        // now fiction. Force the next frame to be full.
+                        shared.frame.reset();
                         (Job::Repaint(repaint), stream, gen)
                     } else if shared.client.is_some() && shared.cwd_report.is_some() {
                         (Job::Cwd(shared.cwd_report.take().unwrap()), stream, gen)
@@ -1170,6 +1267,11 @@ fn clear_client(shared: &mut Shared) {
     shared.repaint_pending.clear();
     shared.repaint_frozen = false;
     shared.text_snapshot_pending.clear();
+    // The next client has seen nothing: it gets a repaint, and its first
+    // frame after that must be a full one.
+    shared.frame.reset();
+    shared.frame_dirty = false;
+    shared.render_alt = false;
 }
 
 /// Detaches only the expected connection generation. The input gate is
@@ -1414,6 +1516,9 @@ mod client_generation_tests {
                 cwd_report: None,
                 agent_reports: VecDeque::new(),
                 osc_tail: Vec::new(),
+                frame: FrameTracker::default(),
+                frame_dirty: false,
+                render_alt: false,
             }),
             cond: Condvar::new(),
         }

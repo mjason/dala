@@ -163,6 +163,7 @@ impl FrameTracker {
     }
 
     /// Has this tracker ever produced a frame for the current client?
+    #[cfg(test)]
     pub fn primed(&self) -> bool {
         self.primed
     }

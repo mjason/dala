@@ -42,6 +42,19 @@ config :dala,
   bootstrap_users_reset:
     System.get_env("DALA_USERS_RESET") in ~w(true 1) or auth["usersReset"] == true
 
+# Terminal render mode (zellij's model): the holder delivers the alternate
+# screen as diffed frames instead of forwarding raw PTY bytes, so a TUI
+# repainting at 60fps costs what CHANGED rather than what it wrote. Set false
+# to fall back to the raw byte stream every dala before this shipped.
+terminal_render_mode =
+  case System.get_env("DALA_TERMINAL_RENDER_MODE") do
+    value when value in ~w(false 0) -> false
+    value when value in ~w(true 1) -> true
+    _unset -> (cfg["terminal"] || %{})["renderMode"] != false
+  end
+
+config :dala, terminal_render_mode: terminal_render_mode
+
 # The MCP (Model Context Protocol) server is enabled/disabled at RUNTIME from
 # the web Settings panel, and its bearer token is server-generated — both live
 # in `Dala.Settings.Mcp` (a DB singleton), not the environment. See docs/mcp.md.
