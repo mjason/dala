@@ -16,6 +16,7 @@ use alacritty_terminal::vte::ansi::{
     Processor, StandardCharset,
 };
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -173,6 +174,68 @@ impl FrameTracker {
 /// pen, erase to end of line. A full frame has just erased the screen, so
 /// those rows would paint nothing and are skipped.
 const BLANK_ROW: &[u8] = b"\x1b[0m\x1b[K";
+
+/// The result of feeding a chunk of PTY output to the emulator.
+pub struct Advanced<'a> {
+    /// The stream a client may see: the input minus every query we answered.
+    pub forwardable: Cow<'a, [u8]>,
+    /// Replies whose query was removed from `forwardable`. Safe to write to
+    /// the PTY whether or not a client is attached.
+    pub answered: Vec<u8>,
+    /// Replies we could not attribute to a removed sequence. A client that
+    /// is attached has already seen the query and will answer it, so these
+    /// are only usable while nothing is attached.
+    pub unattributed: Vec<u8>,
+}
+
+/// CSI final bytes the emulator can answer: DA (`c`), DSR/CPR (`n`), DECRQM
+/// (`p`), XTWINOPS (`t`), the kitty keyboard query (`u`), DECREQTPARM (`x`).
+/// Deliberately a SUPERSET — plenty of sequences ending in these never reply,
+/// and the caller settles that by watching the emulator rather than guessing.
+const QUERY_FINALS: &[u8] = b"cnptux";
+
+/// Byte spans that could be a device query, as `[start, end)` pairs.
+///
+/// Only `ESC [` is recognised, never the C1 form (0x9B): that byte is a
+/// legitimate UTF-8 continuation, and a false positive here would delete real
+/// text from a user's screen. A missed query is merely the old behaviour —
+/// the client answers it.
+///
+/// The holder only ever advances the emulator with COMPLETE tokens (see
+/// ParserSafeOutput), so a sequence is never split across a chunk boundary
+/// and this scanner needs no carry-over state.
+fn query_candidates(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+
+    while index + 1 < bytes.len() {
+        if bytes[index] != 0x1b || bytes[index + 1] != b'[' {
+            index += 1;
+            continue;
+        }
+
+        let mut cursor = index + 2;
+        while cursor < bytes.len() && (0x30..=0x3f).contains(&bytes[cursor]) {
+            cursor += 1;
+        }
+        while cursor < bytes.len() && (0x20..=0x2f).contains(&bytes[cursor]) {
+            cursor += 1;
+        }
+
+        match bytes.get(cursor) {
+            Some(final_byte) if (0x40..=0x7e).contains(final_byte) => {
+                if QUERY_FINALS.contains(final_byte) {
+                    spans.push((index, cursor + 1));
+                }
+                index = cursor + 1;
+            }
+            // Malformed or truncated: step past the ESC and keep looking.
+            _ => index += 1,
+        }
+    }
+
+    spans
+}
 
 pub struct Screen {
     term: Term<Responder>,
@@ -374,6 +437,74 @@ impl Screen {
             alt_tracker: AltTracker::default(),
             alt_parser: alacritty_terminal::vte::Parser::new(),
             normal_grid,
+        }
+    }
+
+    /// Feed the emulator and report both what a client may see and what we
+    /// are allowed to answer on the application's behalf.
+    ///
+    /// A device query needs EXACTLY ONE reply. The holder can answer in
+    /// microseconds; routing it through the browser costs two network
+    /// round-trips (query out over the websocket, xterm auto-responds, the
+    /// reply comes back as ordinary input). So the holder answers — but only
+    /// for queries it can also REMOVE from the stream the browser is fed,
+    /// because a browser that still sees the query will answer it too.
+    ///
+    /// Attribution is by construction rather than by a table of "queries
+    /// alacritty answers": the stream is advanced in pieces around every
+    /// query-shaped sequence and a reply is attributed to the piece that
+    /// produced it. Anything that replies where we did not expect it (a new
+    /// query type after an alacritty upgrade) lands in `unattributed` and is
+    /// simply not sent, leaving the previous behaviour — the client answers —
+    /// intact instead of delivering a duplicate.
+    pub fn advance_answering<'a>(&mut self, bytes: &'a [u8]) -> Advanced<'a> {
+        // Anything left from an earlier call belongs to no piece here.
+        let _ = self.take_query_replies();
+
+        let candidates = query_candidates(bytes);
+        if candidates.is_empty() {
+            self.advance(bytes);
+            return Advanced {
+                forwardable: Cow::Borrowed(bytes),
+                answered: Vec::new(),
+                unattributed: self.take_query_replies(),
+            };
+        }
+
+        let mut forwardable = Vec::with_capacity(bytes.len());
+        let mut answered = Vec::new();
+        let mut unattributed = Vec::new();
+        let mut cursor = 0;
+
+        for (start, end) in candidates {
+            if start > cursor {
+                self.advance(&bytes[cursor..start]);
+                unattributed.extend_from_slice(&self.take_query_replies());
+                forwardable.extend_from_slice(&bytes[cursor..start]);
+            }
+
+            self.advance(&bytes[start..end]);
+            let reply = self.take_query_replies();
+            if reply.is_empty() {
+                // Query-SHAPED but not a query: `CSI 2 t` iconifies, `CSI 4 t`
+                // resizes. The client still needs to see those.
+                forwardable.extend_from_slice(&bytes[start..end]);
+            } else {
+                answered.extend_from_slice(&reply);
+            }
+            cursor = end;
+        }
+
+        if cursor < bytes.len() {
+            self.advance(&bytes[cursor..]);
+            unattributed.extend_from_slice(&self.take_query_replies());
+            forwardable.extend_from_slice(&bytes[cursor..]);
+        }
+
+        Advanced {
+            forwardable: Cow::Owned(forwardable),
+            answered,
+            unattributed,
         }
     }
 

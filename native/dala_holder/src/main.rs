@@ -642,7 +642,12 @@ fn main() {
                                 shared = state.cond.wait(shared).unwrap();
                             }
 
-                            shared.screen.advance(&complete);
+                            // Answering and forwarding are decided together:
+                            // a query we answer is removed from what the
+                            // client sees, so it is never answered twice.
+                            let advanced = shared.screen.advance_answering(&complete);
+                            let forwardable = advanced.forwardable.into_owned();
+                            let mut replies = advanced.answered;
                             {
                                 let mut out = OscOut::default();
                                 let mut tail = std::mem::take(&mut shared.osc_tail);
@@ -653,17 +658,14 @@ fn main() {
                                 }
                                 extend_agent_reports_bounded(&mut shared.agent_reports, out.agents);
                             }
-                            // Device queries need EXACTLY ONE answer, and the
-                            // same flag decides both things under the same
-                            // lock: bytes reaching a browser mean its xterm
-                            // will auto-respond, so ours would be a duplicate;
-                            // nothing attached means we are the only emulator
-                            // left and an app blocked on `\x1b[c` hangs until
-                            // its own timeout unless we reply. Drained either
-                            // way — a reply held over from an attached window
-                            // must never be flushed after that browser leaves.
-                            let replies = shared.screen.take_query_replies();
                             let attached = shared.client.is_some();
+                            // Replies the scanner could not attribute are only
+                            // safe with nothing attached: an attached client
+                            // has already seen that query in the forwarded
+                            // stream and its own emulator will answer it.
+                            if !attached {
+                                replies.extend_from_slice(&advanced.unattributed);
+                            }
                             // The emulator is the durable history; the ring only
                             // carries live bytes to the attached client.
                             //
@@ -683,7 +685,7 @@ fn main() {
                                         // client's scrollback. The first frame
                                         // is full and idempotently re-enters
                                         // and repaints the alternate screen.
-                                        shared.transit.push_bounded(&complete, RING_MAX);
+                                        shared.transit.push_bounded(&forwardable, RING_MAX);
                                         shared.render_alt = true;
                                         shared.frame.reset();
                                     }
@@ -700,11 +702,11 @@ fn main() {
                                     let resync = shared.screen.normal_resync_frame();
                                     shared.transit.push_bounded(&resync, RING_MAX);
                                 } else {
-                                    shared.transit.push_bounded(&complete, RING_MAX);
+                                    shared.transit.push_bounded(&forwardable, RING_MAX);
                                 }
                             }
                             state.cond.notify_all();
-                            if attached { Vec::new() } else { replies }
+                            replies
                         };
 
                         if !query_replies.is_empty() {
@@ -2232,6 +2234,85 @@ mod query_reply_tests {
         screen.advance(b"\x1b[c");
         assert!(!screen.take_query_replies().is_empty());
         assert!(screen.take_query_replies().is_empty());
+    }
+
+    /// The holder answers AND removes the query, so the browser's own
+    /// emulator never sees it and cannot answer a second time.
+    #[test]
+    fn an_answered_query_is_removed_from_what_the_client_sees() {
+        let mut screen = screen();
+        let advanced = screen.advance_answering(b"before\x1b[6nafter");
+
+        assert_eq!(advanced.forwardable.as_ref(), b"beforeafter");
+        assert!(advanced.answered.starts_with(b"\x1b["));
+        assert!(advanced.unattributed.is_empty());
+    }
+
+    #[test]
+    fn ordinary_output_passes_through_untouched_and_unanswered() {
+        let mut screen = screen();
+        let payload = b"\x1b[31mred\x1b[0m plain \xe4\xb8\xad\xe6\x96\x87\r\n";
+        let advanced = screen.advance_answering(payload);
+
+        assert_eq!(advanced.forwardable.as_ref(), payload);
+        assert!(advanced.answered.is_empty());
+        assert!(advanced.unattributed.is_empty());
+    }
+
+    /// `CSI 2 t` iconifies a window; it ends in a query final but replies to
+    /// nothing. Swallowing it would silently drop a real instruction.
+    #[test]
+    fn a_query_shaped_sequence_that_never_replies_is_still_forwarded() {
+        let mut screen = screen();
+        let advanced = screen.advance_answering(b"x\x1b[2ty");
+
+        assert_eq!(advanced.forwardable.as_ref(), b"x\x1b[2ty");
+        assert!(advanced.answered.is_empty());
+    }
+
+    #[test]
+    fn several_queries_in_one_chunk_are_each_removed() {
+        let mut screen = screen();
+        let advanced = screen.advance_answering(b"a\x1b[cb\x1b[5nc\x1b[6nd");
+
+        assert_eq!(advanced.forwardable.as_ref(), b"abcd");
+        // DA, DSR and CPR each contributed a reply.
+        assert!(advanced.answered.len() > 6, "expected three replies concatenated");
+    }
+
+    /// The safety valve. If a future alacritty answers something this scanner
+    /// does not recognise, the reply must NOT go out while a client is
+    /// attached — that client has seen the query and will answer it. OSC is
+    /// used here because the scanner only ever looks at CSI.
+    #[test]
+    fn an_unrecognised_reply_is_reported_separately_and_the_bytes_kept() {
+        let mut screen = screen();
+        // OSC 10 (?) — a foreground colour query, answered via PtyWrite but
+        // not CSI-shaped, so the scanner cannot attribute it.
+        let advanced = screen.advance_answering(b"\x1b]10;?\x1b\\");
+
+        assert_eq!(advanced.forwardable.as_ref(), b"\x1b]10;?\x1b\\");
+        assert!(advanced.answered.is_empty());
+    }
+
+    /// A 0x9B byte is a legitimate UTF-8 continuation. Treating it as C1 CSI
+    /// would delete real text out of somebody's screen, so the scanner only
+    /// ever recognises `ESC [`.
+    #[test]
+    fn utf8_continuation_bytes_are_never_mistaken_for_a_query() {
+        let mut screen = screen();
+        // U+4E2D U+6587 and a few emoji: several 0x9B-adjacent continuations.
+        let payload = "中文 ✅ 🎉 café".as_bytes();
+        let advanced = screen.advance_answering(payload);
+
+        assert_eq!(advanced.forwardable.as_ref(), payload);
+    }
+
+    #[test]
+    fn a_truncated_escape_at_the_end_is_left_alone() {
+        let mut screen = screen();
+        let advanced = screen.advance_answering(b"tail\x1b[");
+        assert_eq!(advanced.forwardable.as_ref(), b"tail\x1b[");
     }
 
     #[test]
