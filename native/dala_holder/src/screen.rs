@@ -132,6 +132,47 @@ impl Dimensions for Size {
     }
 }
 
+/// What the attached client is currently showing, so the next frame can carry
+/// only the difference. One per client connection; `reset` whenever the client
+/// is handed an authoritative full repaint by some other path.
+#[derive(Default)]
+pub struct FrameTracker {
+    /// Rendered bytes of each viewport row, as the client has them.
+    rows: Vec<Vec<u8>>,
+    columns: usize,
+    cursor: Option<CursorShadow>,
+    mode: TermMode,
+    primed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CursorShadow {
+    line: usize,
+    column: usize,
+    visible: bool,
+}
+
+impl FrameTracker {
+    /// Forget everything: the next frame will be a full one. Called when the
+    /// client changes, or after any repaint it did not come from here.
+    pub fn reset(&mut self) {
+        self.rows.clear();
+        self.columns = 0;
+        self.cursor = None;
+        self.primed = false;
+    }
+
+    /// Has this tracker ever produced a frame for the current client?
+    pub fn primed(&self) -> bool {
+        self.primed
+    }
+}
+
+/// Exactly what `render_row` emits for a row with nothing on it: reset the
+/// pen, erase to end of line. A full frame has just erased the screen, so
+/// those rows would paint nothing and are skipped.
+const BLANK_ROW: &[u8] = b"\x1b[0m\x1b[K";
+
 pub struct Screen {
     term: Term<Responder>,
     responder: Responder,
@@ -502,6 +543,135 @@ impl Screen {
             mode.contains(TermMode::ORIGIN),
         );
         render_active_charset(&mut out, self.scroll_tracker.active_charset);
+        out
+    }
+
+    /// True while an application owns the alternate screen (vim, htop, and
+    /// every TUI agent).
+    pub fn alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// One incremental alternate-screen frame, zellij style: absolute row
+    /// addressing, only the rows whose rendering actually changed since the
+    /// frame the client is currently showing.
+    ///
+    /// This is the whole point of render mode. Forwarding raw PTY bytes makes
+    /// the bytes a client must receive proportional to how much the program
+    /// WROTE; a TUI repainting at 60fps therefore floods a slow link until
+    /// dala's flow control gives up and skips to a snapshot. Here the cost is
+    /// proportional to what actually CHANGED, and is bounded by one screenful
+    /// per frame no matter what the program does.
+    ///
+    /// Restricted to the alternate screen on purpose. It has a fixed grid, no
+    /// scrollback and no soft-wrapped logical lines, so a row-wise diff loses
+    /// nothing. The normal buffer has all three — they are what dala's local
+    /// scroll, selection and search are built on — so it keeps streaming (see
+    /// `normal_resync_frame` for the handover).
+    ///
+    /// Returns an empty vector when the client is already up to date.
+    pub fn alt_frame(&self, tracker: &mut FrameTracker) -> Vec<u8> {
+        let grid = self.term.grid();
+        let columns = grid.columns();
+        let screen_lines = grid.screen_lines();
+        let mode = *self.term.mode();
+        let mut out: Vec<u8> = Vec::new();
+
+        // A resize invalidates every stored row, and an unprimed tracker means
+        // the client has never seen this alternate screen at all.
+        let full = !tracker.primed || tracker.columns != columns || tracker.rows.len() != screen_lines;
+        if full {
+            // Enter the alternate buffer WITHOUT a RIS: the client's normal
+            // buffer and its scrollback have to survive `vim`, and a real
+            // terminal does not lose them either.
+            out.extend_from_slice(b"\x1b[?1049h");
+            out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x0f\x1b(B");
+            out.extend_from_slice(b"\x1b[H\x1b[2J");
+            render_modes(&mut out, &self.term, &mode);
+            tracker.rows = vec![Vec::new(); screen_lines];
+            tracker.columns = columns;
+            tracker.cursor = None;
+            tracker.mode = mode;
+            tracker.primed = true;
+        } else {
+            render_mode_delta(&mut out, &tracker.mode, &mode);
+            tracker.mode = mode;
+        }
+
+        for index in 0..screen_lines {
+            // Each row is rendered with a FRESH pen so its bytes are
+            // self-contained: a delta emits rows out of order and with gaps,
+            // so no row may depend on SGR state left by the row above it.
+            let mut row = Vec::new();
+            let mut pen = Pen::default();
+            render_row(&mut row, &mut pen, grid, Line(index as i32), columns, false);
+            if !full && tracker.rows[index] == row {
+                continue;
+            }
+            // An all-blank row is already blank on a full frame's fresh ED.
+            if full && row == BLANK_ROW {
+                tracker.rows[index] = row;
+                continue;
+            }
+            out.extend_from_slice(format!("\x1b[{};1H", index + 1).as_bytes());
+            out.extend_from_slice(&row);
+            tracker.rows[index] = row;
+        }
+
+        let cursor = CursorShadow {
+            line: grid.cursor.point.line.0.clamp(0, screen_lines as i32) as usize,
+            column: grid.cursor.point.column.0,
+            visible: mode.contains(TermMode::SHOW_CURSOR),
+        };
+        // The cursor has to be re-homed after any row write, since drawing a
+        // row leaves it wherever that row ended.
+        if !out.is_empty() || tracker.cursor != Some(cursor) {
+            out.extend_from_slice(
+                format!("\x1b[{};{}H", cursor.line + 1, cursor.column + 1).as_bytes(),
+            );
+            if tracker.cursor.map(|c| c.visible) != Some(cursor.visible) {
+                out.extend_from_slice(if cursor.visible {
+                    b"\x1b[?25h"
+                } else {
+                    b"\x1b[?25l"
+                });
+            }
+            tracker.cursor = Some(cursor);
+        }
+
+        out
+    }
+
+    /// Handing the stream back after an application left the alternate
+    /// screen: leave the alternate buffer, then make the visible normal-buffer
+    /// rows authoritative again.
+    ///
+    /// No RIS and no scrollback replay — the client's normal buffer is exactly
+    /// where streaming left it, because nothing that happened inside the
+    /// alternate screen could touch it.
+    pub fn normal_resync_frame(&self) -> Vec<u8> {
+        let grid = self.term.grid();
+        let mode = *self.term.mode();
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"\x1b[?1049l");
+        out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x0f\x1b(B");
+        render_modes(&mut out, &self.term, &mode);
+
+        let mut pen = Pen::default();
+        for index in 0..grid.screen_lines() {
+            out.extend_from_slice(format!("\x1b[{};1H", index + 1).as_bytes());
+            render_row(&mut out, &mut pen, grid, Line(index as i32), grid.columns(), false);
+        }
+        pen.reset(&mut out);
+
+        let scroll_region = self.scroll_tracker.region;
+        render_cursor_state(
+            &mut out,
+            grid,
+            &grid.cursor,
+            scroll_region,
+            mode.contains(TermMode::ORIGIN),
+        );
         out
     }
 
@@ -1033,24 +1203,57 @@ fn render_palette(out: &mut Vec<u8>, term: &Term<Responder>) {
     }
 }
 
-fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode) {
-    let mut set = |flag: TermMode, seq: &[u8]| {
-        if mode.contains(flag) {
-            out.extend_from_slice(seq);
+/// Every mode a synthesized frame has to restore, with the sequence that sets
+/// it and the one that clears it. A full repaint follows RIS and therefore
+/// only ever needs the "set" column; an incremental frame (see `alt_frame`)
+/// starts from whatever the previous frame left and needs both, or a TUI
+/// turning mouse reporting off mid-session would leave the client reporting
+/// clicks forever.
+const MODE_SEQUENCES: &[(TermMode, &[u8], &[u8])] = &[
+    (TermMode::APP_CURSOR, b"\x1b[?1h", b"\x1b[?1l"),
+    (TermMode::APP_KEYPAD, b"\x1b=", b"\x1b>"),
+    (TermMode::BRACKETED_PASTE, b"\x1b[?2004h", b"\x1b[?2004l"),
+    (TermMode::FOCUS_IN_OUT, b"\x1b[?1004h", b"\x1b[?1004l"),
+    (TermMode::MOUSE_REPORT_CLICK, b"\x1b[?1000h", b"\x1b[?1000l"),
+    (TermMode::MOUSE_DRAG, b"\x1b[?1002h", b"\x1b[?1002l"),
+    (TermMode::MOUSE_MOTION, b"\x1b[?1003h", b"\x1b[?1003l"),
+    (TermMode::UTF8_MOUSE, b"\x1b[?1005h", b"\x1b[?1005l"),
+    (TermMode::SGR_MOUSE, b"\x1b[?1006h", b"\x1b[?1006l"),
+    (TermMode::ALTERNATE_SCROLL, b"\x1b[?1007h", b"\x1b[?1007l"),
+    (TermMode::INSERT, b"\x1b[4h", b"\x1b[4l"),
+    (TermMode::LINE_FEED_NEW_LINE, b"\x1b[20h", b"\x1b[20l"),
+];
+
+/// Only the modes that actually flipped between two frames.
+fn render_mode_delta(out: &mut Vec<u8>, previous: &TermMode, current: &TermMode) {
+    for (flag, set, unset) in MODE_SEQUENCES {
+        if previous.contains(*flag) == current.contains(*flag) {
+            continue;
         }
-    };
-    set(TermMode::APP_CURSOR, b"\x1b[?1h");
-    set(TermMode::APP_KEYPAD, b"\x1b=");
-    set(TermMode::BRACKETED_PASTE, b"\x1b[?2004h");
-    set(TermMode::FOCUS_IN_OUT, b"\x1b[?1004h");
-    set(TermMode::MOUSE_REPORT_CLICK, b"\x1b[?1000h");
-    set(TermMode::MOUSE_DRAG, b"\x1b[?1002h");
-    set(TermMode::MOUSE_MOTION, b"\x1b[?1003h");
-    set(TermMode::UTF8_MOUSE, b"\x1b[?1005h");
-    set(TermMode::SGR_MOUSE, b"\x1b[?1006h");
-    set(TermMode::ALTERNATE_SCROLL, b"\x1b[?1007h");
-    set(TermMode::INSERT, b"\x1b[4h");
-    set(TermMode::LINE_FEED_NEW_LINE, b"\x1b[20h");
+        out.extend_from_slice(if current.contains(*flag) { set } else { unset });
+    }
+    if previous.contains(TermMode::LINE_WRAP) != current.contains(TermMode::LINE_WRAP) {
+        out.extend_from_slice(if current.contains(TermMode::LINE_WRAP) {
+            b"\x1b[?7h"
+        } else {
+            b"\x1b[?7l"
+        });
+    }
+    if previous.contains(TermMode::ORIGIN) != current.contains(TermMode::ORIGIN) {
+        out.extend_from_slice(if current.contains(TermMode::ORIGIN) {
+            b"\x1b[?6h"
+        } else {
+            b"\x1b[?6l"
+        });
+    }
+}
+
+fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode) {
+    for (flag, set, _unset) in MODE_SEQUENCES {
+        if mode.contains(*flag) {
+            out.extend_from_slice(set);
+        }
+    }
 
     // RIS enables line wrapping. Restore the disabled state after the
     // synthesized rows and absolute cursor position have been emitted, so
@@ -2034,5 +2237,242 @@ mod takeover_reflow_tests {
             out.contains(&format!("前{cjk}后")),
             "CJK soft segments must not be separated by hard breaks: {out:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    fn alt_screen(rows: u16, cols: u16) -> Screen {
+        let mut screen = Screen::new(rows, cols, 1000);
+        screen.advance(b"\x1b[?1049h");
+        screen
+    }
+
+    fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// The client applies frames to its own emulator; this is that emulator.
+    /// Comparing its plain text against the holder's is the only assertion
+    /// that actually proves a delta was correct.
+    struct Client {
+        screen: Screen,
+    }
+
+    impl Client {
+        fn new(rows: u16, cols: u16) -> Self {
+            Client {
+                screen: Screen::new(rows, cols, 1000),
+            }
+        }
+        fn apply(&mut self, frame: &[u8]) {
+            self.screen.advance(frame);
+        }
+        fn rows(&self) -> Vec<String> {
+            self.screen.text_snapshot(0, 1 << 20).lines
+        }
+    }
+
+    fn holder_rows(screen: &Screen) -> Vec<String> {
+        screen.text_snapshot(0, 1 << 20).lines
+    }
+
+    #[test]
+    fn the_first_frame_enters_the_alternate_screen_without_a_ris() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"hello");
+        let mut tracker = FrameTracker::default();
+
+        let frame = screen.alt_frame(&mut tracker);
+        assert!(text(&frame).contains("\u{1b}[?1049h"));
+        // RIS would wipe the client's normal buffer and its whole scrollback.
+        assert!(!frame.windows(2).any(|w| w == b"\x1bc"));
+        assert!(tracker.primed());
+    }
+
+    #[test]
+    fn an_idle_screen_produces_no_frame_at_all() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"hello");
+        let mut tracker = FrameTracker::default();
+        let _ = screen.alt_frame(&mut tracker);
+
+        assert!(screen.alt_frame(&mut tracker).is_empty());
+        assert!(screen.alt_frame(&mut tracker).is_empty());
+    }
+
+    #[test]
+    fn only_the_rows_that_changed_are_sent() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"\x1b[1;1Halpha\x1b[2;1Hbravo\x1b[3;1Hcharlie");
+        let mut tracker = FrameTracker::default();
+        let _ = screen.alt_frame(&mut tracker);
+
+        screen.advance(b"\x1b[2;1Hdelta");
+        let frame = screen.alt_frame(&mut tracker);
+        let rendered = text(&frame);
+
+        assert!(rendered.contains("delta"));
+        assert!(!rendered.contains("alpha"));
+        assert!(!rendered.contains("charlie"));
+    }
+
+    /// The property that matters: whatever the program does, replaying every
+    /// frame into a fresh emulator must reproduce the holder's screen.
+    #[test]
+    fn replaying_the_frames_reproduces_the_holder_screen() {
+        let mut screen = alt_screen(8, 30);
+        let mut client = Client::new(8, 30);
+        let mut tracker = FrameTracker::default();
+
+        let steps: &[&[u8]] = &[
+            b"\x1b[H\x1b[2Jline one\r\nline two\r\nline three",
+            b"\x1b[2;1H\x1b[31mRED\x1b[0m",
+            b"\x1b[H\x1b[2Jtotally different",
+            // scroll inside the alternate screen
+            b"\x1b[8;1H\r\n\r\nafter scroll",
+            // a bold/underline run and a cleared line
+            b"\x1b[3;1H\x1b[1;4mstyled\x1b[0m\x1b[4;1H\x1b[K",
+            // cursor moved with nothing drawn
+            b"\x1b[6;7H",
+            // hide and show the cursor
+            b"\x1b[?25l",
+            b"\x1b[?25h",
+        ];
+
+        for step in steps {
+            screen.advance(step);
+            let frame = screen.alt_frame(&mut tracker);
+            client.apply(&frame);
+            assert_eq!(
+                client.rows(),
+                holder_rows(&screen),
+                "text diverged after {:?}",
+                text(step),
+            );
+            let styles = |screen: &Screen| {
+                screen
+                    .text_snapshot(0, 1 << 20)
+                    .highlighted_ranges
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.row,
+                            r.start_column,
+                            r.end_column,
+                            r.foreground.clone(),
+                            r.background.clone(),
+                            r.bold,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                styles(&client.screen),
+                styles(&screen),
+                "styles diverged after {:?}",
+                text(step),
+            );
+            let cursor = |screen: &Screen| {
+                let snapshot = screen.text_snapshot(0, 1 << 20);
+                (snapshot.cursor.row, snapshot.cursor.column)
+            };
+            assert_eq!(
+                cursor(&client.screen),
+                cursor(&screen),
+                "cursor diverged after {:?}",
+                text(step),
+            );
+        }
+    }
+
+    #[test]
+    fn a_resize_forces_a_full_frame() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"\x1b[H\x1b[2Jkeep me");
+        let mut tracker = FrameTracker::default();
+        let _ = screen.alt_frame(&mut tracker);
+
+        screen.resize(6, 40);
+        let frame = screen.alt_frame(&mut tracker);
+        // A full frame re-enters the buffer and erases before repainting.
+        assert!(text(&frame).contains("\u{1b}[2J"));
+        assert!(text(&frame).contains("keep me"));
+    }
+
+    #[test]
+    fn a_reset_tracker_resends_everything() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"\x1b[H\x1b[2Jpersistent");
+        let mut tracker = FrameTracker::default();
+        let _ = screen.alt_frame(&mut tracker);
+        assert!(screen.alt_frame(&mut tracker).is_empty());
+
+        tracker.reset();
+        let frame = screen.alt_frame(&mut tracker);
+        assert!(text(&frame).contains("persistent"));
+    }
+
+    /// A TUI that turns mouse reporting off must not leave the client
+    /// reporting clicks forever — the delta needs the unset sequence, which a
+    /// repaint-style "emit what is set" pass would never produce.
+    #[test]
+    fn modes_turned_off_mid_session_are_cleared_on_the_client() {
+        let mut screen = alt_screen(6, 20);
+        screen.advance(b"\x1b[?1000h\x1b[?1006h");
+        let mut tracker = FrameTracker::default();
+        let frame = screen.alt_frame(&mut tracker);
+        assert!(text(&frame).contains("\u{1b}[?1000h"));
+
+        screen.advance(b"\x1b[?1000l\x1b[?1006l");
+        let frame = screen.alt_frame(&mut tracker);
+        assert!(text(&frame).contains("\u{1b}[?1000l"));
+        assert!(text(&frame).contains("\u{1b}[?1006l"));
+    }
+
+    /// Rows are emitted out of order and with gaps, so none may inherit SGR
+    /// state from the row above. `render_row` guarantees it by ending every
+    /// row with a pen reset; this pins that a styled row cannot bleed into a
+    /// plain one that a later delta sends on its own.
+    #[test]
+    fn a_styled_row_does_not_bleed_into_rows_sent_later() {
+        let mut screen = alt_screen(6, 20);
+        let mut client = Client::new(6, 20);
+        let mut tracker = FrameTracker::default();
+
+        screen.advance(b"\x1b[H\x1b[2J\x1b[1;1H\x1b[41mred row\x1b[0m\x1b[3;1Hplain");
+        client.apply(&screen.alt_frame(&mut tracker));
+
+        screen.advance(b"\x1b[3;1Hplain again");
+        client.apply(&screen.alt_frame(&mut tracker));
+
+        let client_highlights = client.screen.text_snapshot(0, 1 << 20).highlighted_ranges;
+        let holder_highlights = screen.text_snapshot(0, 1 << 20).highlighted_ranges;
+        let backgrounds = |ranges: &[HighlightedRange]| {
+            ranges
+                .iter()
+                .map(|r| (r.row, r.start_column, r.end_column, r.background.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            backgrounds(&client_highlights),
+            backgrounds(&holder_highlights),
+        );
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_restores_the_normal_buffer_without_a_ris() {
+        let mut screen = Screen::new(6, 20, 1000);
+        screen.advance(b"shell line\r\n");
+        screen.advance(b"\x1b[?1049h");
+        screen.advance(b"\x1b[H\x1b[2Jinside vim");
+        screen.advance(b"\x1b[?1049l");
+
+        let frame = screen.normal_resync_frame();
+        assert!(text(&frame).contains("\u{1b}[?1049l"));
+        assert!(!frame.windows(2).any(|w| w == b"\x1bc"));
+        assert!(text(&frame).contains("shell line"));
     }
 }
