@@ -591,6 +591,7 @@ fn main() {
     // PTY -> ring.
     {
         let state = Arc::clone(&state);
+        let pty_writer = Arc::clone(&pty_writer);
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut parser_safe_output = ParserSafeOutput::default();
@@ -603,32 +604,56 @@ fn main() {
                             continue;
                         }
 
-                        let mut shared = state.shared.lock().unwrap();
-                        // A requested repaint freezes the emulator at its
-                        // parser-safe barrier. Bytes already read from the PTY
-                        // stay in this thread until the snapshot frame is on
-                        // the socket, applying natural PTY backpressure.
-                        while shared.repaint_frozen {
-                            shared = state.cond.wait(shared).unwrap();
-                        }
-
-                        shared.screen.advance(&complete);
-                        {
-                            let mut out = OscOut::default();
-                            let mut tail = std::mem::take(&mut shared.osc_tail);
-                            scan_osc(&mut tail, &complete, &mut out);
-                            shared.osc_tail = tail;
-                            if out.cwd.is_some() {
-                                shared.cwd_report = out.cwd;
+                        let query_replies = {
+                            let mut shared = state.shared.lock().unwrap();
+                            // A requested repaint freezes the emulator at its
+                            // parser-safe barrier. Bytes already read from the PTY
+                            // stay in this thread until the snapshot frame is on
+                            // the socket, applying natural PTY backpressure.
+                            while shared.repaint_frozen {
+                                shared = state.cond.wait(shared).unwrap();
                             }
-                            extend_agent_reports_bounded(&mut shared.agent_reports, out.agents);
+
+                            shared.screen.advance(&complete);
+                            {
+                                let mut out = OscOut::default();
+                                let mut tail = std::mem::take(&mut shared.osc_tail);
+                                scan_osc(&mut tail, &complete, &mut out);
+                                shared.osc_tail = tail;
+                                if out.cwd.is_some() {
+                                    shared.cwd_report = out.cwd;
+                                }
+                                extend_agent_reports_bounded(&mut shared.agent_reports, out.agents);
+                            }
+                            // Device queries need EXACTLY ONE answer, and the
+                            // same flag decides both things under the same
+                            // lock: bytes reaching a browser mean its xterm
+                            // will auto-respond, so ours would be a duplicate;
+                            // nothing attached means we are the only emulator
+                            // left and an app blocked on `\x1b[c` hangs until
+                            // its own timeout unless we reply. Drained either
+                            // way — a reply held over from an attached window
+                            // must never be flushed after that browser leaves.
+                            let replies = shared.screen.take_query_replies();
+                            let attached = shared.client.is_some();
+                            // The emulator is the durable history; the ring only
+                            // carries live bytes to the attached client.
+                            if attached {
+                                shared.transit.push_bounded(&complete, RING_MAX);
+                            }
+                            state.cond.notify_all();
+                            if attached { Vec::new() } else { replies }
+                        };
+
+                        if !query_replies.is_empty() {
+                            // Outside the lock on purpose: a PTY whose reader
+                            // has stopped draining would otherwise park every
+                            // output/repaint decision behind a 30-byte reply.
+                            if let Ok(mut writer) = pty_writer.lock() {
+                                let _ = writer.write_all(&query_replies);
+                                let _ = writer.flush();
+                            }
                         }
-                        // The emulator is the durable history; the ring only
-                        // carries live bytes to the attached client.
-                        if shared.client.is_some() {
-                            shared.transit.push_bounded(&complete, RING_MAX);
-                        }
-                        state.cond.notify_all();
                     }
                     // EIO once the child side is gone.
                     Err(_) => break,
@@ -2047,5 +2072,78 @@ mod scan_tests {
             agents[1],
             b"warp://cli-agent\x1f{\"event\":\"new\"}".to_vec()
         );
+    }
+}
+
+#[cfg(test)]
+mod query_reply_tests {
+    use crate::screen::Screen;
+
+    fn screen() -> Screen {
+        Screen::new(24, 80, 1000)
+    }
+
+    /// The set of probes real programs block on at startup. If an
+    /// alacritty upgrade stops answering one of these, a shell or TUI waits
+    /// for its own timeout against a detached holder — so pin them.
+    #[test]
+    fn answers_the_device_queries_programs_block_on() {
+        for (name, query, expected_prefix) in [
+            ("DA1", &b"\x1b[c"[..], &b"\x1b[?"[..]),
+            ("DSR status", &b"\x1b[5n"[..], &b"\x1b[0n"[..]),
+            ("CPR", &b"\x1b[6n"[..], &b"\x1b["[..]),
+            ("DECRQM 2026", &b"\x1b[?2026$p"[..], &b"\x1b[?2026;"[..]),
+            ("text area chars", &b"\x1b[18t"[..], &b"\x1b[8;"[..]),
+        ] {
+            let mut screen = screen();
+            screen.advance(query);
+            let reply = screen.take_query_replies();
+            assert!(
+                reply.starts_with(expected_prefix),
+                "{name}: expected a reply starting with {:?}, got {:?}",
+                String::from_utf8_lossy(expected_prefix),
+                String::from_utf8_lossy(&reply),
+            );
+        }
+    }
+
+    #[test]
+    fn cpr_reports_the_cursor_the_emulator_actually_has() {
+        let mut screen = screen();
+        screen.advance(b"\x1b[7;13H");
+        let _ = screen.take_query_replies();
+
+        screen.advance(b"\x1b[6n");
+        assert_eq!(screen.take_query_replies(), b"\x1b[7;13R".to_vec());
+    }
+
+    /// Draining is what keeps "exactly one responder" honest: a query asked
+    /// while a browser was attached is answered by that browser, and its
+    /// reply must not still be sitting here to be flushed into the PTY after
+    /// the browser leaves.
+    #[test]
+    fn taking_replies_clears_them() {
+        let mut screen = screen();
+        screen.advance(b"\x1b[c");
+        assert!(!screen.take_query_replies().is_empty());
+        assert!(screen.take_query_replies().is_empty());
+    }
+
+    #[test]
+    fn ordinary_output_produces_no_reply() {
+        let mut screen = screen();
+        screen.advance(b"hello\r\n\x1b[31mworld\x1b[0m\r\n");
+        assert!(screen.take_query_replies().is_empty());
+    }
+
+    /// A program looping on queries against a detached holder must not grow
+    /// the queue without bound.
+    #[test]
+    fn the_reply_queue_is_bounded() {
+        let mut screen = screen();
+        for _ in 0..20_000 {
+            screen.advance(b"\x1b[c");
+        }
+        assert!(screen.take_query_replies().len() <= 64 * 1024);
     }
 }

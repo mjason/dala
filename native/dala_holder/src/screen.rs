@@ -17,6 +17,7 @@ use alacritty_terminal::vte::ansi::{
 };
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 /// Byte budget for the scrollback portion of an attach repaint. The client
 /// parses the whole repaint synchronously; ~512 KiB is tens of milliseconds
@@ -74,11 +75,42 @@ pub struct HighlightedRange {
 
 const MAX_HIGHLIGHT_RANGES: usize = 256;
 
-#[derive(Clone)]
-struct Quiet;
+/// Replies the emulator wants written back to the PTY, capped so a program
+/// looping on device queries against a detached holder cannot grow it without
+/// bound. Every real reply is a handful of bytes.
+const MAX_QUERY_REPLY_BYTES: usize = 64 * 1024;
 
-impl EventListener for Quiet {
-    fn send_event(&self, _event: Event) {}
+/// Collects the emulator's answers to terminal device queries.
+///
+/// alacritty reports DA1/DA2, DSR/CPR, DECRQM, the kitty keyboard mode and
+/// the text-area size by emitting `Event::PtyWrite`. The holder used to drop
+/// every event on the floor, which left the ATTACHED BROWSER as the only
+/// thing able to answer: the query travelled out over the websocket, xterm
+/// auto-responded, and the reply came back as ordinary input. That works, but
+/// it costs two network round-trips, and while nothing is attached it does
+/// not work at all — a program that blocks on `\x1b[c` waits for its own
+/// timeout.
+///
+/// So the answers are kept here. Whether they are actually written to the PTY
+/// is the caller's decision, and the rule is exactly one responder at a time:
+/// see the PTY reader in main.rs.
+#[derive(Clone, Default)]
+pub struct Responder {
+    replies: Arc<Mutex<Vec<u8>>>,
+}
+
+impl EventListener for Responder {
+    fn send_event(&self, event: Event) {
+        let Event::PtyWrite(text) = event else {
+            return;
+        };
+        let Ok(mut replies) = self.replies.lock() else {
+            return;
+        };
+        if replies.len() + text.len() <= MAX_QUERY_REPLY_BYTES {
+            replies.extend_from_slice(text.as_bytes());
+        }
+    }
 }
 
 struct Size {
@@ -101,7 +133,8 @@ impl Dimensions for Size {
 }
 
 pub struct Screen {
-    term: Term<Quiet>,
+    term: Term<Responder>,
+    responder: Responder,
     parser: Processor,
     scroll_tracker: ScrollTracker,
     scroll_parser: Processor,
@@ -287,10 +320,12 @@ impl Screen {
             lines: rows.max(1) as usize,
             columns: cols.max(1) as usize,
         };
-        let term = Term::new(config, &size, Quiet);
+        let responder = Responder::default();
+        let term = Term::new(config, &size, responder.clone());
         let normal_grid = term.grid().clone();
         Screen {
             term,
+            responder,
             parser: Processor::new(),
             scroll_tracker: ScrollTracker::new(size.lines),
             scroll_parser: Processor::new(),
@@ -370,6 +405,18 @@ impl Screen {
 
     pub fn columns(&self) -> usize {
         self.term.grid().columns()
+    }
+
+    /// Drain the emulator's answers to device queries seen since the last
+    /// call. ALWAYS drain, even when the caller intends to discard them:
+    /// leaving them queued would let a query asked while a browser was
+    /// attached (and therefore already answered by it) be replayed into the
+    /// PTY later, after that browser detached.
+    pub fn take_query_replies(&mut self) -> Vec<u8> {
+        match self.responder.replies.lock() {
+            Ok(mut replies) => std::mem::take(&mut *replies),
+            Err(_) => Vec::new(),
+        }
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -960,7 +1007,7 @@ fn render_hyperlink(out: &mut Vec<u8>, hyperlink: Option<&Hyperlink>) {
     }
 }
 
-fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
+fn render_palette(out: &mut Vec<u8>, term: &Term<Responder>) {
     for index in 0..alacritty_terminal::term::color::COUNT {
         let Some(color) = term.colors()[index] else {
             continue;
@@ -986,7 +1033,7 @@ fn render_palette(out: &mut Vec<u8>, term: &Term<Quiet>) {
     }
 }
 
-fn render_modes(out: &mut Vec<u8>, term: &Term<Quiet>, mode: &TermMode) {
+fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode) {
     let mut set = |flag: TermMode, seq: &[u8]| {
         if mode.contains(flag) {
             out.extend_from_slice(seq);
