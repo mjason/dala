@@ -108,8 +108,12 @@ test.describe("Given 一个把内容画在 alternate screen 上的程序", () =>
 
     await type(
       page,
-      "printf '\\033[?1049h\\033[H\\033[2JINSIDEALT'; sleep 0.3; printf '\\033[?1049l'",
+      "printf '\\033[?1049h\\033[H\\033[2JINSIDEALT'; sleep 0.5; printf '\\033[?1049l'",
     );
+    // 先等**进去**再等**出来**。只等 "normal" 是个竞态：终端本来就是
+    // normal，那条断言在 alt 屏还没建立时就通过了，接着的输入会打在一个
+    // 正在切换的屏幕上。
+    await expect.poll(() => bufferType(page), { timeout: READY_TIMEOUT }).toBe("alternate");
     await expect.poll(() => bufferType(page), { timeout: READY_TIMEOUT }).toBe("normal");
 
     await type(page, "printf 'MARKERAFTER\\n'");

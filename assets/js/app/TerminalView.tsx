@@ -728,6 +728,10 @@ export default function TerminalView({
       const flowStats: {
         acked: number;
         resets: number;
+        /** Live `output` messages received. In render mode each one is a
+         * frame, so e2e can observe the holder's batching window widening
+         * with the round trip — the policy is otherwise invisible from here. */
+        outputs: number;
         /** Measured keystroke → echo delay; drives "auto" local echo. */
         echoMs: number | null;
         renderer: typeof rendererStats;
@@ -737,6 +741,7 @@ export default function TerminalView({
       } = {
         acked: 0,
         resets: 0,
+        outputs: 0,
         echoMs: null,
         renderer: rendererStats,
         replay: null,
@@ -1057,6 +1062,7 @@ export default function TerminalView({
           }
         },
         output: (payload) => {
+          flowStats.outputs += 1;
           const data = base64ToBytes(payload.data);
           if (!gate.acceptOutput(payload.seq)) {
             // Every received frame was counted by the channel. This includes
