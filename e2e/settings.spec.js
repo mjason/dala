@@ -1,5 +1,5 @@
 // 设置面板 — tab 布局与语音 tab 的项目级转写提示（dala.jsonc）读写。
-const { test, expect, devices } = require("@playwright/test");
+const { test, expect, devices } = require("./fixtures");
 const fs = require("node:fs");
 const h = require("./helpers");
 

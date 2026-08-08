@@ -1,6 +1,6 @@
 // 文件抽屉的实时监控 — 终端命令/agent 在会话目录里建删文件时，抽屉不需要
 // 手动刷新就能跟上（服务端 dala_holder watch 递归监视 + 前端就近路由刷新）。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");

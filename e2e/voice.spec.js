@@ -4,7 +4,7 @@
 // WAV → RPC transcribe（不带 endpoint/model/key！）→ Elixir 端从设置行取端点、
 // 从项目 dala.jsonc 取 speech.prompt，以 multipart 转发 → 假端点校验 multipart
 // 里带 name="prompt" 才返回 PROMPT-OK → 文本落入 composer（CodeMirror，DOM 可读）。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const http = require("node:http");
 const fs = require("node:fs");
 const h = require("./helpers");

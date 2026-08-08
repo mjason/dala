@@ -1,7 +1,7 @@
 // 富文本输入条（composer）— 快捷键三态循环里的“开 → 聚焦”和“关 → 焦点回终端”。
 // composer 是 CodeMirror（#composer-editor .cm-content），内容 DOM 可读；
 // 终端本体是 WebGL 渲染，焦点落在 xterm 的隐藏 textarea 上。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const cp = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");

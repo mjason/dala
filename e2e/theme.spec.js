@@ -4,7 +4,7 @@
 // body 背景（body:has(> #app) → var(--color-bg0)）、以及终端 .xterm-viewport
 // 背景（app.css 里也钉在 var(--color-bg0)）。两处一起变，才算「整个 app 一起
 // 换主题」。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const h = require("./helpers");
 

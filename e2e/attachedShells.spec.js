@@ -1,7 +1,7 @@
 // 会话内的附带 shell（tmux 分页模型）：主 shell 是第一个 tab，附带 shell 排在后面，
 // 各自独立 PTY，能跑 rails s 这类长任务。断言走服务端副作用（落盘文件）与 tab DOM，
 // 不读终端文字（WebGL 渲染，DOM 里没有）。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");

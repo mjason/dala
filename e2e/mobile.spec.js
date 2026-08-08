@@ -11,7 +11,7 @@
 //
 // 终端内容走 WebGL,DOM 里没有文字 —— 内容断言用截图像素检查(顶部行区域
 // 不允许全黑)+ __dalaTerm(调试句柄)读 emulator buffer。
-const { test, expect, devices } = require("@playwright/test");
+const { test, expect, devices } = require("./fixtures");
 const h = require("./helpers");
 
 // iPhone 14: 390×664 CSS 视口,DPR 3,coarse pointer。defaultBrowserType 字段

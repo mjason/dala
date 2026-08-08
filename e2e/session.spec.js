@@ -1,6 +1,6 @@
 // 会话生命周期 — 创建与删除都能在侧栏里看到结果。
 // 终端内容走 WebGL 渲染，DOM 里读不到文字：这里只断言 .xterm 挂载即“终端就绪”。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const h = require("./helpers");

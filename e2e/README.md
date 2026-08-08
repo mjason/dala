@@ -18,6 +18,34 @@ Playwright 会通过 `start-server.sh` 自动拉起一个 **完全隔离** 的 d
 dev server（127.0.0.1:4499），跑完自动关掉。先确认 4499 没被占用
 （`ss -ltnp | grep 4499`，按端口杀，不要按进程名杀）。
 
+也可以从仓库根目录跑 `mix e2e`。
+
+## 每条用例都在盯控制台
+
+所有 spec 从 `./fixtures` 而不是 `@playwright/test` 引入 `test`/`expect`。
+那个 fixture 是 `auto` 的：它把 `pageerror` 和 `console.error` 收集起来，
+在用例结束时断言为空。
+
+这不是洁癖。React 里一个把整棵子树卸载掉的错误，留下的 DOM 在结构上仍然
+是「合理」的 —— 关于布局、文本、几何的断言照样通过，而用户看到的是白屏。
+真发生过：一个 `useEffect` 写成裸表达式，把 `scrollTo` 的返回值当成清理
+函数，整个设置弹窗卸载，而 `settings.spec.js` 那七条全绿。
+
+某条用例如果是**故意**触发某个错误，屏蔽那一条，而不是关掉检查：
+
+```js
+test.use({ ignorePageErrors: [/expected message/] });
+```
+
+## 给慢链路写用例
+
+`h.withSocketLatency(page, 300)` 在 socket 上注入单向延迟（用 Playwright
+的 `routeWebSocket` 做双向转发代理）。必须在 `gotoApp` **之前**调用。
+
+dala 里所有按延迟分档的策略 —— auto 本地回显、流控的 BDP 水位、holder 的
+帧窗口 —— 输入都是实测往返，而 e2e 跑在 localhost（往返 ~1ms）。没有这个
+helper 的话，那些策略的慢链路分支一条测试都执行不到。见 `latency.spec.js`。
+
 ## 隔离机制（重要）
 
 dala 的会话存在 **共享的 sqlite（dala_dev.db）** 里，PTY holder 的

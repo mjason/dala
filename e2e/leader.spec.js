@@ -1,5 +1,5 @@
 // Spacemacs 式 leader 键（mac ⌥Space / 其他 Ctrl+Shift+Space）：which-key 面板 → 单键导航执行。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const h = require("./helpers");

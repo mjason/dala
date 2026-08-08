@@ -4,7 +4,7 @@
 // 让 <SettingsModal> 整棵子树崩掉、页面变白的 React 错误可以让那七条用例
 // 全绿。这里补的就是那一层 —— 每条用例都把 pageerror 和 console.error
 // 当作失败，并且真的把每个 tab 都点开一遍。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const h = require("./helpers");
 
 // React 的 "useEffect must not return anything besides a function" 之类只是

@@ -7,7 +7,7 @@
 //
 // 主题行是全实例共享的，用例之间必须清干净（afterEach 里逐个 delete_theme），
 // 否则串场（参考 voice.spec 对共享设置行的归零处理）。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const h = require("./helpers");
 

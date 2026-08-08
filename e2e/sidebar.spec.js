@@ -1,7 +1,7 @@
 // 侧栏拖拽排序 — 顺序持久化在服务端（position 浮点键），刷新后不变。
 // 拖拽从每行专用的 handle（⠿）发起：桌面 hover 才显示，粗指针常显；
 // 列表本身不设 touch-action:none，移动端在行上滑动仍是滚动。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const h = require("./helpers");

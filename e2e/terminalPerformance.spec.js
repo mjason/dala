@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const h = require("./helpers");
@@ -81,12 +81,17 @@ test.describe("Given 用户有很多终端会话", () => {
         timeout: 15_000,
       })
       .toBe(true);
+    // GPU budget: the pool keeps ten terminals warm, but WebGL contexts are
+    // capped per page (~16 in Chromium, and exceeding it silently kills the
+    // oldest). The terminal you just LEFT keeps its context — flipping back
+    // and forth between two tabs would otherwise rebuild shaders and the
+    // glyph atlas in both directions — and everything older than that is on
+    // the DOM renderer. So: at most two contexts, at most one of them hidden.
     const renderers = await rendererKinds();
-    expect(renderers.filter((item) => !item.visible).every((item) => item.renderer === "dom"))
-      .toBe(true);
-    expect(renderers.filter((item) => item.renderer === "webgl").length).toBeLessThanOrEqual(1);
+    const hiddenWebgl = renderers.filter((item) => !item.visible && item.renderer === "webgl");
+    expect(hiddenWebgl.length).toBeLessThanOrEqual(1);
+    expect(renderers.filter((item) => item.renderer === "webgl").length).toBeLessThanOrEqual(2);
     if (requireWebgl) {
-      expect(renderers.filter((item) => item.renderer === "webgl")).toHaveLength(1);
       expect(renderers.find((item) => item.visible)?.renderer).toBe("webgl");
     }
 
@@ -121,13 +126,13 @@ test.describe("Given 用户有很多终端会话", () => {
       )
       .not.toBe(sizesBefore.hidden);
 
+    // Same budget as above, re-checked after a switch: the terminal just left
+    // keeps its context, everything older is back on the DOM renderer.
     await expect
       .poll(
         async () => {
           const kinds = await rendererKinds();
-          return kinds
-            .filter((item) => !item.visible)
-            .every((item) => item.renderer === "dom");
+          return kinds.filter((item) => !item.visible && item.renderer === "webgl").length <= 1;
         },
         { timeout: 15_000 },
       )
@@ -135,7 +140,7 @@ test.describe("Given 用户有很多终端会话", () => {
     const renderersAfterSwitch = await rendererKinds();
     expect(
       renderersAfterSwitch.filter((item) => item.renderer === "webgl").length,
-    ).toBeLessThanOrEqual(1);
+    ).toBeLessThanOrEqual(2);
     if (requireWebgl) {
       expect(renderersAfterSwitch.find((item) => item.visible)?.renderer).toBe("webgl");
     }

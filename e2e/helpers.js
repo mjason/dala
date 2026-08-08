@@ -27,6 +27,61 @@ async function gotoApp(page) {
   await expect(page.locator("#new-session-button")).toBeVisible();
 }
 
+/**
+ * Fail the test on anything the page reported as broken.
+ *
+ * Every spec should call this: a React error that unmounts a whole subtree
+ * leaves the DOM structurally plausible, so assertions about layout and text
+ * keep passing while the user stares at a white screen. That is exactly how a
+ * `useEffect` returning a non-function shipped — seven green settings tests,
+ * blank page.
+ *
+ * Returns the (live) failure list so a spec can assert mid-test; `assertClean`
+ * is the usual way to check it.
+ */
+function watchPageHealth(page, ignore = []) {
+  const failures = [];
+  // Transport noise (a reconnect, a cancelled request, a socket closing on
+  // teardown) is not a rendering-health problem.
+  const noise = /Failed to load resource|net::ERR_|WebSocket|ERR_CONNECTION/;
+  const ignored = (text) => noise.test(text) || ignore.some((pattern) => pattern.test(text));
+
+  page.on("pageerror", (error) => {
+    if (!ignored(error.message)) failures.push(`pageerror: ${error.message}`);
+  });
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (!ignored(text)) failures.push(`console.error: ${text}`);
+  });
+
+  return failures;
+}
+
+/**
+ * Put `ms` of ONE-WAY delay on the app's socket.
+ *
+ * Everything adaptive in dala keys off the measured round trip — auto local
+ * echo, the flow-control watermark, the holder's frame window — and e2e runs
+ * on localhost, where that measurement is ~1ms. Without this the entire
+ * slow-link half of those policies is never executed by any test.
+ *
+ * Must be installed BEFORE navigating: routes only apply to connections
+ * opened afterwards.
+ */
+async function withSocketLatency(page, ms) {
+  await page.routeWebSocket(/\/socket/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => setTimeout(() => server.send(message), ms));
+    server.onMessage((message) => setTimeout(() => ws.send(message), ms));
+  });
+}
+
+/** Assert nothing was reported since `watchPageHealth`. */
+function assertClean(failures, context = "page") {
+  expect(failures, `${context} 出现未捕获错误:\n${failures.join("\n")}`).toEqual([]);
+}
+
 /** Create a terminal session via RPC; resolves to its id. */
 async function createSession(page, cwd) {
   const result = await rpcRun(page, {
@@ -97,6 +152,9 @@ module.exports = {
   openDrawer,
   clickTerminalTool,
   rpcRun,
+  watchPageHealth,
+  assertClean,
+  withSocketLatency,
   gotoApp,
   createSession,
   deleteSession,

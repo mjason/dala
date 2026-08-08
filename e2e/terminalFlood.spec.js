@@ -1,7 +1,7 @@
 // 刷屏负载下的交互性 —— 一个会话把 PTY 灌满时，输入路径不能被输出挤死，
 // 会话也不能被误判成“已退出”。断言全部走服务端副作用（落盘文件）和 UI 状态，
 // 不读终端 DOM 文本（WebGL 渲染，DOM 里没有文字）。
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");

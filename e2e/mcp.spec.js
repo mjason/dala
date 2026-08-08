@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const h = require("./helpers");
 
 // The MCP enable-state + token are a global DB singleton toggled from the

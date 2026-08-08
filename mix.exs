@@ -145,6 +145,13 @@ defmodule Dala.MixProject do
         "esbuild dala --minify",
         "phx.digest"
       ],
+      # The browser layer. NOT part of precommit: the suite takes ~20 minutes
+      # against a real dev server, which is the wrong shape for a
+      # run-before-every-commit gate. It IS the gate for anything touching the
+      # terminal pipeline — the warm-renderer change in this tree shipped a
+      # behaviour that an existing e2e already contracted, and nobody noticed
+      # because nobody ran it.
+      e2e: ["cmd --cd e2e npx playwright test"],
       precommit: [
         "compile --warnings-as-errors",
         "deps.unlock --unused",
