@@ -45,7 +45,14 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   // Each tab starts at the top: the scroll position of the (long) Shortcuts
   // tab must not carry over into the next one.
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => bodyRef.current?.scrollTo(0, 0), [tab]);
+  // Braces, not a bare expression: an expression body hands whatever the
+  // call returns to React AS THE CLEANUP FUNCTION. `scrollTo` is specified to
+  // return void, but a smooth-scroll polyfill or browser extension that
+  // returns a Promise is enough to make React call it — "destroy is not a
+  // function", the whole modal subtree unmounts, the screen goes white.
+  useEffect(() => {
+    bodyRef.current?.scrollTo(0, 0);
+  }, [tab]);
 
   const fail = (error: string) => onError(error || t("somethingWentWrong"));
 

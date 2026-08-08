@@ -28,10 +28,22 @@ export function usePanelLayout() {
   const [gitW, setGitW] = useState(() =>
     clampWidth(Number(localStorage.getItem("dala:git-w")) || PANEL_W.git, 280, 800),
   );
-  useEffect(() => localStorage.setItem("dala:sidebar-w", String(sidebarW)), [sidebarW]);
-  useEffect(() => localStorage.setItem("dala:qs-w", String(qsW)), [qsW]);
-  useEffect(() => localStorage.setItem("dala:drawer-w", String(drawerW)), [drawerW]);
-  useEffect(() => localStorage.setItem("dala:git-w", String(gitW)), [gitW]);
+  // Block bodies throughout: an effect written as a bare expression adopts
+  // that expression's value as its cleanup function, and a host API is not
+  // ours to make promises about (see SettingsModal's tab-reset effect for the
+  // white screen this caused).
+  useEffect(() => {
+    localStorage.setItem("dala:sidebar-w", String(sidebarW));
+  }, [sidebarW]);
+  useEffect(() => {
+    localStorage.setItem("dala:qs-w", String(qsW));
+  }, [qsW]);
+  useEffect(() => {
+    localStorage.setItem("dala:drawer-w", String(drawerW));
+  }, [drawerW]);
+  useEffect(() => {
+    localStorage.setItem("dala:git-w", String(gitW));
+  }, [gitW]);
   useEffect(() => {
     const reset = () => {
       setSidebarW(PANEL_W.sidebar);

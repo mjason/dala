@@ -67,7 +67,9 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   const active = Math.min(index, Math.max(0, total - 1));
   const directActive = directTarget != null && active === ranked.length;
 
-  useEffect(() => setIndex(0), [query]);
+  useEffect(() => {
+    setIndex(0);
+  }, [query]);
 
   useEffect(() => {
     listRef.current

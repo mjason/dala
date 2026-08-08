@@ -98,3 +98,66 @@ describe("SettingsModal tabs", () => {
     expect(container.querySelector("#mcp-section")).not.toBeNull();
   });
 });
+
+describe("the tab-reset effect must not adopt scrollTo's return value", () => {
+  // Real reproduction of a blank screen: something in the page makes
+  // `Element.scrollTo` return a value — a smooth-scroll polyfill or browser
+  // extension returns a Promise, and jsdom's own stub above returns undefined
+  // only because this file says so. An effect written as a bare expression
+  // hands whatever that call returns straight to React as its cleanup
+  // function, and React then calls it: "destroy is not a function", the whole
+  // <SettingsModal> subtree unmounts, the screen goes white.
+  //
+  // React's warning names the case ("or returned a Promise") but nothing
+  // enforces it, so the guarantee lives here instead.
+  const scrollToReturning = (value: unknown) => {
+    const original = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = function scrollTo() {
+      return value;
+    } as unknown as typeof Element.prototype.scrollTo;
+    return () => {
+      Element.prototype.scrollTo = original;
+    };
+  };
+
+  it("survives a scrollTo that returns a Promise", async () => {
+    const restore = scrollToReturning(Promise.resolve());
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      errors.push(args[0]);
+    });
+
+    try {
+      const { container } = renderModal();
+      // Mounted, and still mounted after the effects have run and (in
+      // StrictMode) been torn down once.
+      expect(container.querySelector("#settings-body")).not.toBeNull();
+
+      // Changing tabs re-runs the effect, which is where the bad cleanup from
+      // the previous run would be invoked.
+      const appearance = container.querySelector(
+        '[data-settings-tab="appearance"]',
+      ) as HTMLElement;
+      fireEvent.click(appearance);
+      expect(container.querySelector("#settings-body")).not.toBeNull();
+
+      const complaints = errors
+        .map((entry) => String(entry))
+        .filter((entry) => /must not return anything|destroy is not a function/.test(entry));
+      expect(complaints, complaints.join("\n")).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      restore();
+    }
+  });
+
+  it("survives a scrollTo that returns any other truthy value", () => {
+    const restore = scrollToReturning(42);
+    try {
+      const { container } = renderModal();
+      expect(container.querySelector("#settings-body")).not.toBeNull();
+    } finally {
+      restore();
+    }
+  });
+});
