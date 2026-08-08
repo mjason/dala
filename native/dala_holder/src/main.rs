@@ -50,7 +50,7 @@ use std::time::Duration;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 
-use crate::screen::{FrameTracker, Screen, REPAINT_HISTORY_BUDGET};
+use crate::screen::{graphics_sequence, FrameTracker, Screen, REPAINT_HISTORY_BUDGET};
 
 /// Hard bounds on PTY/emulator dimensions, mirroring the server's clamp.
 /// The emulator allocates rows×cols cells on resize — a stray 65535×65535
@@ -473,6 +473,9 @@ struct Shared {
     frame: FrameTracker,
     /// The emulator changed since the last frame went out.
     frame_dirty: bool,
+    /// This session emitted an inline-graphics protocol, so render mode is off
+    /// for good: the emulator cannot reproduce an image it never stored.
+    graphics_seen: bool,
     /// True while the client is being driven by `alt_frame` rather than by
     /// the raw byte stream. The handover in both directions happens in the
     /// PTY reader, which is the only place that sees the alternate-screen
@@ -610,6 +613,7 @@ fn main() {
             osc_tail: Vec::new(),
             frame: FrameTracker::default(),
             frame_dirty: false,
+            graphics_seen: false,
             render_alt: false,
         }),
         cond: Condvar::new(),
@@ -640,6 +644,27 @@ fn main() {
                             // the socket, applying natural PTY backpressure.
                             while shared.repaint_frozen {
                                 shared = state.cond.wait(shared).unwrap();
+                            }
+
+                            // Graphics are checked BEFORE the emulator is
+                            // advanced. Handing the stream back afterwards
+                            // would mean choosing between losing the image
+                            // (the frame cannot contain it) and applying this
+                            // chunk's text twice; syncing the client to the
+                            // PRE-chunk screen and then streaming the chunk
+                            // whole costs neither.
+                            if !shared.graphics_seen && graphics_sequence(&complete) {
+                                shared.graphics_seen = true;
+                                if shared.render_alt {
+                                    let shared = &mut *shared;
+                                    let frame = shared.screen.alt_frame(&mut shared.frame);
+                                    if !frame.is_empty() && shared.client.is_some() {
+                                        shared.transit.push_bounded(&frame, RING_MAX);
+                                    }
+                                    shared.render_alt = false;
+                                    shared.frame_dirty = false;
+                                    shared.frame.reset();
+                                }
                             }
 
                             // Answering and forwarding are decided together:
@@ -675,7 +700,8 @@ fn main() {
                             // that sees the 1049 transition and the client flag
                             // under a single lock, so both handovers live here.
                             if attached {
-                                let render_alt = render_mode && shared.screen.alt_screen();
+                                let render_alt =
+                                    render_mode && !shared.graphics_seen && shared.screen.alt_screen();
                                 if render_alt {
                                     if !shared.render_alt {
                                         // Entering: this chunk still holds the
@@ -754,6 +780,9 @@ fn main() {
             guard.frame_dirty = false;
             // Split borrow: the tracker and the emulator are disjoint fields.
             let shared = &mut *guard;
+            // An application that opened `?2026h` and then stalled would
+            // otherwise hold this client's screen frozen indefinitely.
+            shared.screen.finish_expired_synchronized_update();
             let frame = shared.screen.alt_frame(&mut shared.frame);
             if !frame.is_empty() {
                 shared.transit.push_bounded(&frame, RING_MAX);
@@ -1520,6 +1549,7 @@ mod client_generation_tests {
                 osc_tail: Vec::new(),
                 frame: FrameTracker::default(),
                 frame_dirty: false,
+                graphics_seen: false,
                 render_alt: false,
             }),
             cond: Condvar::new(),

@@ -83,10 +83,15 @@ defmodule Dala.Terminal.RenderModeTest do
     pid = Server.whereis(session.id)
     ready!(pid)
 
+    # The drawing goes in its own write, AFTER a tick has passed: the chunk
+    # that carries `?1049h` is deliberately streamed raw (it still holds the
+    # shell's last normal-buffer output ahead of the switch), so a drawing
+    # inside it would reach the client verbatim and prove nothing.
     run_and_await(
       session,
       pid,
-      ~s|printf '\\033[?1049h\\033[H\\033[2J\\033[3;5H%sWN' "$V"; | <>
+      ~s|printf '\\033[?1049h\\033[H\\033[2J'; sleep 0.15; | <>
+        ~s|printf '\\033[3;5H%sWN' "$V"; | <>
         ~s|sleep 0.15; printf '\\033[?1049l'|,
       "DRAWN"
     )
@@ -97,6 +102,37 @@ defmodule Dala.Terminal.RenderModeTest do
     # repaints whole rows from column 1.
     assert output =~ "\e[3;1H",
            "no absolute row addressing in the stream — the bytes were forwarded raw"
+
+    refute output =~ "\e[3;5H",
+           "the program's own addressing reached the client, so this was not a frame"
+  end
+
+  @tag :integration
+  test "a session that draws images drops back to the raw byte stream" do
+    session = create_session!()
+    pid = Server.whereis(session.id)
+    ready!(pid)
+
+    # alacritty renders no inline-graphics protocol, so a frame simply cannot
+    # contain the image: the holder has to hand the stream back or the picture
+    # silently disappears. Kitty's APC is the trigger here.
+    run_and_await(
+      session,
+      pid,
+      ~s|printf '\\033[?1049h\\033[H\\033[2J'; | <>
+        ~s|printf '\\033_Ga=T,f=100;QUFB\\033\\\\'; | <>
+        ~s|sleep 0.15; printf '\\033[7;9H%sKER' "$V"; | <>
+        ~s|sleep 0.15; printf '\\033[?1049l'|,
+      "MARKER"
+    )
+
+    output = retained_output(pid)
+
+    # Column 9 is the proof. A frame always repaints whole rows from column 1,
+    # so the program's own addressing only survives if the bytes were
+    # forwarded raw.
+    assert output =~ "\e[7;9H",
+           "the graphics fallback did not engage — the image would have been lost"
   end
 
   @tag :integration

@@ -26,16 +26,17 @@ attach 或切 tab 时 `render_full_viewport()` 重发整屏。滚动是**服务�
 
 ## 搬了什么
 
-### 1. holder 自己回答设备查询（`d26db73`）
+### 1. holder 独家回答设备查询（`d26db73`、`ae86097`）
 
 alacritty 靠 `Event::PtyWrite` 报告 DA1/DA2、CPR、DECRQM、kitty keyboard、
 text-area size。dala 的监听器原来叫 `Quiet`，一个不落全丢了 —— 唯一能答的是
 浏览器，查询要走一整圈 websocket 出去、xterm 自动回包、再当普通输入送回来。
 每次 2×RTT；detach 之后压根没人答。
 
-现在收进 `Responder`。谁来答由 PTY reader 决定，规则是「同一把锁下的同一个
-标志」：client 在 → 字节会到浏览器，它会自动回包，我们答就是第二份，丢弃；
-client 不在 → 字节本来就不进 transit 环，我们是仅存的模拟器，写回 PTY。
+现在收进 `Responder`，并且答复和转发**一起决定**：holder 答掉的那条查询，
+同时从客户端看到的流里摘掉，所以永远只有一份答案。详见下面第 1 条尾巴。
+
+这一条与 render mode 无关，兜底模式下同样生效。
 
 ### 2. alternate screen 的增量帧（`7f8aaa8`、`5ce9f65`）
 
@@ -63,19 +64,36 @@ client 不在 → 字节本来就不进 transit 环，我们是仅存的模拟�
 **同步更新（DECSET 2026）没搬。** zellij 用它让客户端终端原子换帧；dala 目前
 是「保留旧帧 + 单次写入」，等价效果，改造收益不大。
 
-## 还没做的
+## 三条尾巴的处置
 
-1. **查询的 2×RTT 还在。** 现在只修了 detach 场景。要彻底消掉，得让 holder
-   在转发流里把查询序列摘掉（它本来就逐字节 VTE 解析，知道 CSI 的确切边界），
-   然后由 holder 独家回答。风险是和 alacritty 升级后的答复集合漂移，需要一张
-   查询表配套测试。
-2. **流控水位仍然是 RTT 盲的**（alt 128 KiB、normal 768 KiB）。高延迟链路上
-   in-flight ≈ 带宽 × RTT 会把它误判成洪水。render mode 大幅降低了 alt 侧触发
-   概率，但没有根治。前端现在有 `flowStats.echoMs`（自适应本地回显的测量），
-   可以复用它按 BDP 缩放水位。
-3. **需要真机浸泡。** 单测覆盖了「重放每一帧到真模拟器、逐步比对文本/样式/
-   光标」，集成测试做过证伪，但 CJK 宽字符、sixel/kitty 图形、鼠标模式切换、
-   `?2026` 同步更新块跨 tick 这些还只有单测级别的信心。
+**1. 查询的 2×RTT —— 已消除。** holder 现在独家回答：答掉的那条查询同时从
+客户端看到的流里摘掉，所以永远只有一份答案。归属不靠「alacritty 会答哪些」
+的表，而是把流按 query 形状的序列切段逐段喂给模拟器、谁产生回复就归给谁；
+认不出来的落进 `unattributed`，attach 时不发，退回旧行为让客户端答。扫描器
+只认 `ESC [`、不认 C1 的 `0x9B`（那是合法的 UTF-8 后续字节，误判会删掉真实
+文字）。
+
+**2. 流控水位 —— 已按 BDP 缩放。** `Dala.Terminal.FlowWindow`：往返时间和
+速率都从客户端本来就在发的 ack 里量出来，有效水位 = 基线 + 实测 BDP，
+封顶 4 倍基线。往返取 ack 覆盖到的**最新**那个 marker（更老的大头是排队
+不是往返），平滑系数压得低，一次 GC 停顿不足以重新定义链路。
+
+**3. 浸泡 —— 转成了自动化覆盖，并且真挖出一个回归。**
+
+alacritty 0.26 **不支持任何内联图形协议**（只有 kitty *键盘*，没有 kitty
+graphics，没有 sixel）。render mode 下这意味着图形序列被解析、什么都没存下、
+也永远不转发 —— 图片会**静默消失**。现在检测到 kitty APC `ESC _ G`、
+iTerm2 `OSC 1337;` 或 sixel `DCS <数字> q` 就把该会话永久退回原始字节流；
+交接在推进模拟器**之前**做，先把客户端同步到「本块之前」的画面再整块原样
+转发，既不丢图也不会把这一块的文字应用两遍。（`DCS $q` DECRQSS 和
+`DCS +q` XTGETTCAP 都以 q 结尾，明确排除。）
+
+另外补了：`?2026` 同步更新块跨 tick 不会露出半张画面，且开了 `?2026h`
+之后卡死的程序不会把客户端画面永久冻住（tick 上按 deadline 强制收尾）；
+CJK 宽字符、组合符、emoji 走完整的重放比对；鼠标模式中途关闭要发 unset。
+
+剩下的仍然是**真机时间**：这些都是单测和集成测试级别的信心，兜底开关就是
+为此存在的。
 
 ## 关掉
 
@@ -84,5 +102,7 @@ client 不在 → 字节本来就不进 transit 环，我们是仅存的模拟�
 { "terminal": { "renderMode": false } }
 ```
 
-或 `DALA_TERMINAL_RENDER_MODE=false`。回到每个旧版本 dala 的原始字节流，
-holder 也随之退回「只有浏览器回答查询」。
+或 `DALA_TERMINAL_RENDER_MODE=false`。回到每个旧版本 dala 的原始字节流。
+
+注意这个开关**只管增量帧**：holder 独家回答查询和 BDP 水位在兜底模式下
+照常生效，它们不依赖渲染管线。

@@ -188,6 +188,49 @@ pub struct Advanced<'a> {
     pub unattributed: Vec<u8>,
 }
 
+/// Does this chunk carry an inline-graphics protocol?
+///
+/// alacritty renders NONE of them (0.26 has kitty *keyboard*, not kitty
+/// graphics, and no sixel), so render mode would parse the sequence, keep
+/// nothing, and never forward it — the image would silently vanish. A session
+/// that uses graphics therefore drops back to the raw byte stream for good.
+///
+/// Recognises kitty's APC `ESC _ G`, iTerm2's `OSC 1337;`, and sixel's
+/// `DCS <numbers> q`. The sixel form deliberately allows only digits and
+/// semicolons before the `q`: `DCS $ q` is DECRQSS and `DCS + q` is
+/// XTGETTCAP, both ordinary queries that must not cost a session its frames.
+pub fn graphics_sequence(bytes: &[u8]) -> bool {
+    let mut index = 0;
+
+    while index + 1 < bytes.len() {
+        if bytes[index] != 0x1b {
+            index += 1;
+            continue;
+        }
+
+        match bytes[index + 1] {
+            b'_' if bytes.get(index + 2) == Some(&b'G') => return true,
+            b']' if bytes[index + 2..].starts_with(b"1337;") => return true,
+            b'P' => {
+                let mut cursor = index + 2;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_digit() || bytes[cursor] == b';')
+                {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) == Some(&b'q') {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        index += 1;
+    }
+
+    false
+}
+
 /// CSI final bytes the emulator can answer: DA (`c`), DSR/CPR (`n`), DECRQM
 /// (`p`), XTWINOPS (`t`), the kitty keyboard query (`u`), DECREQTPARM (`x`).
 /// Deliberately a SUPERSET — plenty of sequences ending in these never reply,
@@ -574,6 +617,26 @@ impl Screen {
         {
             self.scroll_parser.stop_sync(&mut self.scroll_tracker);
         }
+    }
+
+    /// Close a synchronized update whose deadline has passed.
+    ///
+    /// `?2026h` tells the terminal to hold everything until `?2026l`, which is
+    /// exactly right for a frame — but an application that opens one and then
+    /// stalls (or is killed) would otherwise freeze the client's screen for
+    /// good, since the render tick only ever sees the pre-update grid. Returns
+    /// true when a block was force-closed.
+    pub fn finish_expired_synchronized_update(&mut self) -> bool {
+        let expired = self
+            .parser
+            .sync_timeout()
+            .sync_timeout()
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+
+        if expired {
+            self.finish_synchronized_update();
+        }
+        expired
     }
 
     pub fn columns(&self) -> usize {
@@ -2520,6 +2583,60 @@ mod frame_tests {
         }
     }
 
+    /// Wide characters occupy two cells with a spacer alacritty must not emit
+    /// twice, and combining marks ride along on the base cell. A frame that
+    /// got either wrong would shift every column after it.
+    #[test]
+    fn wide_characters_combining_marks_and_emoji_survive_the_diff() {
+        let mut screen = alt_screen(8, 40);
+        let mut client = Client::new(8, 40);
+        let mut tracker = FrameTracker::default();
+
+        let steps: &[&[u8]] = &[
+            "\x1b[H\x1b[2J中文测试".as_bytes(),
+            "\x1b[2;1Hcafe\u{301} naïve".as_bytes(),
+            "\x1b[3;1H🎉 ✅ 🚀".as_bytes(),
+            // Overwrite the second cell of a wide char: the pair must break
+            // cleanly rather than leave half a glyph.
+            "\x1b[1;2Hx".as_bytes(),
+            // Mixed widths on one row, then a narrower rewrite of it.
+            "\x1b[4;1H日本語abc漢字".as_bytes(),
+            "\x1b[4;1Hshort".as_bytes(),
+        ];
+
+        for step in steps {
+            screen.advance(step);
+            client.apply(&screen.alt_frame(&mut tracker));
+            assert_eq!(
+                client.rows(),
+                holder_rows(&screen),
+                "diverged after {:?}",
+                text(step),
+            );
+        }
+    }
+
+    /// `?2026` is an atomic-frame request: everything between the h and the l
+    /// belongs to one repaint. A tick landing in the middle must show the
+    /// PREVIOUS complete frame, never a half-drawn one.
+    #[test]
+    fn a_synchronized_update_is_not_shown_half_drawn() {
+        let mut screen = alt_screen(6, 20);
+        let mut tracker = FrameTracker::default();
+        screen.advance(b"\x1b[H\x1b[2J\x1b[1;1Hsettled");
+        let _ = screen.alt_frame(&mut tracker);
+
+        screen.advance(b"\x1b[?2026h\x1b[1;1Htorn");
+        let mid_update = text(&screen.alt_frame(&mut tracker));
+        assert!(
+            !mid_update.contains("torn"),
+            "a frame taken inside a synchronized update exposed it: {mid_update:?}"
+        );
+
+        screen.advance(b"\x1b[?2026l");
+        assert!(text(&screen.alt_frame(&mut tracker)).contains("torn"));
+    }
+
     #[test]
     fn a_resize_forces_a_full_frame() {
         let mut screen = alt_screen(6, 20);
@@ -2592,6 +2709,28 @@ mod frame_tests {
             backgrounds(&client_highlights),
             backgrounds(&holder_highlights),
         );
+    }
+
+    #[test]
+    fn graphics_protocols_are_recognised() {
+        // kitty, iTerm2, sixel.
+        assert!(graphics_sequence(b"\x1b_Ga=T,f=100;AAAA\x1b\\"));
+        assert!(graphics_sequence(b"\x1b]1337;File=inline=1:AAAA\x07"));
+        assert!(graphics_sequence(b"\x1bP0;1;0q#0;2;0;0;0"));
+        assert!(graphics_sequence(b"text before \x1b_G and after"));
+    }
+
+    #[test]
+    fn ordinary_sequences_are_not_mistaken_for_graphics() {
+        // DECRQSS and XTGETTCAP both end in `q` and must not cost a session
+        // its frames.
+        assert!(!graphics_sequence(b"\x1bP$qm\x1b\\"));
+        assert!(!graphics_sequence(b"\x1bP+q544e\x1b\\"));
+        assert!(!graphics_sequence(b"\x1b[31mred\x1b[0m plain"));
+        assert!(!graphics_sequence("中文 ✅ 🎉".as_bytes()));
+        assert!(!graphics_sequence(b"\x1b]0;window title\x07"));
+        assert!(!graphics_sequence(b""));
+        assert!(!graphics_sequence(b"\x1b"));
     }
 
     #[test]
