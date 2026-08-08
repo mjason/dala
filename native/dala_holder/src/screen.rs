@@ -2747,3 +2747,113 @@ mod frame_tests {
         assert!(text(&frame).contains("shell line"));
     }
 }
+
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    fn realistic_chunk() -> Vec<u8> {
+        // A build-log-ish 16 KiB: colour runs, plain text, some CJK.
+        let mut out = Vec::new();
+        while out.len() < 16 * 1024 {
+            out.extend_from_slice(b"\x1b[32m==>\x1b[0m compiling module_name ");
+            out.extend_from_slice("中文 ✅ ".as_bytes());
+            out.extend_from_slice(b"ok 0.42s\r\n");
+        }
+        out
+    }
+
+    fn tui_grid() -> Screen {
+        let mut screen = Screen::new(50, 200, 10_000);
+        screen.advance(b"\x1b[?1049h\x1b[H\x1b[2J");
+        for row in 1..=50 {
+            screen.advance(
+                format!("\x1b[{row};1H\x1b[36m│\x1b[0m some pane content for row {row} ")
+                    .as_bytes(),
+            );
+        }
+        screen
+    }
+
+    fn per_op(label: &str, iterations: u32, elapsed: std::time::Duration) {
+        let ns = elapsed.as_nanos() as f64 / iterations as f64;
+        println!("{label:<44} {ns:>10.0} ns/op");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_hot_path() {
+        let chunk = realistic_chunk();
+        let n = 2_000;
+
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(query_candidates(std::hint::black_box(&chunk)));
+        }
+        per_op("query_candidates (16 KiB)", n, start.elapsed());
+
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(graphics_sequence(std::hint::black_box(&chunk)));
+        }
+        per_op("graphics_sequence (16 KiB)", n, start.elapsed());
+
+        let mut parse_into = Screen::new(50, 200, 10_000);
+        let start = Instant::now();
+        for _ in 0..n {
+            parse_into.advance(std::hint::black_box(&chunk));
+        }
+        per_op("advance 16 KiB (parsing already on the path)", n, start.elapsed());
+
+        let mut answering = Screen::new(50, 200, 10_000);
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(answering.advance_answering(std::hint::black_box(&chunk)));
+        }
+        per_op("advance_answering 16 KiB (scans + parse)", n, start.elapsed());
+
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(chunk.clone());
+        }
+        per_op("clone 16 KiB (the into_owned I added)", n, start.elapsed());
+
+        // Frame rendering, 50x200.
+        let mut screen = tui_grid();
+        let mut tracker = FrameTracker::default();
+        let _ = screen.alt_frame(&mut tracker);
+
+        let n = 5_000;
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(screen.alt_frame(&mut tracker));
+        }
+        per_op("alt_frame 50x200, nothing changed", n, start.elapsed());
+
+        let start = Instant::now();
+        for i in 0..n {
+            screen.advance(format!("\x1b[25;1Hstatus line tick {i}   ").as_bytes());
+            std::hint::black_box(screen.alt_frame(&mut tracker));
+        }
+        per_op("alt_frame 50x200, one row changed", n, start.elapsed());
+
+        let n = 2_000;
+        let start = Instant::now();
+        for i in 0..n {
+            screen.advance(format!("\x1b[H\x1b[2Jfull redraw {i}").as_bytes());
+            for row in 1..=50 {
+                screen.advance(format!("\x1b[{row};1Hrow {row} of redraw {i}").as_bytes());
+            }
+            std::hint::black_box(screen.alt_frame(&mut tracker));
+        }
+        per_op("alt_frame 50x200, whole screen changed", n, start.elapsed());
+
+        let start = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(screen.repaint(false));
+        }
+        per_op("repaint (full snapshot, for comparison)", n, start.elapsed());
+    }
+}
