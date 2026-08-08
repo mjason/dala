@@ -10,6 +10,10 @@ defmodule Dala.Terminal.RenderModeTest do
   PTY reader, and the bytes arrive here through the same socket a browser is
   fed from.
 
+  There is no longer a switch to turn this off (see docs/zellij-render-mode.md
+  for why), so these assertions are the discriminator: a renderer that stopped
+  collapsing repaints, or stopped addressing rows absolutely, fails them.
+
   Every literal these tests look for is ASSEMBLED BY THE SHELL (`V=STE;
   echo "$V"ADY`). A plain `echo STEADY` puts the word in the terminal twice —
   once when bash echoes the command line you typed, once when it runs — and

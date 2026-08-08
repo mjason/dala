@@ -157,20 +157,12 @@ struct Config {
     cols: u16,
     #[serde(default = "default_history_lines")]
     history_lines: usize,
-    /// Deliver the alternate screen as diffed frames (zellij's model) instead
-    /// of forwarding raw PTY bytes. Off falls all the way back to the byte
-    /// stream, which is what every dala before this shipped.
-    #[serde(default = "default_render_mode")]
-    render_mode: bool,
 }
 
 fn default_history_lines() -> usize {
     10_000
 }
 
-fn default_render_mode() -> bool {
-    true
-}
 
 #[derive(Default)]
 struct TransitQueue {
@@ -656,7 +648,6 @@ fn main() {
     {
         let state = Arc::clone(&state);
         let pty_writer = Arc::clone(&pty_writer);
-        let render_mode = config.render_mode;
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut parser_safe_output = ParserSafeOutput::default();
@@ -734,7 +725,7 @@ fn main() {
                             // under a single lock, so both handovers live here.
                             if attached {
                                 let render_alt =
-                                    render_mode && !shared.graphics_seen && shared.screen.alt_screen();
+                                    !shared.graphics_seen && shared.screen.alt_screen();
                                 if render_alt {
                                     if !shared.render_alt {
                                         // Entering: this chunk still holds the
@@ -795,10 +786,11 @@ fn main() {
         });
     }
 
-    // Render tick: the alternate screen's only producer while render mode
-    // drives it. Everything downstream is unchanged — a frame is just ANSI
-    // bytes in the same ring the raw stream uses.
-    if config.render_mode {
+    // Render tick: the alternate screen's only producer. Everything downstream
+    // is unchanged — a frame is just ANSI bytes in the same ring the raw
+    // stream uses, and the raw stream is still what carries the normal buffer
+    // (and the alternate screen once a session has drawn an image).
+    {
         let state = Arc::clone(&state);
         thread::spawn(move || {
             let mut sleep_for = render_window(None);

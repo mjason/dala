@@ -185,8 +185,7 @@ defmodule Dala.Terminal.Holder do
         env_remove: Keyword.get(opts, :env_remove, []),
         rows: Keyword.get(opts, :rows, 24),
         cols: Keyword.get(opts, :cols, 80),
-        history_lines: Keyword.get(opts, :history_lines, 10_000),
-        render_mode: Application.get_env(:dala, :terminal_render_mode, true)
+        history_lines: Keyword.get(opts, :history_lines, 10_000)
       })
 
     File.mkdir_p!(dir())

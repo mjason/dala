@@ -332,7 +332,6 @@ never write them. Restart the service after editing.
 | `dataDir` | `~/.local/share/dala` | Session store, scrollback cache, secrets |
 | `releaseRoot` / `serviceName` | set by install.sh | Enable the in-app updater |
 | `server` | `true` (written by install.sh) | Start the HTTP server (release installs) |
-| `terminal.renderMode` | `true` | Deliver the alternate screen (vim, htop, TUI agents) as diffed frames instead of raw PTY bytes — the cost of a redraw becomes what *changed*, not what the program *wrote*. `false` falls back to the raw byte stream |
 
 Upload/preview size limits live under `"limits"`
 (`drawerUploadMaxMb`, `browserAttachmentMaxMb`, `mcpAttachmentMaxMb`,
