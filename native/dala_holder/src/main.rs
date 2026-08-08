@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
@@ -82,6 +82,7 @@ const T_RESIZE: u8 = 0x12;
 const T_KILL: u8 = 0x13;
 const T_REPAINT_REQ: u8 = 0x14;
 const T_TEXT_SNAPSHOT_REQ: u8 = 0x15;
+const T_LATENCY: u8 = 0x16;
 
 /// Transit-queue cap between the PTY reader and the socket writer. The
 /// emulator is the durable history; this only smooths bursts to an attached
@@ -98,10 +99,33 @@ const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 // many attached clients, but bound work queued by a malformed/raw peer. New
 // requests are rejected at the limit so holder replies stay FIFO-aligned with
 // the BEAM's pending-request queue.
-/// Frame interval in render mode. zellij debounces its renders on the same
-/// 10ms, which caps a runaway TUI at 100 screenfuls a second no matter how
-/// fast it writes.
-const RENDER_TICK: Duration = Duration::from_millis(10);
+/// Frame batching window before any round-trip has been measured. zellij
+/// debounces on a flat 10ms; that is a reasonable place to start, and the
+/// measurement replaces it within a second of a client attaching.
+const DEFAULT_RTT_MS: u32 = 10;
+/// Past ~120fps the frames cost CPU nobody can perceive.
+const MIN_WINDOW_MS: u32 = 8;
+/// Under 20fps a moving TUI reads as choppy however far away the viewer is.
+const MAX_WINDOW_MS: u32 = 50;
+
+/// How long to batch changes before emitting a frame, given the round-trip
+/// the BEAM measured against the most latency-sensitive attached client.
+///
+/// The LEADING edge is the caller's job — the first change after a quiet
+/// period goes out immediately, whatever this returns — so this only sets the
+/// floor on frame spacing while a program repaints continuously. That split is
+/// what lets one policy serve both ends: typing in vim over a LAN is isolated
+/// changes and never waits, while a runaway repaint loop is batched.
+///
+/// The window then tracks the round trip, because the two regimes want
+/// opposite things. On localhost the link is free and the viewer is right
+/// there, so batching only adds latency to no purpose. On a slow link every
+/// frame skipped is bytes saved where they are scarce, and the extra few
+/// milliseconds disappear next to the round trip that is already being paid.
+fn render_window(rtt_ms: Option<u32>) -> Duration {
+    let rtt = rtt_ms.unwrap_or(DEFAULT_RTT_MS);
+    Duration::from_millis(rtt.clamp(MIN_WINDOW_MS, MAX_WINDOW_MS) as u64)
+}
 
 const MAX_PENDING_REPAINTS: usize = 64;
 // TEXT_SNAPSHOT has no request id on the wire. Never evict or silently reject
@@ -473,6 +497,13 @@ struct Shared {
     frame: FrameTracker,
     /// The emulator changed since the last frame went out.
     frame_dirty: bool,
+    /// Round trip in ms to the most latency-sensitive attached client, as
+    /// measured by the BEAM from its acknowledgements. None until the first
+    /// report.
+    rtt_ms: Option<u32>,
+    /// When the last frame was handed to the ring, so an isolated change can
+    /// be recognised and sent without waiting for the batching window.
+    last_frame_at: Instant,
     /// This session emitted an inline-graphics protocol, so render mode is off
     /// for good: the emulator cannot reproduce an image it never stored.
     graphics_seen: bool,
@@ -614,6 +645,8 @@ fn main() {
             frame: FrameTracker::default(),
             frame_dirty: false,
             graphics_seen: false,
+            rtt_ms: None,
+            last_frame_at: Instant::now(),
             render_alt: false,
         }),
         cond: Condvar::new(),
@@ -716,6 +749,11 @@ fn main() {
                                         shared.frame.reset();
                                     }
                                     shared.frame_dirty = true;
+                                    // Leading edge: nothing has gone out for a
+                                    // whole window, so this change is an
+                                    // isolated one (a keystroke's redraw, not
+                                    // a repaint loop) and must not be delayed.
+                                    emit_frame_if_due(&mut shared, Instant::now());
                                 } else if shared.render_alt {
                                     // Leaving: the resync frame already carries
                                     // the normal viewport as it stands after
@@ -762,31 +800,20 @@ fn main() {
     // bytes in the same ring the raw stream uses.
     if config.render_mode {
         let state = Arc::clone(&state);
-        thread::spawn(move || loop {
-            thread::sleep(RENDER_TICK);
-            let mut guard = state.shared.lock().unwrap();
-            if guard.exit_status.is_some() {
-                break;
-            }
-            // `frame_dirty` stays set while a repaint holds the barrier, so
-            // the change is not lost — it goes out on the tick after it.
-            if !guard.render_alt
-                || !guard.frame_dirty
-                || guard.client.is_none()
-                || guard.repaint_frozen
-            {
-                continue;
-            }
-            guard.frame_dirty = false;
-            // Split borrow: the tracker and the emulator are disjoint fields.
-            let shared = &mut *guard;
-            // An application that opened `?2026h` and then stalled would
-            // otherwise hold this client's screen frozen indefinitely.
-            shared.screen.finish_expired_synchronized_update();
-            let frame = shared.screen.alt_frame(&mut shared.frame);
-            if !frame.is_empty() {
-                shared.transit.push_bounded(&frame, RING_MAX);
-                state.cond.notify_all();
+        thread::spawn(move || {
+            let mut sleep_for = render_window(None);
+            loop {
+                thread::sleep(sleep_for);
+                let mut guard = state.shared.lock().unwrap();
+                if guard.exit_status.is_some() {
+                    break;
+                }
+                // `frame_dirty` stays set while a repaint holds the barrier, so
+                // the change is not lost — it goes out on the tick after it.
+                if emit_frame_if_due(&mut guard, Instant::now()) {
+                    state.cond.notify_all();
+                }
+                sleep_for = render_window(guard.rtt_ms);
             }
         });
     }
@@ -1021,6 +1048,14 @@ fn main() {
                             TextSnapshotRequestResult::Stale
                             | TextSnapshotRequestResult::Overloaded => break,
                         }
+                    }
+                    Ok((T_LATENCY, data)) if data.len() == 4 => {
+                        let reported = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                        let mut shared = state.shared.lock().unwrap();
+                        if shared.client_gen != my_gen {
+                            break;
+                        }
+                        shared.rtt_ms = Some(reported);
                     }
                     Ok((T_KILL, _)) => {
                         let shared = state.shared.lock().unwrap();
@@ -1305,6 +1340,37 @@ fn clear_client(shared: &mut Shared) {
     shared.render_alt = false;
 }
 
+/// Emit one frame if the alternate screen is being rendered, something
+/// changed, and the batching window has elapsed since the last one.
+///
+/// Called from BOTH the PTY reader (leading edge: an isolated change after a
+/// quiet period leaves immediately) and the render tick (trailing edge: a
+/// continuous repaint is batched to one frame per window).
+fn emit_frame_if_due(shared: &mut Shared, now: Instant) -> bool {
+    if !shared.render_alt
+        || !shared.frame_dirty
+        || shared.client.is_none()
+        || shared.repaint_frozen
+    {
+        return false;
+    }
+    if now.duration_since(shared.last_frame_at) < render_window(shared.rtt_ms) {
+        return false;
+    }
+
+    shared.frame_dirty = false;
+    shared.last_frame_at = now;
+    // An application that opened `?2026h` and then stalled would otherwise
+    // hold this client's screen frozen indefinitely.
+    shared.screen.finish_expired_synchronized_update();
+    let frame = shared.screen.alt_frame(&mut shared.frame);
+    if frame.is_empty() {
+        return false;
+    }
+    shared.transit.push_bounded(&frame, RING_MAX);
+    true
+}
+
 /// Detaches only the expected connection generation. The input gate is
 /// acquired first everywhere that changes ownership, so a frame already read
 /// by the old control thread either finishes before detach or observes the new
@@ -1419,6 +1485,7 @@ mod frame_tests {
             T_TEXT_SNAPSHOT,
             T_REPAINT_REQ,
             T_TEXT_SNAPSHOT_REQ,
+            T_LATENCY,
         ];
         for &ty in &types {
             // Payload exercises all byte values including 0x00 and 0xff.
@@ -1500,7 +1567,7 @@ mod frame_tests {
 mod client_generation_tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct BlockingWriter {
         entered: mpsc::Sender<()>,
@@ -1550,6 +1617,8 @@ mod client_generation_tests {
                 frame: FrameTracker::default(),
                 frame_dirty: false,
                 graphics_seen: false,
+                rtt_ms: None,
+                last_frame_at: Instant::now(),
                 render_alt: false,
             }),
             cond: Condvar::new(),
@@ -2209,6 +2278,152 @@ mod scan_tests {
             agents[1],
             b"warp://cli-agent\x1f{\"event\":\"new\"}".to_vec()
         );
+    }
+}
+
+#[cfg(test)]
+mod render_window_tests {
+    use super::*;
+
+    #[test]
+    fn an_unmeasured_link_keeps_the_previous_flat_window() {
+        assert_eq!(render_window(None), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn a_local_link_batches_as_little_as_is_useful() {
+        // localhost: the link is free and the viewer is right there, so
+        // batching only adds latency to no purpose.
+        assert_eq!(render_window(Some(0)), Duration::from_millis(MIN_WINDOW_MS as u64));
+        assert_eq!(render_window(Some(1)), Duration::from_millis(MIN_WINDOW_MS as u64));
+    }
+
+    #[test]
+    fn the_window_tracks_the_round_trip_in_between() {
+        assert_eq!(render_window(Some(20)), Duration::from_millis(20));
+        assert_eq!(render_window(Some(35)), Duration::from_millis(35));
+    }
+
+    #[test]
+    fn a_slow_link_batches_harder_but_never_below_twenty_fps() {
+        // Every frame skipped is bytes saved where they are scarce, but under
+        // 20fps a moving TUI reads as choppy however far away the viewer is.
+        assert_eq!(render_window(Some(300)), Duration::from_millis(MAX_WINDOW_MS as u64));
+        assert_eq!(render_window(Some(5_000)), Duration::from_millis(MAX_WINDOW_MS as u64));
+    }
+}
+
+#[cfg(test)]
+mod frame_cadence_tests {
+    use super::*;
+
+    fn alt_session(rtt_ms: Option<u32>) -> Shared {
+        let (client, _peer) = UnixStream::pair().unwrap();
+        let mut screen = Screen::new(24, 80, 1_000);
+        screen.advance(b"\x1b[?1049h\x1b[H\x1b[2Jstarting");
+
+        Shared {
+            transit: TransitQueue::default(),
+            client: Some(client),
+            client_gen: 1,
+            exit_status: None,
+            screen,
+            repaint_pending: VecDeque::new(),
+            repaint_frozen: false,
+            text_snapshot_pending: VecDeque::new(),
+            cwd_report: None,
+            agent_reports: VecDeque::new(),
+            osc_tail: Vec::new(),
+            frame: FrameTracker::default(),
+            frame_dirty: true,
+            graphics_seen: false,
+            rtt_ms,
+            last_frame_at: Instant::now(),
+            render_alt: true,
+        }
+    }
+
+    /// The whole point of the leading edge: a keystroke's redraw in vim is an
+    /// ISOLATED change, and making it wait out a batching window would add
+    /// latency to the one case that has none to spare.
+    #[test]
+    fn an_isolated_change_goes_out_immediately() {
+        let mut shared = alt_session(Some(40));
+        let start = Instant::now();
+        shared.last_frame_at = start - Duration::from_secs(1);
+
+        assert!(emit_frame_if_due(&mut shared, start));
+        assert!(!shared.transit.is_empty());
+    }
+
+    /// ...and the trailing edge is what caps a repaint loop.
+    #[test]
+    fn a_second_change_inside_the_window_waits_for_it() {
+        let mut shared = alt_session(Some(40));
+        let start = Instant::now();
+        shared.last_frame_at = start - Duration::from_secs(1);
+        assert!(emit_frame_if_due(&mut shared, start));
+
+        shared.screen.advance(b"\x1b[2;1Hchanged again");
+        shared.frame_dirty = true;
+        assert!(!emit_frame_if_due(&mut shared, start + Duration::from_millis(20)));
+        // Still pending, not lost.
+        assert!(shared.frame_dirty);
+
+        assert!(emit_frame_if_due(&mut shared, start + Duration::from_millis(41)));
+    }
+
+    /// The adaptive part, observed through the cadence rather than the
+    /// constant: the same burst is batched harder for a distant viewer.
+    #[test]
+    fn a_local_viewer_gets_frames_a_distant_one_would_not() {
+        let elapsed = Duration::from_millis(12);
+
+        let mut local = alt_session(Some(1));
+        let start = Instant::now();
+        local.last_frame_at = start - Duration::from_secs(1);
+        assert!(emit_frame_if_due(&mut local, start));
+        local.screen.advance(b"\x1b[3;1Hmore");
+        local.frame_dirty = true;
+        assert!(
+            emit_frame_if_due(&mut local, start + elapsed),
+            "an 8ms window must have elapsed after 12ms"
+        );
+
+        let mut distant = alt_session(Some(300));
+        distant.last_frame_at = start - Duration::from_secs(1);
+        assert!(emit_frame_if_due(&mut distant, start));
+        distant.screen.advance(b"\x1b[3;1Hmore");
+        distant.frame_dirty = true;
+        assert!(
+            !emit_frame_if_due(&mut distant, start + elapsed),
+            "a 50ms window must still be batching after 12ms"
+        );
+    }
+
+    #[test]
+    fn a_repaint_barrier_holds_the_frame_without_losing_it() {
+        let mut shared = alt_session(Some(10));
+        shared.repaint_frozen = true;
+        let start = Instant::now();
+        shared.last_frame_at = start - Duration::from_secs(1);
+
+        assert!(!emit_frame_if_due(&mut shared, start));
+        assert!(shared.frame_dirty, "the change must survive the barrier");
+
+        shared.repaint_frozen = false;
+        assert!(emit_frame_if_due(&mut shared, start));
+    }
+
+    #[test]
+    fn a_detached_session_renders_nothing() {
+        let mut shared = alt_session(Some(10));
+        shared.client = None;
+        let start = Instant::now();
+        shared.last_frame_at = start - Duration::from_secs(1);
+
+        assert!(!emit_frame_if_due(&mut shared, start));
+        assert!(shared.transit.is_empty());
     }
 }
 

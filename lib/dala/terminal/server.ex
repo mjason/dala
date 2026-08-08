@@ -84,6 +84,17 @@ defmodule Dala.Terminal.Server do
   end
 
   @doc """
+  Report the round trip (ms) this client channel measured against its browser.
+
+  Drives the holder's frame batching window — see `Dala.Terminal.FlowWindow`
+  for where the number comes from and the holder's `render_window` for what it
+  does with it.
+  """
+  def report_latency(id, client, rtt_ms) when is_pid(client) and is_integer(rtt_ms) do
+    cast_if_alive(id, {:report_latency, client, rtt_ms})
+  end
+
+  @doc """
   Enqueue one complete rich-input delivery. Frames from separate callers are
   never interleaved; the returned sequence is captured immediately before the
   first frame reaches the holder.
@@ -399,6 +410,13 @@ defmodule Dala.Terminal.Server do
           # Visible viewers need responsive cwd updates. Warm pooled viewers
           # stay attached but use the much slower background cadence.
           visible_clients: MapSet.new(),
+          # Round trip per client channel, as each measures it from its own
+          # acknowledgements. The holder is told the SMALLEST across visible
+          # viewers: the frame window is a freshness budget and has to suit
+          # whoever notices delay first, while bandwidth for slower viewers is
+          # already handled per-client by their own flow-control watermark.
+          client_rtt: %{},
+          reported_rtt: nil,
           cwd_poll_timer: nil,
           # A /proc read can block on a wedged mount, so it stays off this
           # process (see start_cwd_poll/1) — synchronous calls (attach, resize,
@@ -603,7 +621,7 @@ defmodule Dala.Terminal.Server do
         do: MapSet.put(state.visible_clients, client),
         else: MapSet.delete(state.visible_clients, client)
 
-    state = %{state | visible_clients: visible_clients}
+    state = push_latency(%{state | visible_clients: visible_clients})
     has_visible? = MapSet.size(visible_clients) > 0
 
     state =
@@ -614,6 +632,11 @@ defmodule Dala.Terminal.Server do
       end
 
     {:noreply, state}
+  end
+
+  def handle_cast({:report_latency, client, rtt_ms}, state) do
+    state = %{state | client_rtt: Map.put(state.client_rtt, client, rtt_ms)}
+    {:noreply, push_latency(state)}
   end
 
   def handle_cast({:claim_size, client, client_ref, device_id, rows, cols}, state) do
@@ -733,6 +756,7 @@ defmodule Dala.Terminal.Server do
     state = %{
       state
       | clients: Map.delete(state.clients, pid),
+        client_rtt: Map.delete(state.client_rtt, pid),
         visible_clients: MapSet.delete(state.visible_clients, pid)
     }
 
@@ -1181,6 +1205,39 @@ defmodule Dala.Terminal.Server do
 
   # Monitor each client the first time we hear from it, so ownership is
   # released when its channel process exits.
+  @doc false
+  # The holder's frame window follows the most latency-sensitive VISIBLE
+  # viewer. Reported only when it moves enough to matter — a window that
+  # jitters by a millisecond changes nothing a person can see and would put a
+  # socket write on every acknowledgement.
+  def effective_rtt(client_rtt, visible_clients) do
+    client_rtt
+    |> Enum.filter(fn {client, _rtt} -> MapSet.member?(visible_clients, client) end)
+    |> Enum.map(fn {_client, rtt} -> rtt end)
+    |> case do
+      [] -> nil
+      values -> Enum.min(values)
+    end
+  end
+
+  @doc false
+  def rtt_worth_reporting?(nil, _previous), do: false
+  def rtt_worth_reporting?(_current, nil), do: true
+
+  def rtt_worth_reporting?(current, previous),
+    do: abs(current - previous) >= max(div(previous, 5), 2)
+
+  defp push_latency(state) do
+    current = effective_rtt(state.client_rtt, state.visible_clients)
+
+    if rtt_worth_reporting?(current, state.reported_rtt) do
+      if state.socket, do: Holder.send_latency(state.socket, current)
+      %{state | reported_rtt: current}
+    else
+      state
+    end
+  end
+
   defp track_client(state, client, client_ref) do
     unless Map.has_key?(state.clients, client), do: Process.monitor(client)
     %{state | clients: Map.put(state.clients, client, client_ref)}

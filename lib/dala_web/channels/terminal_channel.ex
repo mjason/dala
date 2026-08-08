@@ -581,10 +581,29 @@ defmodule DalaWeb.TerminalChannel do
         window: FlowWindow.acked(fc.window, acked, now_ms())
     }
 
+    # The same measurement that sizes this client's watermark also sizes the
+    # holder's frame window — one is about bandwidth, the other about
+    # freshness, and both want to know how far away the viewer is.
+    report_latency(socket, fc.window)
+
     {:noreply, maybe_flow_repaint(assign(socket, :fc, fc))}
   end
 
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
+
+  defp report_latency(socket, window) do
+    case FlowWindow.rtt_ms(window) do
+      nil ->
+        :ok
+
+      rtt ->
+        Dala.Terminal.Server.report_latency(
+          socket.assigns.session_id,
+          self(),
+          round(rtt)
+        )
+    end
+  end
 
   # Cheap defense at the channel layer; Server.apply_size is the
   # authoritative choke point with the same bounds.

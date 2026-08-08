@@ -19,6 +19,7 @@ defmodule Dala.Terminal.Holder do
   @type_kill 0x13
   @type_repaint_req 0x14
   @type_text_snapshot_req 0x15
+  @type_latency 0x16
   @repaint_history_budget 512 * 1024
 
   @connect_attempts 40
@@ -144,6 +145,15 @@ defmodule Dala.Terminal.Holder do
     do: :gen_tcp.send(socket, <<@type_resize, rows::16, cols::16>>)
 
   def send_kill(socket), do: :gen_tcp.send(socket, <<@type_kill>>)
+
+  @doc """
+  Tell the holder the round trip (ms) to the most latency-sensitive client
+  attached to this session. It sets the frame batching window: see
+  `render_window` in the holder — a local viewer wants frames as soon as they
+  exist, a distant one would rather have fewer, fatter ones.
+  """
+  def send_latency(socket, rtt_ms) when is_integer(rtt_ms) and rtt_ms >= 0,
+    do: :gen_tcp.send(socket, <<@type_latency, min(rtt_ms, 60_000)::32>>)
 
   @doc """
   Ask the holder for a synthesized repaint (answered as a REPAINT frame).
