@@ -403,3 +403,45 @@ describe("createEchoMeter", () => {
     expect(meter.averageMs()).toBe(80);
   });
 });
+
+describe("measuring must not depend on the drawing heuristic", () => {
+  // Found by e2e: `auto` never armed against a real shell. The TUI-quiet
+  // window fires on any cursor-addressing output — which is exactly what a
+  // fancy prompt (oh-my-zsh, powerlevel10k, starship) emits every time it
+  // redraws. Each keystroke's echo re-armed the window, the next keystroke
+  // landed inside it, and no sample was ever taken: on a 600ms link the user
+  // got no local echo and no explanation.
+  it("still times the echo while the TUI-quiet window is open", () => {
+    const { term, writes } = makeTerm();
+    const ta = createTypeahead(term, () => "auto");
+
+    // A prompt redraw: cursor addressing, so the quiet window is now open.
+    ta.reconcile(bytes("\x1b[2K\x1b[1G➜  ~ "));
+
+    ta.predict("a");
+    // Nothing drawn — the quiet window still suppresses prediction, correctly.
+    expect(writes).toEqual([]);
+
+    vi.advanceTimersByTime(400);
+    ta.reconcile(bytes("a"));
+
+    // ...but the delay WAS measured, which is what lets auto arm at all.
+    expect(ta.echoDelayMs()).toBe(400);
+  });
+
+  it("arms prediction once the quiet window lapses, on the measurement it took", () => {
+    const { term, writes } = makeTerm();
+    const ta = createTypeahead(term, () => "auto");
+
+    ta.reconcile(bytes("\x1b[2K\x1b[1G➜  ~ "));
+    ta.predict("a");
+    vi.advanceTimersByTime(400);
+    ta.reconcile(bytes("a"));
+    expect(writes).toEqual([]);
+
+    // Past TUI_QUIET_MS with no further redraw-looking output.
+    vi.advanceTimersByTime(600);
+    ta.predict("b");
+    expect(writes).toEqual(["b"]);
+  });
+});

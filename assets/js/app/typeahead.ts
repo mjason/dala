@@ -110,15 +110,19 @@ export function createTypeahead(term: Terminal, mode: () => LocalEchoMode) {
     timer = window.setTimeout(eraseNow, CONFIRM_TIMEOUT_MS);
   };
 
-  // Everything a prediction needs to be unambiguous. Identical for the
-  // measurement probe: sampling keystrokes we would never have drawn would
-  // measure a delay that says nothing about the echo we care about.
-  const predictable = (data: string): boolean => {
+  // A keystroke whose echo is worth TIMING: one printable ASCII character at
+  // a normal prompt, so the first byte of the reply identifies it.
+  //
+  // Deliberately weaker than `drawable`. Measuring used to require everything
+  // drawing requires, and that made "auto" unable to arm for most users: the
+  // TUI-quiet heuristic below fires on any cursor-addressing output, which is
+  // what EVERY fancy prompt emits when it redraws (oh-my-zsh, powerlevel10k,
+  // starship). Each keystroke's echo re-armed the quiet window, the next
+  // keystroke landed inside it, no sample was ever taken, and a link that
+  // needed local echo never got it. Measurement must not depend on the
+  // heuristic that decides whether to draw.
+  const measurable = (data: string): boolean => {
     if (term.buffer.active.type !== "normal") return false;
-    // A TUI owns the screen right now (Claude Code, opencode, …): its
-    // echo is a full redraw, never a plain character — stay out.
-    if (Date.now() < tuiUntil) return false;
-    if (pending.length >= MAX_PENDING) return false;
     // Single printable ASCII only. IME/CJK input arrives as composed
     // strings and readline may render it anywhere — leave it to the echo.
     if (data.length !== 1) return false;
@@ -126,20 +130,28 @@ export function createTypeahead(term: Terminal, mode: () => LocalEchoMode) {
     // > 0x7e: a lone CJK/accented char would echo back as multi-byte
     // UTF-8 (mismatching the char-vs-byte reconcile) and its width-2
     // cell makes the 1-column erase leave half a glyph behind.
-    if (code < 0x20 || code > 0x7e) return false;
+    return code >= 0x20 && code <= 0x7e;
+  };
+
+  // Everything a prediction additionally needs to be unambiguous.
+  const drawable = (): boolean => {
+    // A TUI owns the screen right now (Claude Code, opencode, …): its
+    // echo is a full redraw, never a plain character — stay out.
+    if (Date.now() < tuiUntil) return false;
+    if (pending.length >= MAX_PENDING) return false;
     // Soft-wrap at the right edge makes the cursor math ambiguous.
-    if (term.buffer.active.cursorX >= term.cols - 2) return false;
-    return true;
+    return term.buffer.active.cursorX < term.cols - 2;
   };
 
   return {
     /** Call from term.onData BEFORE the keystroke is pushed to the server. */
     predict(data: string) {
       const setting = mode();
-      if (setting === "off" || !predictable(data)) return;
+      if (setting === "off" || !measurable(data)) return;
       // Probe first and unconditionally: "auto" can only learn that the link
       // got slow from keystrokes it did NOT draw.
       if (!pending) meter.probe(data.charCodeAt(0));
+      if (!drawable()) return;
       if (setting === "auto" && !meter.slowLink()) return;
       pending += data;
       term.write(data);

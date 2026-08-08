@@ -46,6 +46,14 @@ dala 里所有按延迟分档的策略 —— auto 本地回显、流控的 BDP 
 帧窗口 —— 输入都是实测往返，而 e2e 跑在 localhost（往返 ~1ms）。没有这个
 helper 的话，那些策略的慢链路分支一条测试都执行不到。见 `latency.spec.js`。
 
+`latency.spec.js` **默认跳过**（和 `DALA_E2E_WEBGL` 一个路子）：每条用例都
+要串起好几个 600ms 的真实往返，对机器负载敏感，在忙碌的开发机上会时绿时红。
+改动任何按延迟分档的东西时手动跑：
+
+```bash
+DALA_E2E_LATENCY=1 npx playwright test latency.spec.js
+```
+
 ## 隔离机制（重要）
 
 dala 的会话存在 **共享的 sqlite（dala_dev.db）** 里，PTY holder 的
