@@ -1,6 +1,6 @@
-import React from "react";
+import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@octanejs/testing-library";
 import { I18nProvider } from "../i18n";
 
 // The clipboard helper degrades gracefully in prod; here we just watch it.

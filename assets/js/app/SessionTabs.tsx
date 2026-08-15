@@ -1,4 +1,4 @@
-import React from "react";
+import * as Octane from "octane";
 import { useI18n } from "./i18n";
 import type { Session } from "./Sidebar";
 

@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useRef, useState } from "octane";
 import {
   mcpSettings,
   regenerateMcpToken,

@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "octane";
 import { agentCommands, listFiles, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
 import { blobToBase64, startRecording, type Recorder } from "./speech";
@@ -91,7 +92,7 @@ export default function InputBar({
   const [commands, setCommands] = useState<{ name: string; description: string }[] | null>(null);
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const cursorRef = useRef(0);
-  const attachRef = useRef<HTMLInputElement>(null);
+  const attachRef = useRef<HTMLInputElement | null>(null);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const mountedRef = useRef(true);
   const valueRef = useRef(value);
@@ -112,7 +113,7 @@ export default function InputBar({
   // While fullscreen a spacer holds the bar's old slot, so the terminal
   // behind the overlay keeps its grid (no SIGWINCH round-trip for its TUI).
   const [spacerHeight, setSpacerHeight] = useState(0);
-  const barRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
   // Baseline = the bar's resting (floor) height. In normal mode the bar floats
   // at the bottom (absolute) and grows UPWARD as the editor auto-grows; the flow
   // reserves only this baseline, so growth overlays the terminal's bottom rows
@@ -360,7 +361,7 @@ export default function InputBar({
   };
 
   const send = () => {
-    // The editor is the source of truth for WHAT gets sent (a React mirror
+    // The editor is the source of truth for WHAT gets sent (a state mirror
     // can lag a keystroke), and in-flight upload markers are placeholders —
     // never deliverable text (their uploads append to the next draft when
     // they resolve; see composer/uploadQueue).
@@ -594,8 +595,8 @@ export default function InputBar({
           multiple
           className="hidden"
           onChange={(e) => {
-            attach(e.target.files);
-            e.target.value = "";
+            attach(e.currentTarget.files);
+            e.currentTarget.value = "";
           }}
         />
         <button

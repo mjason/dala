@@ -1,6 +1,6 @@
-import React from "react";
+import * as Octane from "octane";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@octanejs/testing-library";
 import { I18nProvider } from "./i18n";
 
 // jsdom ships no scroll engine; the modal resets its body scroll on tab change.
@@ -104,11 +104,11 @@ describe("the tab-reset effect must not adopt scrollTo's return value", () => {
   // `Element.scrollTo` return a value — a smooth-scroll polyfill or browser
   // extension returns a Promise, and jsdom's own stub above returns undefined
   // only because this file says so. An effect written as a bare expression
-  // hands whatever that call returns straight to React as its cleanup
-  // function, and React then calls it: "destroy is not a function", the whole
+  // hands whatever that call returns straight to Octane as its cleanup
+  // function, and Octane then calls it: "destroy is not a function", the whole
   // <SettingsModal> subtree unmounts, the screen goes white.
   //
-  // React's warning names the case ("or returned a Promise") but nothing
+  // The runtime warning names the case ("or returned a Promise") but nothing
   // enforces it, so the guarantee lives here instead.
   const scrollToReturning = (value: unknown) => {
     const original = Element.prototype.scrollTo;
@@ -130,7 +130,7 @@ describe("the tab-reset effect must not adopt scrollTo's return value", () => {
     try {
       const { container } = renderModal();
       // Mounted, and still mounted after the effects have run and (in
-      // StrictMode) been torn down once.
+      // a reconnect) been torn down once.
       expect(container.querySelector("#settings-body")).not.toBeNull();
 
       // Changing tabs re-runs the effect, which is where the bad cleanup from

@@ -1,7 +1,8 @@
-import React from "react";
+import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { I18nProvider } from "./i18n";
+import type { ComponentProps } from "./octaneTypes";
 
 const gitStatus = vi.fn();
 const gitDiff = vi.fn();
@@ -53,7 +54,7 @@ function statusData(files: object[], branch = "main") {
   return { repo: true, root: "/proj", branch, files, ignored: [] };
 }
 
-function renderPanel(overrides: Partial<React.ComponentProps<typeof GitPanel>> = {}) {
+function renderPanel(overrides: Partial<ComponentProps<typeof GitPanel>> = {}) {
   const props = { path: "/proj", onClose: vi.fn(), onError: vi.fn(), ...overrides };
   render(
     <I18nProvider>
@@ -177,7 +178,7 @@ describe("GitPanel changes tab", () => {
     const button = document.getElementById("commit-button") as HTMLButtonElement;
     expect(button.disabled).toBe(true); // no message yet
 
-    fireEvent.change(document.getElementById("commit-message-input")!, {
+    fireEvent.input(document.getElementById("commit-message-input")!, {
       target: { value: "my commit" },
     });
     expect(button.disabled).toBe(false);

@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import * as Octane from "octane";
+import { useState } from "octane";
 import { gitBranches } from "../../ash_rpc";
 import type { GitBranchesFields } from "../../ash_rpc";
 import { call } from "../rpc";

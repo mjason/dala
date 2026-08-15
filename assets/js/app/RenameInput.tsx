@@ -1,4 +1,6 @@
-import React, { useRef } from "react";
+import * as Octane from "octane";
+import { useRef } from "octane";
+import type { InputProps } from "./octaneTypes";
 import { cx } from "./ui";
 
 /**
@@ -26,7 +28,7 @@ export function RenameInput({
   onCommit: (name: string) => void;
   onCancel: () => void;
 } & Omit<
-  React.InputHTMLAttributes<HTMLInputElement>,
+  InputProps,
   "defaultValue" | "onBlur" | "onKeyDown" | "className" | "aria-label"
 >) {
   const settled = useRef(false);

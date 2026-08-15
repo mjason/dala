@@ -1,7 +1,8 @@
-import React from "react";
+import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@octanejs/testing-library";
 import { I18nProvider } from "../i18n";
+import type { ComponentProps } from "../octaneTypes";
 
 // theme.ts apply-layer: spy on the live preview + restore-on-cancel.
 const applyCustomTokens = vi.fn();
@@ -28,7 +29,7 @@ function renderEditor(draft: ThemeDraft, overrides: Record<string, unknown> = {}
   const props = { draft, onClose: vi.fn(), onSaved: vi.fn(), onError: vi.fn(), ...overrides };
   const utils = render(
     <I18nProvider>
-      <ThemeEditor {...(props as React.ComponentProps<typeof ThemeEditor>)} />
+      <ThemeEditor {...(props as ComponentProps<typeof ThemeEditor>)} />
     </I18nProvider>,
   );
   return { ...utils, props };
@@ -61,7 +62,7 @@ describe("ThemeEditor live preview", () => {
   it("editing a colour previews the updated sparse token map", () => {
     const { container } = renderEditor({ name: "Draft", base: "dark", tokens: {} });
     const hex = container.querySelector("#theme-hex-bg0") as HTMLInputElement;
-    fireEvent.change(hex, { target: { value: "#123456" } });
+    fireEvent.input(hex, { target: { value: "#123456" } });
     expect(lastPreviewTokens()).toEqual({ bg0: "#123456" });
     expect(lastPreviewBase()).toBe("dark");
   });
@@ -116,12 +117,12 @@ describe("ThemeEditor save", () => {
   it("creates a new theme with sparse tokens + name", async () => {
     createTheme.mockResolvedValue(ok({ id: "new-2" }));
     const { container, props } = renderEditor({ name: "", base: "dark", tokens: {} });
-    fireEvent.change(container.querySelector("#theme-name-input")!, {
+    fireEvent.input(container.querySelector("#theme-name-input")!, {
       target: { value: "Midnight" },
     });
     // The ANSI group is collapsed by default — expand it to reach ansiRed.
     fireEvent.click(container.querySelector("[data-theme-group='ansi']")!);
-    fireEvent.change(container.querySelector("#theme-hex-ansiRed")!, {
+    fireEvent.input(container.querySelector("#theme-hex-ansiRed")!, {
       target: { value: "#ff0000" },
     });
     fireEvent.click(container.querySelector("#save-theme-button")!);

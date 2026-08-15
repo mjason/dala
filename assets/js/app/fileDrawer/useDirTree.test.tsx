@@ -1,5 +1,5 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import React from "react";
+import { act, renderHook, waitFor } from "@octanejs/testing-library";
+import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { useDirTree } from "./useDirTree";
@@ -36,7 +36,7 @@ const listing = (path: string) => ({
   data: { path, parent: "/", entries: [{ name: "a.txt", dir: false, size: 1 }] },
 });
 
-function wrapper({ children }: { children: React.ReactNode }) {
+function wrapper({ children }: { children: Octane.OctaneNode }) {
   return <I18nProvider>{children}</I18nProvider>;
 }
 
@@ -58,7 +58,7 @@ describe("useDirTree — change-storm handling", () => {
   });
 
   it("a burst of changed frames for one expanded ancestor costs ONE refetch", async () => {
-    const { result } = renderHook(() => useDirTree("/proj", () => {}), { wrapper });
+    const { result } = renderHook(() => useDirTree("/proj", () => {}, undefined), { wrapper });
 
     // Initial root load.
     await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
@@ -81,7 +81,7 @@ describe("useDirTree — change-storm handling", () => {
   });
 
   it("restores a root's expanded folders after the drawer path leaves and returns", async () => {
-    const { result, rerender } = renderHook(({ p }) => useDirTree(p, () => {}), {
+    const { result, rerender } = renderHook(({ p }) => useDirTree(p, () => {}, undefined), {
       wrapper,
       initialProps: { p: "/proj" },
     });
@@ -105,7 +105,7 @@ describe("useDirTree — change-storm handling", () => {
   });
 
   it("malformed frames are ignored and do not refetch", async () => {
-    const { result } = renderHook(() => useDirTree("/proj", () => {}), { wrapper });
+    const { result } = renderHook(() => useDirTree("/proj", () => {}, undefined), { wrapper });
     await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
     const afterMount = listDirectoryMock.mock.calls.length;
 

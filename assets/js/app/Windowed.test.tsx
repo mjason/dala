@@ -1,6 +1,6 @@
-import React from "react";
+import * as Octane from "octane";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@octanejs/testing-library";
 import { I18nProvider } from "./i18n";
 import Windowed from "./Windowed";
 

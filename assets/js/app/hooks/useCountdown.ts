@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "octane";
 
 /**
  * Seconds-granular auto-hide countdown for banners/tips: `start(n)` shows

@@ -67,6 +67,26 @@ export function tabAfterClose(
 }
 
 /**
+ * A sidebar root restores its last active tab; an explicit child selection
+ * (for example from the leader menu) remains explicit. Stale memories fall
+ * back to the root instead of selecting a deleted or re-parented shell.
+ */
+export function tabForSessionSelection(
+  sessions: Session[],
+  requestedId: string,
+  rememberedId: string | undefined,
+): string {
+  const requested = sessions.find((s) => s.id === requestedId);
+  if (!requested || requested.parentId) return requestedId;
+  if (!rememberedId) return requestedId;
+
+  const remembered = sessions.find((s) => s.id === rememberedId);
+  return remembered && (remembered.id === requestedId || remembered.parentId === requestedId)
+    ? remembered.id
+    : requestedId;
+}
+
+/**
  * The 1-based tab index a desktop-client menu action asks for, or null.
  *
  * These arrive as `dala:menu` events (⌘1..9 / Ctrl+1..9 accelerators in the

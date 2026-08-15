@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useState } from "octane";
 import { applyUpdate, checkUpdate } from "../ash_rpc";
 import { call } from "./rpc";
 import { useI18n } from "./i18n";

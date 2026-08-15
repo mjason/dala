@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useMemo, useRef, useState } from "octane";
 import { createTheme, updateTheme } from "../../ash_rpc";
 import { call } from "../rpc";
 import { FieldLabel, TextInput } from "../ui";
@@ -182,7 +183,7 @@ export default function ThemeEditor({ draft, onClose, onSaved, onError }: Props)
             <TextInput
               id="theme-name-input"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onInput={(e) => setName(e.currentTarget.value)}
               className="text-[15px]"
             />
           </label>
@@ -250,7 +251,7 @@ export default function ThemeEditor({ draft, onClose, onSaved, onError }: Props)
                           id={`theme-color-${key}`}
                           aria-label={key}
                           value={toHexColor(value || placeholder)}
-                          onChange={(e) => setToken(key, e.target.value)}
+                          onChange={(e) => setToken(key, e.currentTarget.value)}
                           className="h-6 w-6 shrink-0 cursor-pointer rounded border border-line bg-transparent"
                         />
                         <span className="w-0 flex-1 truncate font-mono text-[11px] text-fg-muted">
@@ -263,7 +264,7 @@ export default function ThemeEditor({ draft, onClose, onSaved, onError }: Props)
                             value={value}
                             placeholder={placeholder}
                             spellCheck={false}
-                            onChange={(e) => setToken(key, e.target.value)}
+                            onInput={(e) => setToken(key, e.currentTarget.value)}
                             className="px-2 py-1 text-[11px]"
                           />
                         </div>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook } from "@octanejs/testing-library";
 import { useCountdown } from "./useCountdown";
 
 beforeEach(() => {
@@ -61,9 +61,10 @@ describe("useCountdown", () => {
   });
 
   it("unmount cleans the interval up", () => {
+    const clearInterval = vi.spyOn(window, "clearInterval");
     const { result, unmount } = renderHook(() => useCountdown());
     act(() => result.current.start(5));
     unmount();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(clearInterval).toHaveBeenCalled();
   });
 });

@@ -1,9 +1,10 @@
-import React from "react";
+import * as Octane from "octane";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@octanejs/testing-library";
 import Sidebar from "./Sidebar";
 import type { Session } from "./Sidebar";
 import { I18nProvider } from "./i18n";
+import type { ComponentProps } from "./octaneTypes";
 
 const sessions: Session[] = [
   {
@@ -38,7 +39,7 @@ const sessions: Session[] = [
   },
 ];
 
-function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
+function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) {
   const props = {
     sessions,
     activeId: "s1",
@@ -124,7 +125,7 @@ describe("Sidebar", () => {
 
     it("commits on Enter", () => {
       const props = renderSidebar({ renamingId: "s1" });
-      fireEvent.change(input()!, { target: { value: "  deploy  " } });
+      fireEvent.input(input()!, { target: { value: "  deploy  " } });
       fireEvent.keyDown(input()!, { key: "Enter" });
       expect(props.onRename).toHaveBeenCalledWith("s1", "deploy");
       expect(props.onRenameStart).toHaveBeenCalledWith(null);
@@ -132,7 +133,7 @@ describe("Sidebar", () => {
 
     it("commits on blur", () => {
       const props = renderSidebar({ renamingId: "s1" });
-      fireEvent.change(input()!, { target: { value: "deploy" } });
+      fireEvent.input(input()!, { target: { value: "deploy" } });
       fireEvent.blur(input()!);
       expect(props.onRename).toHaveBeenCalledWith("s1", "deploy");
       expect(props.onRenameStart).toHaveBeenCalledWith(null);
@@ -140,7 +141,7 @@ describe("Sidebar", () => {
 
     it("cancels on Escape, and a later blur commits nothing", () => {
       const props = renderSidebar({ renamingId: "s1" });
-      fireEvent.change(input()!, { target: { value: "deploy" } });
+      fireEvent.input(input()!, { target: { value: "deploy" } });
       fireEvent.keyDown(input()!, { key: "Escape" });
       fireEvent.blur(input()!);
       expect(props.onRename).not.toHaveBeenCalled();
@@ -171,7 +172,7 @@ describe("Sidebar", () => {
       const blank = renderSidebar({ renamingId: "s1" });
       const inputs = document.querySelectorAll<HTMLInputElement>('[data-rename-session="s1"]');
       const second = inputs[inputs.length - 1];
-      fireEvent.change(second, { target: { value: "   " } });
+      fireEvent.input(second, { target: { value: "   " } });
       fireEvent.keyDown(second, { key: "Enter" });
       expect(blank.onRename).not.toHaveBeenCalled();
     });
@@ -385,7 +386,7 @@ describe("Sidebar context menu", () => {
     // Second level: no groups exist yet, only "new group…".
     pick("new-group");
     const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
-    fireEvent.change(input, { target: { value: "  work  " } });
+    fireEvent.input(input, { target: { value: "  work  " } });
     fireEvent.submit(document.querySelector("#group-name-modal")!);
     expect(props.onSetGroup).toHaveBeenCalledWith(["s1"], "work");
     expect(document.querySelector("#group-name-modal")).toBeNull();
@@ -416,7 +417,7 @@ describe("Sidebar context menu", () => {
     pick("rename-group");
     const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
     expect(input.value).toBe("work");
-    fireEvent.change(input, { target: { value: "play" } });
+    fireEvent.input(input, { target: { value: "play" } });
     fireEvent.submit(document.querySelector("#group-name-modal")!);
     expect(props.onSetGroup).toHaveBeenCalledWith(["s1", "s2"], "play");
     fireEvent.contextMenu(header);
@@ -445,7 +446,7 @@ describe("Sidebar group actions", () => {
     fireEvent.click(document.querySelector('[data-session-row="s2"]')!, { ctrlKey: true });
     fireEvent.click(document.querySelector("#group-selected-button")!);
     const input = document.querySelector<HTMLInputElement>("#group-name-input")!;
-    fireEvent.change(input, { target: { value: "work" } });
+    fireEvent.input(input, { target: { value: "work" } });
     fireEvent.submit(document.querySelector("#group-name-modal")!);
     expect(props.onSetGroup).toHaveBeenCalledWith(
       expect.arrayContaining(["s1", "s2"]),

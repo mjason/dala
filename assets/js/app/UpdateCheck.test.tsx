@@ -1,6 +1,6 @@
-import React from "react";
+import * as Octane from "octane";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@octanejs/testing-library";
 import UpdateCheck from "./UpdateCheck";
 import { I18nProvider } from "./i18n";
 

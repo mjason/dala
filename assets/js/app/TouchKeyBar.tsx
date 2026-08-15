@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useState } from "octane";
 import type { BarKey } from "./touchKeys";
+import type { NativePointerEvent } from "./octaneTypes";
 
 /** True on touch-first devices: the PRIMARY pointer is coarse (phones,
  * tablets). A desktop with a touchscreen keeps its fine mouse pointer and
@@ -45,7 +47,7 @@ type Props = {
  * textarea, or the soft keyboard would collapse mid-session.
  */
 export default function TouchKeyBar({ ctrl, onCtrl, onKey }: Props) {
-  const press = (e: React.PointerEvent, run: () => void) => {
+  const press = (e: NativePointerEvent, run: () => void) => {
     e.preventDefault();
     run();
   };

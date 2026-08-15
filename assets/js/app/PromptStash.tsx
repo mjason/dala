@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useRef, useState } from "octane";
 import {
   archivePrompt,
   deletePrompt,
@@ -9,6 +10,7 @@ import {
 import { call } from "./rpc";
 import { useI18n } from "./i18n";
 import { stripMarkers } from "./composer/markers";
+import type { MutableRefObject } from "./octaneTypes";
 
 /**
  * The prompt stash: quick capture of prompts/ideas, quick recall in the
@@ -25,7 +27,7 @@ type Props = {
   setValue: (next: string) => void;
   onError: (message: string) => void;
   /** Published so the composer's keyboard shortcut can stash without the mouse. */
-  stashActionRef?: React.MutableRefObject<(() => void) | null>;
+  stashActionRef?: MutableRefObject<(() => void) | null>;
   /** Formatted key combo shown in tooltips/buttons. */
   shortcutHint?: string;
 };

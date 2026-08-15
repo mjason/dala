@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import * as Octane from "octane";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "octane";
 import {
   createSession,
   deleteSession,
@@ -19,15 +20,13 @@ import {
   attachedCount,
   rootIdOf,
   rootSessions,
+  tabForSessionSelection,
   tabsFor,
   warmPreference,
 } from "./shellTabs";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
-import GitPanel from "./GitPanel";
-import SettingsModal from "./SettingsModal";
-import QuickOpen from "./QuickOpen";
-import FilePreview, { type Preview } from "./FilePreview";
+import type { Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { focusOrphaned, isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
 import { useSessions, SESSION_FIELDS } from "./hooks/useSessions";
@@ -42,6 +41,11 @@ import { checkServerUpdated } from "./versionCheck";
 import { planDelivery, resolveApp } from "./agentDelivery";
 import LeaderMenu from "./LeaderMenu";
 import { nextWarmSession, terminalWarmLimit, touchTerminalPool } from "./terminalPool";
+
+const FilePreview = lazy(() => import("./FilePreview"));
+const GitPanel = lazy(() => import("./GitPanel"));
+const QuickOpen = lazy(() => import("./QuickOpen"));
+const SettingsModal = lazy(() => import("./SettingsModal"));
 
 type Toast = { id: number; message: string };
 
@@ -211,7 +215,6 @@ export default function App() {
 
   const {
     sessions,
-    setSessions,
     upsertSession,
     ordered,
     active,
@@ -221,6 +224,7 @@ export default function App() {
     creating,
     activeIdRef,
     sessionsRef,
+    applySessionDeleted,
     handleCreate: createMainSession,
     handleRestart: restartMainSession,
     handleDelete,
@@ -247,8 +251,14 @@ export default function App() {
   const roots = rootSessions(ordered);
   const activeRootId = rootIdOf(sessions, activeId);
   const tabs = tabsFor(sessions, activeRootId);
+  const lastActiveTabByRootRef = useRef(new Map<string, string>());
 
-  const attachedCounts = React.useMemo(
+  useEffect(() => {
+    if (!active) return;
+    lastActiveTabByRootRef.current.set(active.parentId ?? active.id, active.id);
+  }, [active?.id]);
+
+  const attachedCounts = Octane.useMemo(
     () =>
       Object.fromEntries(roots.map((s) => [s.id, attachedCount(sessions, s.id)])) as Record<
         string,
@@ -511,7 +521,11 @@ export default function App() {
   // ONE selection path for every entry point (sidebar click, leader-menu
   // switcher): activate, close the mobile nav, clear a settled agent badge.
   const selectSession = (id: string) => {
-    setActiveId(id);
+    const rootId = rootIdOf(sessionsRef.current, id);
+    const remembered = rootId
+      ? lastActiveTabByRootRef.current.get(rootId)
+      : undefined;
+    setActiveId(tabForSessionSelection(sessionsRef.current, id, remembered));
     setNavOpen(false);
     setAgentStatus((m) =>
       m[id] && m[id].state !== "working"
@@ -563,7 +577,7 @@ export default function App() {
   }, [termPool]);
   // Membership from the pool (plus whatever is active right now), order from
   // the session list — stable across switches.
-  const paneIds = React.useMemo(
+  const paneIds = Octane.useMemo(
     () =>
       ordered
         .filter((s) => termPool.includes(s.id) || s.id === activeId)
@@ -971,7 +985,7 @@ export default function App() {
             <div className="relative min-h-0 flex-1 overflow-hidden bg-bg0">
               {/* Rendered in the SESSION order, not the MRU pool's order. The
                   pool decides which terminals stay alive; using its order here
-                  reshuffled these children on every switch, and React tore the
+                  reshuffled these children on every switch, and the renderer tore the
                   moved ones down and rebuilt them — a fresh xterm, a channel
                   rejoin and a cold-attach repaint for every pooled terminal,
                   on every single switch. */}
@@ -1104,14 +1118,16 @@ export default function App() {
       </main>
 
       {gitOpen && active && (
-        <GitPanel
-          path={active.cwd}
-          onClose={() => setGitOpen(false)}
-          onError={toast}
-          width={gitW}
-          onResize={(x) => setGitW(clampWidth(window.innerWidth - x, 280, 800))}
-          onResetWidth={() => setGitW(PANEL_W.git)}
-        />
+        <Suspense fallback={null}>
+          <GitPanel
+            path={active.cwd}
+            onClose={() => setGitOpen(false)}
+            onError={toast}
+            width={gitW}
+            onResize={(x) => setGitW(clampWidth(window.innerWidth - x, 280, 800))}
+            onResetWidth={() => setGitW(PANEL_W.git)}
+          />
+        </Suspense>
       )}
 
       {drawerOpen && active && (
@@ -1148,27 +1164,31 @@ export default function App() {
       />
 
       {quickOpen && active && (
-        <QuickOpen
-          root={active.cwd}
-          onPick={(path) => void openQuickFile(path)}
-          onClose={() => setQuickOpen(false)}
-          onError={toast}
-        />
+        <Suspense fallback={null}>
+          <QuickOpen
+            root={active.cwd}
+            onPick={(path) => void openQuickFile(path)}
+            onClose={() => setQuickOpen(false)}
+            onError={toast}
+          />
+        </Suspense>
       )}
 
       {quickPreview && (
-        <FilePreview
-          preview={quickPreview}
-          onClose={() => setQuickPreview(null)}
-          onError={toast}
-          onSaved={(savedPath, savedContent, savedSize) => {
-            setQuickPreview((current) =>
-              current && "content" in current && current.path === savedPath
-                ? { ...current, content: savedContent, size: savedSize }
-                : current,
-            );
-          }}
-        />
+        <Suspense fallback={null}>
+          <FilePreview
+            preview={quickPreview}
+            onClose={() => setQuickPreview(null)}
+            onError={toast}
+            onSaved={(savedPath, savedContent, savedSize) => {
+              setQuickPreview((current) =>
+                current && "content" in current && current.path === savedPath
+                  ? { ...current, content: savedContent, size: savedSize }
+                  : current,
+              );
+            }}
+          />
+        </Suspense>
       )}
 
       {sessionToDelete && (
@@ -1272,15 +1292,14 @@ export default function App() {
       )}
 
       {settingsSession && (
-        <SettingsModal
-          session={settingsSession}
-          onClose={() => setSettingsFor(null)}
-          onDeleted={() => {
-            setSessions((list) => list.filter((s) => s.id !== settingsSession.id));
-            if (activeId === settingsSession.id) setActiveId(null);
-          }}
-          onError={toast}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            session={settingsSession}
+            onClose={() => setSettingsFor(null)}
+            onDeleted={() => applySessionDeleted(settingsSession.id)}
+            onError={toast}
+          />
+        </Suspense>
       )}
 
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">

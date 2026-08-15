@@ -1,5 +1,4 @@
-import React from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot } from "octane";
 import App from "./app/App";
 import { I18nProvider } from "./app/i18n";
 import { isMac } from "./app/shortcuts";
@@ -33,9 +32,7 @@ window.visualViewport?.addEventListener("resize", syncVisualViewportHeight);
 window.addEventListener("resize", syncVisualViewportHeight);
 
 createRoot(document.getElementById("app")!).render(
-  <React.StrictMode>
-    <I18nProvider>
-      <App />
-    </I18nProvider>
-  </React.StrictMode>,
+  <I18nProvider>
+    <App />
+  </I18nProvider>,
 );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState } from "octane";
 
 export const clampWidth = (value: number, min: number, max: number) =>
   Math.min(Math.max(Math.round(value), min), Math.max(min, max));
