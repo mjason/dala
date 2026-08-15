@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useMemo, useState } from "octane";
 import { Text } from "@codemirror/state";
 import { Chunk } from "@codemirror/merge";
 import { buildLinesPatch } from "./patchBuilder";
@@ -107,7 +108,7 @@ export default function LineSelectDiff({ oldText, newText, filename, wrap, actio
                 <input
                   type="checkbox"
                   checked={count === total && total > 0}
-                  onChange={(e) => setAll(index, lines, e.target.checked)}
+                  onChange={(e) => setAll(index, lines, e.currentTarget.checked)}
                   className="h-3 w-3 accent-[#4cc38a]"
                   title={t("selectAllLines")}
                 />

@@ -1,5 +1,6 @@
-import React, { useState } from "react";
-import { Check, Copy, Pencil, Plus, Trash2 } from "lucide-react";
+import * as Octane from "octane";
+import { useState } from "octane";
+import { Check, Copy, Pencil, Plus, Trash2 } from "@octanejs/lucide";
 import { deleteTheme } from "../../ash_rpc";
 import { call } from "../rpc";
 import { FieldLabel, TextInput, ValueChip } from "../ui";
@@ -340,7 +341,7 @@ export default function AppearanceSection({
             min={FONT_SIZE_RANGE.min}
             max={FONT_SIZE_RANGE.max}
             value={prefs.fontSize}
-            onChange={(e) => apply({ fontSize: Number(e.target.value) })}
+            onChange={(e) => apply({ fontSize: Number(e.currentTarget.value) })}
             className="flex-1"
           />
           <div className="w-16 shrink-0">
@@ -349,7 +350,7 @@ export default function AppearanceSection({
               min={FONT_SIZE_RANGE.min}
               max={FONT_SIZE_RANGE.max}
               value={prefs.fontSize}
-              onChange={(e) => apply({ fontSize: Number(e.target.value) || defaultFontSize() })}
+              onInput={(e) => apply({ fontSize: Number(e.currentTarget.value) || defaultFontSize() })}
               className="text-right"
             />
           </div>
@@ -369,7 +370,7 @@ export default function AppearanceSection({
             max={LINE_HEIGHT_RANGE.max}
             step={0.05}
             value={prefs.lineHeight}
-            onChange={(e) => apply({ lineHeight: Number(e.target.value) })}
+            onChange={(e) => apply({ lineHeight: Number(e.currentTarget.value) })}
             className="w-full"
           />
         </div>
@@ -385,7 +386,7 @@ export default function AppearanceSection({
             max={SCROLL_SENSITIVITY_RANGE.max}
             step={0.5}
             value={prefs.scrollSensitivity}
-            onChange={(e) => apply({ scrollSensitivity: Number(e.target.value) })}
+            onChange={(e) => apply({ scrollSensitivity: Number(e.currentTarget.value) })}
             className="w-full"
           />
         </div>
@@ -396,7 +397,7 @@ export default function AppearanceSection({
         <TextInput
           id="font-family-input"
           value={prefs.fontFamily}
-          onChange={(e) => apply({ fontFamily: e.target.value })}
+          onInput={(e) => apply({ fontFamily: e.currentTarget.value })}
           placeholder="JetBrainsMono NFM"
           spellCheck={false}
         />

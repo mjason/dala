@@ -1,6 +1,6 @@
-import React from "react";
+import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@octanejs/testing-library";
 import { I18nProvider } from "../i18n";
 import ShortcutsSection from "./ShortcutsSection";
 import { KEY_GUIDE } from "../keyGuide";

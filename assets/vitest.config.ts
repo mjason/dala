@@ -1,8 +1,8 @@
 import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
+import { octane } from "@octanejs/vite-plugin";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [octane()],
   test: {
     environment: "jsdom",
     include: ["js/**/*.test.{ts,tsx}"],

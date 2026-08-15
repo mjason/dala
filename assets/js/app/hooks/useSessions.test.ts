@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeIdAfterDelete,
   isFresher,
   pickPreviousSession,
   reconcileSnapshot,
@@ -83,6 +84,28 @@ describe("pickPreviousSession", () => {
     const history = ["a", "b"];
     pickPreviousSession(history, "b", live);
     expect(history).toEqual(["a", "b"]);
+  });
+});
+
+describe("activeIdAfterDelete", () => {
+  const root = session("root");
+  const child = { ...session("child"), parentId: "root" };
+  const other = session("other");
+  const live = [root, child, other];
+
+  it("returns to the parent when the active attached tab is deleted", () => {
+    expect(activeIdAfterDelete("child", "child", live, ["other", "child"])).toBe("root");
+  });
+
+  it("does not overwrite the parent selected by an earlier delete notification", () => {
+    expect(activeIdAfterDelete("root", "child", live, ["other", "child", "root"])).toBe(
+      "root",
+    );
+  });
+
+  it("uses MRU for a deleted root and null when no session survives", () => {
+    expect(activeIdAfterDelete("other", "other", live, ["root", "other"])).toBe("root");
+    expect(activeIdAfterDelete("only", "only", [session("only")], ["only"])).toBeNull();
   });
 });
 

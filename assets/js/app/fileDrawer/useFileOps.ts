@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "octane";
 import { copyEntry, deleteEntry, moveEntry, renameEntry } from "../../ash_rpc";
 import { call } from "../rpc";
 import { useI18n } from "../i18n";

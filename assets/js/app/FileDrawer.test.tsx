@@ -1,8 +1,9 @@
-import React from "react";
+import * as Octane from "octane";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { EditorView } from "@codemirror/view";
 import { I18nProvider } from "./i18n";
+import type { ComponentProps } from "./octaneTypes";
 
 /** The CodeMirror view inside the editor host div. */
 function editorView(): EditorView {
@@ -53,7 +54,7 @@ const entry = (name: string, type: string, size = 10) => ({
   mtime: null,
 });
 
-function renderDrawer(overrides: Partial<React.ComponentProps<typeof FileDrawer>> = {}) {
+function renderDrawer(overrides: Partial<ComponentProps<typeof FileDrawer>> = {}) {
   const props = {
     path: "/proj",
     followCwd: true,

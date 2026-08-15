@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
+import * as Octane from "octane";
+import { useCallback, useEffect, useState } from "octane";
 import {
   gitCheckout,
   gitCommit,
@@ -19,6 +20,7 @@ import type {
 import { call, type RpcOutcome } from "./rpc";
 import { TextArea } from "./ui";
 import { COMPACT_FIELD_CLASS } from "./composerSize";
+import type { CSSProperties } from "./octaneTypes";
 import { useI18n } from "./i18n";
 import { shortPath } from "./util";
 import { hasOpenWindows, inTextInput, Tooltip } from "./shortcuts";
@@ -226,7 +228,7 @@ export default function GitPanel({
     <section
       id="git-panel"
       className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:relative md:z-auto md:w-[var(--panel-w,22rem)]"
-      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
+      style={width ? ({ "--panel-w": `${width}px` } as CSSProperties) : undefined}
     >
       {onResize && <ResizeHandle id="git-resize" edge="left" onResize={onResize} onReset={onResetWidth} />}
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
@@ -388,7 +390,7 @@ export default function GitPanel({
                 <TextArea
                   id="commit-message-input"
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onInput={(e) => setMessage(e.currentTarget.value)}
                   placeholder={t("commitMessage")}
                   rows={2}
                   // Same floor as the composer (composerSize.ts): the two text
@@ -400,7 +402,7 @@ export default function GitPanel({
                     id="amend-checkbox"
                     type="checkbox"
                     checked={amend}
-                    onChange={(e) => setAmend(e.target.checked)}
+                    onChange={(e) => setAmend(e.currentTarget.checked)}
                     className="h-3 w-3 accent-mint"
                   />
                   {t("amend")}

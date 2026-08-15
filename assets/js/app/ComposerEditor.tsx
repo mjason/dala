@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef } from "react";
+import * as Octane from "octane";
+import { useEffect, useLayoutEffect, useRef } from "octane";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
@@ -8,6 +9,7 @@ import { createMarker } from "./composer/markers";
 import { languages } from "@codemirror/language-data";
 import { dalaTheme } from "./cm/theme";
 import { composerSizing } from "./composerSize";
+import type { MutableRefObject } from "./octaneTypes";
 
 
 type Props = {
@@ -19,7 +21,7 @@ type Props = {
   /** Bumped on user-initiated opens: focus and put the cursor at the END. */
   focusNonce: number;
   /** The last nonce already honored (owned by the App — a render-time
-   * snapshot, so StrictMode's double effects and remounts both behave):
+   * snapshot, so effect reconnects and remounts both behave):
    * equal values mean "this mount is an auto-open, don't steal focus". */
   focusConsumed: number;
   onFocusConsumed: (nonce: number) => void;
@@ -40,7 +42,7 @@ type Props = {
    */
   onFiles: (files: File[], marker: string) => void;
   /** Imperative escape hatch for async text edits (upload placeholders). */
-  apiRef?: React.MutableRefObject<ComposerEditorApi | null>;
+  apiRef?: MutableRefObject<ComposerEditorApi | null>;
   /** Fullscreen: fill the host (a flex child) instead of growing to the cap. */
   fullscreen: boolean;
   /** Debounced editor-height changes (auto-grow), if the parent needs them. */
@@ -51,7 +53,7 @@ export type ComposerEditorApi = {
   /** Replace the first occurrence of `find`; false when it is gone. */
   replaceOnce: (find: string, replacement: string) => boolean;
   /** The CURRENT document — the send path reads the editor, not a possibly
-   * stale React mirror. */
+   * stale state mirror. */
   read: () => string;
 };
 
@@ -157,7 +159,7 @@ export default function ComposerEditor({
   fullscreen,
   onResize,
 }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
 
   // Imperative surface for async edits: published while mounted only, so a

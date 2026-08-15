@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "octane";
 import type { Channel } from "phoenix";
 import {
   createSession,
@@ -127,6 +127,26 @@ export function pickPreviousSession(
 }
 
 /**
+ * Resolve an active-session deletion without letting a later duplicate
+ * notification overwrite a selection already made by the first one.
+ */
+export function activeIdAfterDelete(
+  activeId: string | null,
+  deletedId: string,
+  sessions: Session[],
+  history: string[],
+): string | null {
+  if (activeId !== deletedId) return activeId;
+  return (
+    tabAfterClose(
+      sessions,
+      deletedId,
+      pickPreviousSession(history, deletedId, sessions),
+    ) ?? null
+  );
+}
+
+/**
  * Session list state + CRUD: the lobby channel subscription (created /
  * updated / deleted broadcasts), the initial list fetch, the active-session
  * trail and its localStorage persistence.
@@ -168,6 +188,22 @@ export function useSessions(opts: {
     sessionsRef.current = sessions;
   }, [sessions]);
 
+  // The delete RPC response and its lobby broadcast can arrive in either
+  // order. Update the ref eagerly so whichever path runs second observes the
+  // parent/MRU choice made by the first instead of resetting to ordered[0].
+  const selectAfterDelete = useCallback((id: string) => {
+    const current = activeIdRef.current;
+    const next = activeIdAfterDelete(
+      current,
+      id,
+      sessionsRef.current,
+      historyRef.current,
+    );
+    if (next === current) return;
+    activeIdRef.current = next;
+    setActiveId(next);
+  }, []);
+
   // Callbacks re-read on every event so the channel handlers (registered
   // once) never call a stale closure.
   const callbacksRef = useRef(opts);
@@ -188,20 +224,9 @@ export function useSessions(opts: {
       agent_event: (payload) => callbacksRef.current.onAgentEvent(payload),
       session_deleted: ({ id }) => {
         deletedSessionIdsRef.current.add(id);
+        selectAfterDelete(id);
         setSessions((list) => list.filter((s) => s.id !== id));
         callbacksRef.current.onSessionDeleted?.(id);
-        // The active session was deleted: return to the most recently
-        // visited one that still exists.
-        if (id === activeIdRef.current) {
-          // Closing a tab returns to its parent; anything else falls back to
-          // the most recently visited session that still exists.
-          const previous = tabAfterClose(
-            sessionsRef.current,
-            id,
-            pickPreviousSession(historyRef.current, id, sessionsRef.current),
-          );
-          if (previous) setActiveId(previous);
-        }
       },
     });
     const refetchSessions = async () => {
@@ -242,7 +267,7 @@ export function useSessions(opts: {
       phxChannel.leave();
       socket.off([openRef, closeRef]);
     };
-  }, [toast, upsertSession, t]);
+  }, [toast, upsertSession, selectAfterDelete, t]);
 
   // Every session you can be looking at, attached shells included: they are
   // tabs of their parent, so they take part in the active rotation. The
@@ -382,8 +407,8 @@ export function useSessions(opts: {
       const result = await call<unknown>(deleteSession, { identity: id });
       if (result.ok) {
         deletedSessionIdsRef.current.add(id);
+        selectAfterDelete(id);
         setSessions((list) => list.filter((s) => s.id !== id));
-        if (activeId === id) setActiveId(null);
       } else {
         toast(result.error || t("somethingWentWrong"));
       }

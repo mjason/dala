@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
+import * as Octane from "octane";
+import { useCallback, useEffect, useState } from "octane";
 import { useI18n } from "./i18n";
 import { isTopWindow, popWindow, pushWindow, Tooltip } from "./shortcuts";
 
@@ -65,10 +66,10 @@ type Props = {
   id: string;
   onClose: () => void;
   /** Left side of the title bar (path, badges, …). */
-  title: React.ReactNode;
+  title: Octane.OctaneNode;
   /** Extra action buttons rendered before the window-mode switcher. */
-  actions?: React.ReactNode;
-  children: React.ReactNode;
+  actions?: Octane.OctaneNode;
+  children: Octane.OctaneNode;
 };
 
 /**
@@ -81,7 +82,7 @@ export default function Windowed({ id, onClose, title, actions, children }: Prop
   const { t } = useI18n();
   const frame = FRAMES[mode];
 
-  const onCloseRef = React.useRef(onClose);
+  const onCloseRef = Octane.useRef(onClose);
   onCloseRef.current = onClose;
 
   // Escape closes the topmost window. Handlers inside (e.g. CodeMirror's
@@ -138,7 +139,7 @@ function WindowModeSwitcher({
 }) {
   const { t } = useI18n();
 
-  const options: { value: WindowMode; label: string; icon: React.ReactNode }[] = [
+  const options: { value: WindowMode; label: string; icon: Octane.OctaneNode }[] = [
     { value: "left", label: t("windowLeft"), icon: <DockIcon side="left" /> },
     { value: "center", label: t("windowCenter"), icon: <CenterIcon /> },
     { value: "right", label: t("windowRight"), icon: <DockIcon side="right" /> },

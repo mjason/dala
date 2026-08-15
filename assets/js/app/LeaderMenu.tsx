@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import * as Octane from "octane";
+import { useEffect, useRef, useState } from "octane";
+import { createPortal } from "octane";
 import { useI18n } from "./i18n";
 import type { Messages } from "./i18n/locales";
 import { formatCombo, loadBindings } from "./keybindings";
@@ -176,7 +177,7 @@ export default function LeaderMenu({
   const { t } = useI18n();
   const [view, setView] = useState<View>(ROOT);
   // The handler reads the CURRENT level through a ref — side effects must
-  // never live inside a setState updater (StrictMode double-invokes those).
+  // never live inside a setState updater, which must stay pure.
   const viewRef = useRef<View>(ROOT);
   viewRef.current = view;
   const sessionsRef = useRef(sessions);

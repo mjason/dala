@@ -1,12 +1,8 @@
 // This file is needed on most editors to enable the intelligent autocompletion
 // of LiveView's JavaScript API methods. You can safely delete it if you don't need it.
 //
-// Note: This file assumes a basic esbuild setup without node_modules.
-// We include a generic paths alias to deps to mimic how esbuild resolves
-// the Phoenix and LiveView JavaScript assets.
-// If you have a package.json in your project, you should remove the
-// paths configuration and instead add the phoenix dependencies to the
-// dependencies section of your package.json:
+// Phoenix and LiveView are installed as local npm dependencies so Vite and
+// TypeScript resolve the same sources from deps/.
 //
 // {
 //   ...
@@ -18,11 +14,15 @@
 //   }
 // }
 //
-// Feel free to adjust this configuration however you need.
 {
   "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "esModuleInterop": true,
     "jsx": "react-jsx",
+    "jsxImportSource": "octane",
+    "types": ["node"],
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "allowJs": true,
@@ -30,5 +30,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["js/**/*", "vitest.setup.ts", "vitest.config.ts"]
+  "include": ["js/**/*", "vite.config.ts", "vitest.setup.ts", "vitest.config.ts"]
 }

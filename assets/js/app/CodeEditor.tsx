@@ -1,4 +1,5 @@
-import React, { useEffect, useRef } from "react";
+import * as Octane from "octane";
+import { useEffect, useRef } from "octane";
 import { EditorState, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -39,7 +40,7 @@ type Props = {
  * indent-aware Tab/Enter and Cmd/Ctrl+S to save.
  */
 export default function CodeEditor({ value, onChange, onSave, wrap, filename }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);

@@ -6,6 +6,7 @@ import {
   rootSessions,
   tabActionIndex,
   tabAfterClose,
+  tabForSessionSelection,
   tabsFor,
   warmPreference,
 } from "./shellTabs";
@@ -88,6 +89,21 @@ describe("sessionTabs", () => {
 
     it("has nothing to offer when nothing is left", () => {
       expect(tabAfterClose(all, "other", undefined)).toBeUndefined();
+    });
+  });
+
+  describe("restoring the active tab when switching sessions", () => {
+    it("restores a root session's last active attached tab", () => {
+      expect(tabForSessionSelection(all, "root", "second")).toBe("second");
+    });
+
+    it("keeps an explicit attached-tab selection explicit", () => {
+      expect(tabForSessionSelection(all, "first", "second")).toBe("first");
+    });
+
+    it("falls back to the root when the remembered tab is gone or belongs elsewhere", () => {
+      expect(tabForSessionSelection(all, "root", "vanished")).toBe("root");
+      expect(tabForSessionSelection(all, "root", "other")).toBe("root");
     });
   });
 

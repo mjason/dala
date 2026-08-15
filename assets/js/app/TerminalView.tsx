@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useLayoutEffect, useRef, useState } from "octane";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -32,6 +33,7 @@ import { fontStack, loadPrefs, onPrefsChange, SMOOTH_SCROLL_MS } from "./termPre
 import { currentTerminalTheme, onThemeChange } from "./theme";
 import { createTypeahead } from "./typeahead";
 import { useCountdown } from "./hooks/useCountdown";
+import type { MutableRefObject } from "./octaneTypes";
 import { isMac } from "./shortcuts";
 import { getDeviceId } from "./deviceId";
 import { sizeRole, type SizeRole } from "./sizeRole";
@@ -106,7 +108,7 @@ type Props = {
   scrollbackLines?: number;
   onCwdChange?: (cwd: string) => void;
   onError?: (message: string) => void;
-  actionsRef?: React.MutableRefObject<TerminalActions | null>;
+  actionsRef?: MutableRefObject<TerminalActions | null>;
   /** Called instead of sending ESC to the shell — but only at a normal
    * prompt: full-screen programs (vim, htop, …) run on the alternate
    * buffer and keep receiving their Escape key. The quick-shell panel
@@ -115,7 +117,7 @@ type Props = {
   /** Optional rewrite of user keystrokes before they reach the PTY. App
    * uses it for the touch key bar's sticky Ctrl: the next single character
    * typed on the soft keyboard becomes its control byte. */
-  inputHookRef?: React.MutableRefObject<((data: string) => string) | null>;
+  inputHookRef?: MutableRefObject<((data: string) => string) | null>;
   /** Expose this terminal as `window.__dalaTerm` (debug/e2e handle). Only
    * the MAIN session view sets it — overlay terminals (quick shells) must
    * not steal the handle from the session the tests read. */
@@ -153,7 +155,7 @@ export default function TerminalView({
   debugHandle,
   visible = true,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   // The mount closure reads visibility through refs (it runs once).
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
@@ -202,7 +204,7 @@ export default function TerminalView({
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const ensureSearchRef = useRef<() => Promise<SearchAddon | null>>(() => Promise.resolve(null));
-  const findInputRef = useRef<HTMLInputElement>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const findOpenRef = useRef(findOpen);
   findOpenRef.current = findOpen;
@@ -214,7 +216,7 @@ export default function TerminalView({
     count: 0,
   });
   // Called from the imperative key handler (set up once) — kept in a ref so it
-  // always sees the latest React setters.
+  // always sees the latest state setters.
   const openFindRef = useRef(() => {});
   openFindRef.current = () => {
     loadHistoryRef.current("find");
@@ -1898,9 +1900,9 @@ export default function TerminalView({
             ref={findInputRef}
             id="terminal-find-input"
             value={findQuery}
-            onChange={(e) => {
-              setFindQuery(e.target.value);
-              runFind(1, e.target.value, true);
+            onInput={(e) => {
+              setFindQuery(e.currentTarget.value);
+              runFind(1, e.currentTarget.value, true);
             }}
             placeholder={t("findPlaceholder")}
             autoFocus

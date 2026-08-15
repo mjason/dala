@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useState } from "octane";
 import {
   setSpeechPrompt,
   setSpeechSettings,
@@ -177,8 +178,8 @@ export default function SpeechSection({ root }: { root: string }) {
         <TextInput
           id="speech-endpoint-input"
           value={server.endpoint}
-          onChange={(e) => {
-            setServer({ ...server, endpoint: e.target.value.trim() });
+          onInput={(e) => {
+            setServer({ ...server, endpoint: e.currentTarget.value.trim() });
             setSettingsState("dirty");
           }}
           onBlur={() => void saveSettings()}
@@ -200,7 +201,7 @@ export default function SpeechSection({ root }: { root: string }) {
         <Select
           id="speech-mic-select"
           value={prefs.micDeviceId}
-          onChange={(e) => apply({ micDeviceId: e.target.value })}
+          onChange={(e) => apply({ micDeviceId: e.currentTarget.value })}
         >
           <option value="">{t("speechMicAuto")}</option>
           {mics.map((mic) => (
@@ -218,8 +219,8 @@ export default function SpeechSection({ root }: { root: string }) {
         <TextArea
           id="speech-prompt-input"
           value={prompt}
-          onChange={(e) => {
-            setPrompt(e.target.value);
+          onInput={(e) => {
+            setPrompt(e.currentTarget.value);
             setPromptState("dirty");
           }}
           onBlur={() => void savePrompt()}
@@ -253,8 +254,8 @@ export default function SpeechSection({ root }: { root: string }) {
           <TextInput
             id="speech-model-input"
             value={server.model}
-            onChange={(e) => {
-              setServer({ ...server, model: e.target.value.trim() });
+            onInput={(e) => {
+              setServer({ ...server, model: e.currentTarget.value.trim() });
               setSettingsState("dirty");
             }}
             onBlur={() => void saveSettings()}
@@ -268,8 +269,8 @@ export default function SpeechSection({ root }: { root: string }) {
               id="speech-api-key-input"
               type="password"
               value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value.trim());
+              onInput={(e) => {
+                setApiKey(e.currentTarget.value.trim());
                 setSettingsState("dirty");
               }}
               onBlur={() => void saveApiKey()}

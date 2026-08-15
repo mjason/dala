@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import * as Octane from "octane";
+import { useEffect, useRef, useState } from "octane";
 import { EditorState, StateField, StateEffect } from "@codemirror/state";
 import type { Extension, Text } from "@codemirror/state";
 import { Decoration, EditorView, lineNumbers, WidgetType } from "@codemirror/view";
@@ -37,7 +38,7 @@ type Props = {
  * patch for that hunk.
  */
 export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkActions }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const [language, setLanguage] = useState<Extension | null | "loading">("loading");
 
   useEffect(() => {

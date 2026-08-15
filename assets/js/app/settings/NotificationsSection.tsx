@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import * as Octane from "octane";
+import { useState } from "octane";
 import { useI18n } from "../i18n";
 import { notificationsEnabled, setNotificationsEnabled } from "../notifyPrefs";
 import ToggleRow from "./ToggleRow";

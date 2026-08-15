@@ -1,4 +1,4 @@
-import React from "react";
+import * as Octane from "octane";
 
 /** Platform-aware shortcut labels: ⌘ on Apple devices, Ctrl elsewhere. */
 export const isMac: boolean =
@@ -64,7 +64,7 @@ export function hasOpenWindows(): boolean {
  * baseline \u2014 no fallback-font misalignment. Colors derive from currentColor,
  * so the badge blends into filled buttons (mint/danger) as well as muted
  * text contexts. */
-export function Kbd({ children }: { children: React.ReactNode }) {
+export function Kbd({ children }: { children: Octane.OctaneNode }) {
   return (
     <kbd className="inline-flex items-center rounded bg-current/15 px-1 py-[3px] align-middle font-kbd text-[10px] leading-none">
       {children}
@@ -88,7 +88,7 @@ export function Tooltip({
   label: string;
   description?: string;
   keys?: string;
-  children: React.ReactNode;
+  children: Octane.OctaneNode;
   /** Extra classes on the wrapper span (e.g. responsive visibility). */
   className?: string;
 }) {
