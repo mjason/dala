@@ -215,7 +215,6 @@ export default function App() {
 
   const {
     sessions,
-    setSessions,
     upsertSession,
     ordered,
     active,
@@ -225,6 +224,7 @@ export default function App() {
     creating,
     activeIdRef,
     sessionsRef,
+    applySessionDeleted,
     handleCreate: createMainSession,
     handleRestart: restartMainSession,
     handleDelete,
@@ -1296,10 +1296,7 @@ export default function App() {
           <SettingsModal
             session={settingsSession}
             onClose={() => setSettingsFor(null)}
-            onDeleted={() => {
-              setSessions((list) => list.filter((s) => s.id !== settingsSession.id));
-              if (activeId === settingsSession.id) setActiveId(null);
-            }}
+            onDeleted={() => applySessionDeleted(settingsSession.id)}
             onError={toast}
           />
         </Suspense>

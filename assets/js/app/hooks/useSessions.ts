@@ -204,6 +204,15 @@ export function useSessions(opts: {
     setActiveId(next);
   }, []);
 
+  const applySessionDeleted = useCallback(
+    (id: string) => {
+      deletedSessionIdsRef.current.add(id);
+      selectAfterDelete(id);
+      setSessions((list) => list.filter((s) => s.id !== id));
+    },
+    [selectAfterDelete],
+  );
+
   // Callbacks re-read on every event so the channel handlers (registered
   // once) never call a stale closure.
   const callbacksRef = useRef(opts);
@@ -223,9 +232,7 @@ export function useSessions(opts: {
       session_updated: upsertSession,
       agent_event: (payload) => callbacksRef.current.onAgentEvent(payload),
       session_deleted: ({ id }) => {
-        deletedSessionIdsRef.current.add(id);
-        selectAfterDelete(id);
-        setSessions((list) => list.filter((s) => s.id !== id));
+        applySessionDeleted(id);
         callbacksRef.current.onSessionDeleted?.(id);
       },
     });
@@ -267,7 +274,7 @@ export function useSessions(opts: {
       phxChannel.leave();
       socket.off([openRef, closeRef]);
     };
-  }, [toast, upsertSession, selectAfterDelete, t]);
+  }, [toast, upsertSession, applySessionDeleted, t]);
 
   // Every session you can be looking at, attached shells included: they are
   // tabs of their parent, so they take part in the active rotation. The
@@ -406,9 +413,7 @@ export function useSessions(opts: {
     try {
       const result = await call<unknown>(deleteSession, { identity: id });
       if (result.ok) {
-        deletedSessionIdsRef.current.add(id);
-        selectAfterDelete(id);
-        setSessions((list) => list.filter((s) => s.id !== id));
+        applySessionDeleted(id);
       } else {
         toast(result.error || t("somethingWentWrong"));
       }
@@ -429,6 +434,7 @@ export function useSessions(opts: {
     creating,
     activeIdRef,
     sessionsRef,
+    applySessionDeleted,
     handleCreate,
     handleRestart,
     handleDelete,
