@@ -132,11 +132,16 @@ const hunkButtonsField = StateField.define<DecorationSet>({
 });
 
 class HunkButtonsWidget extends WidgetType {
-  constructor(
-    readonly patch: ChunkPatch,
-    readonly actions: ChunkAction[],
-  ) {
+  readonly patch: ChunkPatch;
+  readonly actions: ChunkAction[];
+
+  constructor(patch: ChunkPatch, actions: ChunkAction[]) {
     super();
+    // Octane's current transform strips TypeScript parameter properties
+    // without emitting their assignments. Keep these explicit so production
+    // builds retain the hunk data used when CodeMirror mounts the widget.
+    this.patch = patch;
+    this.actions = actions;
   }
 
   override eq(other: HunkButtonsWidget) {
