@@ -90,27 +90,32 @@ test.describe("Given 一个带 dala.jsonc 的项目会话，用户打开设置�
     expect(geom.bodyScrollable).toBe(true);
   });
 
-  test("桌面：设置面板五个 tab 单行并列", async ({ page }) => {
-    // 显式桌面视口：手机上是 2+2+1 三行（见下面的手机用例），这条断言只对
+  test("桌面：设置面板六个 tab 单行并列", async ({ page }) => {
+    // 显式桌面视口：手机上是 2+2+2 三行（见下面的手机用例），这条断言只对
     // sm 及以上成立。
     await page.setViewportSize({ width: 1000, height: 700 });
     await h.openSettings(page);
     const tabs = page.locator("[data-settings-tab]");
-    await expect(tabs).toHaveCount(5);
-    // 一次 evaluate 里同帧测量五个 tab 的 top —— 逐个 boundingBox 会跨越
+    await expect(tabs).toHaveCount(6);
+    // 一次 evaluate 里同帧测量六个 tab 的 top —— 逐个 boundingBox 会跨越
     // 弹窗入场动画的不同帧，出现 1-2px 的假偏差（已踩过坑）。
     const rects = await page.evaluate(() =>
       Array.from(document.querySelectorAll("[data-settings-tab]")).map((el) => {
         const r = el.getBoundingClientRect();
-        return { top: r.top, left: r.left };
+        return { top: r.top, left: r.left, height: r.height };
       }),
     );
-    expect(rects).toHaveLength(5);
+    expect(rects).toHaveLength(6);
     for (const r of rects) {
       expect(Math.abs(r.top - rects[0].top)).toBeLessThanOrEqual(1);
+      expect(r.height).toBeLessThanOrEqual(36);
     }
-    // 五个不同的 left —— 真的是并排 5 列，而不是叠在一起。
-    expect(new Set(rects.map((r) => Math.round(r.left))).size).toBe(5);
+    // 六个不同的 left —— 真的是并排 6 列，而不是叠在一起。
+    expect(new Set(rects.map((r) => Math.round(r.left))).size).toBe(6);
+
+    await page.locator('[data-settings-tab="prompt"]').click();
+    await expect(page.locator("#prompt-optimizer-endpoint-input")).toBeVisible();
+    await expect(page.locator("#prompt-optimizer-prompt-input")).toBeVisible();
   });
 
   test("tab 有完整的 ARIA 语义：左右方向键在 tab 间移动焦点与选中，tabpanel 关联到当前 tab", async ({
@@ -221,7 +226,7 @@ test.describe("Given 手机上打开设置面板的用户", () => {
     await expect(page.locator("[data-settings-tab]").first()).toBeVisible();
   }
 
-  /** 同一帧里量弹窗与四个 tab 的几何（逐个 boundingBox 会跨入场动画的帧）。 */
+  /** 同一帧里量弹窗与所有 tab 的几何（逐个 boundingBox 会跨入场动画的帧）。 */
   function geometry(page) {
     return page.evaluate(() => {
       const modal = document.querySelector("#session-settings").getBoundingClientRect();
@@ -247,7 +252,7 @@ test.describe("Given 手机上打开设置面板的用户", () => {
   }
 
   for (const locale of ["zh-CN", "de"]) {
-    test(`${locale}：390 与 320 视口下五个 tab 全在屏内、不被裁，弹窗不越界，语音 tab 可点`, async ({
+    test(`${locale}：390 与 320 视口下六个 tab 全在屏内、不被裁，弹窗不越界，语音 tab 可点`, async ({
       page,
     }) => {
       await page.addInitScript((loc) => localStorage.setItem("dala:locale", loc), locale);
@@ -264,9 +269,9 @@ test.describe("Given 手机上打开设置面板的用户", () => {
         expect(geom.modalRight).toBeLessThanOrEqual(geom.vw + 0.5);
         expect(geom.docOverflow).toBeLessThanOrEqual(0);
 
-        expect(geom.tabs).toHaveLength(5);
+        expect(geom.tabs).toHaveLength(6);
 
-        // 窄屏是 grid-cols-2：五个 tab 排成 2+2+1 三行。headless chromium 的
+        // 窄屏是 grid-cols-2：六个 tab 排成 2+2+2 三行。headless chromium 的
         // CJK 字形比真机（PingFang/SF）窄半个像素 —— 中文在更多列下"刚好不裁"，
         // 真机上就裁了（用户截图）。所以除了裁切断言，这里直接把 2 列的版式钉死：
         // 任何人把窄屏改成 grid-cols-4/5 立刻红。
@@ -275,7 +280,7 @@ test.describe("Given 手机上打开设置面板的用户", () => {
         const rowCounts = rows.map(
           (row) => geom.tabs.filter((t) => Math.round(t.top) === row).length,
         );
-        expect(rowCounts, `${locale}@${width} row counts`).toEqual([2, 2, 1]);
+        expect(rowCounts, `${locale}@${width} row counts`).toEqual([2, 2, 2]);
 
         for (const tab of geom.tabs) {
           expect(tab.left, `${locale}@${width} ${tab.key} left`).toBeGreaterThanOrEqual(-0.5);

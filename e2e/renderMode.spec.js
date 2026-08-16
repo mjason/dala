@@ -36,6 +36,16 @@ async function terminalReady(page) {
   await expect
     .poll(() => ackedBytes(page), { timeout: READY_TIMEOUT })
     .toBeGreaterThan(0);
+  await page.evaluate(() => window.__dalaTerm?.focus());
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => document.activeElement?.classList?.contains("xterm-helper-textarea") ?? false,
+        ),
+      { timeout: READY_TIMEOUT },
+    )
+    .toBe(true);
 }
 
 async function type(page, line) {

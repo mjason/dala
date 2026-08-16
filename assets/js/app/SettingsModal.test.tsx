@@ -21,6 +21,7 @@ vi.mock("./settings/AppearanceSection", () => ({ default: () => null }));
 vi.mock("./settings/NotificationsSection", () => ({ default: () => null }));
 vi.mock("./settings/ShortcutsSection", () => ({ default: () => null }));
 vi.mock("./settings/SpeechSection", () => ({ default: () => null }));
+vi.mock("./settings/PromptOptimizerSection", () => ({ default: () => <div id="prompt-optimizer-section" /> }));
 vi.mock("./settings/McpSection", () => ({ default: () => <div id="mcp-section" /> }));
 
 vi.mock("../ash_rpc", () => ({
@@ -87,9 +88,15 @@ describe("SettingsModal tabs", () => {
 
   it("renders the full always-present tab strip", () => {
     const { container } = renderModal();
-    for (const key of ["session", "appearance", "shortcuts", "voice", "mcp"]) {
+    for (const key of ["session", "appearance", "shortcuts", "voice", "prompt", "mcp"]) {
       expect(container.querySelector(`[data-settings-tab="${key}"]`)).not.toBeNull();
     }
+  });
+
+  it("selecting the prompt tab shows the prompt optimizer section", () => {
+    const { container } = renderModal();
+    fireEvent.click(container.querySelector('[data-settings-tab="prompt"]') as HTMLElement);
+    expect(container.querySelector("#prompt-optimizer-section")).not.toBeNull();
   });
 
   it("selecting the MCP tab shows the MCP section", () => {

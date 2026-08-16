@@ -7,6 +7,7 @@ import { I18nProvider } from "./i18n";
 
 const listFiles = vi.fn();
 const agentCommands = vi.fn();
+const optimizePrompt = vi.fn();
 
 vi.mock("../ash_rpc", () => ({
   buildCSRFHeaders: () => ({}),
@@ -14,6 +15,7 @@ vi.mock("../ash_rpc", () => ({
   agentCommands: (...args: unknown[]) => agentCommands(...args),
   savePastedFile: vi.fn(),
   transcribe: vi.fn(),
+  optimizePrompt: (...args: unknown[]) => optimizePrompt(...args),
 }));
 
 import InputBar from "./InputBar";
@@ -41,11 +43,13 @@ function Harness({
   root,
   initialValue = "",
   focusNonce = 0,
+  app = "claude",
   onClose = () => {},
 }: {
   root: string;
   initialValue?: string;
   focusNonce?: number;
+  app?: string | null;
   onClose?: () => void;
 }) {
   const [value, setValue] = useState(initialValue);
@@ -54,7 +58,7 @@ function Harness({
       <InputBar
         sessionId="s1"
         root={root}
-        app="claude"
+        app={app}
         value={value}
         onChange={setValue}
         focusNonce={focusNonce}
@@ -162,6 +166,80 @@ describe("InputBar @-mention", () => {
     // The old root's list is stale: it must be dropped and refetched.
     await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2));
     expect(listFiles.mock.calls[1][0]).toMatchObject({ input: { path: "/elsewhere" } });
+  });
+});
+
+describe("InputBar prompt optimizer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agentCommands.mockResolvedValue({ success: true, data: { app: "claude", commands: [] } });
+    listFiles.mockResolvedValue(filesResult([]));
+  });
+
+  it("is available in a plain shell composer", () => {
+    render(<Harness root="/proj" app={null} initialValue="messy prompt" />);
+
+    const button = document.querySelector("#input-bar-optimize") as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(false);
+  });
+
+  it("replaces the current draft with the optimized prompt", async () => {
+    optimizePrompt.mockResolvedValue({
+      success: true,
+      data: { text: "Please fix the authentication bug.", error: null },
+    });
+    render(<Harness root="/proj" initialValue="pls fix auth bug" />);
+
+    fireEvent.click(document.querySelector("#input-bar-optimize")!);
+
+    await waitFor(() => {
+      expect(editorView().state.doc.toString()).toBe("Please fix the authentication bug.");
+    });
+    expect(optimizePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ input: { text: "pls fix auth bug" } }),
+    );
+  });
+
+  it("keeps newer edits made while optimization is running", async () => {
+    let finish!: (value: unknown) => void;
+    optimizePrompt.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<Harness root="/proj" initialValue="first draft" />);
+
+    fireEvent.click(document.querySelector("#input-bar-optimize")!);
+    await waitFor(() => {
+      expect(document.querySelector("#input-bar-optimize-status")?.textContent).toContain(
+        "DeepSeek is optimizing",
+      );
+    });
+    typeDraft("newer draft");
+    finish({ success: true, data: { text: "optimized old draft", error: null } });
+
+    await waitFor(() => {
+      expect(document.querySelector("#input-bar-optimize")!.getAttribute("aria-busy")).toBe("false");
+    });
+    expect(editorView().state.doc.toString()).toBe("newer draft");
+  });
+
+  it("shows visible progress and a completion confirmation", async () => {
+    let finish!: (value: unknown) => void;
+    optimizePrompt.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<Harness root="/proj" initialValue="messy draft" />);
+
+    fireEvent.click(document.querySelector("#input-bar-optimize")!);
+    await waitFor(() => {
+      expect(document.querySelector("#input-bar-optimize-status")?.textContent).toContain(
+        "DeepSeek is optimizing",
+      );
+    });
+
+    finish({ success: true, data: { text: "Clear draft.", error: null } });
+    await waitFor(() => {
+      expect(editorView().state.doc.toString()).toBe("Clear draft.");
+      expect(document.querySelector("#input-bar-optimize-status")?.textContent).toContain(
+        "Prompt optimized",
+      );
+    });
   });
 });
 

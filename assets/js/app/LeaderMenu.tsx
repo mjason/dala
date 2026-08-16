@@ -1,5 +1,5 @@
 import * as Octane from "octane";
-import { useEffect, useRef, useState } from "octane";
+import { useLayoutEffect, useRef, useState } from "octane";
 import { createPortal } from "octane";
 import { useI18n } from "./i18n";
 import type { Messages } from "./i18n/locales";
@@ -195,7 +195,7 @@ export default function LeaderMenu({
     onClose();
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     setView(ROOT);
     viewRef.current = ROOT;

@@ -49,6 +49,14 @@ describe("LeaderMenu", () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
+  it("owns the first key immediately after opening", () => {
+    const props = renderMenu();
+    fireEvent.keyDown(window, { key: "p" });
+    fireEvent.keyDown(window, { key: "e" });
+    expect(props.onAction).toHaveBeenCalledWith("drawer");
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
   it("Backspace returns to the root; Escape closes", () => {
     const props = renderMenu();
     fireEvent.keyDown(window, { key: "s" });

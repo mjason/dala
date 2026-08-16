@@ -1,6 +1,7 @@
 import * as Octane from "octane";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "octane";
-import { agentCommands, listFiles, speechSettings, transcribe } from "../ash_rpc";
+import { Check, LoaderCircle, Sparkles } from "@octanejs/lucide";
+import { agentCommands, listFiles, optimizePrompt, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
 import { blobToBase64, startRecording, type Recorder } from "./speech";
 import { rankFiles } from "./fuzzy";
@@ -193,7 +194,22 @@ export default function InputBar({
   }, []);
 
   const [voice, setVoice] = useState<"idle" | "recording" | "busy">("idle");
+  const [optimizerState, setOptimizerState] = useState<"idle" | "working" | "done">("idle");
+  const [optimizerElapsed, setOptimizerElapsed] = useState(0);
+  const optimizing = optimizerState === "working";
   const recorderRef = useRef<Recorder | null>(null);
+
+  useEffect(() => {
+    if (optimizerState === "working") {
+      setOptimizerElapsed(0);
+      const timer = window.setInterval(() => setOptimizerElapsed((seconds) => seconds + 1), 1000);
+      return () => window.clearInterval(timer);
+    }
+    if (optimizerState === "done") {
+      const timer = window.setTimeout(() => setOptimizerState("idle"), 1800);
+      return () => window.clearTimeout(timer);
+    }
+  }, [optimizerState]);
 
   // The app-level shortcut (mod+shift+M / client menu) pokes us here.
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => {});
@@ -379,6 +395,43 @@ export default function InputBar({
   onErrorRef.current = onError;
   // Filled by PromptStash: stashes the current composer text (keyboard path).
   const stashActionRef = useRef<(() => void) | null>(null);
+
+  const optimize = async () => {
+    if (optimizing) return;
+    const original = stripMarkers(editorApiRef.current?.read() ?? value);
+    if (!original.trim()) return;
+
+    setOptimizerState("working");
+    const result = await call<{ text: string | null; error: string | null }>(optimizePrompt, {
+      input: { text: original },
+      fields: ["text", "error"] as never,
+    });
+    if (!mountedRef.current) return;
+
+    if (!result.ok) {
+      setOptimizerState("idle");
+      onError(result.error || t("promptOptimizerFailed"));
+      return;
+    }
+    if (result.data.error || !result.data.text) {
+      setOptimizerState("idle");
+      onError(
+        result.data.error === "prompt_optimizer_not_configured"
+          ? t("promptOptimizerNotConfigured")
+          : result.data.error || t("promptOptimizerFailed"),
+      );
+      return;
+    }
+
+    // Do not overwrite keystrokes entered while the network request was in
+    // flight. The next click can optimize the newer draft.
+    if ((editorApiRef.current?.read() ?? valueRef.current) !== original) {
+      setOptimizerState("idle");
+      return;
+    }
+    setValue(result.data.text);
+    setOptimizerState("done");
+  };
 
   const uploadQueue = useRef(
     createUploadQueue({
@@ -642,6 +695,28 @@ export default function InputBar({
             <path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14" strokeLinecap="round" />
           </svg>
         </button>
+        <button
+          id="input-bar-optimize"
+          type="button"
+          aria-busy={optimizing}
+          aria-label={optimizing ? t("promptOptimizerWorking") : t("promptOptimizerAction")}
+          disabled={optimizing || !value.trim()}
+          onClick={() => void optimize()}
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors pointer-coarse:h-10 pointer-coarse:w-10 ${
+            optimizerState === "idle"
+              ? "border-line text-fg-muted hover:border-mint/60 hover:text-mint disabled:opacity-40"
+              : "border-mint/60 bg-mint/10 text-mint"
+          }`}
+          title={optimizing ? t("promptOptimizerWorking") : t("promptOptimizerAction")}
+        >
+          {optimizerState === "working" ? (
+            <LoaderCircle className="h-3 w-3 animate-spin pointer-coarse:h-4 pointer-coarse:w-4" aria-hidden />
+          ) : optimizerState === "done" ? (
+            <Check className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" aria-hidden />
+          ) : (
+            <Sparkles className="h-3 w-3 pointer-coarse:h-4 pointer-coarse:w-4" aria-hidden />
+          )}
+        </button>
         <PromptStash
           value={value}
           setValue={setValue}
@@ -655,6 +730,30 @@ export default function InputBar({
           </span>
         )}
         <div className="flex-1" />
+        {optimizerState !== "idle" && (
+          <span
+            id="input-bar-optimize-status"
+            role="status"
+            aria-live="polite"
+            className="hidden min-w-0 max-w-44 items-center gap-1.5 truncate text-[11px] text-mint sm:inline-flex"
+          >
+            {optimizerState === "working" ? (
+              <>
+                <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+                <span className="truncate">
+                  {optimizerElapsed > 0
+                    ? t("promptOptimizerWorkingElapsed", { seconds: optimizerElapsed })
+                    : t("promptOptimizerWorking")}
+                </span>
+              </>
+            ) : (
+              <>
+                <Check className="h-3 w-3 shrink-0" aria-hidden />
+                <span>{t("promptOptimizerDone")}</span>
+              </>
+            )}
+          </span>
+        )}
         <span className="hidden truncate font-mono text-[11px] text-fg-muted/60 sm:block" title={root}>
           {shortPath(root, 40)}
         </span>
