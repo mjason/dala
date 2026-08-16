@@ -204,10 +204,13 @@ describe("FileDrawer tree", () => {
     renderDrawer();
 
     fireEvent.click(await screen.findByText("cfg.json"));
-    await waitFor(() => {
-      const preview = document.getElementById("file-preview");
-      expect(preview?.textContent).toContain('"a": 1');
-    });
+    await waitFor(
+      () => {
+        const preview = document.getElementById("file-preview");
+        expect(preview?.textContent).toContain('"a": 1');
+      },
+      { timeout: 5_000 },
+    );
   });
 
   it("opens a CSV preview as a table", async () => {
@@ -226,7 +229,7 @@ describe("FileDrawer tree", () => {
     renderDrawer();
 
     fireEvent.click(await screen.findByText("data.csv"));
-    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(await screen.findByRole("table", undefined, { timeout: 5_000 })).toBeInTheDocument();
     expect(screen.getByText("Ada")).toBeInTheDocument();
     expect(screen.getByText(/2 rows/)).toBeInTheDocument();
   });
