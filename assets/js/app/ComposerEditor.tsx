@@ -57,6 +57,17 @@ export type ComposerEditorApi = {
   read: () => string;
 };
 
+/**
+ * A controlled parent can render older values while several editor updates
+ * are already queued. Those values are acknowledgements, not external edits.
+ */
+export function consumeLocalValue(pending: string[], value: string): boolean {
+  const index = pending.indexOf(value);
+  if (index === -1) return false;
+  pending.splice(0, index + 1);
+  return true;
+}
+
 
 /**
  * The composer's editor: CodeMirror with Markdown + fenced-code syntax
@@ -161,6 +172,8 @@ export default function ComposerEditor({
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const pendingLocalValuesRef = useRef<string[]>([]);
+  const applyingExternalValueRef = useRef(false);
 
   // Imperative surface for async edits: published while mounted only, so a
   // caller holding it across a close falls back to plain string edits.
@@ -213,14 +226,15 @@ export default function ComposerEditor({
           keymapCompartment.current.of(buildKeymap(sendKey, cbs)),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              cbs.current.onChange(update.state.doc.toString());
+            const text = update.state.doc.toString();
+            if (update.docChanged && !applyingExternalValueRef.current) {
+              const pending = pendingLocalValuesRef.current;
+              pending.push(text);
+              if (pending.length > 100) pending.splice(0, pending.length - 100);
+              cbs.current.onChange(text);
             }
             if (update.docChanged || update.selectionSet) {
-              cbs.current.onCursor(
-                update.state.doc.toString(),
-                update.state.selection.main.head,
-              );
+              cbs.current.onCursor(text, update.state.selection.main.head);
             }
           }),
           // Local files pasted or dropped land as uploads, like the terminal.
@@ -316,11 +330,22 @@ export default function ComposerEditor({
   // replace the document and park the cursor at the end.
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || view.state.doc.toString() === value) return;
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: value },
-      selection: { anchor: value.length },
-    });
+    if (!view) return;
+
+    const pending = pendingLocalValuesRef.current;
+    if (consumeLocalValue(pending, value)) return;
+    if (view.state.doc.toString() === value) return;
+
+    pending.length = 0;
+    applyingExternalValueRef.current = true;
+    try {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: value },
+        selection: { anchor: value.length },
+      });
+    } finally {
+      applyingExternalValueRef.current = false;
+    }
   }, [value]);
 
   useEffect(() => {

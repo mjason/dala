@@ -18,6 +18,7 @@ import AppearanceSection from "./settings/AppearanceSection";
 import NotificationsSection from "./settings/NotificationsSection";
 import ShortcutsSection from "./settings/ShortcutsSection";
 import SpeechSection from "./settings/SpeechSection";
+import PromptOptimizerSection from "./settings/PromptOptimizerSection";
 import McpSection from "./settings/McpSection";
 import type { NativeKeyboardEvent } from "./octaneTypes";
 
@@ -31,7 +32,7 @@ type Props = {
   onError: (message: string) => void;
 };
 
-type SettingsTab = "session" | "appearance" | "shortcuts" | "voice" | "mcp";
+type SettingsTab = "session" | "appearance" | "shortcuts" | "voice" | "prompt" | "mcp";
 
 export default function SettingsModal({ session, onClose, onDeleted, onError }: Props) {
   const { t } = useI18n();
@@ -124,6 +125,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
     { key: "appearance", label: t("preferencesTab") },
     { key: "shortcuts", label: t("shortcutsTab") },
     { key: "voice", label: t("speechSection") },
+    { key: "prompt", label: t("promptOptimizerTab") },
     { key: "mcp", label: t("mcpTab") },
   ];
 
@@ -202,21 +204,17 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
           </button>
         </header>
 
-        {/* Five tabs (the MCP tab is always present now). On `sm` and up they
-            sit on one row (grid-cols-5) inside the max-w-lg modal; the longest
-            labels (ru Горячие клавиши) wrap to two lines inside their cell via
-            `break-words` rather than clipping — button tops stay aligned. Narrow
-            screens keep a 2-column grid: 5 tabs fill it as 2+2+1 rows, ~131px of
+        {/* Six tabs (the MCP tab is always present). On `sm` and up they stay
+            on one compact row inside the max-w-lg modal. Narrow
+            screens keep a 2-column grid: 6 tabs fill it as 2+2+2 rows, ~131px of
             text per cell at 390px / ~104px at 320px, so every label fits and the
-            ones that don't (ru at 320) wrap inside their button instead of being
-            cut off. `break-words` keeps a long unbreakable word (de) from
-            pushing the track wider than the modal. */}
+            ones that don't wrap inside their button instead of being cut off. */}
         <div className="shrink-0 px-5">
           <div
             role="tablist"
             aria-label={t("sessionSettings")}
             onKeyDown={onTabKeyDown}
-            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5 sm:grid-cols-5"
+            className="grid grid-cols-2 gap-0.5 rounded-lg border border-line bg-bg2 p-0.5 sm:grid-cols-6"
           >
             {tabs.map(({ key, label }) => (
               <button
@@ -233,7 +231,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                 // the selected pill sits visibly off-center in light mode).
                 // Track/pill colors mirror the theme segmented control below
                 // (bg2 track, lightest pill) for one consistent language.
-                className={`min-w-0 break-words rounded-md px-2 py-1.5 text-[13px] leading-5 transition-colors sm:px-3 ${
+                className={`min-w-0 break-words rounded-md px-2 py-1.5 text-[13px] leading-5 transition-colors sm:whitespace-nowrap sm:px-1 sm:text-[12px] ${
                   tab === key
                     ? "bg-bg0 font-medium text-fg shadow-sm"
                     : "text-fg-muted hover:text-fg"
@@ -403,6 +401,8 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
             <ShortcutsSection />
           ) : tab === "voice" ? (
             <SpeechSection root={session.cwd} />
+          ) : tab === "prompt" ? (
+            <PromptOptimizerSection />
           ) : tab === "mcp" ? (
             <McpSection onError={fail} />
           ) : (

@@ -14,6 +14,12 @@ defmodule Dala.Settings do
   use Ash.Domain, otp_app: :dala, extensions: [AshTypescript.Rpc]
 
   typescript_rpc do
+    resource Dala.Settings.PromptOptimizer do
+      rpc_action :prompt_optimizer_settings, :current
+      rpc_action :set_prompt_optimizer_settings, :save
+      rpc_action :optimize_prompt, :optimize
+    end
+
     resource Dala.Settings.Speech do
       rpc_action :speech_settings, :current
       rpc_action :set_speech_settings, :save
@@ -52,6 +58,7 @@ defmodule Dala.Settings do
   end
 
   resources do
+    resource Dala.Settings.PromptOptimizer
     resource Dala.Settings.Speech
     resource Dala.Settings.Theme
     resource Dala.Settings.Mcp

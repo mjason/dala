@@ -40,6 +40,14 @@ defmodule Dala.Mcp.RegistryTest do
     end
   end
 
+  test "SECURITY: prompt optimizer settings and execution are web-only" do
+    names = Enum.map(Registry.tools(), & &1["name"])
+
+    for forbidden <- ~w(prompt_optimizer_settings set_prompt_optimizer_settings optimize_prompt) do
+      refute forbidden in names, "#{forbidden} must not be an MCP tool"
+    end
+  end
+
   test "create_theme inputSchema inlines all 46 token keys and a light|dark base enum" do
     schema = tool("create_theme")["inputSchema"]
 

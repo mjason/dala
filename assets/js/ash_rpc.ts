@@ -885,6 +885,218 @@ export async function validateStashPrompt(
 }
 
 
+export type OptimizePromptInput = {
+  text: string;
+};
+
+export type OptimizePromptFields = UnifiedFieldSelection<{text: string | null, error: string | null, __type: "TypedMap", __primitiveFields: "text" | "error"}>[];
+
+export type InferOptimizePromptResult<
+  Fields extends OptimizePromptFields | undefined,
+> = InferResult<{text: string | null, error: string | null, __type: "TypedMap", __primitiveFields: "text" | "error"}, Fields>;
+
+export type OptimizePromptResult<Fields extends OptimizePromptFields | undefined = undefined> = | { success: true; data: InferOptimizePromptResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ */
+export async function optimizePrompt<Fields extends OptimizePromptFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: OptimizePromptInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<OptimizePromptResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "optimize_prompt",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<OptimizePromptResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateOptimizePrompt(
+  config: {
+  tenant?: string;
+  input: OptimizePromptInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "optimize_prompt",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type PromptOptimizerSettingsFields = UnifiedFieldSelection<{endpoint: string | null, model: string | null, prompt: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "prompt" | "apiKeySet"}>[];
+
+export type InferPromptOptimizerSettingsResult<
+  Fields extends PromptOptimizerSettingsFields | undefined,
+> = InferResult<{endpoint: string | null, model: string | null, prompt: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "prompt" | "apiKeySet"}, Fields>;
+
+export type PromptOptimizerSettingsResult<Fields extends PromptOptimizerSettingsFields | undefined = undefined> = | { success: true; data: InferPromptOptimizerSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ */
+export async function promptOptimizerSettings<Fields extends PromptOptimizerSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<PromptOptimizerSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "prompt_optimizer_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<PromptOptimizerSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validatePromptOptimizerSettings(
+  config: {
+  tenant?: string;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "prompt_optimizer_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant })
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
+export type SetPromptOptimizerSettingsInput = {
+  endpoint?: string | null;
+  model?: string | null;
+  prompt?: string | null;
+  apiKey?: string | null;
+  clearApiKey?: boolean | null;
+};
+
+export type SetPromptOptimizerSettingsFields = UnifiedFieldSelection<{endpoint: string | null, model: string | null, prompt: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "prompt" | "apiKeySet"}>[];
+
+export type InferSetPromptOptimizerSettingsResult<
+  Fields extends SetPromptOptimizerSettingsFields | undefined,
+> = InferResult<{endpoint: string | null, model: string | null, prompt: string | null, apiKeySet: boolean | null, __type: "TypedMap", __primitiveFields: "endpoint" | "model" | "prompt" | "apiKeySet"}, Fields>;
+
+export type SetPromptOptimizerSettingsResult<Fields extends SetPromptOptimizerSettingsFields | undefined = undefined> = | { success: true; data: InferSetPromptOptimizerSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ */
+export async function setPromptOptimizerSettings<Fields extends SetPromptOptimizerSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input?: SetPromptOptimizerSettingsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetPromptOptimizerSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_prompt_optimizer_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetPromptOptimizerSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Validate: Execute generic action on PromptOptimizer
+ *
+ * @ashActionType :action
+ * @validation true
+ */
+export async function validateSetPromptOptimizerSettings(
+  config: {
+  tenant?: string;
+  input?: SetPromptOptimizerSettingsInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ValidationResult> {
+  const payload = {
+    action: "set_prompt_optimizer_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeValidationRpcRequest<ValidationResult>(
+    payload,
+    config
+  );
+}
+
+
 export type SetSpeechSettingsInput = {
   endpoint?: string | null;
   model?: string | null;

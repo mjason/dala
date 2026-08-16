@@ -60,6 +60,30 @@ export type PromptAttributesOnlySchema = {
 };
 
 
+// PromptOptimizerSettings Schema
+export type PromptOptimizerSettingsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "endpoint" | "model" | "prompt" | "userId";
+  id: UUID;
+  endpoint: string;
+  model: string;
+  prompt: string;
+  userId: UUID | null;
+};
+
+
+
+export type PromptOptimizerSettingsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: "id" | "endpoint" | "model" | "prompt" | "userId";
+  id: UUID;
+  endpoint: string;
+  model: string;
+  prompt: string;
+  userId: UUID | null;
+};
+
+
 // SpeechSettings Schema
 export type SpeechSettingsResourceSchema = {
   __type: "Resource";
@@ -303,6 +327,45 @@ export type PromptFilterInput = {
     lessThan?: UtcDateTimeUsec;
     lessThanOrEqual?: UtcDateTimeUsec;
     in?: Array<UtcDateTimeUsec>;
+  };
+
+  userId?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+    isNil?: boolean;
+  };
+
+
+
+};
+export type PromptOptimizerSettingsFilterInput = {
+  and?: Array<PromptOptimizerSettingsFilterInput>;
+  or?: Array<PromptOptimizerSettingsFilterInput>;
+  not?: Array<PromptOptimizerSettingsFilterInput>;
+
+  id?: {
+    eq?: UUID;
+    notEq?: UUID;
+    in?: Array<UUID>;
+  };
+
+  endpoint?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  model?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
+  };
+
+  prompt?: {
+    eq?: string;
+    notEq?: string;
+    in?: Array<string>;
   };
 
   userId?: {
@@ -570,6 +633,9 @@ export type McpConfigFilterField = (typeof mcpConfigFilterFields)[number];
 export const promptFilterFields = ["id", "content", "status", "usedAt", "ownerId", "insertedAt", "updatedAt", "userId", "user"] as const;
 export type PromptFilterField = (typeof promptFilterFields)[number];
 
+export const promptOptimizerSettingsFilterFields = ["id", "endpoint", "model", "prompt", "userId", "user"] as const;
+export type PromptOptimizerSettingsFilterField = (typeof promptOptimizerSettingsFilterFields)[number];
+
 export const speechSettingsFilterFields = ["id", "endpoint", "model", "userId", "user"] as const;
 export type SpeechSettingsFilterField = (typeof speechSettingsFilterFields)[number];
 
@@ -589,6 +655,9 @@ export type McpConfigSortField = (typeof mcpConfigSortFields)[number];
 
 export const promptSortFields = ["id", "content", "status", "usedAt", "ownerId", "insertedAt", "updatedAt", "userId"] as const;
 export type PromptSortField = (typeof promptSortFields)[number];
+
+export const promptOptimizerSettingsSortFields = ["id", "endpoint", "model", "prompt", "userId"] as const;
+export type PromptOptimizerSettingsSortField = (typeof promptOptimizerSettingsSortFields)[number];
 
 export const speechSettingsSortFields = ["id", "endpoint", "model", "userId"] as const;
 export type SpeechSettingsSortField = (typeof speechSettingsSortFields)[number];

@@ -1,5 +1,5 @@
 import * as Octane from "octane";
-import { useEffect, useState } from "octane";
+import { useEffect, useRef, useState } from "octane";
 import {
   setSpeechPrompt,
   setSpeechSettings,
@@ -44,6 +44,8 @@ export default function SpeechSection({ root }: { root: string }) {
   const [settingsState, setSettingsState] = useState<
     "idle" | "dirty" | "saved" | "error"
   >("idle");
+  const settingsRevisionRef = useRef(0);
+  const settingsQueueRef = useRef<Promise<void>>(Promise.resolve());
   // The transcription prompt is per-project: it lives in the dala.jsonc
   // nearest to the session's cwd (created there when missing), not in the
   // settings row.
@@ -95,16 +97,24 @@ export default function SpeechSection({ root }: { root: string }) {
     apiKey?: string;
     clearApiKey?: boolean;
   }): Promise<ServerSettings | null> => {
-    const result = await call<ServerSettings>(setSpeechSettings, {
-      input,
-      fields: [...SETTINGS_FIELDS] as never,
+    const request = settingsQueueRef.current.then(async () => {
+      const result = await call<ServerSettings>(setSpeechSettings, {
+        input,
+        fields: [...SETTINGS_FIELDS] as never,
+      });
+      return result.ok ? normalize(result.data) : null;
     });
-    return result.ok ? normalize(result.data) : null;
+    settingsQueueRef.current = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    return request;
   };
 
   // Endpoint/model persist on blur (like the prompt): typing every keystroke
   // to the server would hammer it for no benefit.
   const saveSettings = async (patch: Partial<ServerSettings> = {}) => {
+    const revision = settingsRevisionRef.current;
     const next = { ...server, ...patch };
     setServer(next);
     const saved = await pushSettings({
@@ -112,7 +122,7 @@ export default function SpeechSection({ root }: { root: string }) {
       model: next.model,
     });
     if (saved) {
-      setServer(saved);
+      if (settingsRevisionRef.current === revision) setServer(saved);
       setSettingsState("saved");
     } else {
       setSettingsState("error");
@@ -121,10 +131,11 @@ export default function SpeechSection({ root }: { root: string }) {
 
   const saveApiKey = async () => {
     if (!apiKey) return;
+    const revision = settingsRevisionRef.current;
     const saved = await pushSettings({ apiKey });
     setApiKey("");
     if (saved) {
-      setServer(saved);
+      if (settingsRevisionRef.current === revision) setServer(saved);
       setSettingsState("saved");
     } else {
       setSettingsState("error");
@@ -132,10 +143,11 @@ export default function SpeechSection({ root }: { root: string }) {
   };
 
   const clearApiKey = async () => {
+    const revision = settingsRevisionRef.current;
     setApiKey("");
     const saved = await pushSettings({ clearApiKey: true });
     if (saved) {
-      setServer(saved);
+      if (settingsRevisionRef.current === revision) setServer(saved);
       setSettingsState("saved");
     } else {
       setSettingsState("error");
@@ -179,6 +191,7 @@ export default function SpeechSection({ root }: { root: string }) {
           id="speech-endpoint-input"
           value={server.endpoint}
           onInput={(e) => {
+            settingsRevisionRef.current += 1;
             setServer({ ...server, endpoint: e.currentTarget.value.trim() });
             setSettingsState("dirty");
           }}
@@ -255,6 +268,7 @@ export default function SpeechSection({ root }: { root: string }) {
             id="speech-model-input"
             value={server.model}
             onInput={(e) => {
+              settingsRevisionRef.current += 1;
               setServer({ ...server, model: e.currentTarget.value.trim() });
               setSettingsState("dirty");
             }}
@@ -270,6 +284,7 @@ export default function SpeechSection({ root }: { root: string }) {
               type="password"
               value={apiKey}
               onInput={(e) => {
+                settingsRevisionRef.current += 1;
                 setApiKey(e.currentTarget.value.trim());
                 setSettingsState("dirty");
               }}

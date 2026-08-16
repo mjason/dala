@@ -131,7 +131,11 @@ test.describe("Given 一个会话需要额外的 shell", () => {
 
     await page.reload();
     await h.gotoApp(page);
-    await h.selectSession(page, id);
+
+    // Reload restores the last active attached tab. Clicking the root session
+    // intentionally returns to that remembered tab, so do not force the root
+    // terminal visible through the generic selectSession helper here.
+    await expect(activeTab(page)).not.toHaveAttribute("data-session-tab", id);
 
     await expect(tabs(page)).toHaveCount(2);
 

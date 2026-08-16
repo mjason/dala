@@ -8,23 +8,6 @@ const os = require("node:os");
 const path = require("node:path");
 const h = require("./helpers");
 
-// ⚠️ 已知缺陷，不是「预期内的错误」
-//
-// 高度状态机那条用例会让 composer 的 CodeMirror 进入无限更新循环：
-//
-//   Maximum update depth exceeded
-//     at onChange (ComposerEditor 的 EditorView.updateListener)
-//     at _EditorView.dispatchTransactions
-//
-// 这个 bug **早就在线上**了 —— 用例本身的断言一直是过的，是页面健康检查
-// （e2e/fixtures.js）把它照出来的，这正是那个 fixture 存在的意义。
-//
-// 屏蔽只覆盖这一条消息、这一个 describe，其余用例的守卫一律保留。修掉之后
-// 请把这几行删掉 —— 留着它就是在训练人忽略红色。
-// 查的方向：ComposerEditor 的 value 同步 effect（doc !== value 就 dispatch）
-// 与 updateListener 的 onChange/onCursor 之间的回环。
-test.use({ ignorePageErrors: [/Maximum update depth exceeded/] });
-
 test.describe("Given 一个有活动会话的用户", () => {
   let cwd;
   let sessionId;
@@ -79,6 +62,42 @@ test.describe("Given 一个有活动会话的用户", () => {
         page.evaluate(() => Boolean(document.activeElement?.closest("#composer-editor"))),
       )
       .toBe(true);
+  });
+
+  test("shell 会话的 composer 也始终提供 Prompt 优化", async ({ page }) => {
+    let finishOptimization;
+    await page.route("**/rpc/run", async (route) => {
+      const payload = route.request().postDataJSON();
+      if (payload.action !== "optimize_prompt") return route.continue();
+      await new Promise((resolve) => {
+        finishOptimization = resolve;
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          success: true,
+          data: { text: "Clear prompt.", error: null },
+        }),
+      });
+    });
+
+    await page.keyboard.press("Control+Shift+K");
+    const optimize = page.locator("#input-bar-optimize");
+    await expect(optimize).toBeVisible();
+    await expect(optimize).toBeDisabled();
+
+    await page.locator("#composer-editor .cm-content").click();
+    await page.keyboard.insertText("messy prompt");
+    await expect(optimize).toBeEnabled();
+
+    await optimize.click();
+    const status = page.locator("#input-bar-optimize-status");
+    await expect(status).toContainText("DeepSeek is optimizing");
+    await expect.poll(() => typeof finishOptimization).toBe("function");
+    finishOptimization();
+    await expect(page.locator("#composer-editor .cm-content")).toContainText("Clear prompt.");
+    await expect(status).toContainText("Prompt optimized");
   });
 
   // composer 的高度策略是一条状态机，历史上每一级都被改坏过（空态过高吃掉
