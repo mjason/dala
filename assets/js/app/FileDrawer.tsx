@@ -13,7 +13,7 @@ import { buildTreeRows, crumbs, relativePath } from "./fileDrawer/tree";
 import type { DeleteTarget, SelectableRow, TreeRow } from "./fileDrawer/tree";
 import { RenameInput } from "./RenameInput";
 import { Chevron, DownloadIcon, Row, UploadIcon } from "./fileDrawer/rows";
-import { useDirTree } from "./fileDrawer/useDirTree";
+import { useDirTree, type DirTreeCache } from "./fileDrawer/useDirTree";
 import { useFileOps } from "./fileDrawer/useFileOps";
 import { useGitStatus } from "./hooks/useGitStatus";
 import { buildGitDecorations, gitDecorationForPath } from "./gitDecorations";
@@ -31,6 +31,8 @@ type Props = {
   onToggleFollow: () => void;
   onClose: () => void;
   onError: (message: string) => void;
+  /** App-lifetime snapshots keep folders open while this panel is temporarily unmounted. */
+  treeCache?: DirTreeCache;
   /** Desktop width in px (draggable via the left-edge handle). */
   width?: number;
   onResize?: (clientX: number) => void;
@@ -44,6 +46,7 @@ export default function FileDrawer({
   onToggleFollow,
   onClose,
   onError,
+  treeCache,
   width,
   onResize,
   onResetWidth,
@@ -55,7 +58,7 @@ export default function FileDrawer({
     refreshSoon: refreshGitStatusSoon,
   } = useGitStatus(path, onError, { watch: false });
   const { root, children, expanded, loadingDirs, refreshDir, refreshAll, toggleDir, expandDir } =
-    useDirTree(path, onError, refreshGitStatusSoon);
+    useDirTree(path, onError, { onExternalChange: refreshGitStatusSoon, cache: treeCache });
   const [showHidden, setShowHidden] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [editOnOpen, setEditOnOpen] = useState(false);

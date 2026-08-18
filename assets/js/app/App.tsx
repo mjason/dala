@@ -26,6 +26,7 @@ import {
 } from "./shellTabs";
 import InputBar, { AGENT_LABELS } from "./InputBar";
 import FileDrawer from "./FileDrawer";
+import { createDirTreeCache } from "./fileDrawer/useDirTree";
 import type { Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { focusOrphaned, isMac, Kbd, modShiftCombo, Tooltip } from "./shortcuts";
@@ -63,6 +64,7 @@ function terminalViewport() {
 }
 
 export default function App() {
+  const fileTreeCacheRef = useRef(createDirTreeCache());
   const { t } = useI18n();
   const [navOpen, setNavOpen] = useState(false);
   // Desktop sidebar collapse (VS Code's Ctrl/Cmd+B), remembered per browser.
@@ -1132,6 +1134,7 @@ export default function App() {
 
       {drawerOpen && active && (
         <FileDrawer
+          treeCache={fileTreeCacheRef.current}
           path={drawerPath ?? active.cwd}
           width={drawerW}
           onResize={(x) => setDrawerW(clampWidth(window.innerWidth - x, 260, 720))}

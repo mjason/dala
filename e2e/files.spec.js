@@ -66,6 +66,19 @@ test.describe("Given 打开文件抽屉的用户", () => {
       // 切回 A：nested 无需再点就仍是展开的。
       await h.selectSession(page, a);
       await expect(page.locator(inner)).toBeVisible();
+
+      // 文件抽屉切到 Git 等工具时会卸载；重新打开后仍应恢复展开状态。
+      await page.click("#toggle-git-button");
+      await expect(page.locator("#file-tree")).toHaveCount(0);
+      await page.click("#toggle-drawer-button");
+      await expect(page.locator(inner)).toBeVisible();
+
+      // 打开并关闭内层文件预览也不能触发整棵树重新加载或折叠。
+      await page.click(inner);
+      await expect(page.locator("#file-preview")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#file-preview")).toHaveCount(0);
+      await expect(page.locator(inner)).toBeVisible();
     } finally {
       // Clean up both sessions so a later spec never inherits a session whose
       // cwd we're about to delete, then remove B's scratch dir.
