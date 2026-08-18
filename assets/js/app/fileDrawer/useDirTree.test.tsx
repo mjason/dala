@@ -1,8 +1,8 @@
 import { act, renderHook, waitFor } from "@octanejs/testing-library";
 import * as Octane from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { I18nProvider } from "../i18n";
-import { useDirTree } from "./useDirTree";
+import { I18nProvider, useI18n } from "../i18n";
+import { createDirTreeCache, useDirTree } from "./useDirTree";
 
 const listDirectoryMock = vi.hoisted(() => vi.fn());
 vi.mock("../../ash_rpc", () => ({
@@ -58,7 +58,7 @@ describe("useDirTree — change-storm handling", () => {
   });
 
   it("a burst of changed frames for one expanded ancestor costs ONE refetch", async () => {
-    const { result } = renderHook(() => useDirTree("/proj", () => {}, undefined), { wrapper });
+    const { result } = renderHook(() => useDirTree("/proj", () => {}), { wrapper });
 
     // Initial root load.
     await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
@@ -81,7 +81,7 @@ describe("useDirTree — change-storm handling", () => {
   });
 
   it("restores a root's expanded folders after the drawer path leaves and returns", async () => {
-    const { result, rerender } = renderHook(({ p }) => useDirTree(p, () => {}, undefined), {
+    const { result, rerender } = renderHook(({ p }) => useDirTree(p, () => {}), {
       wrapper,
       initialProps: { p: "/proj" },
     });
@@ -104,8 +104,39 @@ describe("useDirTree — change-storm handling", () => {
     expect(result.current.expanded.has("/proj/lib")).toBe(true);
   });
 
+  it("does not reload or restore the root for unrelated context changes", async () => {
+    const { result } = renderHook(
+      () => ({ tree: useDirTree("/proj", () => {}), i18n: useI18n() }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.tree.root?.path).toBe("/proj"));
+
+    const afterMount = listDirectoryMock.mock.calls.length;
+    act(() => {
+      result.current.i18n.setLocale("zh-CN");
+    });
+    await act(async () => await Promise.resolve());
+
+    expect(listDirectoryMock).toHaveBeenCalledTimes(afterMount);
+  });
+
+  it("restores expanded folders after the drawer hook unmounts and remounts", async () => {
+    const cache = createDirTreeCache();
+    const first = renderHook(() => useDirTree("/proj", () => {}, { cache }), { wrapper });
+    await waitFor(() => expect(first.result.current.root?.path).toBe("/proj"));
+    await act(async () => {
+      await first.result.current.toggleDir("/proj/lib");
+    });
+    expect(first.result.current.expanded.has("/proj/lib")).toBe(true);
+    first.unmount();
+
+    const second = renderHook(() => useDirTree("/proj", () => {}, { cache }), { wrapper });
+    await waitFor(() => expect(second.result.current.root?.path).toBe("/proj"));
+    expect(second.result.current.expanded.has("/proj/lib")).toBe(true);
+  });
+
   it("malformed frames are ignored and do not refetch", async () => {
-    const { result } = renderHook(() => useDirTree("/proj", () => {}, undefined), { wrapper });
+    const { result } = renderHook(() => useDirTree("/proj", () => {}), { wrapper });
     await waitFor(() => expect(result.current.root?.path).toBe("/proj"));
     const afterMount = listDirectoryMock.mock.calls.length;
 

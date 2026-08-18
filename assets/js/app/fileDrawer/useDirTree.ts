@@ -11,6 +11,23 @@ import type { Entry, Listing } from "./tree";
 // selection type has no shape for arrays of typed maps, hence the cast.
 const DIR_FIELDS = ["path", "parent", "entries"] as unknown as ListDirectoryFields;
 
+type DirTreeSnapshot = {
+  root: Listing;
+  children: Record<string, Entry[]>;
+  expanded: Set<string>;
+};
+
+export type DirTreeCache = Map<string, DirTreeSnapshot>;
+
+export function createDirTreeCache(): DirTreeCache {
+  return new Map();
+}
+
+type Options = {
+  onExternalChange?: () => void;
+  cache?: DirTreeCache;
+};
+
 /**
  * The directory tree's data layer: the root listing, loaded children,
  * expansion state, and the /files/watch socket keeping everything fresh
@@ -19,7 +36,7 @@ const DIR_FIELDS = ["path", "parent", "entries"] as unknown as ListDirectoryFiel
 export function useDirTree(
   path: string,
   onError: (message: string) => void,
-  onExternalChange?: () => void,
+  { onExternalChange, cache: sharedCache }: Options = {},
 ) {
   const { t } = useI18n();
   // Held in a ref so an inline callback from the caller cannot change
@@ -27,20 +44,17 @@ export function useDirTree(
   // render (an unbounded refetch loop).
   const errorRef = useRef(onError);
   errorRef.current = onError;
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [root, setRoot] = useState<Listing | null>(null);
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
 
-  // Remember each root's tree (expanded folders + loaded children) so switching
-  // the drawer path away and back — chiefly switching session tabs, which
-  // retargets the drawer at the new session's cwd — restores it instead of
-  // collapsing everything to the root. Kept in a ref (survives the path-change
-  // re-renders) on the single app-level FileDrawer; lost only when the drawer
-  // itself unmounts.
-  const cacheRef = useRef<
-    Map<string, { root: Listing; children: Record<string, Entry[]>; expanded: Set<string> }>
-  >(new Map());
+  // Keep a hook-local cache for standalone consumers and tests. The app passes
+  // a longer-lived cache so a temporarily unmounted drawer can restore its tree.
+  const [localCache] = useState(createDirTreeCache());
+  const cache = sharedCache ?? localCache;
 
   const fetchDir = useCallback(
     async (target: string): Promise<Listing | null> => {
@@ -49,10 +63,10 @@ export function useDirTree(
         fields: DIR_FIELDS,
       });
       if (result.ok) return result.data;
-      errorRef.current(result.error || t("couldNotListDirectory"));
+      errorRef.current(result.error || translateRef.current("couldNotListDirectory"));
       return null;
     },
-    [t],
+    [],
   );
 
   const refreshDir = useCallback(
@@ -65,8 +79,8 @@ export function useDirTree(
 
   // Keep each root's snapshot current so it can be restored later.
   useEffect(() => {
-    if (root) cacheRef.current.set(root.path, { root, children, expanded });
-  }, [root, children, expanded]);
+    if (root) cache.set(root.path, { root, children, expanded });
+  }, [cache, root, children, expanded]);
 
   // (Re)load the tree root whenever the drawer path changes. If we've shown
   // this root before, restore its snapshot instantly (expanded folders intact)
@@ -74,7 +88,7 @@ export function useDirTree(
   // doesn't re-collapse the tree; otherwise load it fresh.
   useEffect(() => {
     let stale = false;
-    const cached = cacheRef.current.get(path);
+    const cached = cache.get(path);
 
     if (cached) {
       setRoot(cached.root);
@@ -103,7 +117,7 @@ export function useDirTree(
     return () => {
       stale = true;
     };
-  }, [path, fetchDir]);
+  }, [cache, path, fetchDir]);
 
   // External changes (terminal commands, agents deleting/creating files)
   // don't announce themselves — a watch socket does: the server watches the
