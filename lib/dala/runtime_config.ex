@@ -120,7 +120,7 @@ defmodule Dala.RuntimeConfig do
   @doc "The data directory (tilde expanded), from env/file/XDG default."
   def data_dir(cfg) do
     (get(cfg, "DALA_DATA_DIR", "dataDir") ||
-       Path.join(System.get_env("XDG_DATA_HOME") || Path.join(home(), ".local/share"), "dala"))
+       Path.join(data_home(), "dala"))
     |> Path.expand()
   end
 
@@ -211,13 +211,24 @@ defmodule Dala.RuntimeConfig do
   defp persist_secrets(path, secrets) do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, Jason.encode!(secrets, pretty: true) <> "\n")
-    File.chmod!(path, 0o600)
+    Dala.Platform.chmod!(path, 0o600)
   end
 
   defp generate_secret, do: 48 |> :crypto.strong_rand_bytes() |> Base.encode64(padding: false)
 
-  defp config_home,
-    do: System.get_env("XDG_CONFIG_HOME") || Path.join(home(), ".config")
+  defp config_home do
+    case :os.type() do
+      {:win32, :nt} -> System.get_env("APPDATA") || Path.join(home(), "AppData/Roaming")
+      _ -> System.get_env("XDG_CONFIG_HOME") || Path.join(home(), ".config")
+    end
+  end
+
+  defp data_home do
+    case :os.type() do
+      {:win32, :nt} -> System.get_env("LOCALAPPDATA") || Path.join(home(), "AppData/Local")
+      _ -> System.get_env("XDG_DATA_HOME") || Path.join(home(), ".local/share")
+    end
+  end
 
   defp home, do: System.user_home() || "/"
 end

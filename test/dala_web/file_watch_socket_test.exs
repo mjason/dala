@@ -4,7 +4,11 @@ defmodule DalaWeb.FileWatchSocketTest do
   alias DalaWeb.FileWatchSocket
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "watch-#{System.unique_integer([:positive])}")
+    dir =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "watch-#{System.unique_integer([:positive])}")
+      )
+
     on_exit(fn -> File.rm_rf!(dir) end)
     File.mkdir_p!(dir)
     {:ok, dir: dir}
@@ -290,18 +294,20 @@ defmodule DalaWeb.FileWatchSocketTest do
     }
   end
 
-  defp wait_until(fun, timeout_ms) when timeout_ms > 0 do
-    if fun.() do
-      true
-    else
-      receive do
-      after
-        50 -> :ok
+  if match?({:unix, :linux}, :os.type()) do
+    defp wait_until(fun, timeout_ms) when timeout_ms > 0 do
+      if fun.() do
+        true
+      else
+        receive do
+        after
+          50 -> :ok
+        end
+
+        wait_until(fun, timeout_ms - 50)
       end
-
-      wait_until(fun, timeout_ms - 50)
     end
-  end
 
-  defp wait_until(_fun, _timeout_ms), do: false
+    defp wait_until(_fun, _timeout_ms), do: false
+  end
 end

@@ -50,7 +50,7 @@ defmodule Dala.Settings.Prompt do
       prepare fn query, context -> scope(query, context.actor) end
       # Atoms sort as text and "stashed" > "archived", so :desc puts the
       # live stash before the archive.
-      prepare build(sort: [status: :desc, updated_at: :desc])
+      prepare build(sort: [status: :desc, updated_at: :desc, id: :desc])
     end
 
     create :stash do
@@ -112,7 +112,7 @@ defmodule Dala.Settings.Prompt do
   end
 
   attributes do
-    uuid_primary_key :id
+    uuid_primary_key :id, default: &Ash.UUIDv7.generate/0
 
     attribute :content, :string do
       description "The prompt text itself."

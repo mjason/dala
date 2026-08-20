@@ -90,13 +90,13 @@ impl WatchProc {
 
     /// Waits until a line equal to `dir` arrives; returns all lines seen.
     fn expect_dir(&self, dir: &Path, timeout: Duration) -> Vec<String> {
-        let want = dir.display().to_string();
+        let want = normalize_path(&dir.display().to_string());
         let mut seen = Vec::new();
         let deadline = Instant::now() + timeout;
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             match self.lines.recv_timeout(left) {
                 Ok(line) => {
-                    let hit = line == want;
+                    let hit = normalize_path(&line) == want;
                     seen.push(line);
                     if hit {
                         return seen;
@@ -138,6 +138,16 @@ impl WatchProc {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+fn normalize_path(value: &str) -> String {
+    #[cfg(windows)]
+    {
+        return value.replace('/', "\\");
+    }
+
+    #[cfg(not(windows))]
+    value.to_string()
 }
 
 impl Drop for WatchProc {

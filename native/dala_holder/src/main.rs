@@ -38,17 +38,40 @@
 mod screen;
 mod watch;
 
+#[cfg(windows)]
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+#[cfg(windows)]
+use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+type ClientStream = UnixStream;
+#[cfg(windows)]
+type ClientStream = TcpStream;
+#[cfg(unix)]
+type ClientListener = UnixListener;
+#[cfg(windows)]
+type ClientListener = TcpListener;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::exit;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
+#[cfg(windows)]
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
+#[cfg(windows)]
+use winapi::um::wincon::{AttachConsole, FreeConsole, GetConsoleProcessList};
 
 use crate::screen::{graphics_sequence, FrameTracker, Screen, REPAINT_HISTORY_BUDGET};
 
@@ -83,6 +106,7 @@ const T_KILL: u8 = 0x13;
 const T_REPAINT_REQ: u8 = 0x14;
 const T_TEXT_SNAPSHOT_REQ: u8 = 0x15;
 const T_LATENCY: u8 = 0x16;
+const T_AUTH: u8 = 0x10;
 
 /// Transit-queue cap between the PTY reader and the socket writer. The
 /// emulator is the durable history; this only smooths bursts to an attached
@@ -157,12 +181,25 @@ struct Config {
     cols: u16,
     #[serde(default = "default_history_lines")]
     history_lines: usize,
+    #[serde(default)]
+    token: String,
 }
 
 fn default_history_lines() -> usize {
     10_000
 }
 
+fn decode_hex(value: &str) -> Option<String> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+
+    let bytes = (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf8(bytes).ok()
+}
 
 #[derive(Default)]
 struct TransitQueue {
@@ -457,7 +494,7 @@ fn write_input_if_current<W: Write + ?Sized>(
 
 struct Shared {
     transit: TransitQueue,
-    client: Option<UnixStream>,
+    client: Option<ClientStream>,
     /// Bumped per accepted connection so stale threads/writes can tell they
     /// lost the client race and must not clear a newer connection.
     client_gen: u64,
@@ -553,11 +590,27 @@ fn main() {
     if arg == "watch" {
         watch::run();
     }
-    let mut config: Config = serde_json::from_str(&arg).unwrap_or_else(|e| {
-        eprintln!("dala_holder: bad config json: {e}");
+    if arg == "foreground" {
+        foreground_query();
+    }
+    let config_json = if let Some(hex) = arg.strip_prefix("hex:") {
+        decode_hex(hex).unwrap_or_else(|| {
+            eprintln!("dala_holder: invalid encoded config");
+            exit(2);
+        })
+    } else {
+        arg.clone()
+    };
+    let mut config: Config = serde_json::from_str(&config_json).unwrap_or_else(|e| {
+        eprintln!(
+            "dala_holder: bad config json ({} bytes): {e}",
+            config_json.len()
+        );
         exit(2);
     });
     (config.rows, config.cols) = clamp_dims(config.rows, config.cols);
+
+    detach_windows(&arg);
 
     reset_signals();
 
@@ -567,7 +620,7 @@ fn main() {
     }
     // A live holder for this session means we must not double-spawn; a stale
     // socket is the spawner's job to clear before launching us.
-    let listener = match UnixListener::bind(&socket_path) {
+    let listener = match bind_listener(&socket_path) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("dala_holder: bind {}: {e}", socket_path.display());
@@ -644,10 +697,38 @@ fn main() {
         cond: Condvar::new(),
     });
 
+    #[cfg(windows)]
+    let pty_reader_done = Arc::new(AtomicBool::new(false));
+
+    #[cfg(windows)]
+    {
+        let state = Arc::clone(&state);
+        let pty_reader_done = Arc::clone(&pty_reader_done);
+        thread::spawn(move || {
+            let status = child.wait().map(|s| s.exit_code()).unwrap_or(0);
+
+            // ConPTY does not reliably close its output pipe when the child
+            // exits. Give the reader a bounded chance to drain final output,
+            // then publish the exit independently of that EOF.
+            for _ in 0..25 {
+                if pty_reader_done.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let mut shared = state.shared.lock().unwrap();
+            shared.exit_status = Some(status);
+            state.cond.notify_all();
+        });
+    }
+
     // PTY -> ring.
     {
         let state = Arc::clone(&state);
         let pty_writer = Arc::clone(&pty_writer);
+        #[cfg(windows)]
+        let pty_reader_done = Arc::clone(&pty_reader_done);
         thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut parser_safe_output = ParserSafeOutput::default();
@@ -779,10 +860,16 @@ fn main() {
                 }
             }
 
-            let status = child.wait().map(|s| s.exit_code()).unwrap_or(0);
-            let mut shared = state.shared.lock().unwrap();
-            shared.exit_status = Some(status);
-            state.cond.notify_all();
+            #[cfg(windows)]
+            pty_reader_done.store(true, Ordering::Release);
+
+            #[cfg(unix)]
+            {
+                let status = child.wait().map(|s| s.exit_code()).unwrap_or(0);
+                let mut shared = state.shared.lock().unwrap();
+                shared.exit_status = Some(status);
+                state.cond.notify_all();
+            }
         });
     }
 
@@ -944,6 +1031,9 @@ fn main() {
         if configure_client_stream(&stream).is_err() {
             continue;
         }
+        if authenticate_client(&mut stream, &config.token).is_err() {
+            continue;
+        }
 
         let hello = format!(
             "{{\"pid\":{},\"rows\":{},\"cols\":{},\"proto\":5}}",
@@ -1050,11 +1140,23 @@ fn main() {
                         shared.rtt_ms = Some(reported);
                     }
                     Ok((T_KILL, _)) => {
-                        let shared = state.shared.lock().unwrap();
-                        if shared.client_gen != my_gen {
+                        let current = state.shared.lock().unwrap().client_gen == my_gen;
+                        if !current {
                             break;
                         }
+
                         let _ = killer.lock().unwrap().kill();
+
+                        #[cfg(windows)]
+                        {
+                            // ConPTY can keep its read pipe open after the
+                            // child has been terminated. An explicit kill
+                            // must not wait for that EOF before the holder
+                            // publishes its exit and shuts itself down.
+                            let mut shared = state.shared.lock().unwrap();
+                            shared.exit_status.get_or_insert(1);
+                            state.cond.notify_all();
+                        }
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -1080,8 +1182,24 @@ fn parse_repaint_request(data: &[u8]) -> (u16, usize) {
     (cols, history_budget.min(REPAINT_HISTORY_BUDGET))
 }
 
-fn configure_client_stream(stream: &UnixStream) -> std::io::Result<()> {
+fn configure_client_stream(stream: &ClientStream) -> std::io::Result<()> {
     stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+}
+
+fn authenticate_client(stream: &mut ClientStream, token: &str) -> std::io::Result<()> {
+    if token.is_empty() {
+        return Ok(());
+    }
+
+    let (frame_type, payload) = read_frame(stream)?;
+    if frame_type == T_AUTH && payload == token.as_bytes() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "invalid holder authentication token",
+        ))
+    }
 }
 
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path BEL|ST`) in the output stream.
@@ -1149,7 +1267,7 @@ fn scan_osc(tail: &mut Vec<u8>, chunk: &[u8], out: &mut OscOut) {
                         None => "/",
                     };
                     if let Some(decoded) = percent_decode(path) {
-                        out.cwd = Some(decoded);
+                        out.cwd = Some(platform_file_uri_path(decoded));
                     }
                 }
             }
@@ -1205,11 +1323,193 @@ fn percent_decode(path: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+fn platform_file_uri_path(path: String) -> String {
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return path[1..].to_string();
+        }
+    }
+
+    path
+}
+
+#[cfg(windows)]
+fn foreground_query() -> ! {
+    let shell_pid = std::env::args()
+        .nth(2)
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_else(|| usage());
+
+    if let Some(command) = windows_foreground_command(shell_pid) {
+        print!("{command}");
+    }
+    exit(0);
+}
+
+#[cfg(not(windows))]
+fn foreground_query() -> ! {
+    exit(0);
+}
+
+#[cfg(windows)]
+fn windows_foreground_command(shell_pid: u32) -> Option<String> {
+    let console_pids = windows_console_processes(shell_pid);
+    if !console_pids.is_empty() {
+        return foreground_from_console(console_pids, shell_pid);
+    }
+
+    foreground_from_descendants(shell_pid)
+}
+
+#[cfg(windows)]
+fn foreground_from_console(pids: Vec<Pid>, shell_pid: u32) -> Option<String> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        false,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+
+    let helper_pid = std::process::id();
+    let process = pids
+        .into_iter()
+        .filter(|pid| pid.as_u32() != shell_pid && pid.as_u32() != helper_pid)
+        .filter_map(|pid| system.process(pid))
+        .filter(|process| !windows_shell_process(process.name().to_string_lossy().as_ref()))
+        .max_by_key(|process| (process.start_time(), process.pid().as_u32()))?;
+
+    process_command(process)
+}
+
+#[cfg(windows)]
+fn foreground_from_descendants(shell_pid: u32) -> Option<String> {
+    let mut system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+    );
+    let root = Pid::from_u32(shell_pid);
+
+    let foreground_pid = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            descendant_depth(&system, *pid, root).map(|depth| (*pid, process, depth))
+        })
+        .max_by_key(|(pid, process, depth)| (*depth, process.start_time(), pid.as_u32()))
+        .map(|(pid, _process, _depth)| pid)?;
+
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[foreground_pid]),
+        false,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let process = system.process(foreground_pid)?;
+    if windows_shell_process(process.name().to_string_lossy().as_ref()) {
+        return None;
+    }
+
+    process_command(process)
+}
+
+#[cfg(windows)]
+fn process_command(process: &sysinfo::Process) -> Option<String> {
+    let command = if process.cmd().is_empty() {
+        process.name().to_string_lossy().into_owned()
+    } else {
+        process
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    if command.trim().is_empty() {
+        None
+    } else {
+        Some(command)
+    }
+}
+
+#[cfg(windows)]
+fn windows_console_processes(shell_pid: u32) -> Vec<Pid> {
+    unsafe {
+        let _ = FreeConsole();
+        if AttachConsole(shell_pid) == 0 {
+            return Vec::new();
+        }
+
+        let mut process_ids = vec![0u32; 16];
+        loop {
+            let count = GetConsoleProcessList(process_ids.as_mut_ptr(), process_ids.len() as u32);
+            if count == 0 {
+                let _ = FreeConsole();
+                return Vec::new();
+            }
+            if count as usize <= process_ids.len() {
+                process_ids.truncate(count as usize);
+                let _ = FreeConsole();
+                return process_ids.into_iter().map(Pid::from_u32).collect();
+            }
+            process_ids.resize(count as usize, 0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell_process(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "bash"
+            | "bash.exe"
+            | "sh"
+            | "sh.exe"
+            | "zsh"
+            | "zsh.exe"
+            | "fish"
+            | "fish.exe"
+            | "cmd"
+            | "cmd.exe"
+            | "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+            | "nu"
+            | "nu.exe"
+    )
+}
+
+#[cfg(windows)]
+fn descendant_depth(system: &System, pid: Pid, root: Pid) -> Option<usize> {
+    let mut current = pid;
+    let mut seen = HashSet::new();
+
+    for depth in 1..=64 {
+        let parent = system.process(current)?.parent()?;
+        if parent == root {
+            return Some(depth);
+        }
+        if !seen.insert(parent) {
+            return None;
+        }
+        current = parent;
+    }
+
+    None
+}
+
 struct SendMaster(Box<dyn MasterPty>);
 unsafe impl Send for SendMaster {}
 
 fn usage() -> ! {
-    eprintln!("usage: dala_holder '<config json>' | dala_holder watch");
+    eprintln!(
+        "usage: dala_holder '<config json>' | dala_holder watch | dala_holder foreground <pid>"
+    );
     exit(2);
 }
 
@@ -1239,6 +1539,7 @@ fn fatal(socket_path: &std::path::Path, msg: &str) -> ! {
 
 /// The BEAM ignores SIGCHLD (and that survives exec), which breaks child-exit
 /// detection in anything it spawns — restore defaults before doing any work.
+#[cfg(unix)]
 fn reset_signals() {
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_DFL);
@@ -1251,9 +1552,13 @@ fn reset_signals() {
     }
 }
 
+#[cfg(windows)]
+fn reset_signals() {}
+
 /// Detach from the spawning BEAM: fork (parent exits so dala's spawn returns),
 /// new session, stdio to a per-session log next to the socket. Single-threaded
 /// at this point, so the fork is safe.
+#[cfg(unix)]
 fn daemonize(socket_path: &std::path::Path) {
     unsafe {
         match libc::fork() {
@@ -1288,12 +1593,62 @@ fn daemonize(socket_path: &std::path::Path) {
     }
 }
 
+#[cfg(windows)]
+fn daemonize(_socket_path: &std::path::Path) {}
+
+#[cfg(unix)]
+fn detach_windows(_arg: &str) {}
+
+#[cfg(windows)]
+fn detach_windows(arg: &str) {
+    if std::env::var_os("DALA_HOLDER_DETACHED").is_some() {
+        std::env::remove_var("DALA_HOLDER_DETACHED");
+        return;
+    }
+
+    let executable = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("dala_holder: cannot resolve executable: {e}");
+        exit(1);
+    });
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    Command::new(executable)
+        .arg(arg)
+        .env("DALA_HOLDER_DETACHED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("dala_holder: detach failed: {e}");
+            exit(1);
+        });
+    exit(0);
+}
+
+fn bind_listener(socket_path: &std::path::Path) -> std::io::Result<ClientListener> {
+    #[cfg(unix)]
+    {
+        return UnixListener::bind(socket_path);
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        std::fs::write(socket_path, listener.local_addr()?.to_string())?;
+        Ok(listener)
+    }
+}
+
 /// Writes one frame to the (possibly already replaced) client; on failure,
 /// detaches the client — but only if it is still the same connection
 /// generation, so a newer client is never clobbered by a stale write.
 fn send_or_drop(
     state: &State,
-    stream: Option<UnixStream>,
+    stream: Option<ClientStream>,
     gen: u64,
     frame_type: u8,
     payload: &[u8],
@@ -1339,10 +1694,7 @@ fn clear_client(shared: &mut Shared) {
 /// quiet period leaves immediately) and the render tick (trailing edge: a
 /// continuous repaint is batched to one frame per window).
 fn emit_frame_if_due(shared: &mut Shared, now: Instant) -> bool {
-    if !shared.render_alt
-        || !shared.frame_dirty
-        || shared.client.is_none()
-        || shared.repaint_frozen
+    if !shared.render_alt || !shared.frame_dirty || shared.client.is_none() || shared.repaint_frozen
     {
         return false;
     }
@@ -1405,6 +1757,23 @@ fn read_frame(stream: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     let frame_type = payload[0];
     payload.remove(0);
     Ok((frame_type, payload))
+}
+
+#[cfg(test)]
+fn stream_pair() -> std::io::Result<(ClientStream, ClientStream)> {
+    #[cfg(unix)]
+    {
+        return UnixStream::pair();
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address)?;
+        let (server, _) = listener.accept()?;
+        Ok((server, client))
+    }
 }
 
 #[cfg(test)]
@@ -1542,7 +1911,7 @@ mod frame_tests {
 
     #[test]
     fn client_writer_clones_inherit_a_finite_write_timeout() {
-        let (accepted, _peer) = UnixStream::pair().unwrap();
+        let (accepted, _peer) = stream_pair().unwrap();
 
         configure_client_stream(&accepted).unwrap();
         let writer = accepted.try_clone().unwrap();
@@ -1636,7 +2005,7 @@ mod client_generation_tests {
     #[test]
     fn active_detach_shuts_down_every_clone_of_the_client_socket() {
         let state = frozen_state(7);
-        let (holder, mut peer) = UnixStream::pair().unwrap();
+        let (holder, mut peer) = stream_pair().unwrap();
         let _control_thread_clone = holder.try_clone().unwrap();
         peer.set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
@@ -2208,6 +2577,13 @@ mod scan_tests {
         assert_eq!(cwd.as_deref(), Some("/tmp/x"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_drive_osc7_cwd() {
+        let (cwd, _) = run(&[b"\x1b]7;file://host/C:/work/repo\x07"]);
+        assert_eq!(cwd.as_deref(), Some("C:/work/repo"));
+    }
+
     #[test]
     fn parses_osc777_agent_event() {
         let (_, agents) = run(&[b"\x1b]777;notify;warp://cli-agent;{\"event\":\"stop\"}\x07"]);
@@ -2286,8 +2662,14 @@ mod render_window_tests {
     fn a_local_link_batches_as_little_as_is_useful() {
         // localhost: the link is free and the viewer is right there, so
         // batching only adds latency to no purpose.
-        assert_eq!(render_window(Some(0)), Duration::from_millis(MIN_WINDOW_MS as u64));
-        assert_eq!(render_window(Some(1)), Duration::from_millis(MIN_WINDOW_MS as u64));
+        assert_eq!(
+            render_window(Some(0)),
+            Duration::from_millis(MIN_WINDOW_MS as u64)
+        );
+        assert_eq!(
+            render_window(Some(1)),
+            Duration::from_millis(MIN_WINDOW_MS as u64)
+        );
     }
 
     #[test]
@@ -2300,8 +2682,14 @@ mod render_window_tests {
     fn a_slow_link_batches_harder_but_never_below_twenty_fps() {
         // Every frame skipped is bytes saved where they are scarce, but under
         // 20fps a moving TUI reads as choppy however far away the viewer is.
-        assert_eq!(render_window(Some(300)), Duration::from_millis(MAX_WINDOW_MS as u64));
-        assert_eq!(render_window(Some(5_000)), Duration::from_millis(MAX_WINDOW_MS as u64));
+        assert_eq!(
+            render_window(Some(300)),
+            Duration::from_millis(MAX_WINDOW_MS as u64)
+        );
+        assert_eq!(
+            render_window(Some(5_000)),
+            Duration::from_millis(MAX_WINDOW_MS as u64)
+        );
     }
 }
 
@@ -2310,7 +2698,7 @@ mod frame_cadence_tests {
     use super::*;
 
     fn alt_session(rtt_ms: Option<u32>) -> Shared {
-        let (client, _peer) = UnixStream::pair().unwrap();
+        let (client, _peer) = stream_pair().unwrap();
         let mut screen = Screen::new(24, 80, 1_000);
         screen.advance(b"\x1b[?1049h\x1b[H\x1b[2Jstarting");
 
@@ -2358,11 +2746,17 @@ mod frame_cadence_tests {
 
         shared.screen.advance(b"\x1b[2;1Hchanged again");
         shared.frame_dirty = true;
-        assert!(!emit_frame_if_due(&mut shared, start + Duration::from_millis(20)));
+        assert!(!emit_frame_if_due(
+            &mut shared,
+            start + Duration::from_millis(20)
+        ));
         // Still pending, not lost.
         assert!(shared.frame_dirty);
 
-        assert!(emit_frame_if_due(&mut shared, start + Duration::from_millis(41)));
+        assert!(emit_frame_if_due(
+            &mut shared,
+            start + Duration::from_millis(41)
+        ));
     }
 
     /// The adaptive part, observed through the cadence rather than the
@@ -2514,7 +2908,10 @@ mod query_reply_tests {
 
         assert_eq!(advanced.forwardable.as_ref(), b"abcd");
         // DA, DSR and CPR each contributed a reply.
-        assert!(advanced.answered.len() > 6, "expected three replies concatenated");
+        assert!(
+            advanced.answered.len() > 6,
+            "expected three replies concatenated"
+        );
     }
 
     /// The safety valve. If a future alacritty answers something this scanner

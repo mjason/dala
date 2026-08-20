@@ -18,6 +18,7 @@ defmodule Dala.Terminal.GitTest do
     on_exit(fn -> File.rm_rf!(dir) end)
 
     git!(dir, ["init", "-q", "-b", "main"])
+    git!(dir, ["config", "core.autocrlf", "false"])
     git!(dir, ["config", "user.email", "test@dala.dev"])
     git!(dir, ["config", "user.name", "Dala Test"])
 

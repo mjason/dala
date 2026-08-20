@@ -11,7 +11,8 @@ defmodule Dala.Terminal.FileSystemGitTimeoutTest do
     File.mkdir_p!(root)
 
     old_path = System.get_env("PATH")
-    System.put_env("PATH", bin <> ":" <> old_path)
+    path_separator = if Dala.Platform.windows?(), do: ";", else: ":"
+    System.put_env("PATH", bin <> path_separator <> old_path)
     Application.put_env(:dala, :list_files_git_timeout_ms, 100)
 
     on_exit(fn ->
@@ -24,9 +25,14 @@ defmodule Dala.Terminal.FileSystemGitTimeoutTest do
   end
 
   defp fake_git(bin, script) do
-    path = Path.join(bin, "git")
-    File.write!(path, "#!/bin/sh\n" <> script)
-    File.chmod!(path, 0o755)
+    if Dala.Platform.windows?() do
+      path = Path.join(bin, "git.cmd")
+      File.write!(path, "@echo off\r\n" <> String.replace(script, "\n", "\r\n"))
+    else
+      path = Path.join(bin, "git")
+      File.write!(path, "#!/bin/sh\n" <> script)
+      File.chmod!(path, 0o755)
+    end
   end
 
   defp list_files(path) do
@@ -38,12 +44,12 @@ defmodule Dala.Terminal.FileSystemGitTimeoutTest do
   test "a hung git is killed and the manual walk takes over", %{bin: bin, root: root} do
     File.write!(Path.join(root, "seen.txt"), "x")
 
-    fake_git(bin, """
-    case "$*" in
-      *rev-parse*) echo "#{root}"; exit 0;;
-      *) sleep 5;;
-    esac
-    """)
+    script =
+      if Dala.Platform.windows?(),
+        do: "%SystemRoot%\\System32\\ping.exe 127.0.0.1 -n 6 >NUL\n",
+        else: "sleep 5\n"
+
+    fake_git(bin, script)
 
     assert {:ok, %{files: files, truncated: false}} = list_files(root)
     assert files == ["seen.txt"]
@@ -52,12 +58,7 @@ defmodule Dala.Terminal.FileSystemGitTimeoutTest do
   test "a crashing git falls back to the manual walk", %{bin: bin, root: root} do
     File.write!(Path.join(root, "seen.txt"), "x")
 
-    fake_git(bin, """
-    case "$*" in
-      *rev-parse*) echo "#{root}"; exit 0;;
-      *) exit 128;;
-    esac
-    """)
+    fake_git(bin, if(Dala.Platform.windows?(), do: "exit /B 128\n", else: "exit 128\n"))
 
     assert {:ok, %{files: files, truncated: false}} = list_files(root)
     assert files == ["seen.txt"]

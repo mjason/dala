@@ -424,7 +424,7 @@ defmodule Dala.Terminal.FileSystem do
       run fn input, _context ->
         with {:ok, content} <- Base.decode64(input.arguments.content_base64),
              :ok <- check_paste_size(content) do
-          dir = Path.join(System.tmp_dir!(), "dala-paste")
+          dir = Dala.Paths.expand_user(Path.join(System.tmp_dir!(), "dala-paste"))
           File.mkdir_p!(dir)
 
           timestamp = Calendar.strftime(DateTime.utc_now(), "%Y%m%d-%H%M%S")
@@ -433,7 +433,7 @@ defmodule Dala.Terminal.FileSystem do
 
           case File.write(path, content) do
             :ok ->
-              File.chmod(path, 0o600)
+              Dala.Platform.chmod(path, 0o600)
               {:ok, %{path: path, size: byte_size(content)}}
 
             {:error, reason} ->
@@ -503,33 +503,21 @@ defmodule Dala.Terminal.FileSystem do
     end
   end
 
-  # The whole git interaction runs in a task with a hard deadline: a hung
-  # git must not wedge the RPC. Killing the task closes its port, which
-  # detaches the external process.
+  # The whole git interaction has a hard deadline: a hung git must not wedge
+  # the RPC or survive after the fallback starts.
   defp git_files(root) do
-    task = Task.async(fn -> run_git_files(root) end)
+    git = System.find_executable("git") || "git"
 
-    case Task.yield(task, git_files_timeout_ms()) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, listing}} -> {:ok, listing}
-      _timeout_or_git_failure -> :error
-    end
-  end
+    case Dala.ShellPort.run(
+           [git, "-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+           "/dev/null",
+           git_files_timeout_ms()
+         ) do
+      {:ok, out, 0} ->
+        {:ok, take_git_files(out, @walk_max_files, 0, [])}
 
-  # Run from `root` itself (not the toplevel): git scopes the listing to the
-  # current directory and reports paths relative to it, which is exactly what
-  # subdirectory sessions need. `-z` gives raw NUL-separated bytes (no quoting
-  # of non-ASCII names).
-  defp run_git_files(root) do
-    with top when is_binary(top) <- Dala.Paths.git_toplevel(root),
-         {out, 0} <-
-           System.cmd(
-             "git",
-             ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-             stderr_to_stdout: false
-           ) do
-      {:ok, take_git_files(out, @walk_max_files, 0, [])}
-    else
-      _not_a_repo_or_git_failed -> :error
+      _timeout_or_git_failure ->
+        :error
     end
   rescue
     _missing_git -> :error

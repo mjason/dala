@@ -1,20 +1,9 @@
 defmodule DalaWeb.TerminalChannelTest do
   use DalaWeb.ChannelCase, async: false
 
-  alias Dala.Terminal.{Holder, Server}
+  alias Dala.Terminal.Server
 
-  defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      File.rm(Holder.exit_path(to_string(session.id)))
-      File.rm(Holder.final_path(to_string(session.id)))
-      File.rm(Holder.text_final_path(to_string(session.id)))
-    end)
-
-    session
-  end
+  defp create_session!, do: Dala.TerminalCase.create_session!()
 
   defp join!(session_id, payload \\ %{}) do
     DalaWeb.UserSocket
@@ -29,12 +18,26 @@ defmodule DalaWeb.TerminalChannelTest do
     socket
   end
 
+  defp input_and_wait(session_id, input, marker) do
+    refute String.contains?(input, marker),
+           "input must construct the marker at runtime so terminal echo cannot satisfy the wait"
+
+    {:ok, baseline} = Server.current_seq(session_id)
+    Server.input(session_id, input)
+
+    assert {:ok, %{reason: "match"}} =
+             Server.wait(session_id, baseline,
+               timeout: 5_000,
+               events: ["output"],
+               match: marker
+             )
+  end
+
   test "join delivers the holder's synthesized repaint and reports status" do
     session = create_session!()
 
     # Put something on the screen, then join fresh: the repaint must carry it.
-    Server.input(session.id, "echo repaint-me-$((40 + 2))\r")
-    Process.sleep(300)
+    input_and_wait(session.id, "printf 'repaint-me-%s\\n' $((40 + 2))\r", "repaint-me-42")
 
     assert {:ok, %{status: :running}, socket} = join!(session.id)
     attach!(socket)
@@ -44,8 +47,7 @@ defmodule DalaWeb.TerminalChannelTest do
 
   test "the initial timeout requests the current screen instead of revealing an empty stream" do
     session = create_session!()
-    Server.input(session.id, "echo LATE-ATTACH-SCREEN\r")
-    Process.sleep(300)
+    input_and_wait(session.id, "printf 'LATE-ATTACH-%s\\n' SCREEN\r", "LATE-ATTACH-SCREEN")
 
     assert {:ok, _reply, socket} = join!(session.id)
     _ = :sys.get_state(socket.channel_pid)
@@ -112,8 +114,7 @@ defmodule DalaWeb.TerminalChannelTest do
     session = create_session!()
     id = to_string(session.id)
 
-    Server.input(session.id, "echo final-words\r")
-    Process.sleep(300)
+    input_and_wait(session.id, "printf 'final-%s\\n' words\r", "final-words")
 
     pid = Server.whereis(id)
     ref = Process.monitor(pid)
@@ -140,12 +141,11 @@ defmodule DalaWeb.TerminalChannelTest do
     session = create_session!()
     id = to_string(session.id)
 
-    Server.input(
+    input_and_wait(
       id,
-      "echo OLDEST_MARK; for i in {1..80}; do echo history-$i; done; echo CURRENT_MARK\r"
+      "echo OLDEST_MARK; for i in {1..80}; do echo history-$i; done; printf 'CURRENT_%s\\n' MARK\r",
+      "CURRENT_MARK"
     )
-
-    Process.sleep(500)
 
     assert {:ok, _reply, socket} = join!(id)
     # Browser pools report visibility around attach. The new client must not
@@ -168,8 +168,7 @@ defmodule DalaWeb.TerminalChannelTest do
   test "a dirty hidden viewer can catch up with a viewport-only repaint" do
     session = create_session!()
     id = to_string(session.id)
-    Server.input(id, "echo VIEWPORT_CATCH_UP\r")
-    Process.sleep(200)
+    input_and_wait(id, "printf 'VIEWPORT_%s\\n' CATCH_UP\r", "VIEWPORT_CATCH_UP")
 
     assert {:ok, _reply, socket} = join!(id)
     attach!(socket, 8, 80)

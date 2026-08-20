@@ -12,7 +12,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     session =
       Dala.Terminal.create_session!(%{
-        shell: "/bin/bash",
+        shell: Dala.TerminalCase.shell(),
         name: "mcp-test",
         cwd: System.tmp_dir!()
       })
@@ -78,6 +78,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
                "session" => listed.ref,
                "after_seq" => sent.seq,
                "timeout_seconds" => 5,
+               "match" => "mcp-terminal-roundtrip",
                "lines" => 50
              })
 
@@ -107,10 +108,11 @@ defmodule Dala.Mcp.TerminalToolsTest do
       Path.join(System.tmp_dir!(), "dala-tui-key-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm(result_path) end)
+    result_target = result_path |> Dala.TerminalCase.shell_path() |> Dala.ShellPort.escape()
 
     command =
       "printf '\\033[?1049h\\033[?1h\\033[7;1mSelected option\\033[0m'; " <>
-        "IFS= read -rsN 4 key; printf '%s' \"$key\" | od -An -tx1 > #{result_path}; " <>
+        "IFS= read -rsN 4 key; printf '%s' \"$key\" | od -An -tx1 > #{result_target}; " <>
         "printf '\\033[?1049l'"
 
     Server.input(session.id, command <> "\r")
@@ -135,10 +137,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
 
     assert sent.applicationCursor
     assert sent.keyCount == 2
-    assert eventually(fn -> File.exists?(result_path) end)
-
-    assert File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() ==
-             "1b 4f 42 79"
+    assert eventually(fn -> file_hex(result_path) == "1b 4f 42 79" end)
   end
 
   test "upload stores a private regular file and returns a sendable path" do
@@ -155,12 +154,14 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert uploaded.name == "screen_shot.png"
     assert uploaded.size == byte_size(body)
     assert {:ok, %File.Stat{type: :regular, mode: mode}} = File.lstat(uploaded.path)
-    assert Bitwise.band(mode, 0o077) == 0
 
     assert {:ok, %File.Stat{type: :directory, mode: root_mode}} =
              uploaded.path |> Path.dirname() |> Path.dirname() |> File.lstat()
 
-    assert Bitwise.band(root_mode, 0o077) == 0
+    unless Dala.Platform.windows?() do
+      assert Bitwise.band(mode, 0o077) == 0
+      assert Bitwise.band(root_mode, 0o077) == 0
+    end
 
     on_exit(fn -> File.rm_rf(Path.dirname(uploaded.path)) end)
   end
@@ -180,15 +181,17 @@ defmodule Dala.Mcp.TerminalToolsTest do
       Path.join(System.tmp_dir!(), "dala-ctrl-key-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm(result_path) end)
+    result_target = result_path |> Dala.TerminalCase.shell_path() |> Dala.ShellPort.escape()
 
     # Read the two raw bytes the chord should produce and dump them as hex.
     Server.input(
       session.id,
-      "IFS= read -rsN 2 chord; printf '%s' \"$chord\" | od -An -tx1 > #{result_path}\r"
+      "printf 'CTRL-READY\\n'; IFS= read -rsN 2 chord; " <>
+        "printf '%s' \"$chord\" | od -An -tx1 > #{result_target}\r"
     )
 
     assert eventually(fn ->
-             match?({:ok, _}, TerminalTools.call("read_terminal", %{"session" => session.id}))
+             terminal_contains?(session.id, "CTRL-READY")
            end)
 
     # This is the call that used to fail with "unsupported terminal key: CTRL_O".
@@ -199,11 +202,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
              })
 
     assert sent.keyCount == 2
-    assert eventually(fn -> File.exists?(result_path) end)
-
-    assert eventually(fn ->
-             File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() == "0f 64"
-           end)
+    assert eventually(fn -> file_hex(result_path) == "0f 64" end)
   end
 
   test "a non-ASCII key and a non-letter Ctrl chord reach the PTY", %{session: session} do
@@ -211,16 +210,18 @@ defmodule Dala.Mcp.TerminalToolsTest do
       Path.join(System.tmp_dir!(), "dala-utf8-key-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm(result_path) end)
+    result_target = result_path |> Dala.TerminalCase.shell_path() |> Dala.ShellPort.escape()
 
     # Read until Enter, not a byte/character count: bash's `read -N` counts
     # characters, so a UTF-8 key would make a byte count wait forever.
     Server.input(
       session.id,
-      "IFS= read -rs keys; printf '%s' \"$keys\" | od -An -tx1 > #{result_path}\r"
+      "printf 'UTF8-READY\\n'; IFS= read -rs keys; " <>
+        "printf '%s' \"$keys\" | od -An -tx1 > #{result_target}\r"
     )
 
     assert eventually(fn ->
-             match?({:ok, _}, TerminalTools.call("read_terminal", %{"session" => session.id}))
+             terminal_contains?(session.id, "UTF8-READY")
            end)
 
     assert {:ok, sent} =
@@ -232,9 +233,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
     assert sent.keyCount == 3
 
     assert eventually(fn ->
-             File.exists?(result_path) and
-               File.read!(result_path) |> String.replace(~r/\s+/, " ") |> String.trim() ==
-                 "e5 a5 bd 1f"
+             file_hex(result_path) == "e5 a5 bd 1f"
            end)
   end
 
@@ -274,7 +273,7 @@ defmodule Dala.Mcp.TerminalToolsTest do
   test "duplicate names are rejected as ambiguous selectors", %{session: session} do
     other =
       Dala.Terminal.create_session!(%{
-        shell: "/bin/bash",
+        shell: Dala.TerminalCase.shell(),
         name: session.name,
         cwd: System.tmp_dir!()
       })
@@ -304,6 +303,19 @@ defmodule Dala.Mcp.TerminalToolsTest do
       true ->
         Process.sleep(50)
         eventually(fun, attempts - 1)
+    end
+  end
+
+  defp terminal_contains?(session_id, text) do
+    case TerminalTools.call("read_terminal", %{"session" => session_id}) do
+      {:ok, snapshot} -> String.contains?(snapshot.output, text)
+      _ -> false
+    end
+  end
+
+  defp file_hex(path) do
+    if File.regular?(path) do
+      path |> File.read!() |> String.replace(~r/\s+/, " ") |> String.trim()
     end
   end
 end

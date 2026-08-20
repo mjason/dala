@@ -153,7 +153,7 @@ defmodule Dala.Terminal.AgentCommands do
   defp home(rel), do: Dala.Paths.home(rel)
 
   # Custom commands live where the project starts, not necessarily the cwd.
-  defp project_root(cwd), do: Dala.Paths.git_toplevel(cwd) || cwd
+  defp project_root(cwd), do: Dala.Paths.git_toplevel(cwd) || Dala.Paths.expand_user(cwd)
 
   # commands/a.md → /a; commands/git/pr.md → /git:pr (Claude's namespacing).
   defp command_files(dir) do

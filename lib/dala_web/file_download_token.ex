@@ -18,7 +18,7 @@ defmodule DalaWeb.FileDownloadToken do
 
   @doc "Sign a token that authorizes downloading exactly `abs_path`."
   def sign(abs_path) when is_binary(abs_path) do
-    Phoenix.Token.sign(DalaWeb.Endpoint, @salt, abs_path)
+    Phoenix.Token.sign(DalaWeb.Endpoint, @salt, canonical_path(abs_path))
   end
 
   @doc """
@@ -27,10 +27,12 @@ defmodule DalaWeb.FileDownloadToken do
   """
   def valid_for?(token, abs_path) when is_binary(token) and is_binary(abs_path) do
     case Phoenix.Token.verify(DalaWeb.Endpoint, @salt, token, max_age: @max_age) do
-      {:ok, signed} -> signed == abs_path
+      {:ok, signed} -> signed == canonical_path(abs_path)
       {:error, _reason} -> false
     end
   end
 
   def valid_for?(_token, _abs_path), do: false
+
+  defp canonical_path(path), do: Dala.Paths.expand_user(path)
 end

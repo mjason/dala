@@ -11,6 +11,14 @@ defmodule DalaWeb.FileDownloadTokenTest do
     refute FileDownloadToken.valid_for?(token, "/etc/passwd")
   end
 
+  test "a token accepts equivalent platform path spellings" do
+    raw = Path.join(System.tmp_dir!(), "report.csv")
+    expanded = Dala.Paths.expand_user(raw)
+    token = FileDownloadToken.sign(raw)
+
+    assert FileDownloadToken.valid_for?(token, expanded)
+  end
+
   test "a tampered or non-token string never validates" do
     refute FileDownloadToken.valid_for?("garbage", "/home/me/report.csv")
     refute FileDownloadToken.valid_for?("", "/home/me/report.csv")

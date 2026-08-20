@@ -20,8 +20,10 @@ defmodule Dala.Settings.PromptTest do
 
   describe "stash + list" do
     test "captured prompts come back stashed, newest first" do
-      stash!("first idea")
-      stash!("second idea")
+      first = stash!("first idea")
+      second = stash!("second idea")
+
+      assert second.id > first.id
 
       assert [%{content: "second idea", status: :stashed}, %{content: "first idea"}] = list()
     end

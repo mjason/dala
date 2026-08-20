@@ -8,22 +8,11 @@ defmodule DalaWeb.TerminalChannelFlowTest do
   """
   use DalaWeb.ChannelCase, async: false
 
-  alias Dala.Terminal.{Holder, Server}
+  alias Dala.Terminal.Server
 
   @chunk 32 * 1024
 
-  defp create_session! do
-    session = Dala.Terminal.create_session!(%{shell: "/bin/bash"})
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      File.rm(Holder.exit_path(to_string(session.id)))
-      File.rm(Holder.final_path(to_string(session.id)))
-      File.rm(Holder.text_final_path(to_string(session.id)))
-    end)
-
-    session
-  end
+  defp create_session!, do: Dala.TerminalCase.create_session!()
 
   defp join_and_attach!(session_id) do
     {:ok, _reply, socket} =

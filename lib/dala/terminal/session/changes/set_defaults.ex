@@ -6,10 +6,7 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
   def change(changeset, _opts, _context) do
     parent = parent_session(changeset)
 
-    shell =
-      argument_or_nil(changeset, :shell) ||
-        System.get_env("SHELL") ||
-        "/bin/bash"
+    shell = argument_or_nil(changeset, :shell) || default_shell()
 
     cwd =
       argument_or_nil(changeset, :cwd) || (parent && parent.cwd) || System.user_home() || "/"
@@ -78,6 +75,20 @@ defmodule Dala.Terminal.Session.Changes.SetDefaults do
     case Ash.Changeset.get_argument(changeset, name) do
       value when value in [nil, ""] -> nil
       value -> String.trim(value)
+    end
+  end
+
+  defp default_shell do
+    case :os.type() do
+      {:win32, :nt} ->
+        System.find_executable("pwsh") ||
+          System.find_executable("powershell") ||
+          System.get_env("ComSpec") ||
+          System.get_env("WINDIR", "C:\\Windows")
+          |> Path.join("System32/WindowsPowerShell/v1.0/powershell.exe")
+
+      _ ->
+        System.get_env("SHELL") || "/bin/bash"
     end
   end
 

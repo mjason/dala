@@ -14,6 +14,16 @@ defmodule Dala.Terminal.Foreground do
   """
   @spec cmdline(term()) :: String.t() | nil
   def cmdline(shell_pid) when is_integer(shell_pid) and shell_pid > 0 do
+    if Dala.Platform.windows?() do
+      windows_cmdline(shell_pid)
+    else
+      unix_cmdline(shell_pid)
+    end
+  end
+
+  def cmdline(_shell_pid), do: nil
+
+  defp unix_cmdline(shell_pid) do
     with {:ok, stat} <- File.read("/proc/#{shell_pid}/stat"),
          [{idx, _len} | _] <- Enum.reverse(:binary.matches(stat, ")")),
          # Fields come after the last ")" (comm may itself contain parens).
@@ -29,5 +39,22 @@ defmodule Dala.Terminal.Foreground do
     end
   end
 
-  def cmdline(_shell_pid), do: nil
+  defp windows_cmdline(shell_pid) do
+    case System.cmd(
+           Dala.Terminal.Holder.binary_path(),
+           ["foreground", Integer.to_string(shell_pid)],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case String.trim(output) do
+          "" -> nil
+          command -> command
+        end
+
+      {_output, _status} ->
+        nil
+    end
+  rescue
+    _error -> nil
+  end
 end

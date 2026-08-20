@@ -118,7 +118,7 @@ defmodule Dala.Lsp.Discovery do
 
   # ".venv/bin/basedpyright-langserver --stdio" → "basedpyright"; "dm lsp" → "dm lsp"
   defp server_name([bin | args]) do
-    base = Path.basename(bin)
+    base = executable_basename(bin)
 
     case {base, args} do
       {"dm", ["lsp" | _]} -> "dm lsp"
@@ -288,7 +288,8 @@ defmodule Dala.Lsp.Discovery do
       |> String.replace("${root}", root)
       |> then(fn w ->
         Regex.replace(~r/\$\{(\w+)\}|\$(\w+)/, w, fn _, braced, bare ->
-          System.get_env(if(braced != "", do: braced, else: bare)) || ""
+          name = if(braced != "", do: braced, else: bare)
+          System.get_env(name) || if(name == "HOME", do: System.user_home() || "", else: "")
         end)
       end)
 
@@ -300,10 +301,12 @@ defmodule Dala.Lsp.Discovery do
   end
 
   defp absolutize([bin | args], root) do
+    bin = if Dala.Platform.windows?(), do: String.replace(bin, "\\", "/"), else: bin
+
     resolved =
       cond do
-        Path.type(bin) == :absolute -> bin
-        String.contains?(bin, "/") -> Path.expand(bin, root)
+        Path.type(bin) == :absolute -> Path.expand(bin)
+        String.contains?(bin, ["/", "\\"]) -> Path.expand(bin, root)
         true -> System.find_executable(bin) || bin
       end
 
@@ -316,16 +319,18 @@ defmodule Dala.Lsp.Discovery do
   defp local_bin(name), do: home(".local/bin/#{name}")
 
   defp discover("python", root) do
-    first_existing([
-      {Path.join(root, ".venv/bin/basedpyright-langserver"), ["--stdio"]},
-      {Path.join(root, ".venv/bin/pyright-langserver"), ["--stdio"]},
-      {System.find_executable("basedpyright-langserver"), ["--stdio"]},
-      {System.find_executable("pyright-langserver"), ["--stdio"]},
-      {local_bin("basedpyright-langserver"), ["--stdio"]},
-      {local_bin("pyright-langserver"), ["--stdio"]},
-      {mason_bin("basedpyright-langserver"), ["--stdio"]},
-      {mason_bin("pyright-langserver"), ["--stdio"]}
-    ])
+    first_existing(
+      venv_candidates(root, "basedpyright-langserver", ["--stdio"]) ++
+        venv_candidates(root, "pyright-langserver", ["--stdio"]) ++
+        [
+          {System.find_executable("basedpyright-langserver"), ["--stdio"]},
+          {System.find_executable("pyright-langserver"), ["--stdio"]},
+          {local_bin("basedpyright-langserver"), ["--stdio"]},
+          {local_bin("pyright-langserver"), ["--stdio"]},
+          {mason_bin("basedpyright-langserver"), ["--stdio"]},
+          {mason_bin("pyright-langserver"), ["--stdio"]}
+        ]
+    )
   end
 
   defp discover("rust", _root) do
@@ -371,6 +376,29 @@ defmodule Dala.Lsp.Discovery do
   end
 
   defp discover(_language, _root), do: {[], []}
+
+  defp executable_basename(bin) do
+    base = Path.basename(bin)
+
+    if Dala.Platform.windows?() do
+      Enum.find_value([".exe", ".cmd", ".bat"], base, fn suffix ->
+        if String.ends_with?(String.downcase(base), suffix),
+          do: String.slice(base, 0, byte_size(base) - byte_size(suffix))
+      end)
+    else
+      base
+    end
+  end
+
+  defp venv_candidates(root, name, args) do
+    if Dala.Platform.windows?() do
+      for suffix <- [".exe", ".cmd", ".bat", ""] do
+        {Path.join(root, ".venv/Scripts/#{name}#{suffix}"), args}
+      end
+    else
+      [{Path.join(root, ".venv/bin/#{name}"), args}]
+    end
+  end
 
   # First candidate whose binary exists wins; every probe is recorded so the
   # debug window can show what was looked at and what was missing.

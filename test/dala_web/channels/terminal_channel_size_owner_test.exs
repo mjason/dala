@@ -21,20 +21,9 @@ defmodule DalaWeb.TerminalChannelSizeOwnerTest do
   """
   use DalaWeb.ChannelCase, async: false
 
-  alias Dala.Terminal.{Holder, Server}
+  alias Dala.Terminal.Server
 
-  defp create_session!(extra \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, extra))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      File.rm(Holder.exit_path(to_string(session.id)))
-      File.rm(Holder.final_path(to_string(session.id)))
-      File.rm(Holder.text_final_path(to_string(session.id)))
-    end)
-
-    session
-  end
+  defp create_session!(extra \\ %{}), do: Dala.TerminalCase.create_session!(extra)
 
   defp join!(session_id, device \\ nil) do
     params = if device, do: %{"device_id" => device}, else: %{}

@@ -2,7 +2,11 @@ defmodule Dala.Terminal.FileSystemTest do
   use ExUnit.Case, async: true
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "dala-fs-test-#{System.unique_integer([:positive])}")
+    dir =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "dala-fs-test-#{System.unique_integer([:positive])}")
+      )
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{dir: dir}
@@ -103,7 +107,9 @@ defmodule Dala.Terminal.FileSystemTest do
     assert {:ok, %{path: weird}} = save_pasted_file("../../etc/passwd", Base.encode64("x"))
     on_exit(fn -> File.rm(weird) end)
     assert Path.extname(weird) == ".png"
-    assert Path.dirname(weird) == Path.join(System.tmp_dir!(), "dala-paste")
+
+    assert Path.dirname(weird) ==
+             Dala.Paths.expand_user(Path.join(System.tmp_dir!(), "dala-paste"))
   end
 
   test "save_pasted_file rejects invalid base64 and oversized payloads" do
@@ -195,14 +201,16 @@ defmodule Dala.Terminal.FileSystemTest do
     assert files == ["outer.txt"]
   end
 
-  test "list_files walk drops names that are not valid UTF-8", %{dir: dir} do
-    File.write!(Path.join(dir, "ok.txt"), "x")
-    # Raw invalid byte in the name (Linux allows it) — such names cannot
-    # round-trip through the JSON payload.
-    File.write!(dir <> "/bad_" <> <<0xFF>> <> ".txt", "x")
+  if match?({:unix, _}, :os.type()) do
+    test "list_files walk drops names that are not valid UTF-8", %{dir: dir} do
+      File.write!(Path.join(dir, "ok.txt"), "x")
+      # Raw invalid byte in the name (Unix allows it) — such names cannot
+      # round-trip through the JSON payload.
+      File.write!(dir <> "/bad_" <> <<0xFF>> <> ".txt", "x")
 
-    assert {:ok, %{files: files}} = list_files(dir)
-    assert files == ["ok.txt"]
+      assert {:ok, %{files: files}} = list_files(dir)
+      assert files == ["ok.txt"]
+    end
   end
 
   test "list_files from a subdirectory of a repo returns paths relative to it", %{dir: dir} do

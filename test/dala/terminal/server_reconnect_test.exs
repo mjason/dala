@@ -108,11 +108,15 @@ defmodule Dala.Terminal.ServerReconnectTest do
 
     state = :sys.get_state(pid)
     shell_pid = state.shell_pid
-    on_exit(fn -> System.cmd("kill", ["-KILL", to_string(shell_pid)], stderr_to_stdout: true) end)
+    on_exit(fn -> Dala.Platform.kill_process_tree(shell_pid) end)
+    ref = Process.monitor(pid)
+
+    if holder_pid = Dala.TerminalCase.holder_os_pid(session.id) do
+      Dala.Platform.kill_process_tree(holder_pid)
+    end
 
     # No listening socket and no exit status: nothing left to reattach to.
     File.rm(Holder.socket_path(to_string(session.id)))
-    ref = Process.monitor(pid)
     send(pid, {:tcp_closed, state.socket})
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000

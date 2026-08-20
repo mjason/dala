@@ -20,7 +20,11 @@ defmodule Dala.Terminal.InputTest do
   end
 
   test "text files become @ references for Claude while images stay bare" do
-    root = Path.join(System.tmp_dir!(), "dala-input-#{System.unique_integer([:positive])}")
+    root =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "dala-input-#{System.unique_integer([:positive])}")
+      )
+
     text = Path.join(root, "notes.txt")
     image = Path.join(root, "screen.png")
     File.mkdir_p!(root)

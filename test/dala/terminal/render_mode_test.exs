@@ -87,20 +87,24 @@ defmodule Dala.Terminal.RenderModeTest do
     pid = Server.whereis(session.id)
     ready!(pid)
 
-    # The drawing goes in its own write, AFTER a tick has passed: the chunk
-    # that carries `?1049h` is deliberately streamed raw (it still holds the
-    # shell's last normal-buffer output ahead of the switch), so a drawing
-    # inside it would reach the client verbatim and prove nothing.
-    run_and_await(
-      session,
-      pid,
-      ~s|printf '\\033[?1049h\\033[H\\033[2J'; sleep 0.15; | <>
-        ~s|printf '\\033[3;5H%sWN' "$V"; | <>
-        ~s|sleep 0.15; printf '\\033[?1049l'|,
-      "DRAWN"
-    )
+    # Establish alternate mode in one command, then draw in a later command.
+    # This tests the render boundary without assuming how an OS batches PTY
+    # writes around a fixed sleep.
+    shell(session, ~s|printf '\\033[?1049h\\033[H\\033[2J'|)
+
+    eventually("alternate screen is active", fn ->
+      match?(
+        {:ok, %{"mode" => "alternate"}},
+        Server.snapshot(session.id, lines: 1, max_bytes: 1_024)
+      )
+    end)
+
+    shell(session, ~s|V=DRA; printf '\\033[3;5H%sWN' "$V"|)
+    eventually("alternate drawing was framed", fn -> seen?(pid, "DRAWN") end)
 
     output = retained_output(pid)
+
+    shell(session, ~s|printf '\\033[?1049l'|)
 
     # A frame's signature: the program addressed row 3 COLUMN 5, the frame
     # repaints whole rows from column 1.

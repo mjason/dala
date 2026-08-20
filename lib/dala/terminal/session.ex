@@ -34,7 +34,7 @@ defmodule Dala.Terminal.Session do
     create :create do
       accept [:scrollback_limit, :ephemeral, :parent_id]
 
-      # Optional; SetDefaults falls back to $SHELL, $HOME and a cwd-based name.
+      # Optional; SetDefaults chooses the platform shell, home directory and a cwd-based name.
       argument :name, :string
       argument :shell, :string
       argument :cwd, :string

@@ -34,9 +34,7 @@ defmodule Dala.Terminal.ForegroundTest do
 
       {:os_pid, os_pid} = Port.info(port, :os_pid)
 
-      on_exit(fn ->
-        System.cmd("kill", ["-KILL", to_string(os_pid)], stderr_to_stdout: true)
-      end)
+      on_exit(fn -> Dala.Platform.kill_process_tree(os_pid) end)
 
       assert Foreground.cmdline(os_pid) == nil
     end

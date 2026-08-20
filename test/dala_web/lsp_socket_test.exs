@@ -4,48 +4,82 @@ defmodule DalaWeb.LspSocketTest do
   alias DalaWeb.LspSocket
 
   @fake_server """
-  #!/usr/bin/env python3
-  import json, sys
+  defmodule FakeLsp do
+    def run do
+      case read_message() do
+        :eof ->
+          :ok
 
-  def read_message():
-      length = None
-      while True:
-          line = sys.stdin.buffer.readline().decode()
-          if line in ("\\r\\n", "\\n", ""):
-              break
-          name, _, value = line.partition(":")
-          if name.strip().lower() == "content-length":
-              length = int(value.strip())
-      return json.loads(sys.stdin.buffer.read(length)) if length else None
+        body ->
+          if String.contains?(body, ~s("method":"exit")) do
+            :ok
+          else
+            response =
+              ~s({"jsonrpc":"2.0","id":1,"result":{"capabilities":{"hoverProvider":true}}})
 
-  def write_message(payload):
-      body = json.dumps(payload).encode()
-      sys.stdout.buffer.write(b"Content-Length: %d\\r\\n\\r\\n" % len(body) + body)
-      sys.stdout.buffer.flush()
+            IO.binwrite(:stdio, [
+              "Content-Length: ",
+              Integer.to_string(byte_size(response)),
+              "\r\n\r\n",
+              response
+            ])
 
-  while True:
-      message = read_message()
-      if message is None or message.get("method") == "exit":
-          break
-      if "id" in message:
-          write_message({"jsonrpc": "2.0", "id": message["id"],
-                         "result": {"capabilities": {"hoverProvider": True}}})
+            run()
+          end
+      end
+    end
+
+    defp read_message do
+      case IO.read(:stdio, :line) do
+        :eof -> :eof
+        line -> read_headers(line, nil)
+      end
+    end
+
+    defp read_headers(line, length) when line in ["\r\n", "\n"] do
+      if length, do: IO.binread(:stdio, length), else: :eof
+    end
+
+    defp read_headers(line, length) do
+      length =
+        case String.split(line, ":", parts: 2) do
+          [name, value] ->
+            if String.downcase(String.trim(name)) == "content-length",
+              do: value |> String.trim() |> String.to_integer(),
+              else: length
+
+          _ ->
+            length
+        end
+
+      case IO.read(:stdio, :line) do
+        :eof -> :eof
+        next -> read_headers(next, length)
+      end
+    end
+  end
+
+  FakeLsp.run()
   """
 
   setup do
-    root = Path.join(System.tmp_dir!(), "lsp-socket-#{System.unique_integer([:positive])}")
+    root =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "lsp-socket-#{System.unique_integer([:positive])}")
+      )
+
     on_exit(fn -> File.rm_rf!(root) end)
     File.mkdir_p!(Path.join(root, ".dala"))
 
-    server = Path.join(root, "fake-lsp.py")
+    server = Path.join(root, "fake-lsp.exs")
     File.write!(server, @fake_server)
-    File.chmod!(server, 0o755)
+    Dala.Platform.chmod!(server, 0o755)
 
-    python = System.find_executable("python3")
+    elixir = System.find_executable("elixir") || raise "elixir executable not found"
 
     File.write!(
       Path.join(root, ".dala/lsp.json"),
-      Jason.encode!(%{python: [%{command: [python, server]}]})
+      Jason.encode!(%{python: [%{command: [elixir, server]}]})
     )
 
     {:ok, root: root}
