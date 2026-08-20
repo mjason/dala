@@ -1,6 +1,6 @@
 defmodule Dala.PathsTest do
   use ExUnit.Case, async: true
-
+  alias Dala.Platform
   alias Dala.Paths
 
   defp tmp_dir!(context) do
@@ -17,11 +17,12 @@ defmodule Dala.PathsTest do
 
   describe "expand_user/1" do
     test "expands a bare ~ to the home directory" do
-      assert Paths.expand_user("~") == System.user_home()
+      assert Paths.expand_user("~") == Path.expand(System.user_home())
     end
 
     test "expands ~/rest against the home directory" do
-      assert Paths.expand_user("~/some/dir") == Path.join(System.user_home(), "some/dir")
+      assert Paths.expand_user("~/some/dir") ==
+               Path.expand(Path.join(System.user_home(), "some/dir"))
     end
 
     test "expands relative paths to absolute ones" do
@@ -30,13 +31,14 @@ defmodule Dala.PathsTest do
     end
 
     test "normalizes absolute paths" do
-      assert Paths.expand_user("/tmp/a/../b/.") == "/tmp/b"
+      assert Paths.expand_user("/tmp/a/../b/.") == Path.expand("/tmp/b")
     end
   end
 
   describe "home/1" do
     test "joins a relative path under the home directory" do
-      assert Paths.home(".config/thing") == Path.join(System.user_home(), ".config/thing")
+      assert Paths.home(".config/thing") ==
+               Path.join(Paths.expand_user(System.user_home()), ".config/thing")
     end
   end
 
@@ -70,16 +72,19 @@ defmodule Dala.PathsTest do
           if File.regular?(path), do: path
         end)
 
-      assert found == Path.join(base, "a/marker")
+      assert comparable_path(found) == comparable_path(Path.join(base, "a/marker"))
     end
 
     test "checks the starting directory itself" do
       base = tmp_dir!("walk-start")
       File.write!(Path.join(base, "marker"), "")
 
-      assert Paths.walk_up(base, fn dir ->
-               if File.regular?(Path.join(dir, "marker")), do: dir
-             end) == base
+      found =
+        Paths.walk_up(base, fn dir ->
+          if File.regular?(Path.join(dir, "marker")), do: dir
+        end)
+
+      assert comparable_path(found) == comparable_path(base)
     end
 
     test "stops at the git toplevel (inclusive) without escaping the repo" do
@@ -90,7 +95,12 @@ defmodule Dala.PathsTest do
       File.mkdir_p!(Path.join(repo, "sub"))
       {_, 0} = System.cmd("git", ["init", "--quiet", repo])
 
-      assert Paths.walk_up(Path.join(repo, "sub"), fn dir ->
+      walk_dir =
+        if Platform.windows?(),
+          do: String.upcase(Path.join(repo, "sub")),
+          else: Path.join(repo, "sub")
+
+      assert Paths.walk_up(walk_dir, fn dir ->
                if File.regular?(Path.join(dir, "marker")), do: dir
              end) == nil
 
@@ -98,16 +108,21 @@ defmodule Dala.PathsTest do
       File.write!(Path.join(repo, "marker"), "")
 
       found =
-        Paths.walk_up(Path.join(repo, "sub"), fn dir ->
+        Paths.walk_up(walk_dir, fn dir ->
           if File.regular?(Path.join(dir, "marker")), do: dir
         end)
 
-      assert found == Paths.git_toplevel(repo)
+      assert comparable_path(found) == comparable_path(Paths.git_toplevel(repo))
     end
 
     test "returns nil at the filesystem root when nothing matches" do
       base = tmp_dir!("walk-none")
       assert Paths.walk_up(base, fn _dir -> nil end) == nil
     end
+  end
+
+  defp comparable_path(path) do
+    path = Path.expand(path)
+    if Platform.windows?(), do: String.downcase(path), else: path
   end
 end

@@ -3,7 +3,12 @@ defmodule Dala.Terminal.AttachmentsTest do
 
   setup do
     root =
-      Path.join(System.tmp_dir!(), "dala-attachments-test-#{System.unique_integer([:positive])}")
+      Dala.Paths.expand_user(
+        Path.join(
+          System.tmp_dir!(),
+          "dala-attachments-test-#{System.unique_integer([:positive])}"
+        )
+      )
 
     File.mkdir_p!(root)
     previous_data_dir = Application.fetch_env!(:dala, :data_dir)
@@ -33,17 +38,25 @@ defmodule Dala.Terminal.AttachmentsTest do
     assert File.dir?(fresh)
   end
 
-  test "validate_path rejects directories and symlinks", %{root: root} do
+  test "validate_path rejects directories and symlinks when the OS permits creating one", %{
+    root: root
+  } do
     regular = Path.join(root, "regular.txt")
     link = Path.join(root, "link.txt")
     File.write!(regular, "x")
-    File.ln_s!(regular, link)
 
     assert {:ok, ^regular} = Dala.Terminal.Attachments.validate_path(regular)
     assert {:error, directory_error} = Dala.Terminal.Attachments.validate_path(root)
     assert directory_error =~ "not a regular file"
-    assert {:error, link_error} = Dala.Terminal.Attachments.validate_path(link)
-    assert link_error =~ "not a regular file"
+
+    case File.ln_s(regular, link) do
+      :ok ->
+        assert {:error, link_error} = Dala.Terminal.Attachments.validate_path(link)
+        assert link_error =~ "not a regular file"
+
+      {:error, reason} when reason in [:eperm, :eacces] ->
+        assert Dala.Platform.windows?()
+    end
   end
 
   test "browser uploads enforce per-file and managed-storage quotas", %{root: root} do

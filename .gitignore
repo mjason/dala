@@ -18,6 +18,7 @@ erl_crash.dump
 
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
+/artifacts/
 
 # Temporary files, for example, from tests.
 /tmp/
@@ -27,6 +28,8 @@ dala-*.tar
 
 # Ignore assets that are produced by build tools.
 /priv/static/assets/
+/priv/static/**/*-????????????????????????????????*
+/priv/static/**/*.gz
 
 # Ignore digested assets cache.
 /priv/static/cache_manifest.json

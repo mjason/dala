@@ -10,6 +10,8 @@ defmodule Dala.Terminal.ServerFloodTest do
 
   use Dala.TerminalCase, async: false
 
+  @flood_lines if(Dala.Platform.windows?(), do: 100_000, else: 400_000)
+
   test "the holder socket is armed with a bounded window" do
     session = create_session!()
     pid = Server.whereis(session.id)
@@ -27,7 +29,7 @@ defmodule Dala.Terminal.ServerFloodTest do
     pid = Server.whereis(session.id)
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
-    Server.input(session.id, "seq 1 400000; printf 'flood-done\\n'\n")
+    Server.input(session.id, "seq 1 #{@flood_lines}; printf 'flood-done\\n'\r")
     # Suspending before the shell has started writing would measure nothing.
     eventually("flood is flowing", fn -> :sys.get_state(pid).seq > 0 end)
 
@@ -51,11 +53,15 @@ defmodule Dala.Terminal.ServerFloodTest do
     session = create_session!()
     pid = Server.whereis(session.id)
     eventually(fn -> is_integer(:sys.get_state(pid).shell_pid) end)
+    {:ok, baseline} = Server.current_seq(session.id)
 
-    Server.input(session.id, "seq 1 400000\n")
-    Server.input(session.id, "printf 'typed-through-flood\\n'\n")
+    Server.input(session.id, "while :; do printf 'flooding-output\\n'; done &\r")
+    eventually("background flood is flowing", fn -> seen?(pid, "flooding-output") end)
+    Server.input(session.id, "kill $!; printf 'typed-through-flood\\n'\r")
 
-    eventually(fn -> seen?(pid, "typed-through-flood") end)
+    assert {:ok, %{reason: "match", match: "typed-through-flood"}} =
+             Server.wait(session.id, baseline, timeout: 15_000, match: "typed-through-flood")
+
     assert Dala.Terminal.get_session!(session.id).status == :running
 
     # The window must be wide enough that ordinary flooding never stalls the

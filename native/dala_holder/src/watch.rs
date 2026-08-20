@@ -121,10 +121,10 @@ fn affected_dir(path: &Path, root: &Path) -> PathBuf {
 /// Compared canonicalized so symlinked spellings don't slip through.
 fn pathological_root(root: &Path) -> Option<&'static str> {
     let canon = root.canonicalize().ok()?;
-    if canon == Path::new("/") {
+    if canon == Path::new("/") || canon.parent().is_none() {
         return Some("root is /");
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         if let Ok(home) = PathBuf::from(home).canonicalize() {
             if canon == home {
                 return Some("root is $HOME");

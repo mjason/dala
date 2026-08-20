@@ -5,7 +5,7 @@ defmodule Dala.MixProject do
     [
       app: :dala,
       version: "0.27.2",
-      elixir: "~> 1.17",
+      elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -128,6 +128,8 @@ defmodule Dala.MixProject do
   end
 
   defp aliases do
+    npm = if match?({:win32, :nt}, :os.type()), do: "cmd.exe /c npm", else: "npm"
+
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
@@ -137,10 +139,10 @@ defmodule Dala.MixProject do
         "tailwind.install --if-missing",
         "ash_typescript.npm_install"
       ],
-      "assets.build": ["compile", "tailwind dala", "cmd --cd assets npm run build"],
+      "assets.build": ["compile", "tailwind dala", "cmd --cd assets #{npm} run build"],
       "assets.deploy": [
         "tailwind dala --minify",
-        "cmd --cd assets npm run build",
+        "cmd --cd assets #{npm} run build",
         "phx.digest"
       ],
       # The browser layer. NOT part of precommit: the suite takes ~20 minutes
@@ -151,10 +153,10 @@ defmodule Dala.MixProject do
       # because nobody ran it.
       e2e: ["cmd --cd e2e npx playwright test"],
       precommit: [
+        "cmd --cd assets #{npm} run check",
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format",
-        "cmd --cd assets npm run check",
         "test"
       ],
       "ash.setup": ["ash.setup", "run priv/repo/seeds.exs"]

@@ -23,16 +23,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          elixir-version: "1.19"
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ steps.versions.outputs.node }}
           cache: npm
           cache-dependency-path: assets/package-lock.json
 
@@ -105,19 +117,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+
       - name: Verify Apple Silicon runner
         run: test "$(uname -m)" = "arm64"
 
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          elixir-version: "1.19"
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ steps.versions.outputs.node }}
           cache: npm
           cache-dependency-path: assets/package-lock.json
 
@@ -257,9 +281,100 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
+  windows:
+    name: Build windows-x86_64 server
+    runs-on: windows-latest
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+      - name: Activate and verify pinned Windows toolchain
+        shell: pwsh
+        run: .\scripts\windows\activate-toolchain.ps1 -UseCurrentTools -ExportGithubEnv
+      - name: Install dependencies
+        run: |
+          mix deps.get --only prod
+          npm ci --prefix assets
+      - name: Compile server and assets
+        run: |
+          mix compile
+          mix tailwind.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+      - name: Smoke-test assembled release
+        shell: pwsh
+        run: |
+          $release = "_build/prod/rel/dala"
+          $versioned = Get-ChildItem "$release/lib/dala-*" | Select-Object -First 1
+          if (-not (Test-Path "$versioned/priv/bin/dala_holder.exe")) { throw "dala_holder.exe missing" }
+          if (-not (Test-Path "$versioned/priv/native/dala_git.dll")) { throw "dala_git.dll missing" }
+          if (-not (Test-Path "$versioned/priv/native/dala_theme_renderer.dll")) { throw "dala_theme_renderer.dll missing" }
+          $ertsVersion = (& erl.exe -noshell -eval 'io:format("~s", [erlang:system_info(version)]), halt().' | Out-String).Trim()
+          $ertsDirectories = @(Get-ChildItem -LiteralPath $release -Directory -Filter "erts-*")
+          if ($ertsDirectories.Count -ne 1 -or $ertsDirectories[0].Name -ne "erts-$ertsVersion") {
+            throw "Expected only erts-$ertsVersion in the release, found: $($ertsDirectories.Name -join ', ')"
+          }
+          $expectedVersion = $env:GITHUB_REF_NAME.TrimStart("v")
+          $releaseVersion = (& "$release/bin/dala.bat" version | Out-String).Trim()
+          if ($releaseVersion -ne "dala $expectedVersion") {
+            throw "Expected dala $expectedVersion, got $releaseVersion"
+          }
+          $smokeExpression = 'true = Code.ensure_loaded? Dala.Git; true = Code.ensure_loaded? Dala.ThemeRenderer'
+          & "$release/bin/dala.bat" eval $smokeExpression
+          if ($LASTEXITCODE -ne 0) { throw "Windows release smoke test failed" }
+      - name: Verify Windows install and update lifecycle
+        shell: pwsh
+        run: |
+          $release = (Resolve-Path "_build/prod/rel/dala").Path
+          New-Item -ItemType Directory -Force "$release/scripts/windows" | Out-Null
+          Copy-Item scripts/windows/* "$release/scripts/windows/"
+          & "$release/scripts/windows/test-lifecycle.ps1" `
+            -ReleaseRoot $release `
+            -InstallRoot "$env:RUNNER_TEMP/DalaLifecycle" `
+            -TaskName "Dala-CI-$env:GITHUB_RUN_ID" `
+            -Version $env:GITHUB_REF_NAME `
+            -Port 4417
+      - name: Package release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "_build/prod/rel/dala/scripts/windows" | Out-Null
+          Copy-Item scripts/windows/* "_build/prod/rel/dala/scripts/windows/"
+          $out = "dala-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          Compress-Archive -Path "_build/prod/rel/dala/*" -DestinationPath $out -Force
+          $hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+          "$hash  $out" | Set-Content "$out.sha256"
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Move-Item $out, "$out.sha256" artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-windows-x86_64
+          path: artifacts/
+          if-no-files-found: error
+
   publish:
     name: Publish server release
-    needs: [linux, macos]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -277,6 +392,12 @@ jobs:
             tar -tzf "$archive" > "$CONTENTS"
             grep -q '/priv/native/dala_git.so$' "$CONTENTS"
             grep -q '/priv/native/dala_theme_renderer.so$' "$CONTENTS"
+          done
+          for archive in ./*.zip; do
+            unzip -l "$archive" > "$RUNNER_TEMP/$(basename "$archive").txt"
+            grep -q 'priv/bin/dala_holder.exe' "$RUNNER_TEMP/$(basename "$archive").txt"
+            grep -q 'priv/native/dala_git.dll' "$RUNNER_TEMP/$(basename "$archive").txt"
+            grep -q 'priv/native/dala_theme_renderer.dll' "$RUNNER_TEMP/$(basename "$archive").txt"
           done
 
       - name: Reject duplicate publication

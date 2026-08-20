@@ -6,7 +6,11 @@ defmodule Dala.Mcp.FileToolsTest do
   setup do
     Dala.Settings.Mcp.current()
 
-    dir = Path.join(System.tmp_dir!(), "dala-filetool-#{System.unique_integer([:positive])}")
+    dir =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "dala-filetool-#{System.unique_integer([:positive])}")
+      )
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
 

@@ -22,9 +22,17 @@ defmodule Dala.Updater.Release do
       else: "unsupported"
   end
 
+  def platform({:win32, :nt}, architecture) do
+    if String.contains?(to_string(architecture), "x86_64"),
+      do: "windows-x86_64",
+      else: "unsupported"
+  end
+
   def platform(_os_type, _architecture), do: "unsupported"
 
-  def asset_suffix(platform \\ platform()), do: "#{platform}.tar.gz"
+  def asset_suffix(platform \\ platform())
+  def asset_suffix("windows-x86_64"), do: "windows-x86_64.zip"
+  def asset_suffix(platform), do: "#{platform}.tar.gz"
 
   @doc "True when `latest` and `current` parse as versions and `latest` is strictly newer."
   def newer?(latest, current) do
@@ -39,8 +47,12 @@ defmodule Dala.Updater.Release do
   drafts/prereleases don't count.
   """
   def server_release?(release) do
-    is_binary(release["tag_name"]) and release["tag_name"] =~ ~r/^v\d/ and
+    with "v" <> version <- release["tag_name"],
+         {:ok, _parsed} <- Version.parse(version) do
       release["draft"] != true and release["prerelease"] != true
+    else
+      _ -> false
+    end
   end
 
   @doc "Download URL of the release's server tarball asset for this platform."

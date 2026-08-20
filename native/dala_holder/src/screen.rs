@@ -774,7 +774,8 @@ impl Screen {
 
         // A resize invalidates every stored row, and an unprimed tracker means
         // the client has never seen this alternate screen at all.
-        let full = !tracker.primed || tracker.columns != columns || tracker.rows.len() != screen_lines;
+        let full =
+            !tracker.primed || tracker.columns != columns || tracker.rows.len() != screen_lines;
         if full {
             // Enter the alternate buffer WITHOUT a RIS: the client's normal
             // buffer and its scrollback have to survive `vim`, and a real
@@ -855,7 +856,14 @@ impl Screen {
         let mut pen = Pen::default();
         for index in 0..grid.screen_lines() {
             out.extend_from_slice(format!("\x1b[{};1H", index + 1).as_bytes());
-            render_row(&mut out, &mut pen, grid, Line(index as i32), grid.columns(), false);
+            render_row(
+                &mut out,
+                &mut pen,
+                grid,
+                Line(index as i32),
+                grid.columns(),
+                false,
+            );
         }
         pen.reset(&mut out);
 
@@ -2748,7 +2756,6 @@ mod frame_tests {
     }
 }
 
-
 #[cfg(test)]
 mod bench {
     use super::*;
@@ -2805,14 +2812,22 @@ mod bench {
         for _ in 0..n {
             parse_into.advance(std::hint::black_box(&chunk));
         }
-        per_op("advance 16 KiB (parsing already on the path)", n, start.elapsed());
+        per_op(
+            "advance 16 KiB (parsing already on the path)",
+            n,
+            start.elapsed(),
+        );
 
         let mut answering = Screen::new(50, 200, 10_000);
         let start = Instant::now();
         for _ in 0..n {
             std::hint::black_box(answering.advance_answering(std::hint::black_box(&chunk)));
         }
-        per_op("advance_answering 16 KiB (scans + parse)", n, start.elapsed());
+        per_op(
+            "advance_answering 16 KiB (scans + parse)",
+            n,
+            start.elapsed(),
+        );
 
         let start = Instant::now();
         for _ in 0..n {
@@ -2854,6 +2869,10 @@ mod bench {
         for _ in 0..n {
             std::hint::black_box(screen.repaint(false));
         }
-        per_op("repaint (full snapshot, for comparison)", n, start.elapsed());
+        per_op(
+            "repaint (full snapshot, for comparison)",
+            n,
+            start.elapsed(),
+        );
     }
 }

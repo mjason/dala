@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Compile.DalaHolder do
   use Mix.Task.Compiler
 
   @crate "native/dala_holder"
-  @target "priv/bin/dala_holder"
+  @target_root "priv/bin/dala_holder"
 
   @impl true
   def run(_args) do
@@ -26,19 +26,22 @@ defmodule Mix.Tasks.Compile.DalaHolder do
         Mix.raise("cargo build for dala_holder failed:\n#{output}")
       end
 
-      File.mkdir_p!(Path.dirname(@target))
-      # Unlink first: overwriting the binary while a holder is executing it
-      # fails with ETXTBSY; removing gives the copy a fresh inode and leaves
-      # running holders on the old image.
-      _ = File.rm(@target)
-      File.cp!(Path.join(@crate, "target/release/dala_holder"), @target)
+      artifact = Path.join([@crate, "target/release", executable_name()])
+
+      for target <- [source_target_path(), build_target_path()] do
+        File.mkdir_p!(Path.dirname(target))
+        # Unlink first: overwriting a running binary fails on some platforms;
+        # a fresh file leaves existing holders on their old image.
+        _ = File.rm(target)
+        File.cp!(artifact, target)
+      end
     end
 
     {:ok, []}
   end
 
   defp stale? do
-    case File.stat(@target, time: :posix) do
+    case File.stat(build_target_path(), time: :posix) do
       {:error, _reason} ->
         true
 
@@ -52,4 +55,13 @@ defmodule Mix.Tasks.Compile.DalaHolder do
         end)
     end
   end
+
+  defp source_target_path, do: executable_path(@target_root)
+
+  defp build_target_path,
+    do: Path.join(Mix.Project.app_path(), executable_path(@target_root))
+
+  defp executable_path(path), do: path <> executable_suffix()
+  defp executable_name, do: "dala_holder" <> executable_suffix()
+  defp executable_suffix, do: if(match?({:win32, :nt}, :os.type()), do: ".exe", else: "")
 end

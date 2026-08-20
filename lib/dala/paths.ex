@@ -7,6 +7,8 @@ defmodule Dala.Paths do
   are built on CI where `$HOME` is not the user's.
   """
 
+  @git_toplevel_timeout_ms 10_000
+
   @doc """
   Expands a path to an absolute one, treating a leading `~` as the user's
   home directory (falling back to `/` when `$HOME` is unset).
@@ -15,16 +17,28 @@ defmodule Dala.Paths do
   def expand_user(path), do: Path.expand(path)
 
   @doc "A path under the user's home directory (or `/` when `$HOME` is unset)."
-  def home(rel), do: Path.join(System.user_home() || "/", rel)
+  def home(rel), do: Path.join(expand_user(System.user_home() || "/"), rel)
 
   @doc """
   The toplevel of the git work tree containing `dir`, or `nil` when the
   directory is outside any repository (or `git` itself is unavailable).
   """
   def git_toplevel(dir) do
-    case System.cmd("git", ["-C", dir, "rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
-      {out, 0} -> String.trim(out)
-      _ -> nil
+    git = System.find_executable("git") || "git"
+
+    case Dala.ShellPort.run(
+           [git, "-C", dir, "rev-parse", "--show-cdup"],
+           "/dev/null",
+           @git_toplevel_timeout_ms
+         ) do
+      {:ok, out, 0} ->
+        case String.trim(out) do
+          "" -> Path.expand(dir)
+          relative -> Path.expand(Path.join(dir, relative))
+        end
+
+      _ ->
+        nil
     end
   rescue
     _ -> nil
@@ -37,8 +51,9 @@ defmodule Dala.Paths do
   (the stop directory itself IS checked).
   """
   def walk_up(dir, fun) when is_function(fun, 1) do
+    dir = expand_user(dir)
     top = git_toplevel(dir)
-    home = System.user_home()
+    home = System.user_home() && expand_user(System.user_home())
 
     Stream.iterate(dir, &Path.dirname/1)
     |> Enum.reduce_while(nil, fn current, _acc ->
@@ -46,12 +61,24 @@ defmodule Dala.Paths do
         result = fun.(current) ->
           {:halt, result}
 
-        current == top or current == home or Path.dirname(current) == current ->
+        same_path?(current, top) or same_path?(current, home) or
+            same_path?(Path.dirname(current), current) ->
           {:halt, nil}
 
         true ->
           {:cont, nil}
       end
     end)
+  end
+
+  defp same_path?(left, right) when is_binary(left) and is_binary(right) do
+    canonical_path(left) == canonical_path(right)
+  end
+
+  defp same_path?(_left, _right), do: false
+
+  defp canonical_path(path) do
+    path = Path.expand(path)
+    if Dala.Platform.windows?(), do: String.downcase(path), else: path
   end
 end

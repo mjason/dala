@@ -66,9 +66,22 @@ defmodule Dala.Terminal.ServerPacingTest do
       pid = Server.whereis(session.id)
       eventually("shell is up", fn -> is_integer(:sys.get_state(pid).shell_pid) end)
 
-      assert out_window(pid) == Pacing.out_window_floor()
+      eventually("startup output goes idle", fn ->
+        state = :sys.get_state(pid)
 
-      Server.input(session.id, "seq 1 400000; printf 'pacing-done\\n'\n")
+        is_nil(state.out_timer) and
+          System.monotonic_time(:millisecond) - state.out_last_at >= 100
+      end)
+
+      socket = :sys.get_state(pid).socket
+      send(pid, {:tcp, socket, <<Holder.type_output()>> <> "baseline"})
+
+      eventually("baseline window closes at the floor", fn ->
+        state = :sys.get_state(pid)
+        is_nil(state.out_timer) and state.out_window == Pacing.out_window_floor()
+      end)
+
+      Server.input(session.id, "seq 1 50000; printf 'pacing-done\\n'\r")
 
       eventually("window widens", fn -> out_window(pid) > Pacing.out_window_floor() end)
 

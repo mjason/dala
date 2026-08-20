@@ -4,7 +4,11 @@ defmodule Dala.Lsp.DiscoveryTest do
   alias Dala.Lsp.Discovery
 
   setup do
-    root = Path.join(System.tmp_dir!(), "lsp-discovery-#{System.unique_integer([:positive])}")
+    root =
+      Dala.Paths.expand_user(
+        Path.join(System.tmp_dir!(), "lsp-discovery-#{System.unique_integer([:positive])}")
+      )
+
     on_exit(fn -> File.rm_rf!(root) end)
     File.mkdir_p!(root)
     {:ok, root: root}
@@ -13,26 +17,36 @@ defmodule Dala.Lsp.DiscoveryTest do
   defp fake_bin(root, rel) do
     path = Path.join(root, rel)
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, "#!/bin/sh\n")
-    File.chmod!(path, 0o755)
+    File.write!(path, if(Dala.Platform.windows?(), do: "@echo off\r\n", else: "#!/bin/sh\n"))
+    Dala.Platform.chmod!(path, 0o755)
     path
   end
+
+  defp venv_rel(name) do
+    if Dala.Platform.windows?(),
+      do: ".venv/Scripts/#{name}.cmd",
+      else: ".venv/bin/#{name}"
+  end
+
+  defp venv_bin(root, name), do: fake_bin(root, venv_rel(name))
 
   test "unknown extensions get no servers", %{root: root} do
     assert Discovery.servers(root, "notes.txt") == []
   end
 
   test "venv basedpyright wins for python", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/basedpyright-langserver")
-    fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = venv_bin(root, "basedpyright-langserver")
+    venv_bin(root, "pyright-langserver")
 
     assert [%{name: "basedpyright", command: [^bin, "--stdio"]}] =
              Discovery.servers(root, "main.py")
   end
 
   test "framework servers are NOT guessed — dala.jsonc declares them", %{root: root} do
-    pyright = fake_bin(root, ".venv/bin/pyright-langserver")
-    dm = fake_bin(root, ".venv/bin/dm")
+    pyright_rel = venv_rel("pyright-langserver")
+    dm_rel = venv_rel("dm")
+    pyright = fake_bin(root, pyright_rel)
+    dm = fake_bin(root, dm_rel)
     File.write!(Path.join(root, "dmagic.py"), "workspace = ...\n")
 
     # no config: only the universal convention (venv pyright) is found
@@ -42,8 +56,8 @@ defmodule Dala.Lsp.DiscoveryTest do
     {
       "lsp": {
         "python": [
-          { "command": [".venv/bin/pyright-langserver", "--stdio"] },
-          { "command": [".venv/bin/dm", "lsp"] } // dark-magician DSL server
+          { "command": ["#{pyright_rel}", "--stdio"] },
+          { "command": ["#{dm_rel}", "lsp"] } // dark-magician DSL server
         ]
       }
     }
@@ -56,7 +70,7 @@ defmodule Dala.Lsp.DiscoveryTest do
   end
 
   test ".dala/lsp.json overrides discovery, relative commands resolve", %{root: root} do
-    fake_bin(root, ".venv/bin/basedpyright-langserver")
+    venv_bin(root, "basedpyright-langserver")
     custom = fake_bin(root, "tools/my-lsp")
     File.mkdir_p!(Path.join(root, ".dala"))
 
@@ -70,7 +84,7 @@ defmodule Dala.Lsp.DiscoveryTest do
   end
 
   test "malformed .dala/lsp.json falls back to discovery", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = venv_bin(root, "pyright-langserver")
     File.mkdir_p!(Path.join(root, ".dala"))
     File.write!(Path.join(root, ".dala/lsp.json"), "not json {")
 
@@ -78,7 +92,7 @@ defmodule Dala.Lsp.DiscoveryTest do
   end
 
   test "probe records every candidate checked, found or not", %{root: root} do
-    bin = fake_bin(root, ".venv/bin/pyright-langserver")
+    bin = venv_bin(root, "pyright-langserver")
 
     probe = Discovery.probe(root, "main.py")
     assert probe.language == "python"
@@ -189,7 +203,7 @@ defmodule Dala.Lsp.DiscoveryTest do
 
   test "projects entry without lsp falls back to discovery at the sub-root", %{root: root} do
     File.mkdir_p!(Path.join(root, ".git"))
-    venv = fake_bin(root, "backend/.venv/bin/pyright-langserver")
+    venv = venv_bin(Path.join(root, "backend"), "pyright-langserver")
 
     File.write!(
       Path.join(root, "dala.jsonc"),
@@ -227,7 +241,7 @@ defmodule Dala.Lsp.DiscoveryTest do
 
     # auto-discovered servers carry nil options
     File.rm!(Path.join(root, "dala.jsonc"))
-    fake_bin(root, ".venv/bin/pyright-langserver")
+    venv_bin(root, "pyright-langserver")
     assert [%{initialization_options: nil, settings: nil}] = Discovery.servers(root, "main.py")
   end
 

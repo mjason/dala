@@ -20,6 +20,7 @@ defmodule Dala.Terminal.Holder do
   @type_repaint_req 0x14
   @type_text_snapshot_req 0x15
   @type_latency 0x16
+  @type_auth 0x10
   @repaint_history_budget 512 * 1024
 
   @connect_attempts 40
@@ -47,6 +48,7 @@ defmodule Dala.Terminal.Holder do
   end
 
   def socket_path(id), do: Path.join(dir(), id <> ".sock")
+  def token_path(id), do: socket_path(id) <> ".token"
   def exit_path(id), do: socket_path(id) <> ".exit"
   def final_path(id), do: socket_path(id) <> ".final"
   def text_final_path(id), do: socket_path(id) <> ".text"
@@ -108,6 +110,7 @@ defmodule Dala.Terminal.Holder do
         # Stale leftovers from a crashed holder must not block the bind, and a
         # stale exit file must not shadow this fresh shell's eventual status.
         _ = File.rm(socket_path(id))
+        _ = File.rm(token_path(id))
         _ = File.rm(exit_path(id))
         _ = File.rm(final_path(id))
         _ = File.rm(text_final_path(id))
@@ -123,11 +126,10 @@ defmodule Dala.Terminal.Holder do
     path = socket_path(id)
 
     if File.exists?(path) do
-      :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
-        :binary,
-        packet: 4,
-        active: @active_frames
-      ])
+      with {:ok, socket} <- connect_socket(path),
+           :ok <- authenticate(socket, id) do
+        {:ok, socket}
+      end
     else
       {:error, :enoent}
     end
@@ -174,6 +176,7 @@ defmodule Dala.Terminal.Holder do
 
   defp spawn_holder(id, opts) do
     binary = binary_path()
+    token = Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
 
     config =
       Jason.encode!(%{
@@ -185,16 +188,23 @@ defmodule Dala.Terminal.Holder do
         env_remove: Keyword.get(opts, :env_remove, []),
         rows: Keyword.get(opts, :rows, 24),
         cols: Keyword.get(opts, :cols, 80),
-        history_lines: Keyword.get(opts, :history_lines, 10_000)
+        history_lines: Keyword.get(opts, :history_lines, 10_000),
+        token: token
       })
 
     File.mkdir_p!(dir())
+    File.write!(token_path(id), token)
+    encoded_config = Base.encode16(config, case: :lower)
 
     # The holder daemonizes (its foreground parent exits immediately), so this
     # returns as soon as the socket is being set up.
-    case System.cmd(binary, [config], stderr_to_stdout: true) do
-      {_out, 0} -> :ok
-      {out, code} -> {:error, {:holder_spawn_failed, code, String.trim(out)}}
+    case System.cmd(binary, ["hex:" <> encoded_config], stderr_to_stdout: true) do
+      {_out, 0} ->
+        :ok
+
+      {out, code} ->
+        _ = File.rm(token_path(id))
+        {:error, {:holder_spawn_failed, code, String.trim(out)}}
     end
   end
 
@@ -211,7 +221,38 @@ defmodule Dala.Terminal.Holder do
     end)
   end
 
-  defp binary_path do
-    Path.join(:code.priv_dir(:dala), "bin/dala_holder")
+  @doc false
+  def binary_path do
+    suffix = if match?({:win32, :nt}, :os.type()), do: ".exe", else: ""
+    Path.join(:code.priv_dir(:dala), "bin/dala_holder" <> suffix)
+  end
+
+  defp connect_socket(path) do
+    case :os.type() do
+      {:win32, :nt} ->
+        with {:ok, endpoint} <- File.read(path),
+             [host, port] <- String.split(String.trim(endpoint), ":", parts: 2),
+             {port, ""} <- Integer.parse(port),
+             {:ok, address} <- :inet.parse_address(String.to_charlist(host)) do
+          :gen_tcp.connect(address, port, [:binary, packet: 4, active: @active_frames])
+        else
+          _ -> {:error, :invalid_holder_endpoint}
+        end
+
+      _ ->
+        :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [
+          :binary,
+          packet: 4,
+          active: @active_frames
+        ])
+    end
+  end
+
+  defp authenticate(socket, id) do
+    case File.read(token_path(id)) do
+      {:ok, token} -> :gen_tcp.send(socket, <<@type_auth, token::binary>>)
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 end

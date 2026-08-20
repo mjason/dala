@@ -4171,11 +4171,11 @@ export async function validateTranscribe(
 }
 
 
-export type ApplyUpdateFields = UnifiedFieldSelection<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}>[];
+export type ApplyUpdateFields = UnifiedFieldSelection<{state: string, target: string, __type: "TypedMap", __primitiveFields: "state" | "target"}>[];
 
 export type InferApplyUpdateResult<
   Fields extends ApplyUpdateFields | undefined,
-> = InferResult<{updatedTo: string, __type: "TypedMap", __primitiveFields: "updatedTo"}, Fields>;
+> = InferResult<{state: string, target: string, __type: "TypedMap", __primitiveFields: "state" | "target"}, Fields>;
 
 export type ApplyUpdateResult<Fields extends ApplyUpdateFields | undefined = undefined> = | { success: true; data: InferApplyUpdateResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -4235,11 +4235,11 @@ export async function validateApplyUpdate(
 }
 
 
-export type CheckUpdateFields = UnifiedFieldSelection<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "legacyEnvConfig"}>[];
+export type CheckUpdateFields = UnifiedFieldSelection<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, updateState: string | null, updateMessage: string | null, updateVersion: string | null, updateUpdatedAt: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "updateState" | "updateMessage" | "updateVersion" | "updateUpdatedAt" | "legacyEnvConfig"}>[];
 
 export type InferCheckUpdateResult<
   Fields extends CheckUpdateFields | undefined,
-> = InferResult<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "legacyEnvConfig"}, Fields>;
+> = InferResult<{enabled: boolean, current: string, latest: string | null, tag: string | null, updateAvailable: boolean, notesUrl: string | null, updateState: string | null, updateMessage: string | null, updateVersion: string | null, updateUpdatedAt: string | null, legacyEnvConfig: boolean, __type: "TypedMap", __primitiveFields: "enabled" | "current" | "latest" | "tag" | "updateAvailable" | "notesUrl" | "updateState" | "updateMessage" | "updateVersion" | "updateUpdatedAt" | "legacyEnvConfig"}, Fields>;
 
 export type CheckUpdateResult<Fields extends CheckUpdateFields | undefined = undefined> = | { success: true; data: InferCheckUpdateResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

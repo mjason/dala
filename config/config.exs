@@ -96,7 +96,8 @@ config :dala, DalaWeb.Endpoint,
 # Configure LiveView
 config :phoenix_live_view,
   # the attribute set on all root tags. Used for Phoenix.LiveView.ColocatedCSS.
-  root_tag_attribute: "phx-r"
+  root_tag_attribute: "phx-r",
+  colocated_assets: [disable_symlink_warning: true]
 
 # Configure the mailer
 #
@@ -108,6 +109,8 @@ config :phoenix_live_view,
 config :dala, Dala.Mailer, adapter: Swoosh.Adapters.Local
 
 # Configure tailwind (the version is required)
+node_path_separator = if match?({:win32, :nt}, :os.type()), do: ";", else: ":"
+
 config :tailwind,
   version: "4.3.0",
   dala: [
@@ -124,7 +127,7 @@ config :tailwind,
             Path.expand(Mix.Project.build_path()),
             Path.expand("../_build/dev", __DIR__)
           ],
-          ":"
+          node_path_separator
         )
     }
   ]

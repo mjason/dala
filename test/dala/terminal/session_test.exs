@@ -1,22 +1,5 @@
 defmodule Dala.Terminal.SessionTest do
-  use Dala.DataCase, async: false
-
-  alias Dala.Terminal.{Holder, Server}
-
-  @moduletag :terminal
-
-  defp create_session!(attrs \\ %{}) do
-    session = Dala.Terminal.create_session!(Map.merge(%{shell: "/bin/bash"}, attrs))
-
-    on_exit(fn ->
-      Server.shutdown_and_wait(session.id)
-      File.rm(Holder.exit_path(to_string(session.id)))
-      File.rm(Holder.final_path(to_string(session.id)))
-      File.rm(Holder.text_final_path(to_string(session.id)))
-    end)
-
-    session
-  end
+  use Dala.TerminalCase, async: false
 
   defp tcp_pair do
     opts = [:binary, active: false, packet: 4]
@@ -31,16 +14,6 @@ defmodule Dala.Terminal.SessionTest do
   defp await_exit(session_id) do
     ref = Process.monitor(Server.whereis(session_id))
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 8_000
-  end
-
-  defp eventually(fun, attempts \\ 40) do
-    if fun.() do
-      :ok
-    else
-      if attempts == 0, do: flunk("condition never became true")
-      Process.sleep(100)
-      eventually(fun, attempts - 1)
-    end
   end
 
   # The holder-side emulator's synthesized screen for a running session.
@@ -247,8 +220,12 @@ defmodule Dala.Terminal.SessionTest do
     session = create_session!(%{cwd: dir})
     assert session.cwd == dir
 
-    Server.input(session.id, "echo marker-$PWD\r")
-    eventually(fn -> repaint_text(session.id) =~ "marker-#{dir}" end)
+    marker = Path.join(dir, ".dala-cwd-marker")
+    Server.input(session.id, "printf cwd-ok > .dala-cwd-marker\r")
+
+    eventually("shell writes relative to configured cwd", fn ->
+      File.read(marker) == {:ok, "cwd-ok"}
+    end)
   end
 
   test "OSC 777 agent events reach the sessions topic" do
@@ -267,10 +244,23 @@ defmodule Dala.Terminal.SessionTest do
 
   test "foreground_app reports the process owning the tty" do
     session = create_session!()
-    eventually(fn -> match?({:ok, %{app: "shell"}}, Server.foreground_app(session.id)) end)
+
+    eventually("plain shell is detected", fn ->
+      match?({:ok, %{app: "shell"}}, Server.foreground_app(session.id))
+    end)
 
     Server.input(session.id, "sleep 5\r")
-    eventually(fn -> match?({:ok, %{cmdline: "sleep 5"}}, Server.foreground_app(session.id)) end)
+
+    eventually("foreground command is detected", fn ->
+      case Server.foreground_app(session.id) do
+        {:ok, %{cmdline: cmdline}} ->
+          cmdline = String.downcase(cmdline)
+          String.contains?(cmdline, "sleep") and String.ends_with?(cmdline, " 5")
+
+        _other ->
+          false
+      end
+    end)
   end
 
   test "ephemeral session destroys itself when the shell exits" do
@@ -377,19 +367,21 @@ defmodule Dala.Terminal.SessionTest do
   end
 
   test "queued rich-input jobs never interleave between callers" do
-    session = create_session!()
-    path = Path.join(System.tmp_dir!(), "dala-input-queue-#{System.unique_integer([:positive])}")
-    on_exit(fn -> File.rm(path) end)
+    dir = Path.join(System.tmp_dir!(), "dala-input-queue-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    session = create_session!(%{cwd: dir})
+    path = Path.join(dir, "queue.txt")
 
     first = [
-      {"printf A > #{path};", 150},
-      {"printf B >> #{path}\r", 0}
+      {"printf A > queue.txt;", 150},
+      {"printf B >> queue.txt\r", 0}
     ]
 
     assert {:ok, _baseline} = Server.send_sequence(session.id, first)
-    assert {:ok, _baseline} = Server.send_sequence(session.id, [{"printf C >> #{path}\r", 0}])
+    assert {:ok, _baseline} = Server.send_sequence(session.id, [{"printf C >> queue.txt\r", 0}])
 
-    eventually(fn -> File.read(path) == {:ok, "ABC"} end)
+    eventually("queued input remains FIFO", fn -> File.read(path) == {:ok, "ABC"} end)
   end
 
   test "repaint restores modes a TUI enabled" do
@@ -405,11 +397,16 @@ defmodule Dala.Terminal.SessionTest do
 
   test "OSC 7 in the output stream updates the session cwd" do
     session = create_session!()
+    cwd = Path.join(System.tmp_dir!(), "dala-osc-cwd-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(cwd)
+    on_exit(fn -> File.rm_rf(cwd) end)
+    cwd = Dala.Paths.expand_user(cwd)
+    uri_path = if Dala.Platform.windows?(), do: "/" <> cwd, else: cwd
 
     # What a shell integration (or zellij passing it through) emits on chpwd.
-    Server.input(session.id, "printf '\\e]7;file://%s/tmp\\a' \"$HOST\"\r")
+    Server.input(session.id, "printf '\\e]7;file://localhost#{uri_path}\\a'\r")
 
-    eventually(fn -> Dala.Terminal.get_session!(session.id).cwd == "/tmp" end)
+    eventually("OSC 7 updates cwd", fn -> Dala.Terminal.get_session!(session.id).cwd == cwd end)
   end
 
   test "close kills the shell and marks the session exited" do

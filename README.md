@@ -40,7 +40,37 @@ This installs a prebuilt native release as a **user daemon** on
 under launchd on Apple Silicon Macs.
 Config lives in `~/.config/dala/config.jsonc`, data in `~/.local/share/dala`.
 
-To update later — either click the sidebar update button, or:
+### Windows (x86_64)
+
+Windows 10 1809+ and Windows 11 are supported natively. Download the
+`dala-<version>-windows-x86_64.zip` server asset, extract it, and run
+`scripts/windows/install-service.ps1` from the release directory in PowerShell.
+It installs Dala for the current user under `%LOCALAPPDATA%\Dala` and registers
+a logon Scheduled Task; administrator rights are not required. The task uses
+PowerShell as the default terminal shell and can be removed with
+`scripts/windows/uninstall-service.ps1` (releases and user data are preserved).
+
+Windows uses `versions\vX.Y.Z` plus an atomic `current.txt` pointer, so neither
+symbolic links nor Developer Mode are required. Updates activate out of process,
+health-check the new version, and restore the previous pointer if startup fails.
+
+Development uses the exact versions in [`toolchain.json`](toolchain.json): OTP
+28.5.0.5, Elixir 1.19.5, Node 22.23.2 and Rust 1.94.1. On Windows, ensure the
+active runtime is OTP 28.5.0.5; Elixir's "compiled with OTP" line alone does
+not identify the runtime currently executing it.
+
+Install those versions under `%USERPROFILE%\tools` and activate them together
+with the MSVC x64 build environment before running Mix or Cargo commands:
+
+```powershell
+. .\scripts\windows\activate-toolchain.ps1
+```
+
+Set `DALA_TOOLCHAIN_ROOT` first if the Erlang, Elixir and Node directories live
+elsewhere. CI and local troubleshooting can run `verify-toolchain.ps1` directly
+to reject a shell whose active versions do not match `toolchain.json`.
+
+To update later, use the sidebar update button. On Linux or macOS, you can also run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash

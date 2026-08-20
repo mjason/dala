@@ -134,9 +134,9 @@ defmodule Dala.Terminal.Attachments do
 
       result =
         with :ok <- File.mkdir_p(dir),
-             :ok <- File.chmod(dir, 0o700),
+             :ok <- Dala.Platform.chmod(dir, 0o700),
              :ok <- writer.(path),
-             :ok <- File.chmod(path, 0o600) do
+             :ok <- Dala.Platform.chmod(path, 0o600) do
           {:ok,
            %{
              path: path,
@@ -197,7 +197,7 @@ defmodule Dala.Terminal.Attachments do
   end
 
   defp ensure_root(root) do
-    with :ok <- File.mkdir_p(root), :ok <- File.chmod(root, 0o700), do: :ok
+    with :ok <- File.mkdir_p(root), :ok <- Dala.Platform.chmod(root, 0o700), do: :ok
   end
 
   @doc false
