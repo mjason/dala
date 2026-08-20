@@ -18,15 +18,33 @@ concurrency:
 
 jobs:
   elixir:
-    name: Elixir（覆盖率门槛 75%）
-    runs-on: ubuntu-latest
+    name: Elixir (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          elixir-version: "1.19"
-      - uses: dtolnay/rust-toolchain@stable
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
+      - name: Activate and verify pinned Windows toolchain
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\scripts\windows\activate-toolchain.ps1 -UseCurrentTools -ExportGithubEnv
       - uses: actions/cache@v4
         with:
           path: |
@@ -42,31 +60,129 @@ jobs:
       # NIF 守卫：缓存若存有 dala 的 BEAM 却没有 Rustler .so（取消/中断的
       # run 存下的半成品缓存），mix 会认为已编译而静默跳过 NIF——删掉该
       # app 的 _build 强制重编，自愈而不是再红一轮。
-      - name: guard against BEAM-without-NIF poisoned cache
+      - name: Guard against BEAM-without-NIF poisoned cache
+        shell: pwsh
         run: |
-          for env in dev test; do
-            if [ -d "_build/$env/lib/dala/ebin" ] && [ ! -f "_build/$env/lib/dala/priv/native/dala_git.so" ]; then
-              echo "poisoned cache: _build/$env has BEAMs but no NIF — forcing rebuild"
-              rm -rf "_build/$env/lib/dala"
-            fi
-          done
+          $extension = if ($env:RUNNER_OS -eq "Windows") { "dll" } else { "so" }
+          foreach ($environment in @("dev", "test")) {
+            $appPath = Join-Path (Join-Path (Join-Path "_build" $environment) "lib") "dala"
+            $beamPath = Join-Path $appPath "ebin"
+            $nativePath = Join-Path (Join-Path (Join-Path $appPath "priv") "native") "dala_git.$extension"
+            if ((Test-Path $beamPath) -and -not (Test-Path $nativePath)) {
+              Write-Host "Poisoned cache: $beamPath has BEAMs but no NIF; forcing rebuild"
+              Remove-Item -Recurse -Force $appPath
+            }
+          }
       # file_watch_socket_test 断言 inotify 后端，runner 默认没有
       - run: sudo apt-get update && sudo apt-get install -y inotify-tools
+        if: matrix.os == 'ubuntu-latest'
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
-      - run: mix test --cover
+      - name: Run Elixir tests with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: mix test --cover
+      - name: Run Elixir tests on Windows
+        if: matrix.os == 'windows-latest'
+        run: mix test
 
-  frontend:
-    name: 前端（vitest 分层门槛 + typecheck）
-    runs-on: ubuntu-latest
+  windows:
+    name: Windows server contract
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+      - name: Activate and verify pinned Windows toolchain
+        shell: pwsh
+        run: .\scripts\windows\activate-toolchain.ps1 -UseCurrentTools -ExportGithubEnv
+      - name: Install dependencies
+        run: mix deps.get
+      - name: Compile Windows native artifacts
+        run: mix compile --warnings-as-errors
+      - name: Validate Windows lifecycle scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts/windows/*.* | ForEach-Object {
+            if ($_.Extension -eq ".ps1") {
+              [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_.FullName))
+            }
+          }
+      - name: Build and smoke-test Windows release
+        shell: pwsh
+        env:
+          MIX_ENV: prod
+        run: |
+          mix deps.get --only prod
+          npm ci --prefix assets
+          mix compile --warnings-as-errors
+          mix tailwind.install --if-missing
+          mix assets.deploy
+          mix release --overwrite
+
+          $release = (Resolve-Path "_build/prod/rel/dala").Path
+          New-Item -ItemType Directory -Force "$release/scripts/windows" | Out-Null
+          Copy-Item scripts/windows/* "$release/scripts/windows/"
+
+          $ertsVersion = (& erl.exe -noshell -eval 'io:format("~s", [erlang:system_info(version)]), halt().' | Out-String).Trim()
+          $ertsDirectories = @(Get-ChildItem -LiteralPath $release -Directory -Filter "erts-*")
+          if ($ertsDirectories.Count -ne 1 -or $ertsDirectories[0].Name -ne "erts-$ertsVersion") {
+            throw "Expected only erts-$ertsVersion in the release, found: $($ertsDirectories.Name -join ', ')"
+          }
+
+          $smokeExpression = 'true = Code.ensure_loaded? Dala.Git; true = Code.ensure_loaded? Dala.ThemeRenderer'
+          & "$release/bin/dala.bat" eval $smokeExpression
+          if ($LASTEXITCODE -ne 0) { throw "Windows release smoke test failed" }
+      - name: Verify Windows install and update lifecycle
+        shell: pwsh
+        run: |
+          $release = (Resolve-Path "_build/prod/rel/dala").Path
+          & "$release/scripts/windows/test-lifecycle.ps1" `
+            -ReleaseRoot $release `
+            -InstallRoot "$env:RUNNER_TEMP/DalaLifecycle" `
+            -TaskName "Dala-CI-$env:GITHUB_RUN_ID" `
+            -Version "v0.0.0-ci" `
+            -Port 4417
+
+  frontend:
+    name: Frontend (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
       # phoenix/phoenix_html/phoenix_live_view 的 JS 是 file:../deps 链接，
       # 来自 hex 包——npm 依赖完整需要先取 Elixir deps（只下载不编译）
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          elixir-version: "1.19"
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
       - uses: actions/cache@v4
         with:
           path: deps
@@ -74,14 +190,20 @@ jobs:
       - run: mix deps.get
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ steps.versions.outputs.node }}
           cache: npm
           cache-dependency-path: assets/package-lock.json
       - run: npm ci
         working-directory: assets
       - run: npm run typecheck
         working-directory: assets
-      - run: npx vitest run --coverage
+      - name: Run Vitest with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: npx vitest run --coverage
+        working-directory: assets
+      - name: Run Vitest on Windows
+        if: matrix.os == 'windows-latest'
+        run: npx vitest run
         working-directory: assets
 
   client:
@@ -89,19 +211,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ steps.versions.outputs.node }}
       # 客户端测试零 npm 依赖（node:test + 只读 keybindings.ts），无需 install
       - run: npm test
         working-directory: clients/desktop
 
   rust:
-    name: Rust holder + theme renderer（cargo test）
-    runs-on: ubuntu-latest
+    name: Rust holder + theme renderer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
+      - name: Activate and verify pinned Windows toolchain
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\scripts\windows\activate-toolchain.ps1 -UseCurrentTools -ExportGithubEnv -RustOnly
       - uses: actions/cache@v4
         with:
           path: |
@@ -118,14 +262,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read toolchain versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content toolchain.json | ConvertFrom-Json
+          "otp=$($versions.otp)" >> $env:GITHUB_OUTPUT
+          "elixir=$($versions.elixir)" >> $env:GITHUB_OUTPUT
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+          "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          elixir-version: "1.19"
-      - uses: dtolnay/rust-toolchain@stable
+          otp-version: ${{ steps.versions.outputs.otp }}
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.rust }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ steps.versions.outputs.node }}
       - uses: actions/cache@v4
         with:
           path: |

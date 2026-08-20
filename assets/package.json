@@ -57,7 +57,7 @@
     "dev": "vite build --watch --mode development",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads --maxWorkers=8",
     "check": "npm run typecheck && npm run test"
   }
 }
