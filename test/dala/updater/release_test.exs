@@ -8,7 +8,8 @@ defmodule Dala.Updater.ReleaseTest do
       assert Release.platform({:unix, :linux}, "x86_64-pc-linux-gnu") == "linux-x86_64"
       assert Release.platform({:unix, :darwin}, "aarch64-apple-darwin") == "macos-arm64"
       assert Release.platform({:unix, :darwin}, "arm64-apple-darwin") == "macos-arm64"
-      assert Release.platform({:win32, :nt}, "x86_64-pc-windows") == "unsupported"
+      assert Release.platform({:win32, :nt}, "x86_64-pc-windows") == "windows-x86_64"
+      assert Release.asset_suffix("windows-x86_64") == "windows-x86_64.zip"
     end
   end
 
@@ -49,6 +50,9 @@ defmodule Dala.Updater.ReleaseTest do
         {%{"tag_name" => "v1.2.3", "prerelease" => true}, false},
         # tag must be v<digit>…
         {%{"tag_name" => "version-1"}, false},
+        {%{"tag_name" => "version-1"}, false},
+        {%{"tag_name" => "v1.2.3/../../escape"}, false},
+        {%{"tag_name" => "v1.2"}, false},
         {%{"tag_name" => "v"}, false},
         {%{"tag_name" => nil}, false},
         {%{}, false}
@@ -93,6 +97,20 @@ defmodule Dala.Updater.ReleaseTest do
       }
 
       assert Release.asset_url(release, "macos-arm64") == {:ok, "http://x/macos"}
+    end
+
+    test "selects the Windows zip asset explicitly" do
+      release = %{
+        "tag_name" => "v1.2.3",
+        "assets" => [
+          %{
+            "name" => "dala-v1.2.3-windows-x86_64.zip",
+            "browser_download_url" => "http://x/windows"
+          }
+        ]
+      }
+
+      assert Release.asset_url(release, "windows-x86_64") == {:ok, "http://x/windows"}
     end
 
     test "errors when no asset matches the suffix" do

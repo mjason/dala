@@ -3,16 +3,15 @@ defmodule Dala.Updater do
   In-app self-upgrade against GitHub releases.
 
   Only active when running from an installed release (`DALA_RELEASE_ROOT`
-  points at the `versions/<tag>` + `current` tree that install.sh lays out).
-  Applying an update downloads the new tarball next to the current one,
-  atomically re-points the `current` symlink and asks the platform user-service
-  manager (systemd or launchd) for a restart. Running shells survive inside
-  their PTY holders; the service migrates the database before the new version
-  boots.
+  points at the versioned install tree). Applying an update downloads the new
+  archive and hands activation to the platform service lifecycle. Unix swaps
+  the `current` symlink; Windows queues the stable out-of-process update helper,
+  which atomically replaces `current.txt`, health-checks the new version and
+  rolls back on failure. Running shells survive inside their PTY holders.
   """
   require Logger
 
-  alias Dala.Updater.Release
+  alias Dala.Updater.{Release, Status}
 
   def repo, do: Application.get_env(:dala, :update_repo) || "mjason/dala"
 
@@ -32,6 +31,7 @@ defmodule Dala.Updater do
     with {:ok, release} <- fetch_latest() do
       tag = release["tag_name"] || ""
       latest = String.trim_leading(tag, "v")
+      status = Status.read(release_root())
 
       {:ok,
        %{
@@ -40,12 +40,16 @@ defmodule Dala.Updater do
          latest: latest,
          tag: tag,
          update_available: enabled?() and Release.newer?(latest, current_version()),
-         notes_url: release["html_url"]
+         notes_url: release["html_url"],
+         update_state: status && status.state,
+         update_message: status && status.message,
+         update_version: status && status.version,
+         update_updated_at: status && status.updated_at
        }}
     end
   end
 
-  @doc "Download the latest release, switch `current` and restart the daemon."
+  @doc "Download the latest release, activate it and restart the daemon."
   def apply_latest do
     with :ok <- ensure_enabled(),
          {:ok, release} <- fetch_latest(),
@@ -53,10 +57,9 @@ defmodule Dala.Updater do
          :ok <- ensure_newer(tag),
          {:ok, url} <- Release.asset_url(release),
          :ok <- install_version(tag, url),
-         :ok <- switch_current(tag) do
-      Logger.info("updater: switched to #{tag}, requesting restart")
-      restart()
-      {:ok, %{updated_to: tag}}
+         {:ok, result} <- activate_version(tag) do
+      Logger.info("updater: activation pending for #{tag}")
+      {:ok, result}
     end
   end
 
@@ -102,26 +105,47 @@ defmodule Dala.Updater do
   defp install_version(tag, url) do
     dest = Path.join([release_root(), "versions", tag])
 
-    if File.exists?(Path.join(dest, "bin/dala")) do
+    if File.exists?(release_bin(dest)) do
       :ok
     else
-      tarball = Path.join(System.tmp_dir!(), "dala-#{tag}.tar.gz")
+      suffix = Path.basename(url)
+      archive = Path.join(System.tmp_dir!(), "dala-#{tag}-#{suffix}")
 
       try do
-        with :ok <- download(url, tarball) do
+        with :ok <- download(url, archive) do
           File.mkdir_p!(dest)
 
-          case System.cmd("tar", ["-xzf", tarball, "-C", dest], stderr_to_stdout: true) do
-            {_, 0} ->
-              :ok
-
-            {out, _} ->
-              File.rm_rf(dest)
-              {:error, "unpack failed: #{String.slice(out, 0, 200)}"}
-          end
+          unpack(archive, dest)
         end
       after
-        File.rm(tarball)
+        File.rm(archive)
+      end
+    end
+  end
+
+  defp release_bin(dest) do
+    suffix = if match?({:win32, :nt}, :os.type()), do: ".bat", else: ""
+    Path.join(dest, "bin/dala" <> suffix)
+  end
+
+  defp unpack(archive, dest) do
+    if String.ends_with?(archive, ".zip") do
+      case :zip.unzip(String.to_charlist(archive), cwd: String.to_charlist(dest)) do
+        {:ok, _files} ->
+          :ok
+
+        {:error, reason} ->
+          File.rm_rf(dest)
+          {:error, "unpack failed: #{inspect(reason)}"}
+      end
+    else
+      case System.cmd("tar", ["-xzf", archive, "-C", dest], stderr_to_stdout: true) do
+        {_, 0} ->
+          :ok
+
+        {out, _} ->
+          File.rm_rf(dest)
+          {:error, "unpack failed: #{String.slice(out, 0, 200)}"}
       end
     end
   end
@@ -136,7 +160,18 @@ defmodule Dala.Updater do
     end
   end
 
-  # rename(2) over the existing symlink makes the switch atomic.
+  defp activate_version(tag) do
+    if match?({:win32, :nt}, :os.type()) do
+      queue_windows_activation(tag)
+    else
+      with :ok <- switch_current(tag),
+           :ok <- restart() do
+        {:ok, %{state: "pending", target: tag}}
+      end
+    end
+  end
+
+  # rename(2) over the existing symlink makes the Unix switch atomic.
   defp switch_current(tag) do
     root = release_root()
     fresh = Path.join(root, ".current.new")
@@ -150,24 +185,96 @@ defmodule Dala.Updater do
     end
   end
 
+  @doc false
+  def queue_windows_activation(tag) do
+    root = release_root()
+    helper = Path.join(root, "update-helper.ps1")
+    queue = Path.join(root, "queue-update.ps1")
+    request = Path.join(root, ".update-request-#{System.unique_integer([:positive])}.json")
+    service = Application.get_env(:dala, :service_name) || "Dala"
+    update_task = service <> "-Update"
+    port = Application.get_env(:dala, DalaWeb.Endpoint, []) |> get_in([:http, :port]) || 4000
+
+    payload = %{
+      installRoot: root,
+      targetVersion: tag,
+      taskName: service,
+      healthUrl: "http://127.0.0.1:#{port}/version"
+    }
+
+    with true <- File.regular?(helper) || {:error, "Windows update helper is missing: #{helper}"},
+         true <- File.regular?(queue) || {:error, "Windows update queue is missing: #{queue}"},
+         :ok <- File.write(request, Jason.encode!(payload)),
+         :ok <- Status.write(root, "queued", "Activation queued for #{tag}", tag),
+         :ok <- start_windows_helper(queue, helper, request, update_task) do
+      # The helper must stop this VM before it can activate the target, so the
+      # caller cannot observe the final health result in this request.
+      {:ok, %{state: "pending", target: tag}}
+    else
+      {:error, reason} = error ->
+        File.rm(request)
+        _ = Status.write(root, "failed", "Could not queue activation: #{inspect(reason)}", tag)
+        Logger.error("updater: could not queue Windows activation: #{inspect(reason)}")
+        error
+    end
+  end
+
+  defp start_windows_helper(queue, helper, request, update_task) do
+    powershell =
+      System.find_executable("powershell.exe") || System.find_executable("powershell") ||
+        "powershell.exe"
+
+    case System.cmd(
+           powershell,
+           [
+             "-NoProfile",
+             "-NonInteractive",
+             "-ExecutionPolicy",
+             "Bypass",
+             "-File",
+             queue,
+             "-HelperPath",
+             helper,
+             "-RequestPath",
+             request,
+             "-TaskName",
+             update_task
+           ],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> :ok
+      {output, status} -> {:error, "could not queue Windows update helper (#{status}): #{output}"}
+    end
+  rescue
+    error -> {:error, "could not queue Windows update helper: #{Exception.message(error)}"}
+  end
+
   defp restart do
     case Release.platform() do
       "macos-arm64" ->
         service = Application.get_env(:dala, :service_name) || "com.manjialin.dala"
-        {uid, 0} = System.cmd("id", ["-u"])
 
-        System.cmd(
-          "launchctl",
-          ["kickstart", "-k", "gui/#{String.trim(uid)}/#{service}"],
-          stderr_to_stdout: true
-        )
+        with {uid, 0} <- System.cmd("id", ["-u"]),
+             {_, 0} <-
+               System.cmd(
+                 "launchctl",
+                 ["kickstart", "-k", "gui/#{String.trim(uid)}/#{service}"],
+                 stderr_to_stdout: true
+               ) do
+          :ok
+        else
+          {output, status} -> {:error, "launchd restart failed (#{status}): #{output}"}
+        end
 
       _ ->
         service = Application.get_env(:dala, :service_name) || "dala"
 
-        System.cmd("systemctl", ["--user", "restart", "--no-block", service],
-          stderr_to_stdout: true
-        )
+        case System.cmd("systemctl", ["--user", "restart", "--no-block", service],
+               stderr_to_stdout: true
+             ) do
+          {_, 0} -> :ok
+          {output, status} -> {:error, "systemd restart failed (#{status}): #{output}"}
+        end
     end
   end
 end

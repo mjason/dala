@@ -57,3 +57,27 @@ describe("UpdateCheck config-migration nudge", () => {
     expect(document.querySelector("#config-migrate-notice")).toBeNull();
   });
 });
+
+describe("UpdateCheck activation status", () => {
+  it("shows a rollback reported by the restarted server", async () => {
+    rpc.checkUpdate.mockResolvedValue(
+      info({ updateState: "rolled_back", updateMessage: "Rolled back to v0.25.11" }),
+    );
+    renderCheck();
+
+    await waitFor(() =>
+      expect(document.querySelector("#update-error")?.textContent).toContain("Rolled back"),
+    );
+  });
+
+  it("shows the helper's final success status", async () => {
+    rpc.checkUpdate.mockResolvedValue(
+      info({ updateState: "succeeded", updateMessage: "Activated v0.25.12" }),
+    );
+    renderCheck();
+
+    await waitFor(() =>
+      expect(document.querySelector("#update-status")?.textContent).toContain("Activated"),
+    );
+  });
+});

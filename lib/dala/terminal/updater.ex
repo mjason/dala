@@ -23,6 +23,10 @@ defmodule Dala.Terminal.Updater do
                     tag: [type: :string],
                     update_available: [type: :boolean, allow_nil?: false],
                     notes_url: [type: :string],
+                    update_state: [type: :string],
+                    update_message: [type: :string],
+                    update_version: [type: :string],
+                    update_updated_at: [type: :string],
                     legacy_env_config: [type: :boolean, allow_nil?: false]
                   ]
 
@@ -39,10 +43,11 @@ defmodule Dala.Terminal.Updater do
     end
 
     action :apply_update, :map do
-      description "Download the latest release, switch to it and restart the daemon."
+      description "Download the latest release and return while platform activation is pending."
 
       constraints fields: [
-                    updated_to: [type: :string, allow_nil?: false]
+                    state: [type: :string, allow_nil?: false],
+                    target: [type: :string, allow_nil?: false]
                   ]
 
       run fn _input, _context ->

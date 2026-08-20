@@ -13,13 +13,20 @@ type Info = {
   updateAvailable: boolean | null;
   notesUrl: string | null;
   legacyEnvConfig?: boolean;
+  updateState?: "queued" | "applying" | "succeeded" | "rolled_back" | "failed" | null;
+  updateMessage?: string | null;
+  updateVersion?: string | null;
+  updateUpdatedAt?: string | null;
 };
+
+type ApplyResult = { state: "pending"; target: string };
 
 /**
  * Sidebar-footer self-upgrade: checks GitHub for a newer release once per
  * page load; when one exists (installed releases only) offers a one-click
- * upgrade. The daemon swaps its `current` symlink and restarts — shells
- * survive inside their PTY holders — then the page reloads itself.
+ * upgrade. The daemon swaps its `current` pointer and restarts — shells
+ * survive inside their PTY holders. Windows reports `pending` because the
+ * helper must stop the current VM before the final health result is available.
  */
 export default function UpdateCheck() {
   const { t } = useI18n();
@@ -31,9 +38,26 @@ export default function UpdateCheck() {
     let cancelled = false;
     void (async () => {
       const result = await call<Info>(checkUpdate, {
-        fields: ["enabled", "current", "latest", "tag", "updateAvailable", "notesUrl", "legacyEnvConfig"],
+        fields: [
+          "enabled",
+          "current",
+          "latest",
+          "tag",
+          "updateAvailable",
+          "notesUrl",
+          "legacyEnvConfig",
+          "updateState",
+          "updateMessage",
+          "updateVersion",
+          "updateUpdatedAt",
+        ],
       });
-      if (!cancelled && result.ok) setInfo(result.data);
+      if (!cancelled && result.ok) {
+        setInfo(result.data);
+        if (["rolled_back", "failed"].includes(result.data.updateState ?? "")) {
+          setError(result.data.updateMessage || t("somethingWentWrong"));
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -50,14 +74,21 @@ export default function UpdateCheck() {
   const update = async () => {
     setState("updating");
     setError(null);
-    const result = await call<unknown>(applyUpdate, { fields: ["updatedTo"] });
+    const result = await call<ApplyResult>(applyUpdate, { fields: ["state", "target"] });
     if (!result.ok) {
       setState("idle");
       setError(result.error || t("somethingWentWrong"));
       return;
     }
 
-    // The daemon restarts underneath us; reload once it answers again.
+    if (result.data.state !== "pending") {
+      setState("idle");
+      setError(t("somethingWentWrong"));
+      return;
+    }
+
+    // The queued helper restarts the daemon underneath us; reload once either
+    // the new version or the rolled-back old version answers again.
     setState("restarting");
     await new Promise((resolve) => setTimeout(resolve, 3000));
     for (let i = 0; i < 120; i++) {
@@ -94,6 +125,11 @@ export default function UpdateCheck() {
       {state === "restarting" && (
         <div className="font-mono text-[11px] text-mint">{t("updateReload")}</div>
       )}
+      {info?.updateState === "succeeded" && info.updateMessage && (
+        <div id="update-status" className="text-[11px] text-mint">
+          {info.updateMessage}
+        </div>
+      )}
       {info?.legacyEnvConfig && (
         <a
           id="config-migrate-notice"
@@ -105,7 +141,11 @@ export default function UpdateCheck() {
           {t("configMigrateNotice")}
         </a>
       )}
-      {error && <div className="text-[11px] text-danger">{error}</div>}
+      {error && (
+        <div id="update-error" className="text-[11px] text-danger">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
