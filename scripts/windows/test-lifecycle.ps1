@@ -43,6 +43,16 @@ function Wait-UpdateState([string]$Path, [string]$ExpectedState, [int]$Attempts 
   throw "Update did not reach $ExpectedState after $Attempts attempts"
 }
 
+function Wait-DalaTask([string]$TaskName, [int]$Attempts = 30) {
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -ne $task) { return $task }
+    if ($attempt -lt $Attempts) { Start-Sleep -Seconds 1 }
+  }
+
+  throw "Scheduled task '$TaskName' was not registered after $Attempts attempts"
+}
+
 $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $installer = Join-Path $ReleaseRoot "scripts\windows\install-service.ps1"
@@ -56,11 +66,12 @@ try {
   & $installer -SourceRoot $ReleaseRoot -InstallRoot $InstallRoot -TaskName $TaskName `
     -Version $Version -Port $Port
 
-  $installedTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+  $installedTask = Wait-DalaTask $TaskName
   if ($installedTask.State -notin @("Running", "Ready")) {
     throw "Installed scheduled task is $($installedTask.State), expected Running or Ready"
   }
-  if ($installedTask.Actions[0].Arguments -ne "/d /c launcher.cmd") {
+  if ($installedTask.Actions[0].Execute -notlike "*\wscript.exe" -or
+      $installedTask.Actions[0].Arguments -ne "launcher.vbs") {
     throw "Installer left a candidate-specific task action: $($installedTask.Actions[0].Arguments)"
   }
 
@@ -102,10 +113,12 @@ exit /b 1
   if ((Get-Content -LiteralPath $currentFile -Raw).Trim() -ne $Version) {
     throw "Installer rollback did not restore $Version"
   }
-  if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop).State -notin @("Running", "Ready")) {
+  $restoredTask = Wait-DalaTask $TaskName
+  if ($restoredTask.State -notin @("Running", "Ready")) {
     throw "Installer rollback did not leave the scheduled task registered"
   }
-  if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop).Actions[0].Arguments -ne "/d /c launcher.cmd") {
+  if ($restoredTask.Actions[0].Execute -notlike "*\wscript.exe" -or
+      $restoredTask.Actions[0].Arguments -ne "launcher.vbs") {
     throw "Installer rollback did not restore the stable task action"
   }
   $restoredReleaseVersion = (Invoke-RestMethod -Uri "http://127.0.0.1:$Port/version" -TimeoutSec 2).ToString().Trim()
@@ -137,7 +150,8 @@ exit /b 1
   }
 
   if ($rollbackStatus.state -ne "rolled_back") { throw "Expected rolled_back update status" }
-  if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop).State -notin @("Running", "Ready")) {
+  $rollbackTask = Wait-DalaTask $TaskName
+  if ($rollbackTask.State -notin @("Running", "Ready")) {
     throw "Rollback did not leave the scheduled task registered"
   }
 
@@ -156,7 +170,8 @@ exit /b 1
   }
 
   if ($successStatus.state -ne "succeeded") { throw "Expected succeeded update status" }
-  if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop).State -notin @("Running", "Ready")) {
+  $successTask = Wait-DalaTask $TaskName
+  if ($successTask.State -notin @("Running", "Ready")) {
     throw "Successful activation did not leave the scheduled task registered"
   }
 

@@ -11,10 +11,12 @@ defmodule Dala.Terminal.SessionReorderTest do
 
   @moduletag :terminal
 
+  defp test_shell, do: Dala.TerminalCase.shell()
+
   defp seed!(name, position, inserted_at) do
     Ash.Seed.seed!(Session, %{
       name: name,
-      shell: "/bin/bash",
+      shell: test_shell(),
       cwd: "/tmp",
       position: position,
       inserted_at: inserted_at,
@@ -183,7 +185,7 @@ defmodule Dala.Terminal.SessionReorderTest do
     test "new sessions append at the end even after reordering" do
       seed!("z-first", 5.0, at(0))
 
-      session = Dala.Terminal.create_session!(%{shell: "/bin/bash", name: "fresh"})
+      session = Dala.Terminal.create_session!(%{shell: test_shell(), name: "fresh"})
 
       on_exit(fn ->
         Server.shutdown_and_wait(session.id)

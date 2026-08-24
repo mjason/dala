@@ -133,10 +133,10 @@ function Wait-DalaTaskStopped([string]$TaskName, [int]$Attempts = 30) {
 
 function Register-DalaTask([string]$Name, [string]$Root, [string]$VersionOverride = "") {
   $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $arguments = "/d /c launcher.cmd"
+  $arguments = "launcher.vbs"
   if ($VersionOverride) { $arguments += " $VersionOverride" }
 
-  $action = New-ScheduledTaskAction -Execute $env:ComSpec `
+  $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot "System32\wscript.exe") `
     -Argument $arguments -WorkingDirectory $Root
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
   $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
@@ -150,8 +150,8 @@ function Register-DalaTask([string]$Name, [string]$Root, [string]$VersionOverrid
 }
 
 function Set-DalaTaskStableAction([string]$Name, [string]$Root) {
-  $action = New-ScheduledTaskAction -Execute $env:ComSpec `
-    -Argument "/d /c launcher.cmd" -WorkingDirectory $Root
+  $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot "System32\wscript.exe") `
+    -Argument "launcher.vbs" -WorkingDirectory $Root
   Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
 }
 
@@ -194,9 +194,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $destination "bin\dala.bat"))) {
 }
 
 $launcherSource = Join-Path $SourceRoot "scripts\windows\launcher.cmd"
+$hiddenLauncherSource = Join-Path $SourceRoot "scripts\windows\launcher.vbs"
 $helperSource = Join-Path $SourceRoot "scripts\windows\update-helper.ps1"
 $queueSource = Join-Path $SourceRoot "scripts\windows\queue-update.ps1"
-foreach ($required in @($launcherSource, $helperSource, $queueSource)) {
+foreach ($required in @($launcherSource, $hiddenLauncherSource, $helperSource, $queueSource)) {
   if (-not (Test-Path -LiteralPath $required)) { throw "Required installer file is missing: $required" }
 }
 
@@ -236,6 +237,7 @@ if ($null -ne $existingService) {
 
 $currentFile = Join-Path $InstallRoot "current.txt"
 $launcher = Join-Path $InstallRoot "launcher.cmd"
+$hiddenLauncher = Join-Path $InstallRoot "launcher.vbs"
 $helper = Join-Path $InstallRoot "update-helper.ps1"
 $queue = Join-Path $InstallRoot "queue-update.ps1"
 $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -257,6 +259,7 @@ New-Item -ItemType Directory -Force -Path $rollbackDir | Out-Null
 $backups = @(
   [pscustomobject]@{ Path = $currentFile; Name = "current.txt"; Existed = (Test-Path -LiteralPath $currentFile) },
   [pscustomobject]@{ Path = $launcher; Name = "launcher.cmd"; Existed = (Test-Path -LiteralPath $launcher) },
+  [pscustomobject]@{ Path = $hiddenLauncher; Name = "launcher.vbs"; Existed = (Test-Path -LiteralPath $hiddenLauncher) },
   [pscustomobject]@{ Path = $helper; Name = "update-helper.ps1"; Existed = (Test-Path -LiteralPath $helper) },
   [pscustomobject]@{ Path = $queue; Name = "queue-update.ps1"; Existed = (Test-Path -LiteralPath $queue) }
 )
@@ -280,6 +283,7 @@ try {
   }
 
   Copy-Item -LiteralPath $launcherSource -Destination $launcher -Force
+  Copy-Item -LiteralPath $hiddenLauncherSource -Destination $hiddenLauncher -Force
   Copy-Item -LiteralPath $helperSource -Destination $helper -Force
   Copy-Item -LiteralPath $queueSource -Destination $queue -Force
 

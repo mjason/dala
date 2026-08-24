@@ -116,6 +116,11 @@ defmodule Dala.Terminal.RenderModeTest do
   end
 
   @tag :integration
+  @tag skip:
+         if(Dala.Platform.windows?(),
+           do: "Windows ConPTY does not guarantee graphics APC passthrough",
+           else: false
+         )
   test "a session that draws images drops back to the raw byte stream" do
     session = create_session!()
     pid = Server.whereis(session.id)
