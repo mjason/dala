@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@octanejs/testing-library";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 
 vi.mock("../ash_rpc", () => ({

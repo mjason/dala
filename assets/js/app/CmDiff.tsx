@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, useRef, useState } from "octane";
+import React, { useEffect, useRef, useState } from "react";
 import { EditorState, StateField, StateEffect } from "@codemirror/state";
 import type { Extension, Text } from "@codemirror/state";
 import { Decoration, EditorView, lineNumbers, WidgetType } from "@codemirror/view";
@@ -38,7 +37,7 @@ type Props = {
  * patch for that hunk.
  */
 export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkActions }: Props) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const [language, setLanguage] = useState<Extension | null | "loading">("loading");
 
   useEffect(() => {
@@ -137,9 +136,8 @@ class HunkButtonsWidget extends WidgetType {
 
   constructor(patch: ChunkPatch, actions: ChunkAction[]) {
     super();
-    // Octane's current transform strips TypeScript parameter properties
-    // without emitting their assignments. Keep these explicit so production
-    // builds retain the hunk data used when CodeMirror mounts the widget.
+    // Keep the assignments explicit so production builds retain the hunk data
+    // used when CodeMirror mounts the widget.
     this.patch = patch;
     this.actions = actions;
   }

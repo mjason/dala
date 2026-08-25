@@ -1,4 +1,4 @@
-import * as Octane from "octane";
+import React from "react";
 
 /**
  * File-type icons using Nerd Font glyphs from the bundled terminal font

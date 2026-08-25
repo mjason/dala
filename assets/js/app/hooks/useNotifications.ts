@@ -1,4 +1,4 @@
-import type { RefObject } from "../octaneTypes";
+import type { RefObject } from "react";
 import type { AgentEventPayload } from "../../ash_types";
 import type { Session } from "../Sidebar";
 import { AGENT_LABELS } from "../InputBar";

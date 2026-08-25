@@ -22,7 +22,7 @@ config :dala, DalaWeb.Endpoint,
   debug_errors: true,
   secret_key_base: "vQAP0UKLjoMNx1kobns7TH9j3AXfgeOXU7bDmAQLy8S/KvenToAVGYcwo6wqVEyZ",
   watchers: [
-    npm: ["run", "dev", cd: Path.expand("../assets", __DIR__)],
+    esbuild: {Esbuild, :install_and_run, [:dala, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:dala, ~w(--watch)]}
   ]
 

@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render } from "@octanejs/testing-library";
+import { fireEvent, render } from "@testing-library/react";
 import LeaderMenu, { LEADER_TREE, SESSION_KEYS } from "./LeaderMenu";
 import { I18nProvider } from "./i18n";
 

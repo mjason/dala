@@ -7,8 +7,7 @@
  * Deviations: pass `className` for layout concerns (width, margin). Do
  * not re-specify colors/borders/focus at call sites — change them here.
  */
-import * as Octane from "octane";
-import type { InputProps, SelectProps, TextareaProps } from "./octaneTypes";
+import React from "react";
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -17,43 +16,40 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 export const inputClass =
   "w-full rounded-md border border-line bg-bg0 px-2.5 py-1.5 font-mono text-[13px] text-fg outline-none transition-colors focus:border-mint/60";
 
-export function TextInput({
-  className,
-  ref,
-  ...props
-}: Omit<InputProps, "className"> & { className?: string }) {
+export const TextInput = React.forwardRef<
+  HTMLInputElement,
+  React.InputHTMLAttributes<HTMLInputElement>
+>(function TextInput({ className, ...props }, ref) {
   return <input ref={ref} {...props} className={cx(inputClass, className)} />;
-}
+});
 
-export function TextArea({
-  className,
-  ref,
-  ...props
-}: Omit<TextareaProps, "className"> & { className?: string }) {
+export const TextArea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>
+>(function TextArea({ className, ...props }, ref) {
   // Tailwind resolves conflicts by stylesheet order (resize-y is emitted
   // after resize-none), so a caller's resize choice must replace the
   // default instead of being appended next to it.
   const resize = /(?:^|\s)resize-/.test(className ?? "") ? null : "resize-y";
   return <textarea ref={ref} {...props} className={cx(inputClass, resize, className)} />;
-}
+});
 
-export function Select({
-  className,
-  ref,
-  ...props
-}: Omit<SelectProps, "className"> & { className?: string }) {
+export const Select = React.forwardRef<
+  HTMLSelectElement,
+  React.SelectHTMLAttributes<HTMLSelectElement>
+>(function Select({ className, ...props }, ref) {
   return <select ref={ref} {...props} className={cx(inputClass, className)} />;
-}
+});
 
 // ------------------------------------------------- modal/form companions
 
 /** Muted label above a form control. */
-export function FieldLabel({ children }: { children: Octane.OctaneNode }) {
+export function FieldLabel({ children }: { children: React.ReactNode }) {
   return <span className="text-xs text-fg-muted">{children}</span>;
 }
 
 /** Small right-aligned monospace value chip next to a control label. */
-export function ValueChip({ children }: { children: Octane.OctaneNode }) {
+export function ValueChip({ children }: { children: React.ReactNode }) {
   return (
     <span className="rounded border border-line bg-bg0 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-fg">
       {children}

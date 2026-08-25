@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createRoot } from "octane";
-import { act } from "octane";
-import * as Octane from "octane";
+import { createRoot } from "react-dom/client";
+import { act } from "react";
+import React from "react";
 import { TextArea, TextInput, Select, cx, inputClass } from "./ui";
 
-function render(node: Octane.ElementDescriptor): HTMLElement {
+function render(node: React.ReactElement): HTMLElement {
   const host = document.createElement("div");
   document.body.appendChild(host);
   act(() => createRoot(host).render(node));
@@ -52,15 +52,15 @@ describe("shared form-control primitives", () => {
     expect(el.className).toContain("text-[13px]");
   });
 
-  it("native props (value/onInput/placeholder) pass straight through", () => {
+  it("native props (value/onChange/placeholder) pass straight through", () => {
     let value = "";
     const host = render(
-      <TextInput id="t4" placeholder="hint" defaultValue="x" onInput={(e) => (value = e.currentTarget.value)} />,
+      <TextInput id="t4" placeholder="hint" defaultValue="x" onChange={(e) => (value = e.target.value)} />,
     );
     const el = host.querySelector<HTMLInputElement>("#t4")!;
     expect(el.placeholder).toBe("hint");
     act(() => {
-      // Go through the native setter so the input event layer sees the
+      // Go through the native setter so React's value tracker sees the
       // change (a plain el.value assignment gets deduped as a no-op).
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
       setter.call(el, "typed");

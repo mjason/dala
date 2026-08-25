@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@octanejs/testing-library";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 
 const listFiles = vi.fn();
@@ -26,7 +26,7 @@ function renderQuickOpen(onPick: (path: string) => void = () => {}) {
 
 async function search(query: string) {
   const input = document.querySelector("#quick-open-input") as HTMLInputElement;
-  fireEvent.input(input, { target: { value: query } });
+  fireEvent.change(input, { target: { value: query } });
   await waitFor(() => {
     expect(document.querySelector("[data-quick-path]")).not.toBeNull();
   });
@@ -98,7 +98,7 @@ describe("QuickOpen open-by-path", () => {
     renderQuickOpen((p) => picked.push(p));
 
     const input = document.querySelector("#quick-open-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "data/子策略/out.csv" } });
+    fireEvent.change(input, { target: { value: "data/子策略/out.csv" } });
     await waitFor(() => {
       expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
     });
@@ -113,7 +113,7 @@ describe("QuickOpen open-by-path", () => {
     renderQuickOpen((p) => picked.push(p));
 
     const input = document.querySelector("#quick-open-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "/etc/hosts" } });
+    fireEvent.change(input, { target: { value: "/etc/hosts" } });
     await waitFor(() => {
       expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
     });
@@ -128,7 +128,7 @@ describe("QuickOpen open-by-path", () => {
     renderQuickOpen((p) => picked.push(p));
 
     const input = document.querySelector("#quick-open-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "build/artifacts/bundle.js" } });
+    fireEvent.change(input, { target: { value: "build/artifacts/bundle.js" } });
     await waitFor(() => {
       expect(document.querySelector("[data-quick-direct-path]")).not.toBeNull();
     });

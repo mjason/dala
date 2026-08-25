@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@octanejs/testing-library";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { I18nProvider } from "../i18n";
 
 const GLOBAL = "00000000-0000-0000-0000-000000000000";

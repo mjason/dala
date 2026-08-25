@@ -92,7 +92,8 @@ export async function migrateLegacySpeechPrefs(
 // The migration fires at APP MOUNT (not just when Settings→Voice is opened),
 // so an upgrading user's voice keeps working — and their plaintext key stops
 // lingering in localStorage — even if they never touch settings. This guard
-// keeps it to one attempt per page session when the settings panel asks again.
+// keeps it to one attempt per page session: React strict mode double-invokes
+// mount effects, and the settings panel could ask again.
 let migrationDone = false;
 
 /** Test-only: forget that the migration ran this session. */

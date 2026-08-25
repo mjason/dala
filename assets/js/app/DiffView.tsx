@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, useMemo, useState } from "octane";
+import React, { useEffect, useMemo, useState } from "react";
 import { parseDiff, toSplitRows } from "./diffParse";
 import type { DiffFile, DiffLine } from "./diffParse";
 import { FileTypeIcon } from "./fileIcons";
@@ -163,8 +162,9 @@ function cellText(wrap: boolean): string {
 function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
   return (
     <table className="w-full border-collapse font-mono text-xs leading-5">
-      {file.hunks.map((hunk, h) => (
-          <tbody key={h}>
+      <tbody>
+        {file.hunks.map((hunk, h) => (
+          <React.Fragment key={h}>
             <tr>
               <td
                 colSpan={4}
@@ -183,8 +183,9 @@ function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
                 <td className={`w-full pr-3 text-fg ${cellText(wrap)}`}>{line.text || " "}</td>
               </tr>
             ))}
-          </tbody>
-      ))}
+          </React.Fragment>
+        ))}
+      </tbody>
     </table>
   );
 }
@@ -192,8 +193,9 @@ function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
 function SplitFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
   return (
     <table className="w-full table-fixed border-collapse font-mono text-xs leading-5">
-      {file.hunks.map((hunk, h) => (
-          <tbody key={h}>
+      <tbody>
+        {file.hunks.map((hunk, h) => (
+          <React.Fragment key={h}>
             <tr>
               <td
                 colSpan={4}
@@ -208,8 +210,9 @@ function SplitFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
                 <SplitCell line={row.right} side="add" wrap={wrap} numberOf="new" />
               </tr>
             ))}
-          </tbody>
-      ))}
+          </React.Fragment>
+        ))}
+      </tbody>
     </table>
   );
 }

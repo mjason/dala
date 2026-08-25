@@ -1,8 +1,6 @@
-import * as Octane from "octane";
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "octane";
-import { createPortal } from "octane";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { GitDecoration } from "../gitDecorations";
-import type { RefObject } from "../octaneTypes";
 
 const DECORATION_CLASSES: Record<GitDecoration["tone"], string> = {
   added: "text-git-added",
@@ -105,13 +103,13 @@ export function PathTooltip({
   path,
   onDismiss,
 }: {
-  anchor: RefObject<HTMLElement | null>;
+  anchor: React.RefObject<HTMLElement | null>;
   id: string;
   name: string;
   path: string;
   onDismiss: () => void;
 }) {
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<TooltipPosition | null>(null);
 
   const updatePosition = useCallback(() => {
@@ -188,7 +186,7 @@ export function PathTooltip({
 }
 
 export function usePathTooltip() {
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
   const timerRef = useRef<number | null>(null);
   const detachPressRef = useRef<(() => void) | null>(null);
@@ -226,7 +224,7 @@ export function usePathTooltip() {
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
       timerRef.current = null;
       // Also NULL the ref: `detachPressRef.current` non-null must always
-      // mean "listener attached", or a remounted instance
+      // mean "listener attached", or a remounted instance (StrictMode)
       // would skip re-attaching and silently lose press-cancel.
       detachPressRef.current?.();
       detachPressRef.current = null;
@@ -257,18 +255,18 @@ export function Row({
   dropDir?: string | null;
   dropTarget?: boolean;
   depth: number;
-  icon: Octane.OctaneNode;
-  extraIcon: Octane.OctaneNode;
+  icon: React.ReactNode;
+  extraIcon: React.ReactNode;
   name: string;
   /** Replaces the name text (inline rename editor). */
-  nameSlot?: Octane.OctaneNode;
+  nameSlot?: React.ReactNode;
   detail?: string;
   symlink?: boolean;
   loading?: boolean;
   selected?: boolean;
   decoration?: GitDecoration;
   onClick: () => void;
-  actions?: Octane.OctaneNode;
+  actions?: React.ReactNode;
 }) {
   const {
     anchorRef: rowRef,

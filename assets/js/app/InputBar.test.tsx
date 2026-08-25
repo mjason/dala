@@ -1,7 +1,6 @@
-import * as Octane from "octane";
-import { useState } from "octane";
+import React, { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, waitFor } from "@octanejs/testing-library";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { I18nProvider } from "./i18n";
 

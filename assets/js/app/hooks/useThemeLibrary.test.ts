@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@octanejs/testing-library";
+import { renderHook, waitFor } from "@testing-library/react";
 import { GLOBAL_THEME_OWNER } from "../themeLibrary";
 
 // --- RPC: control what listThemes returns ---------------------------------

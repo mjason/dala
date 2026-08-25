@@ -1,4 +1,4 @@
-import * as Octane from "octane";
+import React from "react";
 import { FileTypeIcon } from "../fileIcons";
 import { PathTooltip, usePathTooltip } from "../fileDrawer/rows";
 import type { GitFile } from "./types";
@@ -7,7 +7,7 @@ export function GroupLabel({
   children,
   action,
 }: {
-  children: Octane.OctaneNode;
+  children: React.ReactNode;
   action?: { id: string; label: string; onClick: () => void };
 }) {
   return (

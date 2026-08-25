@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, createContext, useCallback, useContext, useMemo, useState } from "octane";
+import React, { useEffect, createContext, useCallback, useContext, useMemo, useState } from "react";
 import { de, en, es, fr, ja, ko, pt, ru, zhCN, zhTW } from "./locales";
 import type { Messages } from "./locales";
 
@@ -105,7 +104,7 @@ function reportLocaleToClient(locale: Locale) {
   if (bridge) void bridge.invoke("set_locale", { locale }).catch(() => undefined);
 }
 
-export function I18nProvider({ children }: { children: Octane.OctaneNode }) {
+export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
 
   useEffect(() => {

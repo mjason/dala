@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the custom-theme LIBRARY (the picker in AppearanceSection
- * and its live channel sync). The DOM/Octane side lives in useThemeLibrary.ts;
+ * and its live channel sync). The DOM/React side lives in useThemeLibrary.ts;
  * the network apply-layer lives in theme.ts (Phase 1a).
  */
 import type { EffectiveTheme } from "./theme";

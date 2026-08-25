@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { render, screen } from "@octanejs/testing-library";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import CmDiff from "./CmDiff";
 
