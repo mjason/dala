@@ -419,6 +419,9 @@ defmodule DalaWeb.TerminalChannelTest do
   test "resize is accepted" do
     session = create_session!()
     assert {:ok, _reply, socket} = join!(session.id)
+    # The join-time repaint can suppress incremental output while it is in
+    # flight. Establish the output baseline before testing resize ordering.
+    assert_push "replay", %{done: true}, 5_000
 
     push(socket, "resize", %{"rows" => 40, "cols" => 120})
     push(socket, "input", %{"data" => "tput cols\r"})
