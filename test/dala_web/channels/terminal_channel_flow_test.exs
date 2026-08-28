@@ -89,7 +89,10 @@ defmodule DalaWeb.TerminalChannelFlowTest do
     assert_push "output", %{seq: 1_999}, 2_000
 
     charged = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
-    assert charged.sent == before.sent + @chunk
+    # The live shell can emit a prompt between the baseline read and this
+    # synthetic broadcast. The ledger must include our whole chunk, while
+    # allowing those concurrent bytes as well.
+    assert charged.sent >= before.sent + @chunk
 
     push(socket, "ack", %{"bytes" => @chunk, "alt" => true})
     _ = push(socket, "resize", %{"rows" => 24, "cols" => 80})
