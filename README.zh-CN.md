@@ -29,16 +29,58 @@
 
 ![快速打开](docs/screenshots/quick-open.png)
 
-## 快速开始（Linux x86_64）
+## 快速开始（Linux x86_64 / macOS arm64）
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash
 ```
 
-以 systemd **用户守护进程**安装预编译包，地址 `http://localhost:4400`。
-配置在 `~/.config/dala/dala.env`，数据在 `~/.local/share/dala`。
+以 systemd（Linux）或 launchd（Apple Silicon macOS）**用户守护进程**安装
+预编译包，地址 `http://localhost:4400`。配置在
+`~/.config/dala/config.jsonc`，数据在 `~/.local/share/dala`。
 
-升级：点侧栏的升级按钮，或者：
+### Windows（x86_64）
+
+Windows 10 1809+ 和 Windows 11 原生支持。在普通 PowerShell 窗口中运行下面
+的一行命令即可，**不需要管理员权限**：
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+安装器会选择最新稳定版，下载 `dala-<version>-windows-x86_64.zip` 及其
+SHA-256 校验文件，校验通过后为当前用户注册并启动登录时运行的 Scheduled
+Task。服务健康检查通过后会输出访问地址，不会自动打开浏览器。
+
+安装指定版本：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1))) `
+  -Version vX.Y.Z
+```
+
+安装根目录为 `%LOCALAPPDATA%\Dala`，配置为
+`%APPDATA%\Dala\config.jsonc`，会话数据为
+`%LOCALAPPDATA%\Dala\data`。重复运行命令会原地升级并保留配置、数据库和
+会话；启动失败会恢复之前的版本。版本保存在
+`%LOCALAPPDATA%\Dala\versions\vX.Y.Z`，由 `current.txt` 选择当前版本，
+不需要符号链接或 Developer Mode。
+
+离线安装或已下载 ZIP 时，解压后在 release 目录运行
+`scripts/windows/install-service.ps1`。任务状态可用
+`Get-ScheduledTask -TaskName Dala` 查看，日志在
+`%LOCALAPPDATA%\Dala\logs`。编辑 `config.jsonc` 后执行
+`Start-ScheduledTask -TaskName Dala` 重启服务。卸载任务但保留版本、配置和
+数据：运行 release 目录中的 `scripts/windows/uninstall-service.ps1`。
+
+升级：点侧栏的升级按钮。Windows 再次运行下面的 bootstrap 命令即可原地升级，
+配置和数据会保留；启动健康检查失败时会自动恢复旧版本：
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+Linux/macOS 也可运行：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
@@ -262,30 +304,45 @@ pyright 系就是这样接收 `python.pythonPath`、`venvPath` 的）：
 |---|---|
 | `~/.local/dala/versions/<tag>` | 解包后的各版本 |
 | `~/.local/dala/current` | 指向当前版本的符号链接 |
-| `~/.config/dala/dala.env` | 环境配置（密钥、端口、开关） |
+| `~/.config/dala/config.jsonc` | 服务配置（端口、监听地址、登录等） |
 | `~/.config/systemd/user/dala.service` | 守护进程 unit |
 | `~/.local/share/dala` | SQLite 数据库、会话存储、滚动缓存 |
+| `%LOCALAPPDATA%\Dala\versions\<tag>`（Windows） | 解包后的各版本 |
+| `%LOCALAPPDATA%\Dala\current.txt`（Windows） | 当前版本指针 |
+| `%APPDATA%\Dala\config.jsonc`（Windows） | 服务配置 |
+| `%LOCALAPPDATA%\Dala\data`（Windows） | SQLite 数据库、会话、滚动缓存和密钥 |
+| `%LOCALAPPDATA%\Dala\logs`（Windows） | 启动器 stdout/stderr 日志 |
 
-unit 每次启动前先跑 `Dala.Release.migrate()`，升级自动迁移数据库；
+Unix unit 每次启动前先跑 `Dala.Release.migrate()`，升级自动迁移数据库；
 `KillMode=process` 保证服务重启时 PTY holder（以及你的 shell）不被杀。
+Windows 启动器也会在启动前执行同样的迁移，Scheduled Task 会自动重启失败的
+启动进程。
 
-### 环境变量参考（`~/.config/dala/dala.env`）
+### 配置参考（`~/.config/dala/config.jsonc`；Windows 为 `%APPDATA%\Dala\config.jsonc`）
 
-| 变量 | 默认 | 含义 |
+配置是一个文件：服务进程不会把 Dala 专用环境变量带进它创建的 shell，避免
+泄露或与其他工具冲突。密钥首次启动时自动生成到
+`<dataDir>/secrets.json`（Unix 权限 0600；Windows 继承用户配置目录 ACL）。
+修改后重启服务。
+
+| 键 | 默认 | 含义 |
 |---|---|---|
-| `PORT` | `4400` | HTTP 端口 |
-| `DALA_LISTEN_IP` | `127.0.0.1` | 监听地址。**默认仅本机**——设 `0.0.0.0` 暴露局域网（务必同时开登录！） |
-| `DALA_AUTH_ENABLED` | `false` | 是否要求登录 |
-| `DALA_USERS` | — | 引导账号，`email:password[,email2:password2]`（密码至少 8 位）。**仅首次启动生效**：已存在的账号不会被改动——账号建好后请删除该行，别让明文密码留在配置里。忘记密码：临时加 `DALA_USERS_RESET=true` 重启一次 |
-| `PHX_HOST` / `PHX_SCHEME` / `PHX_URL_PORT` | `localhost` / `http` / 同 `PORT` | 对外 URL 组成（挂反代时设置） |
-| `PHX_CHECK_ORIGIN` | `false` | WebSocket 来源校验——固定域名的反代后面建议开 |
-| `DATABASE_PATH` | `~/.local/share/dala/dala.db` | SQLite 位置 |
-| `DALA_DATA_DIR` | `~/.local/share/dala` | 会话存储与滚动缓存 |
-| `DALA_RELEASE_ROOT` | install.sh 设置 | 存在时启用应用内升级 |
-| `DALA_UPDATE_REPO` / `DALA_SERVICE` | `mjason/dala` / `dala` | 升级源仓库 / systemd unit 名 |
-| `SECRET_KEY_BASE` / `TOKEN_SIGNING_SECRET` | 自动生成 | 会话/令牌密钥——注意保密 |
+| `port` | `4400` | HTTP 端口 |
+| `listenIp` | `127.0.0.1` | 监听地址。**默认仅本机**；设 `0.0.0.0` 暴露局域网时务必启用登录 |
+| `auth.enabled` | `false` | 是否要求登录 |
+| `auth.users` | — | 引导账号，`email:password[,email2:password2]`（密码至少 8 位），仅首次启动生效；建号后删除明文 |
+| `host` / `scheme` / `urlPort` | `localhost` / `http` / 同 `port` | 对外 URL 组成（挂反代时设置） |
+| `checkOrigin` | `false` | WebSocket 来源校验；固定域名的反代后面建议开启 |
+| `databasePath` | `<dataDir>/dala.db` | SQLite 位置 |
+| `dataDir` | `~/.local/share/dala`（Unix）；`%LOCALAPPDATA%/Dala/data`（Windows） | 会话存储、滚动缓存和密钥 |
+| `releaseRoot` / `serviceName` | 安装器设置 | 启用应用内升级 |
+| `server` | `true`（安装器写入） | 是否启动 HTTP 服务（release 安装） |
 
-改完执行 `systemctl --user restart dala`（shell 存活）。
+上传/预览大小限制位于 `limits` 下；还可设置 `updateRepo` 和
+`dnsClusterQuery`。开发环境和旧版安装仍支持 `DALA_` 前缀环境变量，但存在
+`config.jsonc` 时环境变量会被忽略。
+
+Unix 修改后执行 `systemctl --user restart dala`；Windows 使用下面的任务命令。
 
 ### 服务管理
 
@@ -297,10 +354,28 @@ systemctl --user restart dala
 
 `install.sh` 已执行 `loginctl enable-linger`，注销后守护进程照常运行。
 
+Windows 在安装该用户登录时启动 Scheduled Task；在同一用户的 PowerShell 中：
+
+```powershell
+Get-ScheduledTask -TaskName Dala
+Start-ScheduledTask -TaskName Dala
+Stop-ScheduledTask -TaskName Dala
+Get-Content "$env:LOCALAPPDATA\Dala\logs\dala.stderr.log" -Tail 50
+```
+
+卸载任务但保留版本、配置和数据：
+
+```powershell
+& "$env:LOCALAPPDATA\Dala\versions\$((Get-Content "$env:LOCALAPPDATA\Dala\current.txt").Trim())\scripts\windows\uninstall-service.ps1"
+```
+
+也可以直接运行解压目录中的 `scripts/windows/uninstall-service.ps1`。
+
 ### 局域网访问
 
-1. `dala.env` 里：`DALA_LISTEN_IP=0.0.0.0`、`DALA_AUTH_ENABLED=true`、
-   `DALA_USERS=you@example.com:yourpassword`，然后重启服务。能登录后**删掉 `DALA_USERS` 这一行**——账号已持久化，别把明文密码留在文件里。
+1. 在 `config.jsonc` 中设置：`"listenIp": "0.0.0.0"`、
+   `"auth": { "enabled": true, "users": "you@example.com:yourpassword" }`，
+   然后重启服务。能登录后**删除 `users` 键**——账号已持久化，别把明文密码留在文件里。
 2. 其他设备访问 `http://<机器IP>:<端口>`。
 3. **WSL2**：使用镜像网络（`.wslconfig` → `networkingMode=mirrored`），
    并放行 Hyper-V 防火墙端口（管理员 PowerShell）：
@@ -331,13 +406,16 @@ config :dala, DalaWeb.Endpoint,
   ]
 ```
 
-并在 `dala.env` 设置 `PHX_SCHEME=https`、`PHX_HOST=<域名>`、`PHX_CHECK_ORIGIN=true`。
+并在 `config.jsonc` 设置 `"scheme": "https"`、`"host": "<域名>"`、
+`"checkOrigin": true`。
 
 ### 发布与源码构建
 
 发布产物由 GitHub Actions 在打 `v*` tag 时自动构建
 （`.github/workflows/release.yml`）：生产前端（minify + digest）、Rust NIF、
-PTY holder，打包为 `dala-<tag>-linux-x86_64.tar.gz`。
+PTY holder，分别打包为 Linux x86_64、macOS arm64 和 Windows x86_64 版本。
+Windows 服务端资产为 `dala-<tag>-windows-x86_64.zip`，并附带供
+`install.ps1` 使用的同名 `.sha256` 校验文件。
 
 本地开发需要 Elixir 1.19+/OTP 28、Rust、Node 22：
 
