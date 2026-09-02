@@ -42,17 +42,43 @@ Config lives in `~/.config/dala/config.jsonc`, data in `~/.local/share/dala`.
 
 ### Windows (x86_64)
 
-Windows 10 1809+ and Windows 11 are supported natively. Download the
-`dala-<version>-windows-x86_64.zip` server asset, extract it, and run
-`scripts/windows/install-service.ps1` from the release directory in PowerShell.
-It installs Dala for the current user under `%LOCALAPPDATA%\Dala` and registers
-a logon Scheduled Task; administrator rights are not required. The task uses
-PowerShell as the default terminal shell and can be removed with
-`scripts/windows/uninstall-service.ps1` (releases and user data are preserved).
+Windows 10 1809+ and Windows 11 are supported natively. From a regular
+PowerShell window (administrator rights are not required), run:
 
-Windows uses `versions\vX.Y.Z` plus an atomic `current.txt` pointer, so neither
-symbolic links nor Developer Mode are required. Updates activate out of process,
-health-check the new version, and restore the previous pointer if startup fails.
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+The installer selects the latest stable server release, downloads the
+`dala-<version>-windows-x86_64.zip` asset and its SHA-256 checksum, verifies the
+archive, then registers and starts a per-user logon Scheduled Task. It prints
+the health-checked URL when the server is ready. It does not open a browser.
+
+To install a specific release, use the same bootstrap with `-Version`:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1))) `
+  -Version vX.Y.Z
+```
+
+The install root is `%LOCALAPPDATA%\Dala`; configuration is
+`%APPDATA%\Dala\config.jsonc`, and session data is
+`%LOCALAPPDATA%\Dala\data`. Running the command again upgrades in place and
+preserves configuration and data. Releases are stored under
+`%LOCALAPPDATA%\Dala\versions\vX.Y.Z` and selected through `current.txt`, so
+symbolic links and Developer Mode are not required. Failed startup checks
+restore the previous release.
+
+For an offline or already-downloaded release, extract the ZIP and run
+`scripts/windows/install-service.ps1` from the extracted directory. To inspect
+the service, use `Get-ScheduledTask -TaskName Dala`; restart it with
+`Start-ScheduledTask -TaskName Dala` after editing `config.jsonc`. Logs are in
+`%LOCALAPPDATA%\Dala\logs`. Remove the task without deleting releases or user
+data with `scripts/windows/uninstall-service.ps1`.
+
+The task uses PowerShell as the default terminal shell. Updates activate out of
+process, health-check the new version, and restore the previous pointer if
+startup fails.
 
 Development uses the exact versions in [`toolchain.json`](toolchain.json): OTP
 28.5.0.5, Elixir 1.19.5, Node 22.23.2 and Rust 1.94.1. On Windows, ensure the
@@ -70,7 +96,15 @@ Set `DALA_TOOLCHAIN_ROOT` first if the Erlang, Elixir and Node directories live
 elsewhere. CI and local troubleshooting can run `verify-toolchain.ps1` directly
 to reject a shell whose active versions do not match `toolchain.json`.
 
-To update later, use the sidebar update button. On Linux or macOS, you can also run:
+To update later, use the sidebar update button. On Windows, rerun the bootstrap
+command; it downloads the latest stable Windows release and upgrades in place,
+preserving configuration and data:
+
+```powershell
+irm https://raw.githubusercontent.com/mjason/dala/main/install.ps1 | iex
+```
+
+On Linux or macOS, you can also run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/update.sh | bash
@@ -337,10 +371,16 @@ Rules:
 | `~/.config/systemd/user/dala.service` (Linux) | systemd user unit |
 | `~/Library/LaunchAgents/com.manjialin.dala.plist` (macOS) | launchd user agent |
 | `~/.local/share/dala` | SQLite DB, session store, scrollback cache |
+| `%LOCALAPPDATA%\Dala\versions\<tag>` (Windows) | unpacked releases |
+| `%LOCALAPPDATA%\Dala\current.txt` (Windows) | active release pointer |
+| `%APPDATA%\Dala\config.jsonc` (Windows) | server configuration |
+| `%LOCALAPPDATA%\Dala\data` (Windows) | SQLite DB, session store, scrollback cache and secrets |
+| `%LOCALAPPDATA%\Dala\logs` (Windows) | launcher stdout/stderr logs |
 
-The unit runs `Dala.Release.migrate()` before every start, so upgrades migrate
-the database automatically. `KillMode=process` keeps PTY holders (and your
-shells) alive across service restarts.
+The Unix unit runs `Dala.Release.migrate()` before every start, so upgrades
+migrate the database automatically. `KillMode=process` keeps PTY holders (and
+your shells) alive across service restarts. The Windows launcher performs the
+same migration before starting and the Scheduled Task restarts failed launches.
 
 ### Configuration reference (`~/.config/dala/config.jsonc`)
 
@@ -359,9 +399,9 @@ never write them. Restart the service after editing.
 | `host` / `scheme` / `urlPort` | `"localhost"` / `"http"` / `port` | Public URL parts (set behind a reverse proxy) |
 | `checkOrigin` | `false` | WebSocket origin check — enable behind a reverse proxy with a fixed host |
 | `databasePath` | `<dataDir>/dala.db` | SQLite location |
-| `dataDir` | `~/.local/share/dala` | Session store, scrollback cache, secrets |
-| `releaseRoot` / `serviceName` | set by install.sh | Enable the in-app updater |
-| `server` | `true` (written by install.sh) | Start the HTTP server (release installs) |
+| `dataDir` | `~/.local/share/dala` (Unix); `%LOCALAPPDATA%/Dala/data` (Windows) | Session store, scrollback cache, secrets |
+| `releaseRoot` / `serviceName` | set by installer | Enable the in-app updater |
+| `server` | `true` (written by installer) | Start the HTTP server (release installs) |
 
 Upload/preview size limits live under `"limits"`
 (`drawerUploadMaxMb`, `browserAttachmentMaxMb`, `mcpAttachmentMaxMb`,
@@ -384,6 +424,31 @@ servers show a migration notice in the sidebar footer.
 
 On Linux, `install.sh` runs `loginctl enable-linger` so the daemon also runs
 while you are logged out. The macOS LaunchAgent starts when the user logs in.
+On Windows, the per-user Scheduled Task starts at logon for the account that
+installed Dala; no administrator rights or system-wide service are required.
+
+### Windows service management
+
+Run these commands in PowerShell as the same user who installed Dala:
+
+```powershell
+Get-ScheduledTask -TaskName Dala
+Start-ScheduledTask -TaskName Dala
+Stop-ScheduledTask -TaskName Dala
+Get-Content "$env:LOCALAPPDATA\Dala\logs\dala.stderr.log" -Tail 50
+```
+
+To uninstall only the task and keep releases, configuration and data:
+
+```powershell
+& "$env:LOCALAPPDATA\Dala\versions\$((Get-Content "$env:LOCALAPPDATA\Dala\current.txt").Trim())\scripts\windows\uninstall-service.ps1"
+```
+
+The simpler `scripts/windows/uninstall-service.ps1` command from the extracted
+release directory is equivalent. To expose a Windows server on a LAN, set
+`listenIp` to the machine's address (or `0.0.0.0`) and enable authentication,
+then allow the selected port through Windows Firewall. Never expose a terminal
+server without login protection.
 
 ### LAN access
 
@@ -429,9 +494,11 @@ in `config.jsonc`.
 
 Releases are built by GitHub Actions on every `v*` tag
 (`.github/workflows/release.yml`): production assets, Rust NIFs and the PTY
-holder are packaged for Linux x86_64 and macOS arm64. Every Mach-O artifact in
-the macOS release is signed with the Developer ID certificate and the complete
-release is submitted to Apple notarization before publication.
+holder are packaged for Linux x86_64, macOS arm64 and Windows x86_64. Windows
+server ZIPs are published as `dala-<tag>-windows-x86_64.zip` with a matching
+`.sha256` file used by `install.ps1`. Every Mach-O artifact in the macOS release
+is signed with the Developer ID certificate and the complete release is
+submitted to Apple notarization before publication.
 
 Local development needs Elixir 1.19+/OTP 28, Rust and Node 22:
 
