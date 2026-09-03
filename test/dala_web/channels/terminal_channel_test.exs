@@ -424,7 +424,14 @@ defmodule DalaWeb.TerminalChannelTest do
     assert_push "replay", %{done: true}, 5_000
 
     push(socket, "resize", %{"rows" => 40, "cols" => 120})
-    push(socket, "input", %{"data" => "tput cols\r"})
+    # `push/3` queues the channel event asynchronously. Wait for the server's
+    # authoritative viewport before sending input, so Windows cannot race the
+    # resize frame and drop the first byte of `tput`.
+    eventually(fn -> Server.viewport(session.id) == {40, 120} end, 500)
+    # ConPTY can consume the first byte immediately after a resize frame. A
+    # leading space is harmless when preserved and keeps the command valid if
+    # that byte is lost, while the assertion still proves the resized width.
+    push(socket, "input", %{"data" => " tput cols\r"})
 
     assert_output_containing("120")
   end

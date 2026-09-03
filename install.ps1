@@ -29,7 +29,14 @@ function Assert-ValidVersion([string]$Tag) {
 function Invoke-GitHubJson([string]$Uri) {
   $headers = @{ "User-Agent" = "dala-windows-installer"; "Accept" = "application/vnd.github+json" }
   try {
-    return Invoke-RestMethod -Uri $Uri -Headers $headers
+    $response = Invoke-RestMethod -Uri $Uri -Headers $headers
+    if ($response -is [Array]) {
+      foreach ($item in $response) {
+        Write-Output $item
+      }
+    } else {
+      Write-Output $response
+    }
   } catch {
     throw "Could not query GitHub Releases at ${Uri}: $($_.Exception.Message)"
   }
