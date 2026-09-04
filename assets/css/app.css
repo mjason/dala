@@ -106,9 +106,42 @@
 
 /* This file is for your main application CSS */
 
-/* Bundled terminal font: JetBrainsMono Nerd Font Mono. One strictly
-   monospaced font for text AND icons (powerline, devicons, …), so cell
-   metrics are identical on every machine regardless of installed fonts. */
+/* Bundled primary mono font: Ioskeley Mono (SIL OFL, see
+   priv/static/fonts/LICENSE-IoskeleyMono.txt). It is served with the app so
+   terminal and editor text render consistently without a local install. */
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("/fonts/IoskeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("/fonts/IoskeleyMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("/fonts/IoskeleyMono-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("/fonts/IoskeleyMono-BoldItalic.woff2") format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Bundled Nerd Font fallback for powerline/devicon glyphs. */
 @font-face {
   font-family: "JetBrainsMono NFM";
   src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
@@ -173,9 +206,11 @@
   --color-git-conflict: #c9a5dd;
   --color-git-ignored: #748493;
   --font-kbd: "Inter Kbd", ui-sans-serif, system-ui, sans-serif;
-  /* Bundled terminal mono for UI chrome that shows keys/symbols/Latin —
-     CJK text falls through to the system stack. */
-  --font-term: "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Ioskeley is served by Dala; JetBrains supplies Nerd Font-only glyphs. */
+  --font-mono: "Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+  --font-term: "Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
 }
 
 /* Semantic diff + CodeMirror-chrome tokens. Defined as plain custom props

@@ -397,7 +397,7 @@ export default function AppearanceSection({
           id="font-family-input"
           value={prefs.fontFamily}
           onChange={(e) => apply({ fontFamily: e.target.value })}
-          placeholder="JetBrainsMono NFM"
+          placeholder="Ioskeley Mono"
           spellCheck={false}
         />
         <span className="block text-xs leading-5 text-fg-muted/80">{t("fontFamilyHint")}</span>

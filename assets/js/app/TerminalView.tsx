@@ -49,14 +49,14 @@ import {
   type ReplayTrigger,
 } from "./replayPresentation";
 
-// Wait for the bundled font faces (the guaranteed fallback of every stack)
-// before the terminal measures its cell size — measuring against a fallback
-// font misaligns everything drawn later. User-picked fonts are system fonts
-// and need no loading.
+// Wait for the bundled font faces before the terminal measures its cell size —
+// measuring against a fallback font misaligns everything drawn later.
 function loadTerminalFonts(fontSize: number): Promise<unknown> {
   return Promise.all(
-    ["", "bold ", "italic ", "bold italic "].map((variant) =>
-      document.fonts.load(`${variant}${fontSize}px "JetBrainsMono NFM"`),
+    ["Ioskeley Mono", "JetBrainsMono NFM"].flatMap((family) =>
+      ["", "bold ", "italic ", "bold italic "].map((variant) =>
+        document.fonts.load(`${variant}${fontSize}px "${family}"`),
+      ),
     ),
   ).catch(() => undefined);
 }
