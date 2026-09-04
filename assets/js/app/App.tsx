@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "octane";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createSession,
   deleteSession,
@@ -260,7 +259,7 @@ export default function App() {
     lastActiveTabByRootRef.current.set(active.parentId ?? active.id, active.id);
   }, [active?.id]);
 
-  const attachedCounts = Octane.useMemo(
+  const attachedCounts = useMemo(
     () =>
       Object.fromEntries(roots.map((s) => [s.id, attachedCount(sessions, s.id)])) as Record<
         string,
@@ -579,7 +578,7 @@ export default function App() {
   }, [termPool]);
   // Membership from the pool (plus whatever is active right now), order from
   // the session list — stable across switches.
-  const paneIds = Octane.useMemo(
+  const paneIds = useMemo(
     () =>
       ordered
         .filter((s) => termPool.includes(s.id) || s.id === activeId)

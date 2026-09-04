@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, useMemo, useState } from "octane";
+import React, { useEffect, useMemo, useState } from "react";
 import { gitFileAt } from "../../ash_rpc";
 import { call } from "../rpc";
 import { useI18n } from "../i18n";
@@ -232,7 +231,7 @@ function FileRailEntry({
   active: boolean;
   onClick: () => void;
   label: string;
-  icon?: Octane.OctaneNode;
+  icon?: React.ReactNode;
   additions: number;
   deletions: number;
 }) {

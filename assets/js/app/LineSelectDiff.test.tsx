@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@octanejs/testing-library";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "./i18n";
 import LineSelectDiff from "./LineSelectDiff";
 import type { ChunkAction } from "./CmDiff";

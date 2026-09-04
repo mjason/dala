@@ -140,7 +140,8 @@ export function onPrefsChange(callback: (prefs: TermPrefs) => void): () => void 
   return () => window.removeEventListener(EVENT, handler);
 }
 
-const BUNDLED_STACK = '"JetBrainsMono NFM", monospace';
+const BUNDLED_STACK =
+  '"Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 /** Full xterm font stack: the user's fonts first, bundled font as fallback. */
 export function fontStack(prefs: TermPrefs): string {

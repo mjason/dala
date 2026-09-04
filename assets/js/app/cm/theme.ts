@@ -79,7 +79,7 @@ const chrome = EditorView.theme(
     "&.cm-editor": { height: "100%" },
     "&.cm-focused": { outline: "none" },
     ".cm-scroller": {
-      fontFamily: '"JetBrainsMono NFM", monospace',
+      fontFamily: "var(--font-mono)",
       lineHeight: "1.55",
       scrollbarWidth: "thin",
       scrollbarColor: "#2c3037 transparent",
@@ -107,7 +107,7 @@ const chrome = EditorView.theme(
     // Search / goto panels.
     ".cm-panels": { backgroundColor: colors.bg1, color: colors.fg },
     ".cm-panels.cm-panels-bottom": { borderTop: `1px solid ${colors.line}` },
-    ".cm-panel.cm-search": { padding: "6px 10px", fontFamily: '"JetBrainsMono NFM", monospace' },
+    ".cm-panel.cm-search": { padding: "6px 10px", fontFamily: "var(--font-mono)" },
     ".cm-panel.cm-search label": { fontSize: "11px", color: colors.fgMuted },
     ".cm-textfield": {
       backgroundColor: colors.bg0,
@@ -164,7 +164,7 @@ const chrome = EditorView.theme(
       borderRadius: "5px",
       padding: "1px 8px",
       fontSize: "10px",
-      fontFamily: '"JetBrainsMono NFM", monospace',
+      fontFamily: "var(--font-mono)",
       cursor: "pointer",
       backgroundColor: "transparent",
       color: colors.fgMuted,

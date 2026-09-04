@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "octane";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { writeFile } from "../ash_rpc";
 import { call } from "./rpc";
 import { humanBytes } from "./util";
@@ -12,8 +11,7 @@ import { Kbd, modCombo } from "./shortcuts";
 import CodeEditor from "./CodeEditor";
 import LspDebug from "./LspDebug";
 import CmCode from "./CmCode";
-
-const SpreadsheetView = lazy(() => import("./SpreadsheetView"));
+import SpreadsheetView from "./SpreadsheetView";
 
 const WRAPPABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv", "spreadsheet"]);
 const EDITABLE: ReadonlySet<string> = new Set(["text", "json", "html", "csv"]);
@@ -295,22 +293,16 @@ function Body({ preview, wrap }: { preview: Preview; wrap: boolean }) {
 
     case "csv":
       return (
-        <Suspense fallback={null}>
-          <SpreadsheetView
-            path={preview.path}
-            csvContent={preview.content}
-            csvTruncated={preview.truncated}
-            wrap={wrap}
-          />
-        </Suspense>
+        <SpreadsheetView
+          path={preview.path}
+          csvContent={preview.content}
+          csvTruncated={preview.truncated}
+          wrap={wrap}
+        />
       );
 
     case "spreadsheet":
-      return (
-        <Suspense fallback={null}>
-          <SpreadsheetView path={preview.path} wrap={wrap} />
-        </Suspense>
-      );
+      return <SpreadsheetView path={preview.path} wrap={wrap} />;
 
     case "json":
       return <JsonView content={preview.content} wrap={wrap} />;

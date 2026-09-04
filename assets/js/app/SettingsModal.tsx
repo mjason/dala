@@ -1,6 +1,5 @@
-import * as Octane from "octane";
-import { useEffect, useRef, useState } from "octane";
-import { Check, Copy } from "@octanejs/lucide";
+import React, { useEffect, useRef, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import {
   closeSession,
   deleteSession,
@@ -20,7 +19,6 @@ import ShortcutsSection from "./settings/ShortcutsSection";
 import SpeechSection from "./settings/SpeechSection";
 import PromptOptimizerSection from "./settings/PromptOptimizerSection";
 import McpSection from "./settings/McpSection";
-import type { NativeKeyboardEvent } from "./octaneTypes";
 
 const LINES_MIN = 1_000;
 const LINES_MAX = 50_000;
@@ -49,9 +47,9 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   // tab must not carry over into the next one.
   const bodyRef = useRef<HTMLDivElement | null>(null);
   // Braces, not a bare expression: an expression body hands whatever the
-  // call returns to Octane AS THE CLEANUP FUNCTION. `scrollTo` is specified to
+  // call returns to React AS THE CLEANUP FUNCTION. `scrollTo` is specified to
   // return void, but a smooth-scroll polyfill or browser extension that
-  // returns a Promise is enough to make Octane call it — "destroy is not a
+  // returns a Promise is enough to make React call it — "destroy is not a
   // function", the whole modal subtree unmounts, the screen goes white.
   useEffect(() => {
     bodyRef.current?.scrollTo(0, 0);
@@ -132,7 +130,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
   // ARIA roving-tabindex keyboard nav: Left/Right (and Home/End) move focus
   // AND selection between tabs, per the tabs pattern. Only the active tab is
   // in the tab order; the arrows walk the rest.
-  const onTabKeyDown = (e: NativeKeyboardEvent<HTMLDivElement>) => {
+  const onTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     // Anchor on the FOCUSED tab (roving tabindex), not the selected one — they
     // track together in normal use, but keying off focus is what the WAI-ARIA
     // tabs pattern specifies.
@@ -263,7 +261,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                 <TextInput
                   id="session-name-input"
                   value={name}
-                  onInput={(e) => setName(e.currentTarget.value)}
+                  onChange={(e) => setName(e.target.value)}
                   className="text-[15px]"
                 />
               </label>
@@ -312,7 +310,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                     max={LINES_MAX}
                     step={1000}
                     value={historyLines}
-                    onChange={(e) => setHistoryLines(Number(e.currentTarget.value))}
+                    onChange={(e) => setHistoryLines(Number(e.target.value))}
                     className="flex-1"
                   />
                   {/* Fixed width via wrapper: .w-full is emitted after .w-20
@@ -324,7 +322,7 @@ export default function SettingsModal({ session, onClose, onDeleted, onError }: 
                       max={LINES_MAX}
                       step={1000}
                       value={historyLines}
-                      onInput={(e) => setHistoryLines(Number(e.currentTarget.value) || 10_000)}
+                      onChange={(e) => setHistoryLines(Number(e.target.value) || 10_000)}
                       className="text-right"
                     />
                   </div>

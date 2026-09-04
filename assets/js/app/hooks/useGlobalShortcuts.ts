@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "octane";
-import type { RefObject } from "../octaneTypes";
+import { useEffect, useRef } from "react";
+import type { RefObject } from "react";
 import type { TerminalActions } from "../TerminalView";
 import {
   BINDINGS,

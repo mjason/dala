@@ -1,6 +1,5 @@
-import * as Octane from "octane";
-import { useLayoutEffect, useRef, useState } from "octane";
-import { createPortal } from "octane";
+import React, { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useI18n } from "./i18n";
 import type { Messages } from "./i18n/locales";
 import { formatCombo, loadBindings } from "./keybindings";

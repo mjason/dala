@@ -1,4 +1,4 @@
-import * as Octane from "octane";
+import React from "react";
 import { FieldLabel } from "../ui";
 
 export type SegmentedOption<T extends string> = { value: T; label: string };

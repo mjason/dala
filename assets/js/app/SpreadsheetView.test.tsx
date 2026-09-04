@@ -1,5 +1,5 @@
-import * as Octane from "octane";
-import { fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readXlsxFile = vi.fn();
@@ -28,14 +28,14 @@ describe("SpreadsheetView", () => {
     expect(await screen.findByRole("table")).toBeInTheDocument();
     expect(screen.getByText("3 rows · 3 columns")).toBeInTheDocument();
 
-    fireEvent.input(screen.getByPlaceholderText("Search table…"), { target: { value: "Grace" } });
+    fireEvent.change(screen.getByPlaceholderText("Search table…"), { target: { value: "Grace" } });
     expect(screen.getByText("Grace")).toBeInTheDocument();
     expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     expect(screen.getByText("1 of 3 rows")).toBeInTheDocument();
 
-    fireEvent.input(screen.getByPlaceholderText("Search table…"), { target: { value: "" } });
+    fireEvent.change(screen.getByPlaceholderText("Search table…"), { target: { value: "" } });
     fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "column-1" } });
-    fireEvent.input(screen.getByPlaceholderText("Filter values…"), { target: { value: "Crypto" } });
+    fireEvent.change(screen.getByPlaceholderText("Filter values…"), { target: { value: "Crypto" } });
     expect(screen.getByText("Alan")).toBeInTheDocument();
     expect(screen.queryByText("Grace")).not.toBeInTheDocument();
   });

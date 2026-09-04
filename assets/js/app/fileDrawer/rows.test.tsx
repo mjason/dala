@@ -1,5 +1,5 @@
-import * as Octane from "octane";
-import { act, fireEvent, render, screen } from "@octanejs/testing-library";
+import React from "react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compactPath, placeTooltip, Row } from "./rows";
 

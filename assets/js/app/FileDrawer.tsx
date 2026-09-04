@@ -1,8 +1,7 @@
-import * as Octane from "octane";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "octane";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { humanBytes, writeClipboard } from "./util";
 import { useI18n } from "./i18n";
-import type { Preview } from "./FilePreview";
+import FilePreview, { type Preview } from "./FilePreview";
 import { loadPreview } from "./loadPreview";
 import { rawFileUrl } from "./fileTypes";
 import { FileTypeIcon } from "./fileIcons";
@@ -18,9 +17,6 @@ import { useFileOps } from "./fileDrawer/useFileOps";
 import { useGitStatus } from "./hooks/useGitStatus";
 import { buildGitDecorations, gitDecorationForPath } from "./gitDecorations";
 import UploadProgressView from "./UploadProgressView";
-import type { CSSProperties, NativeKeyboardEvent } from "./octaneTypes";
-
-const FilePreview = lazy(() => import("./FilePreview"));
 
 export type { Entry } from "./fileDrawer/tree";
 
@@ -76,8 +72,8 @@ export default function FileDrawer({
   const ctxUploadDir = useRef<string | null>(null);
   // Directory a drag is currently hovering over (drop target highlight).
   const [dropDir, setDropDir] = useState<string | null>(null);
-  const uploadInputRef = useRef<HTMLInputElement | null>(null);
-  const treeRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   const {
     uploading,
@@ -172,7 +168,7 @@ export default function FileDrawer({
     else void openFile(row.path, row.entry.size);
   };
 
-  const onTreeKeyDown = (e: NativeKeyboardEvent) => {
+  const onTreeKeyDown = (e: React.KeyboardEvent) => {
     const index = selectable.findIndex((row) => row.path === selectedPath);
     const select = (i: number) => {
       const row = selectable[Math.max(0, Math.min(selectable.length - 1, i))];
@@ -251,7 +247,7 @@ export default function FileDrawer({
     <section
       id="file-drawer"
       className="fixed inset-0 z-30 flex h-full w-full shrink-0 flex-col border-l border-line bg-bg1 md:relative md:z-auto md:w-[var(--panel-w,22rem)]"
-      style={width ? ({ "--panel-w": `${width}px` } as CSSProperties) : undefined}
+      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
     >
       {onResize && <ResizeHandle id="drawer-resize" edge="left" onResize={onResize} onReset={onResetWidth} />}
       <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
@@ -278,8 +274,8 @@ export default function FileDrawer({
           multiple
           className="hidden"
           onChange={(e) => {
-            const files = Array.from(e.currentTarget.files ?? []);
-            e.currentTarget.value = "";
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = "";
             const dir = ctxUploadDir.current ?? uploadTargetDir();
             ctxUploadDir.current = null;
             if (dir) void uploadTo(dir, files);
@@ -329,7 +325,7 @@ export default function FileDrawer({
 
       <div className="flex flex-wrap items-center gap-x-0.5 border-b border-line px-3 py-1.5 font-mono text-xs text-fg-muted">
         {segments.map((seg, i) => (
-          <Octane.Fragment key={seg.path}>
+          <React.Fragment key={seg.path}>
             {i > 0 && <span className="text-fg-muted/50">/</span>}
             <button
               onClick={() => onNavigate(seg.path)}
@@ -337,7 +333,7 @@ export default function FileDrawer({
             >
               {seg.label}
             </button>
-          </Octane.Fragment>
+          </React.Fragment>
         ))}
       </div>
 
@@ -714,25 +710,23 @@ export default function FileDrawer({
       )}
 
       {preview && (
-        <Suspense fallback={null}>
-          <FilePreview
-            preview={preview}
-            startInEdit={editOnOpen}
-            onClose={() => setPreview(null)}
-            onError={onError}
-            onSaved={(savedPath, savedContent, savedSize) => {
-              setPreview((current) =>
-                current && "content" in current && current.path === savedPath
-                  ? { ...current, content: savedContent, size: savedSize }
-                  : current,
-              );
-              // Refresh the file's directory (if loaded) so the tree shows the
-              // new size.
-              const dir = savedPath.slice(0, savedPath.lastIndexOf("/")) || "/";
-              void refreshDir(dir);
-            }}
-          />
-        </Suspense>
+        <FilePreview
+          preview={preview}
+          startInEdit={editOnOpen}
+          onClose={() => setPreview(null)}
+          onError={onError}
+          onSaved={(savedPath, savedContent, savedSize) => {
+            setPreview((current) =>
+              current && "content" in current && current.path === savedPath
+                ? { ...current, content: savedContent, size: savedSize }
+                : current,
+            );
+            // Refresh the file's directory (if loaded) so the tree shows the
+            // new size.
+            const dir = savedPath.slice(0, savedPath.lastIndexOf("/")) || "/";
+            void refreshDir(dir);
+          }}
+        />
       )}
     </section>
   );

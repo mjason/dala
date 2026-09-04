@@ -1,6 +1,6 @@
-import * as Octane from "octane";
+import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import PromptStash from "./PromptStash";
 import { I18nProvider } from "./i18n";
 

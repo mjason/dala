@@ -1,25 +1,18 @@
-import * as Octane from "octane";
-import { useEffect, useMemo, useRef, useState } from "octane";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   type ColumnDef,
   type ColumnFiltersState,
+  type FilterFn,
   type SortingState,
-  type ColumnVisibilityState,
-  columnFilteringFeature,
-  columnResizingFeature,
-  columnSizingFeature,
-  columnVisibilityFeature,
-  constructFilterFn,
-  createFilteredRowModel,
-  createSortedRowModel,
+  type VisibilityState,
   flexRender,
-  globalFilteringFeature,
-  rowSortingFeature,
-  tableFeatures,
-  useTable,
-} from "@octanejs/tanstack-table";
-import { useVirtualizer } from "@octanejs/tanstack-virtual";
-import { ArrowUpDown, Check, ChevronDown, Columns3, Search, X } from "@octanejs/lucide";
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ArrowUpDown, Check, ChevronDown, Columns3, Search, X } from "lucide-react";
 import readXlsxFile, { type Sheet } from "read-excel-file/browser";
 import { detectDelimiter, parseCsv } from "./csv";
 import { rawFileUrl } from "./fileTypes";
@@ -34,26 +27,6 @@ type Props = {
   csvTruncated?: boolean;
   wrap: boolean;
 };
-
-const includesText = constructFilterFn({
-  filter: (dataValue, filterValue) =>
-    String(dataValue ?? "")
-      .toLocaleLowerCase()
-      .includes(String(filterValue).toLocaleLowerCase()),
-  autoRemove: (value) => value === undefined || value === null || value === "",
-});
-
-const spreadsheetFeatures = tableFeatures({
-  columnFilteringFeature,
-  globalFilteringFeature,
-  rowSortingFeature,
-  columnSizingFeature,
-  columnResizingFeature,
-  columnVisibilityFeature,
-  filteredRowModel: createFilteredRowModel(),
-  sortedRowModel: createSortedRowModel(),
-  filterFns: { includesText },
-});
 
 export default function SpreadsheetView({ path, csvContent, csvTruncated, wrap }: Props) {
   const { t } = useI18n();
@@ -149,12 +122,17 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [filterColumn, setFilterColumn] = useState("column-0");
   const [columnsOpen, setColumnsOpen] = useState(false);
-  const columnsMenuRef = useRef<HTMLDivElement | null>(null);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
 
-  const columns = useMemo<ColumnDef<typeof spreadsheetFeatures, TableRow>[]>(
+  const includesText: FilterFn<TableRow> = (row, columnId, value) =>
+    String(row.getValue(columnId) ?? "")
+      .toLocaleLowerCase()
+      .includes(String(value).toLocaleLowerCase());
+
+  const columns = useMemo<ColumnDef<TableRow>[]>(
     () =>
       headers.map((header, index) => ({
         id: `column-${index}`,
@@ -162,15 +140,14 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
         header,
         minSize: 88,
         size: Math.min(320, Math.max(120, header.length * 9 + 40)),
-        filterFn: "includesText",
+        filterFn: includesText,
       })),
     // The filter function is stateless and deliberately follows the current locale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [headers],
   );
 
-  const table = useTable({
-    features: spreadsheetFeatures,
+  const table = useReactTable({
     data: rows,
     columns,
     state: { sorting, globalFilter, columnFilters, columnVisibility },
@@ -178,12 +155,15 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
     onGlobalFilterChange: setGlobalFilter,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
-    globalFilterFn: "includesText",
+    globalFilterFn: includesText,
     columnResizeMode: "onChange",
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getSortedRowModel: getSortedRowModel(),
   });
 
   const filteredRows = table.getRowModel().rows;
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: filteredRows.length,
     getScrollElement: () => scrollRef.current,
@@ -226,7 +206,7 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
           <input
             type="search"
             value={globalFilter}
-            onInput={(event) => setGlobalFilter(event.currentTarget.value)}
+            onChange={(event) => setGlobalFilter(event.target.value)}
             placeholder={t("spreadsheetSearch")}
             className="min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-muted/70"
           />
@@ -240,7 +220,7 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
         <div className="flex h-7 min-w-56 flex-1 items-center rounded border border-line bg-bg0 sm:max-w-80">
           <select
             value={filterColumn}
-            onChange={(event) => setFilterColumn(event.currentTarget.value)}
+            onChange={(event) => setFilterColumn(event.target.value)}
             aria-label={t("spreadsheetFilterColumn")}
             className="h-full max-w-32 border-r border-line bg-transparent px-2 text-xs text-fg outline-none"
           >
@@ -250,7 +230,7 @@ function DataGrid({ matrix, wrap }: { matrix: Matrix; wrap: boolean }) {
           </select>
           <input
             value={columnFilterValue}
-            onInput={(event) => selectedColumn?.setFilterValue(event.currentTarget.value)}
+            onChange={(event) => selectedColumn?.setFilterValue(event.target.value)}
             placeholder={t("spreadsheetFilter")}
             className="min-w-0 flex-1 bg-transparent px-2 text-xs text-fg outline-none placeholder:text-fg-muted/70"
           />

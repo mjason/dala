@@ -1,5 +1,5 @@
-import * as Octane from "octane";
-import { act, renderHook, waitFor } from "@octanejs/testing-library";
+import React from "react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 
@@ -11,7 +11,7 @@ vi.mock("../../ash_rpc", () => ({
 
 import { useGitStatus } from "./useGitStatus";
 
-function wrapper({ children }: { children: Octane.OctaneNode }) {
+function wrapper({ children }: { children: React.ReactNode }) {
   return <I18nProvider>{children}</I18nProvider>;
 }
 

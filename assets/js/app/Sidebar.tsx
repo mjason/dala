@@ -1,6 +1,5 @@
-import * as Octane from "octane";
-import { useEffect, useRef, useState } from "octane";
-import { createPortal } from "octane";
+import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { SessionUpdatedPayload } from "../ash_types";
 import { authEnabled, userEmail } from "./meta";
 import { beforeIdFor, insertionIndex } from "./reorder";
@@ -13,7 +12,6 @@ import UpdateCheck from "./UpdateCheck";
 import { RenameInput } from "./RenameInput";
 import ResizeHandle from "./ResizeHandle";
 import { Select } from "./ui";
-import type { CSSProperties, NativeMouseEvent, NativePointerEvent } from "./octaneTypes";
 
 export type Session = SessionUpdatedPayload;
 
@@ -187,7 +185,7 @@ export default function Sidebar({
     return () => window.removeEventListener("keydown", handler);
   }, [selected.size]);
 
-  const rowClick = (e: NativeMouseEvent, id: string) => {
+  const rowClick = (e: React.MouseEvent, id: string) => {
     if (e.metaKey || e.ctrlKey) {
       toggleSelect(id);
     } else if (e.shiftKey && anchorRef.current) {
@@ -207,7 +205,7 @@ export default function Sidebar({
     }
   };
 
-  const startDrag = (e: NativePointerEvent, id: string) => {
+  const startDrag = (e: React.PointerEvent, id: string) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault(); // no text selection while dragging across rows
     const pointerId = e.pointerId;
@@ -280,7 +278,7 @@ export default function Sidebar({
     null,
   );
 
-  const startGroupDrag = (e: NativePointerEvent, key: string) => {
+  const startGroupDrag = (e: React.PointerEvent, key: string) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -365,10 +363,10 @@ export default function Sidebar({
       : undefined;
   const lastVisibleId = visibleSessions[visibleSessions.length - 1]?.id;
 
-  const content = (
+  return (
     <aside
       className="relative flex h-full w-64 shrink-0 flex-col border-r border-line bg-bg1 md:w-[var(--panel-w,16rem)]"
-      style={width ? ({ "--panel-w": `${width}px` } as CSSProperties) : undefined}
+      style={width ? ({ "--panel-w": `${width}px` } as React.CSSProperties) : undefined}
     >
       {onResize && (
         <ResizeHandle id="sidebar-resize" edge="right" onResize={onResize} onReset={onResetWidth} />
@@ -409,7 +407,7 @@ export default function Sidebar({
           const grouped = g.key != null;
           const isCollapsed = grouped && collapsed.has(g.key!);
           return (
-            <Octane.Fragment key={g.key ?? `loose-${gi}`}>
+            <React.Fragment key={g.key ?? `loose-${gi}`}>
               {grouped && (
                 <div className="group/hdr mb-0.5 flex items-center">
                   <button
@@ -455,7 +453,7 @@ export default function Sidebar({
                 </div>
               )}
               {!isCollapsed && g.sessions.map((s) => renderRow(s, grouped))}
-            </Octane.Fragment>
+            </React.Fragment>
           );
         })}
       </nav>
@@ -528,7 +526,7 @@ export default function Sidebar({
           id="language-select"
           aria-label={t("language")}
           value={locale}
-          onChange={(e) => setLocale(e.currentTarget.value as Locale)}
+          onChange={(e) => setLocale(e.target.value as Locale)}
         >
           {(Object.keys(LOCALE_NAMES) as Locale[]).map((code) => (
             <option key={code} value={code}>
@@ -867,6 +865,4 @@ export default function Sidebar({
             </div>
     );
   }
-
-  return content;
 }

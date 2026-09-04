@@ -1,5 +1,5 @@
-import * as Octane from "octane";
-import { X } from "@octanejs/lucide";
+import React from "react";
+import { X } from "lucide-react";
 import { humanBytes } from "./util";
 import type { UploadProgress } from "./fileUpload";
 

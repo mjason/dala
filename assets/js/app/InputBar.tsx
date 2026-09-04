@@ -1,6 +1,5 @@
-import * as Octane from "octane";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "octane";
-import { Check, LoaderCircle, Sparkles } from "@octanejs/lucide";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Check, LoaderCircle, Sparkles } from "lucide-react";
 import { agentCommands, listFiles, optimizePrompt, speechSettings, transcribe } from "../ash_rpc";
 import { call } from "./rpc";
 import { blobToBase64, startRecording, type Recorder } from "./speech";

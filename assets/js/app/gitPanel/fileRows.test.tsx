@@ -1,5 +1,5 @@
-import * as Octane from "octane";
-import { act, fireEvent, render } from "@octanejs/testing-library";
+import React from "react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { FileRow } from "./fileRows";
 

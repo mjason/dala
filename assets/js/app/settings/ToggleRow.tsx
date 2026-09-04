@@ -1,4 +1,4 @@
-import * as Octane from "octane";
+import React from "react";
 import { Toggle } from "../ui";
 
 export default function ToggleRow({

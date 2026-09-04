@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, useRef } from "octane";
+import React, { useEffect, useRef } from "react";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, drawSelection } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -23,7 +22,7 @@ type Props = {
  * within the file.
  */
 export default function CmCode({ content, filename, wrap, lspPath }: Props) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const wrapCompartment = useRef(new Compartment());
   const languageCompartment = useRef(new Compartment());

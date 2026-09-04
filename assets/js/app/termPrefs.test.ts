@@ -112,12 +112,14 @@ describe("termPrefs", () => {
   });
 
   it("builds the font stack with the bundled font as fallback", () => {
-    expect(fontStack(DEFAULT_PREFS)).toBe('"JetBrainsMono NFM", monospace');
+    expect(fontStack(DEFAULT_PREFS)).toBe(
+      '"Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    );
     expect(fontStack({ ...DEFAULT_PREFS, fontFamily: "Fira Code, monospace" })).toBe(
-      '"Fira Code", monospace, "JetBrainsMono NFM", monospace',
+      '"Fira Code", monospace, "Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     );
     expect(fontStack({ ...DEFAULT_PREFS, fontFamily: '"Cascadia Mono"' })).toBe(
-      '"Cascadia Mono", "JetBrainsMono NFM", monospace',
+      '"Cascadia Mono", "Ioskeley Mono", "JetBrainsMono NFM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     );
   });
 });

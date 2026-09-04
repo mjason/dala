@@ -1,5 +1,4 @@
-import * as Octane from "octane";
-import { useEffect, useRef, useState } from "octane";
+import React, { useEffect, useRef, useState } from "react";
 import {
   promptOptimizerSettings,
   setPromptOptimizerSettings,

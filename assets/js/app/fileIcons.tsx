@@ -1,9 +1,8 @@
-import * as Octane from "octane";
+import React from "react";
 
 /**
- * File-type icons using Nerd Font glyphs from the bundled terminal font
- * (JetBrainsMono NFM), colored per language/type — the same visual language
- * as editor file trees.
+ * File-type icons use Nerd Font glyphs from the bundled JetBrains fallback,
+ * colored per language/type — the same visual language as editor file trees.
  */
 
 type IconSpec = { glyph: string; color: string };

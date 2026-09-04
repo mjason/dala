@@ -1,5 +1,5 @@
-import { act, renderHook, waitFor } from "@octanejs/testing-library";
-import * as Octane from "octane";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider, useI18n } from "../i18n";
 import { createDirTreeCache, useDirTree } from "./useDirTree";
@@ -36,7 +36,7 @@ const listing = (path: string) => ({
   data: { path, parent: "/", entries: [{ name: "a.txt", dir: false, size: 1 }] },
 });
 
-function wrapper({ children }: { children: Octane.OctaneNode }) {
+function wrapper({ children }: { children: React.ReactNode }) {
   return <I18nProvider>{children}</I18nProvider>;
 }
 

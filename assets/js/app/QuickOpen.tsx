@@ -1,12 +1,10 @@
-import * as Octane from "octane";
-import { useEffect, useMemo, useRef, useState } from "octane";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { listFiles } from "../ash_rpc";
 import { call } from "./rpc";
 import { rankFiles } from "./fuzzy";
 import { FileTypeIcon } from "./fileIcons";
 import { useI18n } from "./i18n";
 import { KeyHint } from "./shortcuts";
-import type { NativeKeyboardEvent } from "./octaneTypes";
 
 type Props = {
   root: string;
@@ -25,8 +23,8 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
   const [truncated, setTruncated] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let stale = false;
@@ -83,7 +81,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
     onPick(`${root === "/" ? "" : root}/${relative}`);
   };
 
-  const onKeyDown = (e: NativeKeyboardEvent) => {
+  const onKeyDown = (e: React.KeyboardEvent) => {
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -123,7 +121,7 @@ export default function QuickOpen({ root, onPick, onClose, onError }: Props) {
             ref={inputRef}
             autoFocus
             value={query}
-            onInput={(e) => setQuery(e.currentTarget.value)}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder={t("quickOpenPlaceholder")}
             spellCheck={false}
             autoCapitalize="off"
