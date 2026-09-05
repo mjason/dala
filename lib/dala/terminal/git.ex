@@ -194,6 +194,7 @@ defmodule Dala.Terminal.Git do
                         items: [
                           fields: [
                             hash: [type: :string, allow_nil?: false],
+                            parents: [type: {:array, :string}, allow_nil?: false],
                             author: [type: :string, allow_nil?: false],
                             date: [type: :string, allow_nil?: false],
                             subject: [type: :string, allow_nil?: false]

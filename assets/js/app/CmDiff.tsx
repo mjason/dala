@@ -27,6 +27,11 @@ type Props = {
   filename: string;
   /** Per-hunk buttons (Fork-style stage/unstage/discard). */
   chunkActions?: ChunkAction[];
+  /** Global hunk navigator position, when the diff is hosted by DiffModal. */
+  activeHunk?: number;
+  hunkOffset?: number;
+  /** Keep unchanged lines visible by default, like an editor diff. */
+  collapseUnchanged?: boolean;
 };
 
 /**
@@ -36,8 +41,19 @@ type Props = {
  * change block gets its own action buttons, each backed by a minimal unified
  * patch for that hunk.
  */
-export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkActions }: Props) {
+export default function CmDiff({
+  oldText,
+  newText,
+  mode,
+  wrap,
+  filename,
+  chunkActions,
+  activeHunk,
+  hunkOffset = 0,
+  collapseUnchanged = false,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<EditorView | null>(null);
   const [language, setLanguage] = useState<Extension | null | "loading">("loading");
 
   useEffect(() => {
@@ -65,7 +81,7 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
       ...(wrap ? [EditorView.lineWrapping] : []),
       ...(language ? [language] : []),
     ];
-    const collapseUnchanged = { margin: 3, minSize: 4 };
+    const collapse = collapseUnchanged ? { margin: 3, minSize: 4 } : undefined;
 
     let destroy: () => void;
 
@@ -76,14 +92,20 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
         b: { doc: newText, extensions: [...shared, hunkButtonsField] },
         gutter: true,
         highlightChanges: true,
-        collapseUnchanged,
+        collapseUnchanged: collapse,
       });
 
       if (chunkActions && chunkActions.length > 0) {
         attachHunkButtons(view.b, filename, oldText, newText, chunkActions, view.a.state.doc);
       }
 
-      destroy = () => view.destroy();
+      editorRef.current = view.b;
+      scrollToHunk(view.b, activeHunk, hunkOffset);
+
+      destroy = () => {
+        editorRef.current = null;
+        view.destroy();
+      };
     } else {
       const view = new EditorView({
         parent: host,
@@ -96,7 +118,7 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
               original: oldText,
               mergeControls: false,
               gutter: true,
-              collapseUnchanged,
+              collapseUnchanged: collapse,
             }),
           ],
         }),
@@ -106,13 +128,32 @@ export default function CmDiff({ oldText, newText, mode, wrap, filename, chunkAc
         attachHunkButtons(view, filename, oldText, newText, chunkActions);
       }
 
-      destroy = () => view.destroy();
+      editorRef.current = view;
+      scrollToHunk(view, activeHunk, hunkOffset);
+
+      destroy = () => {
+        editorRef.current = null;
+        view.destroy();
+      };
     }
 
     return destroy;
-  }, [oldText, newText, mode, wrap, language, chunkActions, filename]);
+  }, [oldText, newText, mode, wrap, language, chunkActions, filename, collapseUnchanged]);
+
+  useEffect(() => {
+    if (editorRef.current) scrollToHunk(editorRef.current, activeHunk, hunkOffset);
+  }, [activeHunk, hunkOffset]);
 
   return <div ref={hostRef} data-cm-diff className="min-h-0" />;
+}
+
+function scrollToHunk(view: EditorView, activeHunk: number | undefined, hunkOffset: number) {
+  if (activeHunk === undefined) return;
+  const localIndex = activeHunk - hunkOffset;
+  if (localIndex < 0) return;
+  const chunks = getChunks(view.state)?.chunks;
+  const chunk = chunks?.[localIndex];
+  if (chunk) view.dispatch({ effects: EditorView.scrollIntoView(chunk.fromB, { y: "start" }) });
 }
 
 // --- per-hunk action buttons -------------------------------------------------

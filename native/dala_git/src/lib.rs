@@ -45,6 +45,7 @@ struct FileAtResult {
 #[derive(NifMap)]
 struct Commit {
     hash: String,
+    parents: Vec<String>,
     author: String,
     date_unix: i64,
     subject: String,
@@ -515,8 +516,13 @@ fn log(path: String, limit: usize) -> Result<LogResult, String> {
     for oid in revwalk.take(limit) {
         let oid = oid.map_err(git_error)?;
         let c = repo.find_commit(oid).map_err(git_error)?;
+        let parents = c
+            .parent_ids()
+            .map(|parent| short_hash(&parent.to_string()))
+            .collect();
         commits.push(Commit {
             hash: short_hash(&oid.to_string()),
+            parents,
             author: c.author().name().unwrap_or("").to_string(),
             date_unix: c.time().seconds(),
             subject: c.summary().unwrap_or("").to_string(),

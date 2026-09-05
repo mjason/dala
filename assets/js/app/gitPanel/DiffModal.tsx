@@ -21,7 +21,9 @@ export default function DiffModal({
   const { t } = useI18n();
   const [mode, setMode] = useState<DiffDisplayMode>("split");
   const [wrap, setWrap] = useState(true);
+  const [collapseUnchanged, setCollapseUnchanged] = useState(false);
   const [onlyFile, setOnlyFile] = useState<string | null>(null);
+  const [activeHunk, setActiveHunk] = useState(0);
 
   // Commit patches usually span several files — offer a Fork-style file rail
   // so each one can be reviewed on its own.
@@ -31,7 +33,23 @@ export default function DiffModal({
   );
   useEffect(() => {
     setOnlyFile(null);
+    setActiveHunk(0);
   }, [target]);
+
+  useEffect(() => {
+    setActiveHunk(0);
+  }, [onlyFile]);
+
+  const diffFiles = useMemo(() => parseDiff(target.text).files, [target.text]);
+  const visibleFiles = onlyFile
+    ? diffFiles.filter((file) => (file.newPath || file.oldPath) === onlyFile)
+    : diffFiles;
+  const hunkCount = visibleFiles.reduce((count, file) => count + file.hunks.length, 0);
+
+  const moveHunk = (delta: number) => {
+    if (hunkCount === 0) return;
+    setActiveHunk((index) => Math.min(hunkCount - 1, Math.max(0, index + delta)));
+  };
 
   // Fork-style per-hunk operations. Unstaged view: stage (apply forward to
   // the index — the old side IS the index, so the patch applies cleanly) or
@@ -92,10 +110,18 @@ export default function DiffModal({
       if (e.key === "i") setMode("inline");
       if (e.key === "s") setMode("split");
       if (e.key === "l" && hasLineMode) setMode("lines");
+      if (e.key === "[" && hunkCount > 0) {
+        e.preventDefault();
+        setActiveHunk((index) => Math.max(0, index - 1));
+      }
+      if (e.key === "]" && hunkCount > 0) {
+        e.preventDefault();
+        setActiveHunk((index) => Math.min(hunkCount - 1, index + 1));
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [hasLineMode]);
+  }, [hasLineMode, hunkCount]);
 
   // With revisions known, each file upgrades to the syntax-highlighted merge
   // view by fetching its full old/new contents; binary/oversized files (or
@@ -167,6 +193,52 @@ export default function DiffModal({
       >
         {t("wrapLines")} <Kbd>Alt+Z</Kbd>
       </button>
+      <button
+        id="diff-context-toggle-button"
+        type="button"
+        aria-pressed={collapseUnchanged}
+        onClick={() => setCollapseUnchanged((value) => !value)}
+        className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors ${
+          collapseUnchanged
+            ? "border-mint/50 bg-bg2 text-mint"
+            : "border-line text-fg-muted hover:text-fg"
+        }`}
+        title={t(collapseUnchanged ? "diffFullContext" : "diffCollapseUnchanged")}
+      >
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.3">
+          <path d="M3 3h10M3 13h10M5 6.5h6M5 9.5h6" strokeLinecap="round" />
+          <path d={collapseUnchanged ? "M8 5v6M6 9l2 2 2-2" : "M8 11V5M6 7l2-2 2 2"} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {hunkCount > 0 && (
+        <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5 font-mono text-[11px]">
+          <button
+            type="button"
+            aria-label={t("previousHunk")}
+            title={t("previousHunk")}
+            onClick={() => moveHunk(-1)}
+            disabled={activeHunk === 0}
+            className="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-bg2 hover:text-fg disabled:opacity-30"
+          >
+            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="m10 12-4-4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <span className="min-w-12 text-center text-fg-muted">{activeHunk + 1}/{hunkCount}</span>
+          <button
+            type="button"
+            aria-label={t("nextHunk")}
+            title={t("nextHunk")}
+            onClick={() => moveHunk(1)}
+            disabled={activeHunk === hunkCount - 1}
+            className="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-bg2 hover:text-fg disabled:opacity-30"
+          >
+            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="m6 12 4-4-4-4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+      )}
     </>
   );
 
@@ -178,6 +250,8 @@ export default function DiffModal({
       sidesFor={sidesFor}
       chunkActionsFor={chunkActionsFor}
       onlyFile={onlyFile}
+      activeHunk={activeHunk}
+      collapseUnchanged={collapseUnchanged}
     />
   );
 

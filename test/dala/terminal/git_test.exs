@@ -384,6 +384,7 @@ defmodule Dala.Terminal.GitTest do
       assert %{commits: [newest, oldest]} = run!(:git_log, %{path: dir})
       assert newest.subject == "second commit"
       assert newest.hash == hash
+      assert length(newest.parents) == 1
       assert newest.author == "Dala Test"
       assert {:ok, _dt, _offset} = DateTime.from_iso8601(newest.date)
       assert oldest.subject == "init"

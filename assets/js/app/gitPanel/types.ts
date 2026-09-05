@@ -6,7 +6,7 @@ export type Status = {
   files: GitFile[];
   ignored: string[];
 };
-export type Commit = { hash: string; author: string; date: string; subject: string };
+export type Commit = { hash: string; parents: string[]; author: string; date: string; subject: string };
 export type BranchInfo = { name: string; current: boolean };
 export type Branches = { current: string | null; local: BranchInfo[]; remote: BranchInfo[] };
 

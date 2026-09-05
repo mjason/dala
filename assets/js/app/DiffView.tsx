@@ -25,6 +25,10 @@ type Props = {
   chunkActionsFor?: (file: DiffFile) => ChunkAction[];
   /** Restrict rendering to a single file of the diff (path as shown). */
   onlyFile?: string | null;
+  /** Zero-based hunk index used by the diff navigator. */
+  activeHunk?: number;
+  /** Whether unchanged context should be collapsed in syntax diff views. */
+  collapseUnchanged?: boolean;
 };
 
 /**
@@ -33,15 +37,32 @@ type Props = {
  * collapsed unchanged regions); without one — or while contents load, or for
  * binary files — it renders parsed hunks as colored rows.
  */
-export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor, onlyFile }: Props) {
+export default function DiffView({
+  text,
+  mode,
+  wrap,
+  sidesFor,
+  chunkActionsFor,
+  onlyFile,
+  activeHunk,
+  collapseUnchanged = false,
+}: Props) {
   const parsed = useMemo(() => parseDiff(text), [text]);
   const { t } = useI18n();
   const files = onlyFile
     ? parsed.files.filter((file) => (file.newPath || file.oldPath) === onlyFile)
     : parsed.files;
 
+  useEffect(() => {
+    if (activeHunk === undefined) return;
+    const anchor = document.querySelector(`[data-diff-hunk="${activeHunk}"]`);
+    if (anchor instanceof HTMLElement && typeof anchor.scrollIntoView === "function") {
+      anchor.scrollIntoView({ block: "start" });
+    }
+  }, [activeHunk, onlyFile, parsed]);
+
   return (
-    <div className="overflow-auto">
+    <div id="diff-content" className="overflow-auto">
       {parsed.preamble && !onlyFile && (
         <pre className="whitespace-pre-wrap border-b border-line px-4 py-3 font-mono text-xs leading-5 text-fg-muted [overflow-wrap:anywhere]">
           {parsed.preamble}
@@ -56,6 +77,9 @@ export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor, 
           sidesFor={sidesFor}
           chunkActionsFor={chunkActionsFor}
           t={t}
+          hunkOffset={files.slice(0, i).reduce((count, item) => count + item.hunks.length, 0)}
+          activeHunk={activeHunk}
+          collapseUnchanged={collapseUnchanged}
         />
       ))}
     </div>
@@ -69,6 +93,9 @@ function FileSection({
   sidesFor,
   chunkActionsFor,
   t,
+  hunkOffset,
+  activeHunk,
+  collapseUnchanged,
 }: {
   file: DiffFile;
   mode: DiffDisplayMode;
@@ -76,6 +103,9 @@ function FileSection({
   sidesFor?: DiffSidesProvider;
   chunkActionsFor?: (file: DiffFile) => ChunkAction[];
   t: (key: any) => string;
+  hunkOffset: number;
+  activeHunk?: number;
+  collapseUnchanged: boolean;
 }) {
   const renamed = file.oldPath !== file.newPath && file.oldPath && file.newPath;
   const [sides, setSides] = useState<DiffSides | null>(null);
@@ -129,11 +159,14 @@ function FileSection({
           wrap={wrap}
           filename={file.newPath || file.oldPath}
           chunkActions={chunkActionsFor?.(file)}
+          activeHunk={activeHunk}
+          hunkOffset={hunkOffset}
+          collapseUnchanged={collapseUnchanged}
         />
       ) : mode === "split" ? (
-        <SplitFile file={file} wrap={wrap} />
+        <SplitFile file={file} wrap={wrap} hunkOffset={hunkOffset} />
       ) : (
-        <InlineFile file={file} wrap={wrap} />
+        <InlineFile file={file} wrap={wrap} hunkOffset={hunkOffset} />
       )}
     </section>
   );
@@ -159,7 +192,7 @@ function cellText(wrap: boolean): string {
     : "whitespace-pre";
 }
 
-function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
+function InlineFile({ file, wrap, hunkOffset }: { file: DiffFile; wrap: boolean; hunkOffset: number }) {
   return (
     <table className="w-full border-collapse font-mono text-xs leading-5">
       <tbody>
@@ -167,6 +200,7 @@ function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
           <React.Fragment key={h}>
             <tr>
               <td
+                data-diff-hunk={hunkOffset + h}
                 colSpan={4}
                 className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[var(--color-diff-hunk)]"
               >
@@ -190,7 +224,7 @@ function InlineFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
   );
 }
 
-function SplitFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
+function SplitFile({ file, wrap, hunkOffset }: { file: DiffFile; wrap: boolean; hunkOffset: number }) {
   return (
     <table className="w-full table-fixed border-collapse font-mono text-xs leading-5">
       <tbody>
@@ -198,6 +232,7 @@ function SplitFile({ file, wrap }: { file: DiffFile; wrap: boolean }) {
           <React.Fragment key={h}>
             <tr>
               <td
+                data-diff-hunk={hunkOffset + h}
                 colSpan={4}
                 className="bg-bg2/60 px-3 py-0.5 font-mono text-[11px] italic text-[var(--color-diff-hunk)]"
               >
