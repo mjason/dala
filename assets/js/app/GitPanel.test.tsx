@@ -212,6 +212,10 @@ describe("GitPanel changes tab", () => {
     });
     // structured view exposes inline/split switch
     expect(document.querySelector('[data-diff-mode="split"]')).not.toBeNull();
+    const contextToggle = document.getElementById("diff-context-toggle-button")!;
+    expect(contextToggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(contextToggle);
+    expect(contextToggle).toHaveAttribute("aria-pressed", "true");
   });
 });
 

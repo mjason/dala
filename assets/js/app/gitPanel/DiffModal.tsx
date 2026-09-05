@@ -21,6 +21,7 @@ export default function DiffModal({
   const { t } = useI18n();
   const [mode, setMode] = useState<DiffDisplayMode>("split");
   const [wrap, setWrap] = useState(true);
+  const [collapseUnchanged, setCollapseUnchanged] = useState(false);
   const [onlyFile, setOnlyFile] = useState<string | null>(null);
   const [activeHunk, setActiveHunk] = useState(0);
 
@@ -192,6 +193,23 @@ export default function DiffModal({
       >
         {t("wrapLines")} <Kbd>Alt+Z</Kbd>
       </button>
+      <button
+        id="diff-context-toggle-button"
+        type="button"
+        aria-pressed={collapseUnchanged}
+        onClick={() => setCollapseUnchanged((value) => !value)}
+        className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors ${
+          collapseUnchanged
+            ? "border-mint/50 bg-bg2 text-mint"
+            : "border-line text-fg-muted hover:text-fg"
+        }`}
+        title={t(collapseUnchanged ? "diffFullContext" : "diffCollapseUnchanged")}
+      >
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.3">
+          <path d="M3 3h10M3 13h10M5 6.5h6M5 9.5h6" strokeLinecap="round" />
+          <path d={collapseUnchanged ? "M8 5v6M6 9l2 2 2-2" : "M8 11V5M6 7l2-2 2 2"} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
       {hunkCount > 0 && (
         <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-line p-0.5 font-mono text-[11px]">
           <button
@@ -233,6 +251,7 @@ export default function DiffModal({
       chunkActionsFor={chunkActionsFor}
       onlyFile={onlyFile}
       activeHunk={activeHunk}
+      collapseUnchanged={collapseUnchanged}
     />
   );
 

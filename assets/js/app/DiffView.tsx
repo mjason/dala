@@ -27,6 +27,8 @@ type Props = {
   onlyFile?: string | null;
   /** Zero-based hunk index used by the diff navigator. */
   activeHunk?: number;
+  /** Whether unchanged context should be collapsed in syntax diff views. */
+  collapseUnchanged?: boolean;
 };
 
 /**
@@ -35,7 +37,16 @@ type Props = {
  * collapsed unchanged regions); without one — or while contents load, or for
  * binary files — it renders parsed hunks as colored rows.
  */
-export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor, onlyFile, activeHunk }: Props) {
+export default function DiffView({
+  text,
+  mode,
+  wrap,
+  sidesFor,
+  chunkActionsFor,
+  onlyFile,
+  activeHunk,
+  collapseUnchanged = false,
+}: Props) {
   const parsed = useMemo(() => parseDiff(text), [text]);
   const { t } = useI18n();
   const files = onlyFile
@@ -68,6 +79,7 @@ export default function DiffView({ text, mode, wrap, sidesFor, chunkActionsFor, 
           t={t}
           hunkOffset={files.slice(0, i).reduce((count, item) => count + item.hunks.length, 0)}
           activeHunk={activeHunk}
+          collapseUnchanged={collapseUnchanged}
         />
       ))}
     </div>
@@ -83,6 +95,7 @@ function FileSection({
   t,
   hunkOffset,
   activeHunk,
+  collapseUnchanged,
 }: {
   file: DiffFile;
   mode: DiffDisplayMode;
@@ -92,6 +105,7 @@ function FileSection({
   t: (key: any) => string;
   hunkOffset: number;
   activeHunk?: number;
+  collapseUnchanged: boolean;
 }) {
   const renamed = file.oldPath !== file.newPath && file.oldPath && file.newPath;
   const [sides, setSides] = useState<DiffSides | null>(null);
@@ -147,6 +161,7 @@ function FileSection({
           chunkActions={chunkActionsFor?.(file)}
           activeHunk={activeHunk}
           hunkOffset={hunkOffset}
+          collapseUnchanged={collapseUnchanged}
         />
       ) : mode === "split" ? (
         <SplitFile file={file} wrap={wrap} hunkOffset={hunkOffset} />

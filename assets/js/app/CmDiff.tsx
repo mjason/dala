@@ -30,6 +30,8 @@ type Props = {
   /** Global hunk navigator position, when the diff is hosted by DiffModal. */
   activeHunk?: number;
   hunkOffset?: number;
+  /** Keep unchanged lines visible by default, like an editor diff. */
+  collapseUnchanged?: boolean;
 };
 
 /**
@@ -48,6 +50,7 @@ export default function CmDiff({
   chunkActions,
   activeHunk,
   hunkOffset = 0,
+  collapseUnchanged = false,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<EditorView | null>(null);
@@ -78,7 +81,7 @@ export default function CmDiff({
       ...(wrap ? [EditorView.lineWrapping] : []),
       ...(language ? [language] : []),
     ];
-    const collapseUnchanged = { margin: 3, minSize: 4 };
+    const collapse = collapseUnchanged ? { margin: 3, minSize: 4 } : undefined;
 
     let destroy: () => void;
 
@@ -89,7 +92,7 @@ export default function CmDiff({
         b: { doc: newText, extensions: [...shared, hunkButtonsField] },
         gutter: true,
         highlightChanges: true,
-        collapseUnchanged,
+        collapseUnchanged: collapse,
       });
 
       if (chunkActions && chunkActions.length > 0) {
@@ -115,7 +118,7 @@ export default function CmDiff({
               original: oldText,
               mergeControls: false,
               gutter: true,
-              collapseUnchanged,
+              collapseUnchanged: collapse,
             }),
           ],
         }),
@@ -135,7 +138,7 @@ export default function CmDiff({
     }
 
     return destroy;
-  }, [oldText, newText, mode, wrap, language, chunkActions, filename]);
+  }, [oldText, newText, mode, wrap, language, chunkActions, filename, collapseUnchanged]);
 
   useEffect(() => {
     if (editorRef.current) scrollToHunk(editorRef.current, activeHunk, hunkOffset);
