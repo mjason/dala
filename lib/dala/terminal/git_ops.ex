@@ -149,9 +149,26 @@ defmodule Dala.Terminal.GitOps do
   defp unwrap({:ok, _}), do: {:ok, true}
   defp unwrap({:error, reason}), do: {:error, reason}
 
+  defp format_commit(%{
+         hash: hash,
+         parents: parents,
+         author: author,
+         subject: subject,
+         date_unix: unix
+       }) do
+    %{
+      hash: hash,
+      parents: parents,
+      author: author,
+      subject: subject,
+      date: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
+    }
+  end
+
   defp format_commit(%{hash: hash, author: author, subject: subject, date_unix: unix}) do
     %{
       hash: hash,
+      parents: [],
       author: author,
       subject: subject,
       date: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()

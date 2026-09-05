@@ -2819,11 +2819,11 @@ export type GitLogInput = {
   limit?: number | null;
 };
 
-export type GitLogFields = UnifiedFieldSelection<{commits: Array<{hash: string, author: string, date: string, subject: string, __type: "TypedMap", __primitiveFields: "hash" | "author" | "date" | "subject"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type GitLogFields = UnifiedFieldSelection<{commits: Array<{hash: string, parents: Array<string>, author: string, date: string, subject: string, __type: "TypedMap", __primitiveFields: "hash" | "parents" | "author" | "date" | "subject"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferGitLogResult<
   Fields extends GitLogFields | undefined,
-> = InferResult<{commits: Array<{hash: string, author: string, date: string, subject: string, __type: "TypedMap", __primitiveFields: "hash" | "author" | "date" | "subject"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{commits: Array<{hash: string, parents: Array<string>, author: string, date: string, subject: string, __type: "TypedMap", __primitiveFields: "hash" | "parents" | "author" | "date" | "subject"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type GitLogResult<Fields extends GitLogFields | undefined = undefined> = | { success: true; data: InferGitLogResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
