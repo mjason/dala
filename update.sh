@@ -19,6 +19,11 @@ case "$(uname -s)/$(uname -m)" in
     SERVICE_MANAGER="systemd"
     SERVICE_NAME="${DALA_SERVICE:-dala}"
     ;;
+  Linux/aarch64|Linux/arm64)
+    PLATFORM="linux-arm64"
+    SERVICE_MANAGER="systemd"
+    SERVICE_NAME="${DALA_SERVICE:-dala}"
+    ;;
   Darwin/arm64)
     PLATFORM="macos-arm64"
     SERVICE_MANAGER="launchd"

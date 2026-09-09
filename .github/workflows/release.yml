@@ -16,10 +16,18 @@ concurrency:
 
 jobs:
   linux:
-    name: Build linux-x86_64 server
-    runs-on: ubuntu-24.04
+    name: Build linux-${{ matrix.arch }} server
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       MIX_ENV: prod
+      PLATFORM: linux-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,8 +67,8 @@ jobs:
             native/dala_git/target
             native/dala_holder/target
             native/dala_theme_renderer/target
-          key: server-v2-${{ runner.os }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex', 'lib/mix/tasks/compile.dala_holder.ex') }}
-          restore-keys: server-v2-${{ runner.os }}-
+          key: server-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('mix.lock', 'mix.exs', 'native/**/Cargo.lock', 'native/**/Cargo.toml', 'native/**/src/**', 'lib/dala/git.ex', 'lib/dala/theme_renderer.ex', 'lib/mix/tasks/compile.dala_holder.ex') }}
+          restore-keys: server-v2-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Repair an incomplete native build cache
         run: |
@@ -95,18 +103,18 @@ jobs:
 
       - name: Package release
         run: |
-          OUT="dala-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
+          OUT="dala-${GITHUB_REF_NAME}-${PLATFORM}.tar.gz"
           tar -C _build/prod/rel/dala -czf "$OUT" .
-          tar -tzf "$OUT" > "$RUNNER_TEMP/linux-release-files.txt"
-          grep -q '/priv/native/dala_git.so$' "$RUNNER_TEMP/linux-release-files.txt"
-          grep -q '/priv/native/dala_theme_renderer.so$' "$RUNNER_TEMP/linux-release-files.txt"
+          tar -tzf "$OUT" > "$RUNNER_TEMP/${PLATFORM}-release-files.txt"
+          grep -q '/priv/native/dala_git.so$' "$RUNNER_TEMP/${PLATFORM}-release-files.txt"
+          grep -q '/priv/native/dala_theme_renderer.so$' "$RUNNER_TEMP/${PLATFORM}-release-files.txt"
           sha256sum "$OUT" > "$OUT.sha256"
           mkdir artifacts
           mv "$OUT" "$OUT.sha256" artifacts/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: server-linux-x86_64
+          name: server-linux-${{ matrix.arch }}
           path: artifacts/
           if-no-files-found: error
 

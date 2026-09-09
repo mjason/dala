@@ -29,7 +29,7 @@
 
 ![快速打开](docs/screenshots/quick-open.png)
 
-## 快速开始（Linux x86_64 / macOS arm64）
+## 快速开始（Linux x86_64 / Linux arm64 / macOS arm64）
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjason/dala/main/install.sh | bash

@@ -9,9 +9,13 @@ defmodule Dala.Updater.Release do
   def platform(os_type \\ :os.type(), architecture \\ :erlang.system_info(:system_architecture))
 
   def platform({:unix, :linux}, architecture) do
-    if String.contains?(to_string(architecture), "x86_64"),
-      do: "linux-x86_64",
-      else: "unsupported"
+    arch = to_string(architecture)
+
+    cond do
+      String.contains?(arch, "x86_64") -> "linux-x86_64"
+      String.contains?(arch, "aarch64") or String.contains?(arch, "arm64") -> "linux-arm64"
+      true -> "unsupported"
+    end
   end
 
   def platform({:unix, :darwin}, architecture) do

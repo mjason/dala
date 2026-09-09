@@ -29,6 +29,13 @@ case "$(uname -s)/$(uname -m)" in
     SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     command -v systemctl >/dev/null || die "systemd (systemctl --user) is required"
     ;;
+  Linux/aarch64|Linux/arm64)
+    PLATFORM="linux-arm64"
+    SERVICE_MANAGER="systemd"
+    SERVICE_NAME="dala"
+    SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    command -v systemctl >/dev/null || die "systemd (systemctl --user) is required"
+    ;;
   Darwin/arm64)
     PLATFORM="macos-arm64"
     SERVICE_MANAGER="launchd"
