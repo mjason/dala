@@ -108,6 +108,8 @@ config :phoenix_live_view,
 # at the `config/runtime.exs`.
 config :dala, Dala.Mailer, adapter: Swoosh.Adapters.Local
 
+node_path_separator = if match?({:win32, :nt}, :os.type()), do: ";", else: ":"
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
@@ -123,14 +125,12 @@ config :esbuild,
             Path.expand(Mix.Project.build_path()),
             Path.expand("../_build/dev", __DIR__)
           ],
-          ":"
+          node_path_separator
         )
     }
   ]
 
 # Configure tailwind (the version is required)
-node_path_separator = if match?({:win32, :nt}, :os.type()), do: ";", else: ":"
-
 config :tailwind,
   version: "4.3.0",
   dala: [

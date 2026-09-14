@@ -76,6 +76,14 @@ function Wait-DalaHealthy([string]$Url, [string]$ExpectedVersion, [string]$TaskN
         $taskHealthy = $task.State -eq "Running" -or
           ($task.State -eq "Ready" -and (Test-DalaReleaseProcess $Entrypoint))
         if ($taskHealthy -and $version.ToString().Trim() -eq $ExpectedVersion) {
+          # A live VM can still serve a blank page if the release omitted its JS.
+          foreach ($asset in @("/assets/index.js", "/assets/css/app.css")) {
+            $assetUrl = [Uri]::new([Uri]$Url, $asset)
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $assetUrl -TimeoutSec 5
+            if ($response.StatusCode -ne 200 -or $response.RawContentLength -le 0) {
+              throw "Missing or empty static asset: $assetUrl"
+            }
+          }
           return $true
         }
       }
