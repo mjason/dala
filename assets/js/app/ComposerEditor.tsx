@@ -301,13 +301,18 @@ export default function ComposerEditor({
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {
       let initial = true;
+      let lastReportedHeight = host.getBoundingClientRect().height;
       observer = new ResizeObserver(() => {
         // The observe() call itself fires once — that's the open/close
         // resize the app already refits for.
         if (initial) {
           initial = false;
+          lastReportedHeight = host.getBoundingClientRect().height;
           return;
         }
+        const height = host.getBoundingClientRect().height;
+        if (Math.abs(height - lastReportedHeight) < 1) return;
+        lastReportedHeight = height;
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => cbs.current.onResize(), 150);
       });
