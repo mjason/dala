@@ -156,6 +156,22 @@ exit /b 1
   }
 
   $goodVersion = "v999.999.999"
+  # Reproduce a release whose backend is healthy but whose browser entrypoint is missing.
+  $missingAssetsVersion = "v999.999.996"
+  $missingAssetsRelease = Join-Path $InstallRoot "versions\$missingAssetsVersion"
+  Copy-Item -LiteralPath $installedRelease -Destination $missingAssetsRelease -Recurse
+  $missingAssetsApp = Get-ChildItem -Path "$missingAssetsRelease/lib/dala-*" -Directory | Select-Object -First 1
+  Remove-Item -LiteralPath (Join-Path $missingAssetsApp.FullName "priv/static/cache_manifest.json") -Force
+  Remove-Item -LiteralPath (Join-Path $missingAssetsApp.FullName "priv/static/assets/index.js") -Force
+  Remove-Item -LiteralPath (Join-Path $missingAssetsApp.FullName "priv/static/assets/index.js.gz") -Force -ErrorAction SilentlyContinue
+  Write-Request $request $InstallRoot $missingAssetsVersion $TaskName $Port 5
+  Remove-Item -LiteralPath (Join-Path $InstallRoot "update-status.json") -Force
+  & $queue -HelperPath $helper -RequestPath $request -TaskName $updateTaskName | Out-Null
+  $null = Wait-UpdateState (Join-Path $InstallRoot "update-status.json") "rolled_back"
+  if ((Get-Content -LiteralPath $currentFile -Raw).Trim() -ne $Version) {
+    throw "Missing frontend assets did not trigger rollback"
+  }
+
   $goodRelease = Join-Path $InstallRoot "versions\$goodVersion"
   Copy-Item -LiteralPath $installedRelease -Destination $goodRelease -Recurse
 
@@ -175,7 +191,7 @@ exit /b 1
     throw "Successful activation did not leave the scheduled task registered"
   }
 
-  Write-Output "Windows lifecycle verified: install, installer rollback, update rollback, and activation"
+  Write-Output "Windows lifecycle verified: install, installer rollback, update rollback, missing frontend rollback, and activation"
 } finally {
   & $uninstaller -InstallRoot $InstallRoot -TaskName $TaskName
   Remove-Item -LiteralPath $installerFixture -Recurse -Force -ErrorAction SilentlyContinue
