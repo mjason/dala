@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef } from "react";
+import React, { startTransition, useEffect, useLayoutEffect, useRef } from "react";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder as cmPlaceholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from "@codemirror/commands";
@@ -225,15 +225,22 @@ export default function ComposerEditor({
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.updateListener.of((update) => {
             const text = update.state.doc.toString();
-            if (update.docChanged && !applyingExternalValueRef.current) {
+            const localChange = update.docChanged && !applyingExternalValueRef.current;
+            if (localChange) {
               const pending = pendingLocalValuesRef.current;
               pending.push(text);
               if (pending.length > 100) pending.splice(0, pending.length - 100);
-              cbs.current.onChange(text);
             }
-            if (update.docChanged || update.selectionSet) {
-              cbs.current.onCursor(text, update.state.selection.main.head);
-            }
+            // CodeMirror owns the visible document and can notify from a DOM
+            // MutationObserver. Mirror it into React without accumulating
+            // synchronous renders during rapid native input. Sending still
+            // reads the current document through apiRef, not this mirror.
+            startTransition(() => {
+              if (localChange) cbs.current.onChange(text);
+              if (update.docChanged || update.selectionSet) {
+                cbs.current.onCursor(text, update.state.selection.main.head);
+              }
+            });
           }),
           // Local files pasted or dropped land as uploads, like the terminal.
           // A placeholder marker goes in at the paste/drop position NOW; the
@@ -301,18 +308,13 @@ export default function ComposerEditor({
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {
       let initial = true;
-      let lastReportedHeight = host.getBoundingClientRect().height;
       observer = new ResizeObserver(() => {
         // The observe() call itself fires once — that's the open/close
         // resize the app already refits for.
         if (initial) {
           initial = false;
-          lastReportedHeight = host.getBoundingClientRect().height;
           return;
         }
-        const height = host.getBoundingClientRect().height;
-        if (Math.abs(height - lastReportedHeight) < 1) return;
-        lastReportedHeight = height;
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => cbs.current.onResize(), 150);
       });

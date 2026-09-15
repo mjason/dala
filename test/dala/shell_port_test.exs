@@ -107,15 +107,19 @@ defmodule Dala.ShellPortTest do
       assert Port.info(port) == nil
     end
 
-    test "closing an already-dead port does not raise" do
+    @tag :tmp_dir
+    test "closing an already-dead port does not raise", %{tmp_dir: tmp_dir} do
       command =
         if match?({:win32, :nt}, :os.type()) do
-          [windows_powershell(), "-NoProfile", "-Command", "exit 0"]
+          # Exercise a naturally exited port without starting a second shell
+          # runtime (PowerShell cold startup is slow on Windows CI runners).
+          [windows_script(tmp_dir, "exit.cmd", "@exit /B 0\r\n")]
         else
           ["true"]
         end
 
       port = ShellPort.open(command, "/dev/null")
+      on_exit(fn -> ShellPort.close(port) end)
       timeout = if match?({:win32, :nt}, :os.type()), do: 10_000, else: 2_000
       assert_receive {^port, {:exit_status, 0}}, timeout
       assert ShellPort.close(port) == :ok

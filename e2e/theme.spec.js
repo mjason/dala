@@ -74,7 +74,8 @@ test.describe("Given 一个打开了终端会话的用户，在设置里切换�
     // Stable visual baseline for the actual appearance panel. The e2e server
     // removes non-built-in themes from its isolated DB copy, so user-created
     // library rows cannot change the screenshot geometry.
-    await expect(appearance).toHaveScreenshot("theme-light.png", {
+    // Collect both theme diffs in one run; either mismatch still fails the test.
+    await expect.soft(appearance).toHaveScreenshot("theme-light.png", {
       animations: "disabled",
       caret: "hide",
       maxDiffPixelRatio: 0.008,
@@ -91,7 +92,7 @@ test.describe("Given 一个打开了终端会话的用户，在设置里切换�
     await expect.poll(() => cssToken(page, "--color-git-deleted")).toBe("#e0705a");
     await expect.poll(() => cssToken(page, "--color-git-conflict")).toBe("#c9a5dd");
     await expect.poll(() => cssToken(page, "--color-git-ignored")).toBe("#748493");
-    await expect(appearance).toHaveScreenshot("theme-dark.png", {
+    await expect.soft(appearance).toHaveScreenshot("theme-dark.png", {
       animations: "disabled",
       caret: "hide",
       maxDiffPixelRatio: 0.008,

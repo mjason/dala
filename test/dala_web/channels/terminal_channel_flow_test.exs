@@ -94,19 +94,25 @@ defmodule DalaWeb.TerminalChannelFlowTest do
     # allowing those concurrent bytes as well.
     assert charged.sent >= before.sent + @chunk
 
+    # Reproduce output arriving after the sampled ledger but before the ack.
+    broadcast_chunk(session.id, 2_000, 133)
+    assert_push "output", %{seq: 2_000}, 2_000
+
     push(socket, "ack", %{"bytes" => @chunk, "alt" => true})
     _ = push(socket, "resize", %{"rows" => 24, "cols" => 80})
 
     enabled = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
     assert enabled.enabled
     assert enabled.acked == @chunk
-    assert enabled.sent - enabled.acked == before.sent
+    assert enabled.sent - enabled.acked >= before.sent + 133
 
     push(socket, "ack", %{"bytes" => 100 * @chunk, "alt" => true})
     _ = push(socket, "resize", %{"rows" => 24, "cols" => 80})
 
     clamped = Phoenix.Channel.Server.socket(socket.channel_pid).assigns.fc
-    assert clamped.acked == clamped.sent
+    # More shell output can arrive after the ack has clamped its count.
+    assert clamped.acked >= enabled.sent
+    assert clamped.acked <= clamped.sent
   end
 
   test "acked clients stop receiving past the alt watermark, then resume via flow repaint" do

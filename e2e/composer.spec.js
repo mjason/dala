@@ -160,12 +160,12 @@ test.describe("Given 一个有活动会话的用户", () => {
     expect(capped).toBeGreaterThan(grown);
     expect(capped).toBeLessThanOrEqual(0.4 * viewport.height + 2);
 
-    const scroller = await page.evaluate(() => {
+    // CodeMirror updates its scroll geometry during the next measure cycle.
+    // Wait for that cycle instead of sampling immediately after native input.
+    await expect.poll(() => page.evaluate(() => {
       const s = document.querySelector("#composer-editor .cm-scroller");
-      return { scrollHeight: s.scrollHeight, clientHeight: s.clientHeight, scrollTop: s.scrollTop };
-    });
-    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
-    expect(scroller.scrollTop).toBeGreaterThan(0); // 真的跟着光标滚了
+      return s.scrollHeight > s.clientHeight && s.scrollTop > 0;
+    })).toBe(true);
     await expect(page.locator("#composer-editor .cm-line").last()).toHaveText("line 39");
     await expect(page.locator("#composer-editor .cm-line").last()).toBeInViewport();
 
