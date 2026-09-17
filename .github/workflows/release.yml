@@ -93,6 +93,15 @@ jobs:
           mix assets.deploy
           mix release --overwrite
 
+      - name: Verify frontend assets in release
+        run: |
+          test -s priv/static/cache_manifest.json
+          test -n "$(find priv/static/assets -maxdepth 1 -type f -name 'index*.js' -size +0c -print -quit)"
+          RELEASE_DIR="_build/prod/rel/dala"
+          APP_DIR="$(find "$RELEASE_DIR/lib" -maxdepth 1 -type d -name 'dala-*' -print -quit)"
+          test -s "$APP_DIR/priv/static/cache_manifest.json"
+          test -n "$(find "$APP_DIR/priv/static/assets" -maxdepth 1 -type f -name 'index*.js' -size +0c -print -quit)"
+
       - name: Smoke-test assembled release
         run: |
           RELEASE_DIR="_build/prod/rel/dala"
@@ -190,6 +199,15 @@ jobs:
           mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
+
+      - name: Verify frontend assets in release
+        run: |
+          test -s priv/static/cache_manifest.json
+          test -n "$(find priv/static/assets -maxdepth 1 -type f -name 'index*.js' -size +0c -print -quit)"
+          RELEASE_DIR="_build/prod/rel/dala"
+          APP_DIR="$(find "$RELEASE_DIR/lib" -maxdepth 1 -type d -name 'dala-*' -print -quit)"
+          test -s "$APP_DIR/priv/static/cache_manifest.json"
+          test -n "$(find "$APP_DIR/priv/static/assets" -maxdepth 1 -type f -name 'index*.js' -size +0c -print -quit)"
 
       - name: Smoke-test assembled release
         run: |
@@ -330,8 +348,25 @@ jobs:
         run: |
           mix compile
           mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
+
+      - name: Verify frontend assets in release
+        shell: pwsh
+        run: |
+          $sourceManifest = "priv/static/cache_manifest.json"
+          $sourceIndex = @(Get-ChildItem "priv/static/assets/index*.js" -File | Where-Object Length -gt 0)
+          if (-not (Test-Path -LiteralPath $sourceManifest) -or $sourceIndex.Count -eq 0) {
+            throw "Frontend assets were not generated"
+          }
+          $release = (Resolve-Path "_build/prod/rel/dala").Path
+          $versioned = Get-ChildItem "$release/lib" -Directory -Filter "dala-*" | Select-Object -First 1
+          $releaseManifest = Join-Path $versioned.FullName "priv/static/cache_manifest.json"
+          $releaseIndex = @(Get-ChildItem (Join-Path $versioned.FullName "priv/static/assets/index*.js") -File -ErrorAction SilentlyContinue | Where-Object Length -gt 0)
+          if (-not (Test-Path -LiteralPath $releaseManifest) -or $releaseIndex.Count -eq 0) {
+            throw "Frontend assets were not copied into the release"
+          }
       - name: Smoke-test assembled release
         shell: pwsh
         run: |
