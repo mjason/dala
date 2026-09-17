@@ -111,6 +111,8 @@ config :dala, Dala.Mailer, adapter: Swoosh.Adapters.Local
 node_path_separator = if match?({:win32, :nt}, :os.type()), do: ";", else: ":"
 
 # Configure esbuild (the version is required)
+node_path_separator = if match?({:win32, :nt}, :os.type()), do: ";", else: ":"
+
 config :esbuild,
   version: "0.25.4",
   dala: [

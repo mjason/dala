@@ -133,10 +133,21 @@ jobs:
           npm ci --prefix assets
           mix compile --warnings-as-errors
           mix tailwind.install --if-missing
+          mix esbuild.install --if-missing
           mix assets.deploy
           mix release --overwrite
 
+          $sourceIndex = @(Get-ChildItem "priv/static/assets/index*.js" -File | Where-Object Length -gt 0)
+          if (-not (Test-Path -LiteralPath "priv/static/cache_manifest.json") -or $sourceIndex.Count -eq 0) {
+            throw "Frontend assets were not generated"
+          }
           $release = (Resolve-Path "_build/prod/rel/dala").Path
+          $versioned = Get-ChildItem "$release/lib" -Directory -Filter "dala-*" | Select-Object -First 1
+          $releaseIndex = @(Get-ChildItem (Join-Path $versioned.FullName "priv/static/assets/index*.js") -File -ErrorAction SilentlyContinue | Where-Object Length -gt 0)
+          if (-not (Test-Path -LiteralPath (Join-Path $versioned.FullName "priv/static/cache_manifest.json")) -or $releaseIndex.Count -eq 0) {
+            throw "Frontend assets were not copied into the release"
+          }
+
           New-Item -ItemType Directory -Force "$release/scripts/windows" | Out-Null
           Copy-Item scripts/windows/* "$release/scripts/windows/"
 
