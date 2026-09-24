@@ -725,7 +725,7 @@ impl Screen {
         render_cursor_state(&mut out, grid, &grid.saved_cursor, scroll_region, false);
         out.extend_from_slice(b"\x1b7");
 
-        render_modes(&mut out, term, &mode);
+        render_modes(&mut out, term, &mode, ModeBase::Reset);
         if mode.contains(TermMode::ORIGIN) {
             out.extend_from_slice(b"\x1b[?6h");
         }
@@ -783,7 +783,7 @@ impl Screen {
             out.extend_from_slice(b"\x1b[?1049h");
             out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x0f\x1b(B");
             out.extend_from_slice(b"\x1b[H\x1b[2J");
-            render_modes(&mut out, &self.term, &mode);
+            render_modes(&mut out, &self.term, &mode, ModeBase::Unknown);
             tracker.rows = vec![Vec::new(); screen_lines];
             tracker.columns = columns;
             tracker.cursor = None;
@@ -851,7 +851,7 @@ impl Screen {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(b"\x1b[?1049l");
         out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x0f\x1b(B");
-        render_modes(&mut out, &self.term, &mode);
+        render_modes(&mut out, &self.term, &mode, ModeBase::Unknown);
 
         let mut pen = Pen::default();
         for index in 0..grid.screen_lines() {
@@ -1408,10 +1408,10 @@ fn render_palette(out: &mut Vec<u8>, term: &Term<Responder>) {
 
 /// Every mode a synthesized frame has to restore, with the sequence that sets
 /// it and the one that clears it. A full repaint follows RIS and therefore
-/// only ever needs the "set" column; an incremental frame (see `alt_frame`)
-/// starts from whatever the previous frame left and needs both, or a TUI
-/// turning mouse reporting off mid-session would leave the client reporting
-/// clicks forever.
+/// only ever needs the "set" column; every other frame (see `alt_frame` and
+/// `normal_resync_frame`) starts from whatever the client already has and
+/// needs both, or a TUI turning mouse reporting off would leave the client
+/// reporting clicks forever.
 const MODE_SEQUENCES: &[(TermMode, &[u8], &[u8])] = &[
     (TermMode::APP_CURSOR, b"\x1b[?1h", b"\x1b[?1l"),
     (TermMode::APP_KEYPAD, b"\x1b=", b"\x1b>"),
@@ -1451,10 +1451,25 @@ fn render_mode_delta(out: &mut Vec<u8>, previous: &TermMode, current: &TermMode)
     }
 }
 
-fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode) {
-    for (flag, set, _unset) in MODE_SEQUENCES {
+/// What the client's modes are when a frame's mode block runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModeBase {
+    /// Right after RIS: every mode is at its default, so only departures from
+    /// the defaults need writing.
+    Reset,
+    /// Whatever the client had — a frame without RIS. Every mode is written
+    /// explicitly, because the chunk that turned one off may never have
+    /// reached the client (the frame replaced it).
+    Unknown,
+}
+
+fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode, base: ModeBase) {
+    let explicit = base == ModeBase::Unknown;
+    for (flag, set, unset) in MODE_SEQUENCES {
         if mode.contains(*flag) {
             out.extend_from_slice(set);
+        } else if explicit {
+            out.extend_from_slice(unset);
         }
     }
 
@@ -1463,10 +1478,14 @@ fn render_modes(out: &mut Vec<u8>, term: &Term<Responder>, mode: &TermMode) {
     // those rows are reconstructed independently of the saved mode.
     if !mode.contains(TermMode::LINE_WRAP) {
         out.extend_from_slice(b"\x1b[?7l");
+    } else if explicit {
+        out.extend_from_slice(b"\x1b[?7h");
     }
 
     if !mode.contains(TermMode::SHOW_CURSOR) {
         out.extend_from_slice(b"\x1b[?25l");
+    } else if explicit {
+        out.extend_from_slice(b"\x1b[?25h");
     }
 
     let style = term.cursor_style();
@@ -2753,6 +2772,70 @@ mod frame_tests {
         assert!(text(&frame).contains("\u{1b}[?1049l"));
         assert!(!frame.windows(2).any(|w| w == b"\x1bc"));
         assert!(text(&frame).contains("shell line"));
+    }
+
+    /// The modes a frame is responsible for, as the client's emulator ends up
+    /// with them.
+    fn frame_modes(screen: &Screen) -> TermMode {
+        let tracked = MODE_SEQUENCES.iter().fold(
+            TermMode::LINE_WRAP | TermMode::SHOW_CURSOR,
+            |acc, (flag, _, _)| acc | *flag,
+        );
+        *screen.term.mode() & tracked
+    }
+
+    /// helix 25.07 turns mouse reporting, focus events and bracketed paste off
+    /// in the very write that leaves the alternate screen. That chunk is
+    /// replaced by the resync frame, so the frame itself has to clear them —
+    /// otherwise every mouse move afterwards lands in the shell as `35;13;15M`.
+    #[test]
+    fn leaving_the_alternate_screen_clears_modes_turned_off_on_the_way_out() {
+        let mut screen = Screen::new(6, 40, 1000);
+        let mut client = Client::new(6, 40);
+        let prompt: &[u8] = b"$ hx\r\n";
+        screen.advance(prompt);
+        client.apply(prompt);
+
+        // Entering is streamed, then the alternate screen is frames.
+        let enter: &[u8] = b"\x1b[?1049h\x1b[?1004h\x1b[?2004h\x1b[?1000h\x1b[?1002h\
+              \x1b[?1003h\x1b[?1015h\x1b[?1006h\x1b[?25l";
+        screen.advance(enter);
+        client.apply(enter);
+        let mut tracker = FrameTracker::default();
+        screen.advance(b"\x1b[H\x1b[2Jediting");
+        client.apply(&screen.alt_frame(&mut tracker));
+        assert!(client.screen.term.mode().contains(TermMode::MOUSE_MOTION));
+
+        screen.advance(
+            b"\x1b[?25h\x1b[2 q\x1b[?12l\x1b[?25h\x1b[?1006l\x1b[?1015l\x1b[?1003l\
+              \x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?1004l\x1b[?1049l",
+        );
+        client.apply(&screen.normal_resync_frame());
+
+        assert_eq!(frame_modes(&client.screen), frame_modes(&screen));
+    }
+
+    /// A full frame does not start from RIS either — a resize lands it on top
+    /// of whatever the previous frame left — so it must clear modes as well.
+    #[test]
+    fn a_full_frame_clears_modes_the_client_still_has_on() {
+        let mut screen = alt_screen(6, 20);
+        let mut client = Client::new(6, 20);
+        let mut tracker = FrameTracker::default();
+        screen.advance(b"\x1b[?1000h\x1b[?1006h\x1b[?1004h\x1b[?25l");
+        client.apply(&screen.alt_frame(&mut tracker));
+        assert!(client
+            .screen
+            .term
+            .mode()
+            .contains(TermMode::MOUSE_REPORT_CLICK));
+
+        screen.advance(b"\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?25h");
+        screen.resize(6, 30);
+        client.screen.resize(6, 30);
+        client.apply(&screen.alt_frame(&mut tracker));
+
+        assert_eq!(frame_modes(&client.screen), frame_modes(&screen));
     }
 }
 

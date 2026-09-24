@@ -132,4 +132,24 @@ test.describe("Given 一个把内容画在 alternate screen 上的程序", () =>
     // 进 alt 之前的那一行必须还在。
     expect(await bufferText(page)).toContain("MARKERBEFORE");
   });
+
+  test("退出时关掉的鼠标/焦点上报，浏览器也跟着关", async ({ page }) => {
+    const modes = () =>
+      page.evaluate(() => {
+        const m = window.__dalaTerm?.modes;
+        return m ? { mouse: m.mouseTrackingMode, focus: m.sendFocusMode } : null;
+      });
+
+    await type(page, "printf '\\033[?1049h\\033[?1004h\\033[?1000h\\033[?1003h\\033[?1006h'");
+    await expect.poll(modes, { timeout: READY_TIMEOUT }).toEqual({ mouse: "any", focus: true });
+
+    // helix 就是这么退的：关模式和 1049l 在同一次 write 里。这一块被 resync
+    // 帧整体替换，关模式只能靠帧自己带，否则鼠标一动 shell 里就是 35;13;15M。
+    await type(
+      page,
+      "printf '\\033[?25h\\033[?1006l\\033[?1003l\\033[?1002l\\033[?1000l\\033[?1004l\\033[?1049l'",
+    );
+    await expect.poll(() => bufferType(page), { timeout: READY_TIMEOUT }).toBe("normal");
+    await expect.poll(modes, { timeout: READY_TIMEOUT }).toEqual({ mouse: "none", focus: false });
+  });
 });
